@@ -878,6 +878,10 @@ async def list_local_models(
 
     try:
         models = collect_local_models(models_root)
+        # Tag each GGUF with its task so the Images picker can filter to diffusion.
+        models = [
+            m.model_copy(update = {"task": _local_model_task(m.path, m.model_format)}) for m in models
+        ]
 
         return LocalModelListResponse(
             models_dir = str(models_root),
@@ -3023,6 +3027,110 @@ def _repo_gguf_last_modified(repo_info) -> float:
     return latest
 
 
+# GGUF general.architecture values that denote a diffusion (image) model;
+# everything else is treated as a text model. Lets the Images picker show only
+# image GGUFs in its On Device list.
+_DIFFUSION_GGUF_ARCHS = frozenset(
+    {
+        # ONLY the families the diffusion backend can actually assemble (see
+        # diffusion_families._FAMILIES). Other on-device diffusion archs (SD1/2/3,
+        # SDXL, PixArt, Lumina2, AuraFlow, Wan, HunyuanVideo, ...) would pass this
+        # Images-picker filter and then fail validate_load with a 400, so they are
+        # deliberately excluded until the backend supports them.
+        "flux",  # flux.1
+        "flux2",  # flux.2-klein
+        "qwen_image",  # qwen-image
+        "qwenimage",
+        "z_image",  # z-image
+        "zimage",
+    }
+)
+
+# Known diffusion / image-video GGUF archs the backend can NOT assemble yet. These
+# are the GGUF general.architecture values llama.cpp also has no architecture for,
+# kept in sync with core.inference.llama_cpp.LlamaCppBackend._DIFFUSION_ARCHES
+# (minus the loadable set above). Tagging them with a dedicated, non-loadable task
+# keeps them OUT of the chat picker -- loading one as a chat model dies with
+# "unknown model architecture" -- while also keeping them out of the Images picker
+# (the task is not an IMAGE_GEN_TASK), where they would 400 in validate_load.
+_UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
+    {
+        "sd1",
+        "sd3",
+        "sdxl",
+        "aura",
+        "hidream",
+        "cosmos",
+        "ltxv",
+        "hyvid",
+        "wan",
+        "lumina2",
+    }
+)
+
+# Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
+_UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
+
+
+def _gguf_architecture(path: str) -> Optional[str]:
+    """The GGUF ``general.architecture``, or None. Delegates to the shared,
+    bounds-checked header reader (cached by path/mtime/size)."""
+    from utils.models.gguf_metadata import read_gguf_general_metadata
+
+    arch = (read_gguf_general_metadata(path) or {}).get("general.architecture")
+    return arch.strip() if isinstance(arch, str) and arch.strip() else None
+
+
+def _arch_to_task(arch: Optional[str]) -> Optional[str]:
+    if arch is None:
+        return None
+    a = arch.lower()
+    if a in _DIFFUSION_GGUF_ARCHS:
+        return "text-to-image"
+    # A diffusion arch the backend can't assemble: hide it from chat (it would die
+    # in llama.cpp) without surfacing it in Images (it would 400 in validate_load).
+    if a in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:
+        return _UNSUPPORTED_DIFFUSION_TASK
+    return "text-generation"
+
+
+def _repo_gguf_task(repo_info) -> Optional[str]:
+    """HF pipeline task of a cached GGUF repo, from its architecture:
+    'text-to-image' for a loadable diffusion arch, the non-loadable diffusion tag
+    for a recognized-but-unsupported image arch, else 'text-generation' (None if
+    unreadable)."""
+    try:
+        for path in _iter_gguf_paths(Path(repo_info.repo_path)):
+            if _is_mmproj_filename(path.name):
+                continue
+            task = _arch_to_task(_gguf_architecture(str(path)))
+            if task is not None:
+                return task
+    except Exception:
+        pass
+    return None
+
+
+def _local_model_task(path: str, model_format: Optional[str]) -> Optional[str]:
+    """Same classification for a local model: read its GGUF architecture. The
+    path may be the .gguf file itself or a folder containing one."""
+    if model_format != "gguf":
+        return None
+    try:
+        p = Path(path)
+        if p.suffix.lower() == ".gguf" and p.is_file():
+            return _arch_to_task(_gguf_architecture(str(p)))
+        for f in _iter_gguf_paths(p):
+            if _is_mmproj_filename(f.name):
+                continue
+            task = _arch_to_task(_gguf_architecture(str(f)))
+            if task is not None:
+                return task
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
@@ -3050,6 +3158,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
                             "has_vision": _repo_has_mmproj(repo_info),
+                            "task": _repo_gguf_task(repo_info),
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
@@ -3072,6 +3181,20 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
         return {"cached": []}
+
+
+def _repo_is_diffusers(repo_info) -> bool:
+    """A diffusers pipeline repo (e.g. a Z-Image / FLUX base) carries a top-level
+    model_index.json. These render images rather than chat, so the chat picker
+    hides them — mirroring how cached diffusion GGUFs are classified by arch."""
+    try:
+        for rev in repo_info.revisions:
+            for f in rev.files:
+                if f.file_name == "model_index.json" or f.file_name.endswith("/model_index.json"):
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
@@ -3120,6 +3243,7 @@ async def list_cached_models(
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
+                            "task": "text-to-image" if _repo_is_diffusers(repo_info) else None,
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
@@ -3183,6 +3307,24 @@ async def delete_cached_model(
         if inference_backend.active_model_name:
             active = inference_backend.active_model_name.lower()
             if active == repo_id.lower() or active.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # Also refuse if the diffusion (Images) backend has this repo loaded; its
+    # delete guard is otherwise chat-only, so its GGUF could be removed from
+    # under a live pipeline. Repo-level match, like the chat guards above.
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+        diffusion_status = get_diffusion_backend().status()
+        if diffusion_status.get("loaded") and diffusion_status.get("repo_id"):
+            loaded_id = str(diffusion_status["repo_id"]).lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",

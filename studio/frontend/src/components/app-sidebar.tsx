@@ -74,6 +74,7 @@ import {
   PinOffIcon,
   PlusSignIcon,
   PowerIcon,
+  PaintBrush02Icon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
@@ -1195,6 +1196,18 @@ export function AppSidebar() {
                 active={pathname === "/hub" || pathname.startsWith("/hub/")}
                 onClick={() => {
                   navigate({ to: "/hub" });
+                  closeMobileIfOpen();
+                }}
+              />
+              <NavItem
+                icon={PaintBrush02Icon}
+                label={t("shell.navigation.images")}
+                active={pathname === "/images" || pathname.startsWith("/images/")}
+                disabled={chatOnly}
+                tooltip={trainExportDisabledHint}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/images" });
                   closeMobileIfOpen();
                 }}
               />

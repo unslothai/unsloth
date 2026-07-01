@@ -39,6 +39,7 @@ export const en = {
       hub: "Hub",
       train: "Train",
       recipes: "Recipes",
+      images: "Images",
       export: "Export",
       recents: "Recents",
       settings: "Settings",

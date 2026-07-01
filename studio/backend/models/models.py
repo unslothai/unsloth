@@ -187,6 +187,12 @@ class LocalModelInfo(BaseModel):
         None,
         description = "Unix timestamp of latest observed update",
     )
+    task: Optional[str] = Field(
+        None,
+        description = "HF pipeline task inferred from a GGUF's architecture "
+        "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
+        "Images picker show only diffusion GGUFs.",
+    )
 
 
 class LocalModelListResponse(BaseModel):

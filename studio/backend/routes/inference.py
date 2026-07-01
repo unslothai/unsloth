@@ -1054,6 +1054,14 @@ from models.inference import (
     LoadRequest,
     UnloadRequest,
     GenerateRequest,
+    DiffusionLoadRequest,
+    DiffusionGenerateRequest,
+    DiffusionGenerateResponse,
+    DiffusionGenerateProgressResponse,
+    DiffusionStatusResponse,
+    DiffusionLoadProgressResponse,
+    GalleryImage,
+    GalleryListResponse,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -2961,6 +2969,14 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             model_identifier = model_identifier,
             user_override = request.chat_template_override,
         )
+
+        # Reclaim the GPU from the diffusion (Images) backend before any chat
+        # load path — including the already-loaded fast path below, so chat
+        # ownership is asserted without depending on chat/diffusion exclusivity
+        # holding. No-op when diffusion isn't loaded.
+        from core.inference.gpu_arbiter import acquire_for, CHAT
+
+        await asyncio.to_thread(acquire_for, CHAT)
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
@@ -10993,3 +11009,276 @@ async def _openai_passthrough_non_streaming(
         # redundant parse + re-serialize round-trip.
         return Response(content = resp.content, media_type = "application/json")
     return JSONResponse(content = data)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Diffusion (local text-to-image)
+#
+# Studio-only routes (studio_router is not mounted under /v1). The diffusion
+# backend runs in-process and is synchronous, so the blocking load/generate/
+# unload calls are offloaded with asyncio.to_thread to keep the event loop free.
+# This is the single error boundary: backend methods raise, we map to HTTP here.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _guard_diffusion_load_against_training() -> None:
+    """Refuse loading an image model while a training run is active. Unlike chat,
+    a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
+    load is refused outright rather than fit-checked. No-op when training is
+    inactive or its state can't be read. Raises HTTP 409."""
+    from core.training import get_training_backend
+
+    try:
+        if not get_training_backend().is_training_active():
+            return
+    except Exception as e:
+        logger.warning("Could not check training state for image-load guard: %s", e)
+        return
+    raise HTTPException(
+        status_code = 409,
+        detail = (
+            "Can't load an image model while training is running: the diffusion "
+            "pipeline would compete with the training run for GPU memory. Training "
+            "was left untouched. Try again after training finishes."
+        ),
+    )
+
+
+@studio_router.post("/images/load", response_model = DiffusionStatusResponse)
+async def load_diffusion_model(
+    request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_engine_router import (
+        active_engine_name,
+        annotate_status,
+        select_and_activate_engine,
+    )
+    from core.inference.gpu_arbiter import acquire_for, DIFFUSION
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+    from utils.native_path_leases import redact_native_paths
+
+    backend = get_diffusion_backend()
+    try:
+        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
+        # missing local GGUF) must not evict a working chat model and then 400. The
+        # validated family also drives engine selection below.
+        fam = await asyncio.to_thread(
+            backend.validate_load_request,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            family_override = request.family_override,
+        )
+        # Refuse while training is running: a multi-GB diffusion pipeline would
+        # compete with the training subprocess for VRAM. The chat path does the
+        # same via _guard_chat_load_against_training; this is its image sibling.
+        _guard_diffusion_load_against_training()
+        # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
+        # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
+        # native fallback never strands a half-loaded state.
+        engine = await asyncio.to_thread(select_and_activate_engine, fam, hf_token = request.hf_token)
+        # Take the GPU from the chat backend only when this load will actually use it.
+        # diffusers always does; a *force-native* sd.cpp load on a CUDA/XPU/MPS box does
+        # too. But a native sd.cpp load on a pure-CPU host never touches the GPU, so
+        # acquiring would evict the resident chat model for nothing -- skip the handoff.
+        device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+        needs_gpu = active_engine_name() != ENGINE_SD_CPP or device != "cpu"
+        if needs_gpu:
+            # Then kick the (slow) load onto a background thread and return at once --
+            # the client polls images/load-progress.
+            await asyncio.to_thread(acquire_for, DIFFUSION)
+        status_dict = await asyncio.to_thread(
+            engine.begin_load,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            base_repo = request.base_repo,
+            family_override = request.family_override,
+            hf_token = request.hf_token,
+            cpu_offload = request.cpu_offload,
+            memory_mode = request.memory_mode,
+            speed_mode = request.speed_mode,
+            text_encoder_quant = request.text_encoder_quant,
+            transformer_quant = request.transformer_quant,
+            transformer_quant_fast_accum = request.transformer_quant_fast_accum,
+            transformer_prequant_path = request.transformer_prequant_path,
+            attention_backend = request.attention_backend,
+            transformer_cache = request.transformer_cache,
+            transformer_cache_threshold = request.transformer_cache_threshold,
+        )
+        return DiffusionStatusResponse(**annotate_status(status_dict))
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
+        # A load is already in progress.
+        raise HTTPException(status_code = 409, detail = str(exc))
+
+
+@studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
+async def generate_diffusion_image(
+    request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import image_gallery
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import (
+        DIFFUSION_CANCELLED_MSG,
+        DIFFUSION_NOT_LOADED_MSG,
+    )
+
+    backend = get_active_diffusion_engine()
+    try:
+        result = await asyncio.to_thread(
+            backend.generate,
+            prompt = request.prompt,
+            negative_prompt = request.negative_prompt,
+            width = request.width,
+            height = request.height,
+            steps = request.steps,
+            guidance = request.guidance,
+            seed = request.seed,
+            batch_size = request.batch_size,
+        )
+    except RuntimeError as exc:
+        # Only "no model loaded" / user-cancelled are client-state (409); both engines
+        # raise these two EXACT messages. The native sd.cpp engine also raises
+        # RuntimeError for execution failures (nonzero exit, timeout, missing output)
+        # whose text can embed the raw sd-cli tail (local paths / argv) -- those are
+        # server errors (500) returned as a fixed literal, never echoed. Match the
+        # sentinels exactly, not as a substring, so an sd-cli failure that merely
+        # contains "cancelled" can't misroute to 409 and leak that output.
+        msg = str(exc)
+        if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
+            raise HTTPException(status_code = 409, detail = msg)
+        logger.error("diffusion.generate_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+    except Exception as exc:
+        logger.error("diffusion.generate_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+    # Persist each image with its full recipe embedded. The diffusers batch shares
+    # one seed (drawn sequentially from one generator); the native sd.cpp batch uses a
+    # distinct seed per image and returns them in ``seeds`` so each is reproducible.
+    created_at = time.time()
+    per_image_seeds = result.get("seeds")
+
+    def _persist() -> list[dict]:
+        records = []
+        for index, image in enumerate(result["images"]):
+            seed = (
+                per_image_seeds[index]
+                if per_image_seeds and index < len(per_image_seeds)
+                else result["seed"]
+            )
+            records.append(
+                image_gallery.save(
+                    image,
+                    {
+                        "prompt": request.prompt,
+                        "negative_prompt": request.negative_prompt,
+                        "width": request.width,
+                        "height": request.height,
+                        "steps": request.steps,
+                        "guidance": request.guidance,
+                        "seed": seed,
+                        # Position within the batch: shared timestamp, so the export
+                        # filename needs this to stay unique.
+                        "batch_index": index,
+                        # The batch shares one seed, so reproducing image batch_index>0
+                        # needs the original batch_size: persist it so restore can replay.
+                        "batch_size": request.batch_size,
+                        "model": result.get("repo_id"),
+                        "created_at": created_at,
+                    },
+                )
+            )
+        return records
+
+    try:
+        records = await asyncio.to_thread(_persist)
+    except Exception as exc:
+        logger.error("diffusion.persist_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+
+    return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
+
+
+@studio_router.get("/images/gallery", response_model = GalleryListResponse)
+async def list_gallery_images(
+    limit: int = 50,
+    offset: int = 0,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import image_gallery
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    # Fetch one extra to learn whether more remain, without a second scan.
+    records = await asyncio.to_thread(image_gallery.list_images, limit + 1, offset)
+    has_more = len(records) > limit
+    return GalleryListResponse(
+        images = [GalleryImage(**r) for r in records[:limit]],
+        has_more = has_more,
+    )
+
+
+@studio_router.get("/images/gallery/{image_id}/file")
+async def get_gallery_image_file(
+    image_id: str, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import image_gallery
+
+    path = await asyncio.to_thread(image_gallery.image_path, image_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    data = await asyncio.to_thread(path.read_bytes)
+    # Immutable content (id is unique per image), so let the browser cache it.
+    return Response(
+        content = data,
+        media_type = "image/png",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@studio_router.delete("/images/gallery/{image_id}")
+async def delete_gallery_image(image_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import image_gallery
+
+    deleted = await asyncio.to_thread(image_gallery.delete, image_id)
+    if not deleted:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return {"deleted": True}
+
+
+@studio_router.delete("/images/gallery")
+async def clear_gallery_images(current_subject: str = Depends(get_current_subject)):
+    from core.inference import image_gallery
+    removed = await asyncio.to_thread(image_gallery.clear)
+    return {"removed": removed}
+
+
+@studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
+async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
+    from core.inference.gpu_arbiter import release, DIFFUSION
+
+    status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
+    release(DIFFUSION)
+    return DiffusionStatusResponse(**annotate_status(status_dict))
+
+
+@studio_router.get("/images/status", response_model = DiffusionStatusResponse)
+async def diffusion_status(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion_engine_router import active_status
+    return DiffusionStatusResponse(**active_status())
+
+
+@studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
+async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    return DiffusionLoadProgressResponse(**get_active_diffusion_engine().load_progress())
+
+
+@studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
+async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    return DiffusionGenerateProgressResponse(**get_active_diffusion_engine().generate_progress())

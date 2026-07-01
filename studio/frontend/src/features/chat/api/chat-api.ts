@@ -204,6 +204,10 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for
+   * diffusion, "text-generation" otherwise). Lets the Images picker show only
+   * diffusion GGUFs. Optional for older-backend compatibility. */
+  task?: string | null;
 }
 
 export async function getGgufDownloadProgress(
@@ -286,6 +290,10 @@ export interface LocalModelInfo {
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
   updated_at?: number | null;
+  // HF pipeline task inferred from the GGUF architecture, so the Images picker
+  // can filter local models to diffusion ("text-to-image"). Optional for
+  // older-backend compatibility.
+  task?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -312,6 +320,9 @@ export interface CachedModelRepo {
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo
+   * (model_index.json present), so the chat picker can hide it. Absent = chat. */
+  task?: string | null;
 }
 
 export async function listCachedModels(

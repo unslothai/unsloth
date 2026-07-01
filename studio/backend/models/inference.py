@@ -1680,3 +1680,240 @@ class AnthropicMessagesResponse(BaseModel):
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
+
+
+# ── Diffusion (local text-to-image) ──
+
+
+class DiffusionLoadRequest(BaseModel):
+    """Request to load a local diffusion (text-to-image) checkpoint."""
+
+    model_path: str = Field(..., description = "Diffusion GGUF repo id or local path")
+    gguf_filename: str = Field(
+        ..., description = "The chosen single-file GGUF quant inside model_path"
+    )
+    base_repo: Optional[str] = Field(
+        None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
+    )
+    family_override: Optional[str] = Field(
+        None, description = "Force a family when it can't be inferred from the repo id"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
+        None,
+        description = "Memory policy: auto (measured), fast (resident), balanced "
+        "(stream the transformer, near-resident speed, moderate VRAM "
+        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "Overrides cpu_offload when set.",
+    )
+    speed_mode: Optional[Literal["off", "default", "max"]] = Field(
+        None,
+        description = "Opt-in speed optims (default off -> bit-identical output): "
+        "default (channels_last + regional torch.compile where eligible), "
+        "max (also TF32 + fused QKV).",
+    )
+    text_encoder_quant: Optional[Literal["fp8", "nvfp4"]] = Field(
+        None,
+        description = "Quantise the companion text encoder(s): fp8 (~2x smaller, "
+        "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "memory-vs-quality tradeoff (shifts fine detail), not free; "
+        "pairs well with balanced mode.",
+    )
+    transformer_quant: Optional[Literal["auto", "int8", "fp8", "nvfp4", "mxfp8"]] = Field(
+        None,
+        description = "Opt-in fast transformer: load the DENSE bf16 transformer instead "
+        "of the GGUF and torchao-quantise it onto the low-precision tensor "
+        "cores (faster than GGUF's bf16-rate dequant, at higher VRAM). auto "
+        "picks the best for the GPU (Blackwell nvfp4/mxfp8, Ada/Hopper fp8, "
+        "Ampere int8); an explicit scheme forces it. Needs CUDA + bf16 + room "
+        "for the dense load; falls back to GGUF otherwise.",
+    )
+    transformer_quant_fast_accum: Optional[bool] = Field(
+        None,
+        description = "fp8 only: FP8 matmul accumulate. null auto-detects by GPU class "
+        "(fast FP16 accumulate on consumer/workstation cards, where FP32 "
+        "accumulate is ~2x slower; precise FP32 accumulate on data-center "
+        "HBM cards, which are not nerfed). true/false force it. Negligible "
+        "quality effect (below the fp8 quant noise floor); no overflow risk.",
+    )
+    transformer_prequant_path: Optional[str] = Field(
+        None,
+        description = "Local path to a pre-quantized transformer checkpoint (built by "
+        "scripts/build_prequant_checkpoint.py) for the requested transformer_quant "
+        "scheme. Loads the already-quantized weights with the dense bf16 never on the "
+        "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
+        "checkpoint if configured, else quantises the dense transformer at load time. "
+        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "ignored unless the path resolves inside a directory the operator allowlisted "
+        "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
+        "the OS path separator). A bare on/off value such as '1' is deliberately not "
+        "accepted -- it must name an allowed directory.",
+    )
+    attention_backend: Optional[
+        Literal[
+            "auto",
+            "native",
+            "sdpa",
+            "cudnn",
+            "flash",
+            "flash2",
+            "flash3",
+            "flash4",
+            "sage",
+            "xformers",
+            "aiter",
+        ]
+    ] = Field(
+        None,
+        description = "Attention kernel via the diffusers dispatcher. auto picks the best "
+        "exact backend for the device (cuDNN fused attention on NVIDIA, ~1.18x and "
+        "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
+        "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
+        "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
+        "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "unavailable kernel falls back to the default.",
+    )
+    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+        None,
+        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
+        "reuse the transformer tail across denoise steps when the first block's residual "
+        "barely changes (~1.4x on Flux 28-step at LPIPS ~0.08). For MANY-step models "
+        "(Flux / Qwen-Image); leave off for few-step distilled models (e.g. Z-Image-Turbo), "
+        "which have no caching headroom. Composes with compile (drops fullgraph "
+        "automatically); incompatible models run uncached.",
+    )
+    transformer_cache_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
+        "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
+        "shifts the residual distribution).",
+    )
+
+
+class DiffusionGenerateRequest(BaseModel):
+    """Request to generate one image from the loaded diffusion model."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text prompt")
+    negative_prompt: Optional[str] = Field(
+        None, description = "What to avoid (if the model supports it)"
+    )
+    width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 16)")
+    height: int = Field(
+        1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 16)"
+    )
+    steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
+    guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    seed: Optional[int] = Field(
+        None, ge = 0, le = 2**64 - 1, description = "Seed for reproducibility (random if omitted)"
+    )
+    batch_size: int = Field(
+        1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
+    )
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_16(cls, value: int) -> int:
+        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x
+        # patch). Non-multiples crash deep in the pipeline, so reject them here
+        # for a clean 422 instead of a cryptic 500.
+        if value % 16 != 0:
+            raise ValueError("must be a multiple of 16")
+        return value
+
+
+class GalleryImage(BaseModel):
+    """A persisted image's full generation recipe (embedded in the PNG too)."""
+
+    id: str = Field(..., description = "Stable id (the on-disk filename stem)")
+    url: str = Field(..., description = "Relative URL to fetch the PNG bytes")
+    prompt: str = Field(..., description = "Prompt used")
+    negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
+    width: int = Field(..., description = "Image width")
+    height: int = Field(..., description = "Image height")
+    steps: int = Field(..., description = "Denoising steps")
+    guidance: float = Field(..., description = "Guidance scale")
+    seed: int = Field(..., description = "Seed used")
+    batch_index: int = Field(0, description = "Position within its batch (0-based)")
+    batch_size: int = Field(
+        1, description = "Batch size used; with batch_index it lets restore replay this image"
+    )
+    model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    created_at: float = Field(..., description = "Creation time (epoch seconds)")
+
+
+class DiffusionGenerateResponse(BaseModel):
+    """The persisted gallery records for one generation call (a batch)."""
+
+    images: list[GalleryImage] = Field(..., description = "Saved records, one per image in the batch")
+
+
+class GalleryListResponse(BaseModel):
+    """A newest-first page of persisted images, for infinite scroll."""
+
+    images: list[GalleryImage] = Field(default_factory = list)
+    has_more: bool = Field(False, description = "Whether older images remain past this page")
+
+
+class DiffusionGenerateProgressResponse(BaseModel):
+    """Live per-step progress for an in-flight generation."""
+
+    active: bool = Field(False, description = "Whether a generation is running")
+    step: int = Field(0, description = "Denoising steps completed so far")
+    total_steps: int = Field(0, description = "Total denoising steps for this run")
+    fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
+    eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+
+
+class DiffusionLoadProgressResponse(BaseModel):
+    """Download/finalize progress for an in-flight diffusion load."""
+
+    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
+        None, description = "Load phase; null when idle"
+    )
+    bytes_downloaded: int = Field(0, description = "Bytes present in the HF cache so far")
+    bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
+    fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
+    error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+
+
+class DiffusionStatusResponse(BaseModel):
+    """Current diffusion backend state."""
+
+    loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
+    repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    family: Optional[str] = Field(None, description = "Detected diffusion family")
+    base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
+    device: Optional[str] = Field(None, description = "Device the pipeline is on")
+    dtype: Optional[str] = Field(None, description = "Compute dtype")
+    cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
+    offload_policy: Optional[str] = Field(
+        None, description = "Resolved offload policy: none | group | model | sequential"
+    )
+    vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
+    memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
+    speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
+    speed_optims: list[str] = Field(
+        default_factory = list, description = "Speed optimisations actually engaged"
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
+        "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged via the diffusers dispatcher (e.g. "
+        "_native_cudnn), or null for the default SDPA",
+    )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )

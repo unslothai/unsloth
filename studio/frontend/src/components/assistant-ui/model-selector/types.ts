@@ -29,6 +29,9 @@ export interface ModelSelectorChangeMeta {
   source: "hub" | "lora" | "exported" | "local" | "external";
   isLora: boolean;
   ggufVariant?: string;
+  /** Exact GGUF filename for the picked quant (filenames don't always follow the
+   *  repo name, e.g. FLUX.1-schnell -> flux1-schnell-*.gguf). */
+  ggufFilename?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
   /** Native GGUF context, threaded so a staged pick can seed the slider. */

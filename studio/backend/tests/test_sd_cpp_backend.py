@@ -1,0 +1,321 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for the native sd.cpp diffusion backend (the no-GPU engine)."""
+
+from __future__ import annotations
+
+import threading
+import types
+
+import pytest
+from PIL import Image
+
+from core.inference import sd_cpp_backend as bk
+from core.inference.diffusion_families import detect_family
+from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles
+from core.inference.sd_cpp_backend import (
+    SdCppDiffusionBackend,
+    _map_guidance,
+    ensure_sd_cpp_binary,
+)
+from core.inference.sd_cpp_engine import SdCppCancelled
+
+
+class _FakeEngine:
+    """Stands in for SdCppEngine: writes a 1x1 PNG and records the args."""
+
+    def __init__(
+        self,
+        *,
+        fail = None,
+        cancel_on_call = False,
+    ):
+        self.calls = []
+        self.fail = fail
+        self.cancel_on_call = cancel_on_call
+
+    def is_available(self):
+        return True
+
+    def version(self, **_):
+        return "fake sd-cli"
+
+    def generate(
+        self,
+        files,
+        params,
+        *,
+        output_path,
+        cancel_event = None,
+        **kw,
+    ):
+        self.calls.append((files, params, output_path, kw))
+        if self.cancel_on_call and cancel_event is not None:
+            cancel_event.set()
+        if self.fail is not None:
+            raise self.fail
+        if cancel_event is not None and cancel_event.is_set():
+            raise SdCppCancelled("cancelled")
+        Image.new("RGB", (1, 1), (10, 20, 30)).save(output_path)
+        from pathlib import Path
+
+        return Path(output_path)
+
+
+def _loaded_backend(fam_name = "z-image", engine = None):
+    b = SdCppDiffusionBackend(engine = engine or _FakeEngine())
+    fam = detect_family(fam_name)
+    b._state = bk._SdState(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        base_repo = fam.base_repo,
+        family = fam,
+        device = "cpu",
+        files = SdCppModelFiles(
+            diffusion_model = "/m/z.gguf", vae = "/m/vae.safetensors", llm = "/m/llm.safetensors"
+        ),
+        vae_format = fam.sd_cpp_vae_format,
+        sampling_method = fam.sd_cpp_sampling_method,
+        flow_shift = fam.sd_cpp_flow_shift,
+    )
+    return b
+
+
+# ── asset resolution ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "fam_name,expect_kinds",
+    [
+        ("flux.1", {"diffusion_model", "vae", "clip_l", "t5xxl"}),
+        ("z-image", {"diffusion_model", "vae", "llm"}),
+        ("qwen-image", {"diffusion_model", "vae", "qwen2vl"}),
+        ("flux.2-klein", {"diffusion_model", "vae", "llm"}),
+    ],
+)
+def test_asset_specs_cover_required_files(fam_name, expect_kinds):
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    fam = detect_family(fam_name)
+    specs = b._asset_specs("unsloth/x-GGUF", "x-Q4_K_M.gguf", fam)
+    kinds = {kind for _, _, kind in specs}
+    assert kinds == expect_kinds
+    # Every spec has a non-empty repo + filename.
+    assert all(repo and fn for repo, fn, _ in specs)
+    # The transformer reuses the requested GGUF, not a registry file.
+    tr = [s for s in specs if s[2] == "diffusion_model"][0]
+    assert tr[0] == "unsloth/x-GGUF" and tr[1] == "x-Q4_K_M.gguf"
+
+
+# ── guidance mapping ──────────────────────────────────────────────────────────
+
+
+def test_map_guidance_flux_uses_distilled_guidance():
+    cfg, g = _map_guidance(detect_family("flux.1"), 3.5)
+    assert cfg is None and g == 3.5
+
+
+def test_map_guidance_cfg_family_off_when_distilled():
+    # qwen-image uses real CFG; a distilled 0 -> CFG off (1.0), a >1 value passes through.
+    assert _map_guidance(detect_family("qwen-image"), 0.0) == (1.0, None)
+    assert _map_guidance(detect_family("qwen-image"), 4.0) == (4.0, None)
+
+
+# ── status ────────────────────────────────────────────────────────────────────
+
+
+def test_status_unloaded_reports_sd_cpp_engine():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    st = b.status()
+    assert st["loaded"] is False and st["engine"] == "sd_cpp"
+
+
+def test_status_loaded_shape():
+    b = _loaded_backend()
+    st = b.status()
+    assert st["loaded"] is True
+    assert st["engine"] == "sd_cpp"
+    assert st["family"] == "z-image"
+    assert st["device"] == "cpu"
+    # diffusers-only fields are present (route response parity) but null.
+    for k in ("transformer_quant", "attention_backend", "transformer_cache", "text_encoder_quant"):
+        assert st[k] is None
+
+
+# ── generate ──────────────────────────────────────────────────────────────────
+
+
+def test_generate_returns_images_and_seed():
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 123, batch_size = 2)
+    assert out["seed"] == 123
+    assert out["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    assert len(out["images"]) == 2
+    assert all(isinstance(im, Image.Image) for im in out["images"])
+    # One sd-cli run per batch image, each a distinct seed from the base.
+    assert len(eng.calls) == 2
+    seeds = [params.seed for _, params, _, _ in eng.calls]
+    assert seeds == [123, 124]
+    # The per-image seeds are returned so the route can persist each one.
+    assert out["seeds"] == [123, 124]
+
+
+def test_generate_qwen_passes_sampling_args():
+    eng = _FakeEngine()
+    b = _loaded_backend(fam_name = "qwen-image", engine = eng)
+    b.generate(prompt = "x", steps = 20, guidance = 4.0, seed = 1)
+    _, params, _, kw = eng.calls[0]
+    assert params.sampling_method == "euler"  # Qwen's supported sd.cpp sampler
+    assert "--flow-shift" in (kw.get("extra_args") or [])
+
+
+def test_generate_raises_when_not_loaded():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    with pytest.raises(RuntimeError, match = "No diffusion model is loaded"):
+        b.generate(prompt = "x")
+
+
+def test_generate_passes_vae_format_for_flux2():
+    eng = _FakeEngine()
+    b = _loaded_backend(fam_name = "flux.2-klein", engine = eng)
+    b.generate(prompt = "x", steps = 4, seed = 1)
+    _, _, _, kw = eng.calls[0]
+    assert kw.get("extra_args") == ["--vae-format", "flux2"]
+
+
+def test_generate_cancellation_raises_cancelled_not_failure():
+    # The engine cancels mid-run; the backend surfaces a cancellation, not a crash.
+    eng = _FakeEngine(cancel_on_call = True)
+    b = _loaded_backend(engine = eng)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        b.generate(prompt = "x", steps = 8, seed = 5)
+
+
+def test_generate_progress_tracks_parsed_steps():
+    b = _loaded_backend()
+    b._gen = bk._SdGen(total_steps = 8)
+    b._on_log("  sampling 4/8 done")
+    p = b.generate_progress()
+    assert p["active"] is True and p["step"] == 4 and p["total_steps"] == 8
+    # A fraction with a different denominator must not move the bar.
+    b._on_log("loaded 1/3 tensors")
+    assert b.generate_progress()["step"] == 4
+
+
+# ── load validation + binary install ──────────────────────────────────────────
+
+
+def test_begin_load_rejects_unsupported_family(monkeypatch):
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    # A family with no native asset mapping must be rejected (router falls back).
+    monkeypatch.setattr(bk, "family_sd_cpp_supported", lambda fam: False)
+    with pytest.raises(ValueError, match = "no native sd.cpp asset mapping"):
+        b.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z.gguf")
+
+
+def test_begin_load_requires_gguf_filename():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    with pytest.raises(ValueError, match = "gguf_filename is required"):
+        b.begin_load("unsloth/Z-Image-Turbo-GGUF")
+
+
+def test_begin_load_resolves_family_from_filename_only(monkeypatch):
+    # A local .gguf pick whose family keyword lives only in the basename (parent dir
+    # carries none) must resolve via the same filename fallback the route validated
+    # with -- not dead-end with "Could not infer" on a native (no-GPU) host.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)  # skip the download thread
+    b.begin_load("/models/gguf-store", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf")
+    # Validation passed (no ValueError) and the family was inferred from the filename.
+    assert b._loading is not None and b._loading.repo_id == "/models/gguf-store"
+
+
+def test_ensure_binary_returns_found(monkeypatch):
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/usr/bin/sd-cli")
+    assert ensure_sd_cpp_binary() == "/usr/bin/sd-cli"
+
+
+def test_ensure_binary_install_disabled_returns_none(monkeypatch):
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
+    assert ensure_sd_cpp_binary(allow_install = False) is None
+
+
+def test_unload_clears_state_and_signals_cancel():
+    cancel = threading.Event()
+    b = _loaded_backend()
+    b._active_generate_cancel = cancel
+    st = b.unload()
+    assert st["loaded"] is False
+    assert cancel.is_set()
+    assert b._cancel_event.is_set()
+
+
+def test_status_reports_offload_when_flags_active():
+    # status must reflect the offload flags actually passed to sd-cli, not always "none",
+    # so a balanced/low_vram (or cpu_offload) load is verifiable.
+    b = _loaded_backend()
+    # No flags (CPU default) -> none.
+    assert b.status()["offload_policy"] == "none" and b.status()["cpu_offload"] is False
+    # Flags present (off-CPU offload) -> reported active.
+    s = b._state
+    b._state = bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = "cuda",
+        files = s.files,
+        offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
+    )
+    st = b.status()
+    assert st["cpu_offload"] is True and st["offload_policy"] == "active"
+
+
+def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
+    # A generation that started during the asset download is still running against the OLD
+    # model. _run_load must cancel it AND wait on _generate_lock before committing the new
+    # state, or a stale sd-cli run finishes afterward and persists an image from the previous
+    # model once the new load reports ready.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    fam = detect_family("z-image")
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    # Avoid importing torch from the worker thread (its first import deadlocks off the main
+    # thread -- a test artifact, not a production path); the device only needs to be CPU here.
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+
+    b._load_token = 5
+    cancel = threading.Event()
+    b._active_generate_cancel = cancel  # a generation is "in flight"
+
+    committed = threading.Event()
+
+    def _load():
+        b._run_load(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z.gguf",
+            base = fam.base_repo,
+            fam = fam,
+            hf_token = None,
+            _load_token = 5,
+        )
+        committed.set()
+
+    b._generate_lock.acquire()  # simulate the live denoise holding _generate_lock
+    try:
+        threading.Thread(target = _load, daemon = True).start()
+        # The commit must block behind the live generation and not publish the new state,
+        # but must already have signalled the in-flight cancel.
+        assert not committed.wait(0.5)
+        assert b._state is None
+        assert cancel.is_set()
+    finally:
+        b._generate_lock.release()
+    assert committed.wait(5)  # only now does the commit run
+    assert b._state is not None and b._state.repo_id == "unsloth/Z-Image-Turbo-GGUF"

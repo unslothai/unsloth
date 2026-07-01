@@ -84,6 +84,7 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monk
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -106,6 +107,7 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
             "size_bytes": 7_000,
             "cache_path": str(repo.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -201,6 +203,7 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch,
             "size_bytes": 6_000,
             "cache_path": str(larger.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -231,6 +234,7 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -281,6 +285,7 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
             "size_bytes": 5_000,
             "cache_path": str(mixed.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -308,6 +313,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
             "size_bytes": 5_000,
             "cache_path": str(partial.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -344,6 +350,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
             "size_bytes": 5_000,
             "cache_path": str(healthy.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -391,7 +398,35 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
 
-    assert result["cached"] == [{"repo_id": "Org/MmprojAux", "size_bytes": 15_000}]
+    assert result["cached"] == [{"repo_id": "Org/MmprojAux", "size_bytes": 15_000, "task": None}]
+
+
+def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch, tmp_path):
+    """A cached diffusers pipeline repo (model_index.json present) is tagged
+    text-to-image so the chat picker hides it, while a plain checkpoint isn't."""
+    diffusion = _repo(
+        "Tongyi-MAI/Z-Image-Turbo",
+        [_file("model_index.json", 1_000), _file("text_encoder/model.safetensors", 9_000)],
+        tmp_path / "models--Tongyi-MAI--Z-Image-Turbo",
+    )
+    checkpoint = _repo(
+        "unsloth/Llama-3.2-1B-Instruct",
+        [_file("config.json", 1_000), _file("model.safetensors", 9_000)],
+        tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [diffusion, checkpoint])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
+    assert by_repo == {
+        "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
+        "unsloth/Llama-3.2-1B-Instruct": None,
+    }
 
 
 def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):
@@ -420,6 +455,7 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
             "size_bytes": 5_000,
             "cache_path": str(vision_repo.repo_path),
             "has_vision": True,
+            "task": None,
         }
     ]
 
@@ -474,6 +510,7 @@ def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_pat
             "size_bytes": 5_000,
             "cache_path": str(tmp_path / "active"),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -698,3 +735,69 @@ def test_gguf_download_progress_counts_quant_subdir(monkeypatch, tmp_path):
 
     assert result["downloaded_bytes"] == 20_000
     assert result["progress"] == 1.0
+
+
+def test_arch_to_task_hides_unsupported_diffusion_from_chat():
+    # Loadable diffusion archs -> the Images-picker task.
+    assert models_route._arch_to_task("flux") == "text-to-image"
+    assert models_route._arch_to_task("z_image") == "text-to-image"
+    assert models_route._arch_to_task("qwen_image") == "text-to-image"
+    # A real LLM arch stays a chat model; None passes through.
+    assert models_route._arch_to_task("llama") == "text-generation"
+    assert models_route._arch_to_task(None) is None
+    # Known-but-unsupported diffusion archs get a task that is NEITHER chat
+    # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
+    # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
+    # out (they'd 400 in validate_load).
+    for arch in ("sdxl", "sd1", "sd3", "wan", "lumina2", "hidream", "cosmos"):
+        task = models_route._arch_to_task(arch)
+        assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
+        assert task not in ("text-generation", "text-to-image")
+    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
+    # classified here as some image task (loadable OR unsupported), never chat.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    classified = models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+    missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
+    assert not missing, f"diffusion archs would still show in chat: {missing}"
+
+
+def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
+    # The cached-delete guard refuses deleting a repo the diffusion (Images)
+    # backend has loaded, mirroring the chat guard, so its GGUF can't be removed
+    # from under a live pipeline.
+    from fastapi import HTTPException
+    import core.inference.diffusion as diffusion_mod
+    import routes.inference as routes_inference
+
+    # Chat and orchestrator report nothing loaded; only diffusion holds the repo.
+    # delete_cached_model resolves get_inference_backend from the models module
+    # namespace, so patch it there (not on core.inference) to isolate that guard.
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(
+        diffusion_mod,
+        "get_diffusion_backend",
+        lambda: SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "org/Z-Image-GGUF"}),
+    )
+
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "org/Z-Image-GGUF",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException refusing the delete"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail

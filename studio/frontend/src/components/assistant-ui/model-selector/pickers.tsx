@@ -41,6 +41,7 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import {
   type HfModelResult,
   type HfSortKey,
+  type HfTaskFilter,
   useHubModelSearch,
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -731,7 +732,7 @@ function GgufVariantExpander({
   );
 
   const handleVariantClick = useCallback(
-    (quant: string, downloaded?: boolean, sizeBytes?: number) => {
+    (quant: string, filename: string, downloaded?: boolean, sizeBytes?: number) => {
       // Only seed the staged context for picks whose weights are already on
       // disk. The staging effect short-circuits on a known contextLength
       // (pendingHasContext) before starting the download, so attaching it to an
@@ -742,6 +743,7 @@ function GgufVariantExpander({
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: quant,
+        ggufFilename: filename,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
@@ -914,7 +916,7 @@ function GgufVariantExpander({
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
               onClick={() =>
-                handleVariantClick(v.quant, v.downloaded, expectedBytes)
+                handleVariantClick(v.quant, v.filename, v.downloaded, expectedBytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
@@ -1030,6 +1032,61 @@ function hasGgufSuffix(id: string): boolean {
 
 function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || hasGgufSuffix(id);
+}
+
+// True when a repo's inferred task is within the picker's task filter (or no
+// filter is set). Unknown task (null) only passes when there's no filter.
+function taskMatchesFilter(repoTask: string | null | undefined, filter: HfTaskFilter): boolean {
+  if (!filter) return true;
+  const wanted = Array.isArray(filter) ? filter : [filter];
+  return repoTask != null && (wanted as readonly string[]).includes(repoTask);
+}
+
+// Image-generation pipeline tasks: handled by the Images page, never loadable as
+// chat models. The backend reports "text-to-image" for diffusion-arch GGUFs. The
+// Images page reuses this as its picker's `task` filter, so it lives here.
+export const IMAGE_GEN_TASKS = [
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+] as const;
+
+// Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/
+// ...). The backend tags them with this task so the chat picker hides them -- they
+// die with "unknown model architecture" in llama.cpp -- while the Images picker,
+// which filters on IMAGE_GEN_TASKS, also leaves them out (they'd 400 on load).
+const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
+
+// Tasks that must never appear as a loadable chat model: the Images-handled
+// generation tasks plus the non-loadable diffusion tag above.
+const NON_CHAT_TASKS: readonly string[] = [...IMAGE_GEN_TASKS, UNSUPPORTED_DIFFUSION_TASK];
+
+// Editing/inpaint checkpoints are tagged image-to-image but need an input image,
+// which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
+// id so they don't show in the Images picker only to 400 on load. Keeping the
+// image-to-image task itself is required: some supported models (FLUX.2-klein)
+// carry that tag too.
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "inpainting"] as const;
+function isImageEditModel(repoId: string | null | undefined): boolean {
+  if (!repoId) return false;
+  // Whole-segment match (not substring) so a normal model like "...-edition"
+  // isn't hidden; mirrors the backend detect_family segment check. Split on
+  // both path separators so a Windows local path is segmented too.
+  const segments = new Set(repoId.toLowerCase().split(/[-_./\\]+/));
+  return IMAGE_EDIT_KEYWORDS.some((kw) => segments.has(kw));
+}
+
+// Gate an on-device model by the picker's task scope. With a filter (the Images
+// page) keep only matching, non-editing tasks; with no filter (chat) drop
+// image-generation models so a downloaded diffusion GGUF doesn't show up as a
+// loadable chat model.
+function passesTaskGate(
+  repoTask: string | null | undefined,
+  repoId: string | null | undefined,
+  filter: HfTaskFilter,
+): boolean {
+  if (filter) return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
+  return !(repoTask != null && NON_CHAT_TASKS.includes(repoTask));
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
@@ -1224,6 +1281,7 @@ export function HubModelPicker({
   section = "downloaded",
   sectionToggle,
   onEject,
+  task,
 }: {
   models: ModelOption[];
   /** Fine-tuned models, shown as a section in the On Device view. */
@@ -1243,6 +1301,9 @@ export function HubModelPicker({
   sectionToggle?: ReactNode;
   /** Eject the loaded model. Rendered as the last list row when set. */
   onEject?: () => void;
+  /** Restrict Hub results to a pipeline task (e.g. text-to-image for the
+   *  Images page). Undefined = all tasks (chat default). */
+  task?: HfTaskFilter;
 }) {
   const gpu = useGpuInfo();
   // The currently-loaded/running model id. We read params.checkpoint from the
@@ -1280,6 +1341,7 @@ export function HubModelPicker({
     hasMore,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
+    task,
     sortBy: recommendedSortBy,
     sortDirection: "desc",
     pinUnslothFirst: true,
@@ -1292,6 +1354,7 @@ export function HubModelPicker({
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
+    task,
     sortBy: recommendedSortBy,
     sortDirection: "desc",
     pinUnslothFirst: true,
@@ -1658,18 +1721,28 @@ export function HubModelPicker({
   const isMac = deviceType === "mac";
 
   // Drop models Studio can't run for chat (diffusion / image / video / etc.)
-  // using the Hub's classifier on the tags the listing already carries.
+  // using the Hub's classifier on the tags the listing already carries. When the
+  // picker is scoped to a task (e.g. the Images page asks for text-to-image),
+  // models matching that task are exactly what we want — keep them even though
+  // the chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
-    (r: HfModelResult) =>
-      classifyUnslothSupport({
-        modelId: r.id,
-        pipelineTag: r.pipelineTag,
-        tags: r.tags,
-        libraryName: r.libraryName,
-        quantMethod: r.quantMethod,
-        deviceType,
-      }).status !== "unsupported",
-    [deviceType],
+    (r: HfModelResult) => {
+      // Image tab (task set): only task-matching, non-editing results. Anything
+      // else (e.g. a chat GGUF surfaced by a typed query) is dropped rather than
+      // falling through to the chat classifier and appearing as loadable.
+      if (task) return taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id);
+      return (
+        classifyUnslothSupport({
+          modelId: r.id,
+          pipelineTag: r.pipelineTag,
+          tags: r.tags,
+          libraryName: r.libraryName,
+          quantMethod: r.quantMethod,
+          deviceType,
+        }).status !== "unsupported"
+      );
+    },
+    [deviceType, task],
   );
 
   const recommendedIds = useMemo(() => {
@@ -1710,6 +1783,10 @@ export function HubModelPicker({
       .filter((r) => !isMobileVariant(r.id));
     // Drop models Studio can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
+    // Images (task set) loads single-file GGUF only, so never surface non-GGUF
+    // rows regardless of the format dropdown (mirrors hfIds and the empty
+    // Recommended view); selecting a non-GGUF row is a silent no-op.
+    if (task) rows = rows.filter((r) => r.isGguf);
     // With no explicit format, show the device-recommended formats (GGUF, plus
     // MLX on Mac). When the user picks a format, honor it instead so Safetensors
     // is not dropped by the recommendation default.
@@ -1749,6 +1826,7 @@ export function HubModelPicker({
     isMac,
     gpu,
     isChatSupported,
+    task,
   ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
@@ -1832,14 +1910,31 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // Ordered by the On Device dropdown (recent/download date/size/name).
+  // Ordered by the On Device dropdown (recent/download date/size/name). The task
+  // gate keeps the Images picker to diffusion GGUFs and, conversely, hides those
+  // diffusion GGUFs from the chat picker (where they aren't loadable models).
   const sortedCachedGguf = useMemo(
-    () => sortCachedRepos(cachedGguf, downloadedSort, loadTimes),
-    [cachedGguf, downloadedSort, loadTimes],
+    () =>
+      sortCachedRepos(
+        cachedGguf.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
+        downloadedSort,
+        loadTimes,
+      ),
+    [cachedGguf, downloadedSort, loadTimes, task],
   );
+  // Non-GGUF (safetensors) cached repos aren't single-file diffusion GGUFs, so
+  // hide them entirely when a task filter is active (the Images picker). In chat,
+  // drop cached diffusers pipeline repos (a Z-Image / FLUX base) the same way.
   const sortedCachedModels = useMemo(
-    () => sortCachedRepos(cachedModels, downloadedSort, loadTimes),
-    [cachedModels, downloadedSort, loadTimes],
+    () =>
+      task
+        ? []
+        : sortCachedRepos(
+            cachedModels.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
+            downloadedSort,
+            loadTimes,
+          ),
+    [cachedModels, downloadedSort, loadTimes, task],
   );
   // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());
@@ -1848,18 +1943,23 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
+  // The Images page wants diffusion GGUFs only; chat wants everything but those.
+  // passesTaskGate handles both directions off the GGUF architecture the backend
+  // reports as each model's task.
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
         lmStudioModels.filter(
           (m) =>
-            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
         ),
         downloadedSort,
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
+    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
   );
   // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
   // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
@@ -1869,6 +1969,7 @@ export function HubModelPicker({
       sortLocalModels(
         localDirModels.filter(
           (m) =>
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             (!chatOnly ||
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
@@ -1887,6 +1988,7 @@ export function HubModelPicker({
       loadTimes,
       localQuery,
       chatOnly,
+      task,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -1894,18 +1996,22 @@ export function HubModelPicker({
       sortLocalModels(
         customFolderModels.filter(
           (m) =>
-            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
         ),
         customSort,
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [customFolderModels, customSort, formatFilter, loadTimes, localQuery],
+    [customFolderModels, customSort, formatFilter, loadTimes, localQuery, task],
   );
 
   // Fine-tuned models for the On Device "Fine-tuned" section: flat, query-
-  // filtered, newest first.
+  // filtered, newest first. Hidden under a task filter (no fine-tuning of e.g.
+  // image models).
   const fineTunedRows = useMemo(() => {
+    if (task) return [];
     const needle = normalizeForSearch(debouncedQuery.trim());
     return loraModels
       .filter((m) => {
@@ -1921,7 +2027,7 @@ export function HubModelPicker({
         if (aTime !== bTime) return bTime - aTime;
         return a.name.localeCompare(b.name);
       });
-  }, [loraModels, debouncedQuery]);
+  }, [loraModels, debouncedQuery, task]);
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
   // downloaded model the user is searching for stays visible.
@@ -2017,10 +2123,14 @@ export function HubModelPicker({
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
-      // on Mac (matches the empty Recommended view so search stays consistent).
-      .filter(
-        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+      // Images (task set) loads single-file GGUF only, so don't surface non-GGUF
+      // text-to-image rows the page can't load (mirrors the Recommended view).
+      // Otherwise chat-only keeps runnable formats: GGUF anywhere, plus MLX/
+      // safetensors on Mac.
+      .filter((id) =>
+        task
+          ? isKnownGgufRepo(id)
+          : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
       .filter((id) =>
@@ -2036,6 +2146,7 @@ export function HubModelPicker({
     isChatSupported,
     formatFilter,
     isMac,
+    task,
   ]);
 
   const hubOptionKeys = useMemo(() => {
@@ -2713,6 +2824,7 @@ export function HubModelPicker({
                             </TooltipContent>
                           </Tooltip>
                         ) : null}
+                        {!task && (
                         <Tooltip delayDuration={0}>
                           <TooltipTrigger asChild={true}>
                             <button
@@ -2734,6 +2846,7 @@ export function HubModelPicker({
                             Go to fine-tuned models
                           </TooltipContent>
                         </Tooltip>
+                        )}
                         <Tooltip delayDuration={0}>
                           <TooltipTrigger asChild={true}>
                             <button
@@ -2792,8 +2905,9 @@ export function HubModelPicker({
 
               {/* Fine-tuned models: a section above Custom Folders. Always shown on
               On Device so the train shortcut always has a target, with an empty
-              state when none exist. */}
-              {section === "downloaded" ? (
+              state when none exist. Hidden under a task filter (e.g. Images —
+              we don't fine-tune image models). */}
+              {section === "downloaded" && !task ? (
                 <>
                   <div
                     ref={fineTunedSectionRef}
