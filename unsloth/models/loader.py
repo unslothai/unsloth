@@ -876,6 +876,18 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+            # The base model was evaluated for grouped MoE when dispatch_model.from_pretrained
+            # returned; re-evaluate now that the adapter is attached so blocks whose experts
+            # gained LoRA are cleanly restored to the original loop, attention-only adapters keep
+            # the grouped path on their frozen experts, and recompute is re-derived from the final
+            # gradient-checkpointing state. Guarded so it never blocks adapter loading.
+            try:
+                from unsloth_zoo.temporary_patches.moe_grouped_modulelist import (
+                    auto_enable_grouped_moe,
+                )
+                auto_enable_grouped_moe(model)
+            except Exception:
+                pass  # optional speedup; never block model loading
 
         # Patch Tiled MLP
         # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
