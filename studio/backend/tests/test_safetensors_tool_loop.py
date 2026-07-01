@@ -314,6 +314,27 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
 
+    def test_rehearsal_inside_prefilled_think_is_ignored(self):
+        """Reasoning models (Qwen3.5 enable_thinking) open <think> in the PROMPT,
+        so generated content starts inside the thought and carries only a closing
+        </think>. A call rehearsed in that leading thought must be skipped, while a
+        real call after the close still fires."""
+        text = (
+            'planning web_search[ARGS]{"query":"draft"}</think>'
+            'python[ARGS]{"code":"print(1)"}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "python"
+
+    def test_literal_close_think_in_leading_argument_not_prefill(self):
+        """A </think> literal inside a real leading call's arguments must not be
+        read as a prefilled-reasoning close (which would skip the call)."""
+        text = 'web_search[ARGS]{"query":"what is </think>"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
     def test_mistral_bracket_with_whitespace(self):
         # Optional whitespace (including newlines) is permitted between
         # the name and the opening brace.

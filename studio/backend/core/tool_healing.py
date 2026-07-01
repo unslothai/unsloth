@@ -140,6 +140,10 @@ _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 # streaming, else a call rehearsed inside an open <think> would fall outside every
 # span and could be executed as a real call.
 _THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
+# Bare open/close markers, for prefilled-reasoning turns where the chat template
+# opens <think> in the PROMPT and the generated text carries only a closing tag.
+_THINK_OPEN_RE = re.compile(r"<think>|\[THINK\]")
+_THINK_CLOSE_RE = re.compile(r"</think>|\[/THINK\]")
 
 # Mistral ``[TOOL_CALLS] [{...}, ...]`` canonical array form: ``[TOOL_CALLS]``
 # followed by a JSON list of ``{"name","arguments"}`` objects.
@@ -809,9 +813,21 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
     greedy unclosed ``<think>`` match runs to end-of-text and so extends past the
     call, yet it is still that call's argument data."""
     think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    call_spans = _tool_call_markup_spans(text)
+    # Prefilled reasoning: the template opens <think> in the PROMPT, so the
+    # generated text starts inside a thought and emits only a closing marker with
+    # no opener. Add a leading span (0 .. first close) so a call rehearsed there is
+    # skipped, not executed -- unless that close sits inside a real call's
+    # arguments (a literal </think>), which the call-span guard preserves.
+    close = _THINK_CLOSE_RE.search(text)
+    if close is not None:
+        opener = _THINK_OPEN_RE.search(text)
+        if (opener is None or close.start() < opener.start()) and not any(
+            cs <= close.start() < ce for cs, ce in call_spans
+        ):
+            think_spans = [(0, close.end())] + think_spans
     if not think_spans:
         return think_spans
-    call_spans = _tool_call_markup_spans(text)
     if not call_spans:
         return think_spans
     return [(s, e) for (s, e) in think_spans if not any(cs <= s < ce for cs, ce in call_spans)]
