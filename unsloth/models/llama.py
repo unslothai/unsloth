@@ -1354,6 +1354,9 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
+from .mtp import compute_mtp_loss, filter_mtp_kwargs
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1485,6 +1488,29 @@ def CausalLM_fast_forward(fast_forward_inference):
                     torch_compile = True,
                     logit_softcapping = logit_softcapping,
                 )
+                mtp_loss = compute_mtp_loss(
+                    self,
+                    hidden_states,
+                    labels,
+                    loss_fn = fast_cross_entropy_loss,
+                    n_items = n_items,
+                    logit_softcapping = logit_softcapping,
+                    logit_scaling = logit_scaling,
+                    mtp_loss_weight = kwargs.get("mtp_loss_weight", None),
+                    use_mtp_loss = kwargs.get("use_mtp_loss", None),
+                    train_mtp = kwargs.get("train_mtp", None),
+                    packed_seq_lengths = kwargs.get("packed_seq_lengths", None),
+                    input_ids = input_ids,
+                    position_ids = position_ids,
+                    attention_mask = attention_mask,
+                    inputs_embeds = inputs_embeds,
+                    cache_position = kwargs.get("cache_position", None),
+                    position_embeddings = kwargs.get("position_embeddings", None),
+                    embed_tokens = getattr(getattr(self, "model", None), "embed_tokens", None),
+                    **filter_mtp_kwargs(kwargs),
+                )
+                if mtp_loss is not None:
+                    loss = loss + mtp_loss.to(loss.device)
                 if not return_dict:
                     # Fused CE never materializes `logits`; use EMPTY_LOGITS
                     # like the return_dict branch below (fixes #2068).
@@ -1538,6 +1564,29 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logit_scaling = logit_scaling,
                 n_items = n_items,
             )
+            mtp_loss = compute_mtp_loss(
+                self,
+                hidden_states,
+                labels,
+                loss_fn = fast_cross_entropy_loss,
+                n_items = n_items,
+                logit_softcapping = logit_softcapping,
+                logit_scaling = logit_scaling,
+                mtp_loss_weight = kwargs.get("mtp_loss_weight", None),
+                use_mtp_loss = kwargs.get("use_mtp_loss", None),
+                train_mtp = kwargs.get("train_mtp", None),
+                packed_seq_lengths = kwargs.get("packed_seq_lengths", None),
+                input_ids = input_ids,
+                position_ids = position_ids,
+                attention_mask = attention_mask,
+                inputs_embeds = inputs_embeds,
+                cache_position = kwargs.get("cache_position", None),
+                position_embeddings = kwargs.get("position_embeddings", None),
+                embed_tokens = getattr(getattr(self, "model", None), "embed_tokens", None),
+                **filter_mtp_kwargs(kwargs),
+            )
+            if mtp_loss is not None:
+                loss = loss + mtp_loss.to(loss.device)
         else:
             if logit_scaling != 0:
                 if logits.requires_grad:
