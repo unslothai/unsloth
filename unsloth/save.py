@@ -1367,14 +1367,20 @@ def install_python_non_blocking(packages = []):
 # bound, `pip install llmcompressor` resolves to whatever the configured index offers, so a
 # compromised, dependency-confused, or inflated-version ("999.0.0") release could be pulled and
 # executed under the Unsloth process at install/import time; the "<1.0" ceiling blocks that jump.
-# The floor keeps the oneshot / QuantizationModifier API this uses. Crucially the range still lets
-# pip pick up new 0.x releases, which is where support for brand-new architectures lands (the gate
-# below can require a newer llm-compressor for newer schemes/models) -- an exact pin would break
-# exporting new models. Bump the ceiling deliberately when llm-compressor reaches 1.0 so a new
-# major is vetted before it is auto-installed. An already-installed newer llm-compressor is used
-# as-is (the import below short-circuits), so this only constrains the auto-install, never what
-# the user installed themselves.
-_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.8.0,<1.0"
+# The range still lets pip pick up new 0.x releases, which is where support for brand-new
+# architectures lands (the gate below can require a newer llm-compressor for newer schemes/models)
+# -- an exact pin would break exporting new models. Bump the ceiling deliberately when
+# llm-compressor reaches 1.0 so a new major is vetted before it is auto-installed.
+#
+# The floor is 0.6.0 (its metadata only needs torch>=1.7) so it never conflicts with the torch this
+# install pins in the constraints file below: Unsloth supports torch>=2.4, but llm-compressor
+# 0.7.0+ require torch>=2.7 (0.10+ need >=2.9, 0.12+ need >=2.10). A higher floor would leave pip
+# with no candidate on a supported torch 2.4-2.6 box and break FP8/FP4 export before quantization.
+# pip still prefers the newest compatible release, so modern torch gets the latest 0.x anyway.
+#
+# An already-installed newer llm-compressor is used as-is (the import below short-circuits), so this
+# only constrains the auto-install, never what the user installed themselves.
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<1.0"
 
 
 def install_llm_compressor():

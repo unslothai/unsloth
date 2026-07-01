@@ -54,6 +54,26 @@ def test_spec_is_a_bounded_pin() -> None:
     assert ">=" in spec and "<" in spec, f"spec must have lower and upper bounds, got {spec!r}"
 
 
+def test_floor_stays_compatible_with_supported_torch() -> None:
+    """The floor must not require a torch newer than the oldest torch Unsloth supports (>=2.4).
+
+    llm-compressor 0.7.0+ require torch>=2.7 (0.10+ >=2.9, 0.12+ >=2.10); only <=0.6.x allows
+    torch<2.7. Since install_llm_compressor() pins the current torch in the constraints file, a
+    floor above 0.6.0 leaves pip with no candidate on a supported torch 2.4-2.6 box and breaks
+    FP8/FP4 export. Keep the floor at or below 0.6.0.
+    """
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    req = Requirement(_spec_value())
+    lowers = [Version(s.version) for s in req.specifier if s.operator in (">=", "==", "~=")]
+    assert lowers, "spec must declare a lower bound"
+    assert max(lowers) <= Version("0.6.0"), (
+        f"floor {max(lowers)} requires a torch newer than Unsloth's minimum (2.4); "
+        "llm-compressor >0.6.0 needs torch>=2.7. Keep the floor <= 0.6.0."
+    )
+
+
 def test_install_command_uses_pinned_spec_not_bare_name() -> None:
     fn = _get_function("install_llm_compressor")
     # No argv list may pass the bare, unpinned package literal "llmcompressor".
