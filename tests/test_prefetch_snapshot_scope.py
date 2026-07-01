@@ -337,12 +337,12 @@ def test_st_fallback_module_loads_resolve_env_cache():
         if "cache_folder" not in dumped:
             continue  # internal pass-through (cache_dir = cache_dir): not a resolution site
         checked += 1
-        assert "SENTENCE_TRANSFORMERS_HOME" in dumped, (
-            f"{node.func.attr} cache_dir resolves cache_folder but not SENTENCE_TRANSFORMERS_HOME"
-        )
-    assert checked >= 2, (
-        "expected the fallback _module_path and _load_modules calls to resolve the env cache"
-    )
+        assert (
+            "SENTENCE_TRANSFORMERS_HOME" in dumped
+        ), f"{node.func.attr} cache_dir resolves cache_folder but not SENTENCE_TRANSFORMERS_HOME"
+    assert (
+        checked >= 2
+    ), "expected the fallback _module_path and _load_modules calls to resolve the env cache"
 
 
 def test_filename_has_variant_matches_single_and_sharded():

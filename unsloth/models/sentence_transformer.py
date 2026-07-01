@@ -1700,7 +1700,8 @@ class FastSentenceTransformer(FastModel):
             FastSentenceTransformer._module_path(
                 model_name,
                 token,
-                cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                cache_dir = kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             )
             is not None
         )
