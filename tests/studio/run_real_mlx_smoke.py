@@ -596,9 +596,15 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
             )
         except subprocess.TimeoutExpired as exc:
             # Surface whatever llama-cli emitted before the timeout so a future hang is
-            # diagnosable from the CI log instead of being opaque.
-            print(f"  [reload:gguf] TIMEOUT stdout:\n{(exc.stdout or '')[:1000]}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stderr:\n{(exc.stderr or '')[:1000]}", flush = True)
+            # diagnosable from the CI log. TimeoutExpired carries raw bytes even under
+            # text=True, so decode before printing (else it renders as b'...' repr).
+            def _decode(stream) -> str:
+                if isinstance(stream, bytes):
+                    return stream.decode("utf-8", errors = "replace")
+                return stream or ""
+
+            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
+            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
             raise
 
     metrics["llama_cli_returncode"] = proc.returncode
