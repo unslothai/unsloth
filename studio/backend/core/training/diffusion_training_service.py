@@ -34,8 +34,7 @@ _TERMINAL = ("complete", "error")
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
-
-    run_diffusion_training_process(event_queue=event_queue, stop_queue=stop_queue, config=config)
+    run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
 
 def _idle_state() -> dict[str, Any]:
@@ -94,20 +93,23 @@ class DiffusionTrainingService:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
             if self._pump is not None and self._pump.is_alive():
-                self._pump.join(timeout=5.0)
+                self._pump.join(timeout = 5.0)
 
             job_id = uuid.uuid4().hex
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
             self._proc = self._ctx.Process(
-                target=self._target,
-                kwargs={"event_queue": event_queue, "stop_queue": self._stop_queue, "config": config},
-                daemon=True,
+                target = self._target,
+                kwargs = {
+                    "event_queue": event_queue,
+                    "stop_queue": self._stop_queue,
+                    "config": config,
+                },
+                daemon = True,
             )
             self._proc.start()
             try:
                 from utils.process_lifetime import adopt_pid
-
                 adopt_pid(self._proc.pid)  # bind to parent lifetime (no zombie on exit)
             except Exception:  # noqa: BLE001 -- lifetime binding is best-effort
                 pass
@@ -115,11 +117,15 @@ class DiffusionTrainingService:
             now = time.time()
             self._state = _idle_state()
             self._state.update(
-                active=True, job_id=job_id, status="running",
-                message="Starting diffusion LoRA training...", started_at=now, updated_at=now,
+                active = True,
+                job_id = job_id,
+                status = "running",
+                message = "Starting diffusion LoRA training...",
+                started_at = now,
+                updated_at = now,
             )
             self._pump = threading.Thread(
-                target=self._pump_loop, args=(event_queue, self._proc), daemon=True
+                target = self._pump_loop, args = (event_queue, self._proc), daemon = True
             )
             self._pump.start()
             return job_id
@@ -149,7 +155,7 @@ class DiffusionTrainingService:
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
             try:
-                ev = event_queue.get(timeout=1.0)
+                ev = event_queue.get(timeout = 1.0)
             except Exception:  # noqa: BLE001 -- Empty (timeout) or a closed queue
                 if not proc.is_alive():
                     # Drain anything buffered, then decide if it exited cleanly.
@@ -163,9 +169,10 @@ class DiffusionTrainingService:
                     with self._lock:
                         if self._state.get("status") not in ("completed", "stopped", "error"):
                             self._state.update(
-                                active=False, status="error",
-                                message="Training process exited unexpectedly.",
-                                updated_at=time.time(),
+                                active = False,
+                                status = "error",
+                                message = "Training process exited unexpectedly.",
+                                updated_at = time.time(),
                             )
                     _ = drained
                     return
@@ -182,33 +189,33 @@ class DiffusionTrainingService:
             s = self._state
             s["updated_at"] = time.time()
             if etype == "model_load_started":
-                s.update(in_model_load=True, status="running", message="Loading base model...")
+                s.update(in_model_load = True, status = "running", message = "Loading base model...")
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
             elif etype == "model_load_completed":
-                s.update(in_model_load=False, message="Training...")
+                s.update(in_model_load = False, message = "Training...")
             elif etype == "progress":
                 s.update(
-                    status="running",
-                    step=ev.get("step", s["step"]),
-                    total_steps=ev.get("total_steps", s["total_steps"]),
-                    loss=ev.get("loss", s["loss"]),
-                    avg_loss=ev.get("avg_loss", s["avg_loss"]),
-                    learning_rate=ev.get("learning_rate", s["learning_rate"]),
-                    message="Training...",
+                    status = "running",
+                    step = ev.get("step", s["step"]),
+                    total_steps = ev.get("total_steps", s["total_steps"]),
+                    loss = ev.get("loss", s["loss"]),
+                    avg_loss = ev.get("avg_loss", s["avg_loss"]),
+                    learning_rate = ev.get("learning_rate", s["learning_rate"]),
+                    message = "Training...",
                 )
             elif etype == "complete":
                 s.update(
-                    active=False,
-                    status="stopped" if ev.get("stopped") else "completed",
-                    output_dir=ev.get("output_dir"),
-                    lora_path=ev.get("lora_path"),
-                    message="Stopped (partial adapter saved)."
+                    active = False,
+                    status = "stopped" if ev.get("stopped") else "completed",
+                    output_dir = ev.get("output_dir"),
+                    lora_path = ev.get("lora_path"),
+                    message = "Stopped (partial adapter saved)."
                     if ev.get("stopped")
                     else "Training complete.",
                 )
             elif etype == "error":
-                s.update(active=False, status="error", message=str(ev.get("message", "error")))
+                s.update(active = False, status = "error", message = str(ev.get("message", "error")))
 
 
 _service: Optional[DiffusionTrainingService] = None
