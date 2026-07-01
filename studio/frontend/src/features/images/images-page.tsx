@@ -1192,12 +1192,29 @@ export function ImagesPage() {
         void handleLoad(id, { kind: spec.kind, filename: spec.filename });
         return;
       }
-      if (!meta.ggufVariant || !meta.ggufFilename) return; // not a quant pick
-      setQuant(meta.ggufVariant);
+      // GGUF quant pick from the variant expander.
+      if (meta.ggufVariant && meta.ggufFilename) {
+        setQuant(meta.ggufVariant);
+        const dq = defaultsFor(id);
+        setSteps(dq.steps);
+        setGuidance(dq.guidance);
+        void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename });
+        return;
+      }
+      // A direct local .gguf file picked without a variant isn't wired for Images.
+      if (meta.isGguf) return;
+      // Otherwise treat it as a full diffusers repo (safetensors / bnb-4bit). The backend
+      // infers the family + base repo from the id and gates loads to unsloth/* repos or
+      // on-device paths, so only attempt those; other Hub orgs can't be assembled here.
+      if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+        toast.error("Only unsloth or on-device image models can be loaded here");
+        return;
+      }
+      setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename });
+      void handleLoad(id, { kind: "pipeline" });
     },
     [handleLoad],
   );
