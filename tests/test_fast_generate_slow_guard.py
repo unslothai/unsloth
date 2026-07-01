@@ -5,6 +5,7 @@ inputs must be rejected with a clear message instead of leaking into transformer
 a string prompt, a vLLM {"prompt":..., "multi_modal_data":...} dict, SamplingParams passed both
 positionally and as a kwarg, and a normal tokenized call passing through.
 """
+
 import ast, functools, os
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,14 +27,18 @@ make_fast_generate_wrapper = _load_factory()
 
 class _SamplingParams:
     pass
-_SamplingParams.__name__ = "SamplingParams"   # match by class name, no vllm import needed
+
+
+_SamplingParams.__name__ = "SamplingParams"  # match by class name, no vllm import needed
 
 
 def _wrapper():
     state = {}
+
     def original_generate(*a, **k):
         state["hit"] = True
         return "ok"
+
     return make_fast_generate_wrapper(original_generate), state
 
 
@@ -49,13 +54,15 @@ def _rejects(fn, needle):
 def run():
     w, _ = _wrapper()
     assert _rejects(lambda: w("hello"), "fast_inference=True")
-    assert _rejects(lambda: w({"prompt": "hi", "multi_modal_data": {"image": None}}), "fast_inference=True")
+    assert _rejects(
+        lambda: w({"prompt": "hi", "multi_modal_data": {"image": None}}), "fast_inference=True"
+    )
     assert _rejects(lambda: w(["a", "b"]), "fast_inference=True")
     assert _rejects(lambda: w({"prompt": "hi"}, _SamplingParams()), "sampling_params")
-    assert _rejects(lambda: w(sampling_params=object()), "sampling_params")
+    assert _rejects(lambda: w(sampling_params = object()), "sampling_params")
 
     w, state = _wrapper()
-    assert w(input_ids="TOKENS", max_new_tokens=8) == "ok" and state.get("hit")
+    assert w(input_ids = "TOKENS", max_new_tokens = 8) == "ok" and state.get("hit")
     print("6/6 fast_generate slow-mode guard cases passed")
 
 

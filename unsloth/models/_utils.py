@@ -3622,8 +3622,15 @@ def make_fast_generate_wrapper(original_generate):
             first_arg = args[0]
             is_vllm_prompt = (
                 isinstance(first_arg, str)
-                or (isinstance(first_arg, (list, tuple)) and len(first_arg) > 0 and isinstance(first_arg[0], str))
-                or (isinstance(first_arg, dict) and ("prompt" in first_arg or "multi_modal_data" in first_arg))
+                or (
+                    isinstance(first_arg, (list, tuple))
+                    and len(first_arg) > 0
+                    and isinstance(first_arg[0], str)
+                )
+                or (
+                    isinstance(first_arg, dict)
+                    and ("prompt" in first_arg or "multi_modal_data" in first_arg)
+                )
             )
             if is_vllm_prompt:
                 raise ValueError(
