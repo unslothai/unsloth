@@ -56,6 +56,7 @@ from .diffusion_attention import (
     apply_attention_backend,
     select_attention_backend,
 )
+from .diffusion_cache import apply_step_cache
 from .diffusion_precision import quantize_text_encoders
 from .diffusion_prequant import (
     load_prequantized_transformer,
@@ -103,6 +104,8 @@ class _LoadState:
     # Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), or
     # None for the default SDPA. Set before compile; orthogonal to the weight quant.
     attention_backend: Optional[str] = None
+    # Step cache engaged ("fbcache") or None. Opt-in, for many-step models.
+    transformer_cache: Optional[str] = None
 
 
 @dataclass
@@ -314,6 +317,8 @@ class DiffusionBackend:
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
+        transformer_cache: Optional[str] = None,
+        transformer_cache_threshold: Optional[float] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -349,6 +354,8 @@ class DiffusionBackend:
                 transformer_quant_fast_accum = transformer_quant_fast_accum,
                 transformer_prequant_path = transformer_prequant_path,
                 attention_backend = attention_backend,
+                transformer_cache = transformer_cache,
+                transformer_cache_threshold = transformer_cache_threshold,
                 _load_token = token,
             ),
             daemon = True,
@@ -486,6 +493,8 @@ class DiffusionBackend:
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
+        transformer_cache: Optional[str] = None,
+        transformer_cache_threshold: Optional[float] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -618,12 +627,27 @@ class DiffusionBackend:
                     ),
                     logger = logger,
                 )
+                # Opt-in step caching (First-Block-Cache), also before compile. OFF by
+                # default; for many-step models it reuses the transformer tail across steps
+                # (~1.4x on Flux at LPIPS ~0.08). When engaged, compile must drop fullgraph
+                # (the cache's per-step decision is a graph break), so pass it through.
+                cache_engaged = apply_step_cache(
+                    pipe,
+                    mode = transformer_cache,
+                    threshold = transformer_cache_threshold,
+                    # GGUF transformers are quantized too (the default Studio path), so the
+                    # cache needs the higher quantized threshold to still trigger -- not just
+                    # the dense-quant fast path.
+                    quant_active = transformer_quant_engaged is not None or bool(gguf_filename),
+                    logger = logger,
+                )
                 speed_applied = apply_speed_optims(
                     pipe,
                     target,
                     is_gguf = bool(gguf_filename),
                     family = fam,
                     speed_mode = effective_speed,
+                    cache_active = cache_engaged is not None,
                     logger = logger,
                 )
                 if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
@@ -672,6 +696,7 @@ class DiffusionBackend:
                     text_encoder_quant = te_quant,
                     transformer_quant = transformer_quant_engaged,
                     attention_backend = attention_engaged,
+                    transformer_cache = cache_engaged,
                 )
 
         logger.info(
@@ -977,6 +1002,7 @@ class DiffusionBackend:
                 "text_encoder_quant": None,
                 "transformer_quant": None,
                 "attention_backend": None,
+                "transformer_cache": None,
             }
         return {
             "loaded": True,
@@ -994,6 +1020,7 @@ class DiffusionBackend:
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
+            "transformer_cache": state.transformer_cache,
         }
 
 

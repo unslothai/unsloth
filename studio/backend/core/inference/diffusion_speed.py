@@ -147,6 +147,7 @@ def apply_speed_optims(
     is_gguf: bool,
     family: Any,
     speed_mode: str = SPEED_OFF,
+    cache_active: bool = False,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optimisations for ``speed_mode`` to a built pipeline,
@@ -181,7 +182,9 @@ def apply_speed_optims(
     # block, where eligible (now incl. the GGUF transformer). `max` opts into
     # max-autotune (longer compile, autotuned kernels).
     if compile_eligible(target, is_gguf = is_gguf, family = family):
-        applied["compiled"] = _compile_repeated_blocks(pipe, logger, max_autotune = mode == SPEED_MAX)
+        applied["compiled"] = _compile_repeated_blocks(
+            pipe, logger, max_autotune = mode == SPEED_MAX, cache_active = cache_active
+        )
 
     if mode == SPEED_MAX:
         # Near-lossless: TF32 matmul (CUDA only) trades a few mantissa bits for speed.
@@ -210,6 +213,7 @@ def _compile_repeated_blocks(
     logger: Any,
     *,
     max_autotune: bool = False,
+    cache_active: bool = False,
 ) -> bool:
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "compile_repeated_blocks", None)
@@ -221,7 +225,12 @@ def _compile_repeated_blocks(
     # compile and a recompile per new resolution. The CUDA-graph modes (reduce-overhead
     # / max-autotune) are deliberately NOT used: they crash on the regionally-compiled
     # block because its static output buffer is overwritten across denoise steps.
-    kwargs: dict[str, Any] = {"fullgraph": True, "dynamic": not max_autotune}
+    #
+    # fullgraph drops to False when a step cache is engaged: FBCache's per-step decision is
+    # ``@torch.compiler.disable``d, i.e. a graph break, which fullgraph=True rejects ("Skip
+    # inlining torch.compiler.disable()d function"). The break is cheap and the rest of the
+    # block still compiles.
+    kwargs: dict[str, Any] = {"fullgraph": not cache_active, "dynamic": not max_autotune}
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
     try:

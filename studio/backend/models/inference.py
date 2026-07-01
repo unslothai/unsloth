@@ -1774,6 +1774,23 @@ class DiffusionLoadRequest(BaseModel):
         "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",
     )
+    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+        None,
+        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
+        "reuse the transformer tail across denoise steps when the first block's residual "
+        "barely changes (~1.4x on Flux 28-step at LPIPS ~0.08). For MANY-step models "
+        "(Flux / Qwen-Image); leave off for few-step distilled models (e.g. Z-Image-Turbo), "
+        "which have no caching headroom. Composes with compile (drops fullgraph "
+        "automatically); incompatible models run uncached.",
+    )
+    transformer_cache_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
+        "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
+        "shifts the residual distribution).",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1894,3 +1911,4 @@ class DiffusionStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")

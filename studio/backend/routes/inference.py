@@ -10335,6 +10335,8 @@ async def load_diffusion_model(
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             transformer_prequant_path = request.transformer_prequant_path,
             attention_backend = request.attention_backend,
+            transformer_cache = request.transformer_cache,
+            transformer_cache_threshold = request.transformer_cache_threshold,
         )
         return DiffusionStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:

@@ -460,6 +460,47 @@ def test_prequant_path_doc_describes_allowlist_not_toggle():
     assert "allowlist" in desc.lower() or "director" in desc.lower()
 
 
+def test_transformer_cache_threads_through(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_cache": "fbcache",
+            "transformer_cache_threshold": 0.1,
+        },
+    )
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs.get("transformer_cache") == "fbcache"
+    assert backend.last_load_kwargs.get("transformer_cache_threshold") == 0.1
+
+
+def test_invalid_transformer_cache_returns_422(client):
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_cache": "deepcache",
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_out_of_range_cache_threshold_returns_422(client):
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_cache_threshold": 1.5,
+        },
+    )
+    assert resp.status_code == 422
+
+
 def test_invalid_transformer_quant_returns_422_without_eviction(client):
     # An unsupported transformer_quant is rejected by the request schema (Literal), so
     # the GPU is never acquired and no chat model is evicted.
