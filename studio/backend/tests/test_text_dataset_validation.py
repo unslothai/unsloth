@@ -14,6 +14,11 @@ class StreamingRows:
         return iter(self._rows)
 
 
+class SizedIterableRows(StreamingRows):
+    def __len__(self):
+        return len(self._rows)
+
+
 def test_validate_non_empty_text_field_accepts_valid_text_dataset():
     dataset = [{"text": "hello"}, {"text": "world"}]
 
@@ -48,3 +53,12 @@ def test_validate_non_empty_text_field_rejects_streaming_empty_first_row():
         validate_non_empty_text_field(dataset, split_name = "train")
 
     assert "train row 0 has an empty `text` field" in str(exc.value)
+
+
+def test_validate_non_empty_text_field_scans_sized_iterables_without_indexing():
+    dataset = SizedIterableRows([{"text": "ok"}, {"text": ""}])
+
+    with pytest.raises(ValueError) as exc:
+        validate_non_empty_text_field(dataset, split_name = "train")
+
+    assert "train row 1 has an empty `text` field" in str(exc.value)

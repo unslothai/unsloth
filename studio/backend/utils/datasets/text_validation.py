@@ -32,17 +32,6 @@ def _dataset_length(dataset: Any) -> int | None:
         return None
 
 
-def _dataset_row(dataset: Any, index: int) -> Any:
-    try:
-        return dataset[index]
-    except (TypeError, NotImplementedError, KeyError):
-        iterator = iter(dataset)
-        for row_index, row in enumerate(iterator):
-            if row_index == index:
-                return row
-        raise IndexError(index)
-
-
 def validate_non_empty_text_field(
     dataset: Any,
     *,
@@ -87,8 +76,11 @@ def validate_non_empty_text_field(
     first_issue: tuple[int, str] | None = None
     issue_count = 0
 
-    for row_index in range(scan_rows):
-        issue = _row_text_issue(_dataset_row(dataset, row_index), field_name)
+    for row_index, row in enumerate(dataset):
+        if row_index >= scan_rows:
+            break
+
+        issue = _row_text_issue(row, field_name)
         if issue is None:
             continue
         issue_count += 1
