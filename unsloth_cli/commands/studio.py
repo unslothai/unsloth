@@ -461,7 +461,7 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             os.chmod(tmp_path, 0o600)
         except OSError:
             pass
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             fd = -1
             f.write(secret)
         os.replace(tmp_path, path)
