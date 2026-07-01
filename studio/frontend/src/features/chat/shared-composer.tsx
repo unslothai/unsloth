@@ -467,6 +467,7 @@ export function SharedComposer({
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
   const compareLoadAbortRef = useRef<AbortController | null>(null);
+  const compareLoadingModelRef = useRef<CompareModelSelection | null>(null);
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
@@ -1002,6 +1003,7 @@ export function SharedComposer({
         if (isAlreadyActive) {
           return "ready";
         }
+        compareLoadingModelRef.current = sel;
         useChatRuntimeStore.getState().setModelLoading(true);
         try {
           const validation = await validateModel(
@@ -1051,7 +1053,6 @@ export function SharedComposer({
               { signal: compareSignal },
             );
             throwIfCompareCancelled();
-            useChatRuntimeStore.getState().clearCheckpoint();
           }
 
           const loadStore = useChatRuntimeStore.getState();
@@ -1124,19 +1125,14 @@ export function SharedComposer({
           }
           return resp.status;
         } finally {
+          if (compareLoadingModelRef.current === sel) {
+            compareLoadingModelRef.current = null;
+          }
           if (compareLoadAbortRef.current === abortCtrl) {
             useChatRuntimeStore.getState().setModelLoading(false);
           }
         }
       }
-
-      // Show user messages immediately on both sides
-      const [messageHandle1, messageHandle2] = await Promise.all([
-        model1?.id ? waitForCompareHandle("model1", "base") : undefined,
-        model2?.id ? waitForCompareHandle("model2", "lora") : undefined,
-      ]);
-      messageHandle1?.appendMessage(content);
-      messageHandle2?.appendMessage(content);
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
@@ -1145,6 +1141,21 @@ export function SharedComposer({
       setComparing(true);
       onComparingChange?.(true);
       try {
+        // Show user messages immediately on both sides. If either pane is not
+        // ready, fail before generation so we never run against a stale prompt.
+        const [messageHandle1, messageHandle2] = await Promise.all([
+          model1?.id ? waitForCompareHandle("model1", "base") : undefined,
+          model2?.id ? waitForCompareHandle("model2", "lora") : undefined,
+        ]);
+        if (model1?.id && !messageHandle1) {
+          throw new Error("Model 1 chat pane is not ready.");
+        }
+        if (model2?.id && !messageHandle2) {
+          throw new Error("Model 2 chat pane is not ready.");
+        }
+        messageHandle1?.appendMessage(content);
+        messageHandle2?.appendMessage(content);
+
         // Side 1: load → generate → wait
         if (model1?.id) {
           toast("Loading Model 1…", {
@@ -1210,6 +1221,7 @@ export function SharedComposer({
       } finally {
         if (compareLoadAbortRef.current === abortCtrl) {
           compareLoadAbortRef.current = null;
+          compareLoadingModelRef.current = null;
           useChatRuntimeStore.getState().setModelLoading(false);
         }
         setComparing(false);
@@ -1226,11 +1238,24 @@ export function SharedComposer({
 
   function stop() {
     if (isDictating) stopDictation();
+    const loadingModel = compareLoadingModelRef.current;
     compareLoadAbortRef.current?.abort();
     if (comparing) {
-      useChatRuntimeStore.getState().setModelLoading(false);
       setComparing(false);
       onComparingChange?.(false);
+    }
+    if (loadingModel) {
+      useChatRuntimeStore.getState().setModelLoading(true);
+      void unloadModel({ model_path: loadingModel.id })
+        .catch(() => {})
+        .finally(() => {
+          if (compareLoadingModelRef.current === loadingModel) {
+            compareLoadingModelRef.current = null;
+          }
+          useChatRuntimeStore.getState().setModelLoading(false);
+        });
+    } else if (comparing) {
+      useChatRuntimeStore.getState().setModelLoading(false);
     }
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
