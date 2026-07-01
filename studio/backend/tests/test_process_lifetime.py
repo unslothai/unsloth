@@ -130,9 +130,7 @@ def test_spawn_parent_pid_prefers_multiprocessing(monkeypatch):
     # healthy PID-1 child.
     import multiprocessing
 
-    monkeypatch.setattr(
-        multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242)
-    )
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242))
     monkeypatch.setattr(pl.os, "getppid", lambda: 1)  # pretend we were reparented
     assert pl._spawn_parent_pid() == 4242
 
