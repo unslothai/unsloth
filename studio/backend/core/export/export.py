@@ -38,6 +38,26 @@ logger = get_logger(__name__)
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+def _supports_kwarg(fn, name):
+    """True if `fn` accepts keyword `name` directly or via **kwargs."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _compressed_export_supported():
+    """True if the installed unsloth build can do FP8/NVFP4 compressed-tensors export."""
+    try:
+        import unsloth.save as _us
+        return hasattr(_us, "_normalize_compressed_method")
+    except Exception:
+        return False
+
+
 def _hf_offline(timeout = 3):
     """True if export should avoid the Hub: honors the HF offline env vars, else does one
     cheap TCP reachability probe so a network-down load uses local files / the HF cache
@@ -400,16 +420,33 @@ class ExportBackend:
             )
 
         output_path: Optional[str] = None
+        # compressed-tensors formats run save_pretrained_merged with an FP8/FP4 save_method and
+        # write to a sibling "<dir>-<suffix>" directory (for vLLM).
+        _COMPRESSED = {
+            "FP8 (compressed-tensors)": ("fp8", "fp8"),
+            "NVFP4 (compressed-tensors)": ("nvfp4", "nvfp4"),
+        }
+        is_compressed = format_type in _COMPRESSED
         try:
             if _IS_MLX:
+                if is_compressed:
+                    return False, "Compressed-tensors export is not supported on macOS/MLX.", None
                 mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+            elif is_compressed:
+                if not _compressed_export_supported():
+                    return (
+                        False,
+                        "Compressed-tensors (FP8/NVFP4) export requires an Unsloth build with "
+                        "compressed-tensors support. Upgrade unsloth, or choose 16-bit.",
+                        None,
+                    )
+                save_method = _COMPRESSED[format_type][0]
+            elif format_type == "4-bit (FP4)":
+                save_method = "merged_4bit_forced"
+            elif self._audio_type == "whisper":
+                save_method = None
             else:
-                if format_type == "4-bit (FP4)":
-                    save_method = "merged_4bit_forced"
-                elif self._audio_type == "whisper":
-                    save_method = None
-                else:
-                    save_method = "merged_16bit"
+                save_method = "merged_16bit"
 
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
@@ -427,9 +464,15 @@ class ExportBackend:
                         save_directory, self.current_tokenizer, save_method = save_method
                     )
 
-                self._write_export_metadata(save_directory)
-                logger.info(f"Model saved successfully to {save_directory}")
-                output_path = str(Path(save_directory).resolve())
+                # Compressed export writes to the "<dir>-<suffix>" sibling; report that as output.
+                final_dir = (
+                    f"{save_directory}-{_COMPRESSED[format_type][1]}"
+                    if is_compressed
+                    else save_directory
+                )
+                self._write_export_metadata(final_dir)
+                logger.info(f"Model saved successfully to {final_dir}")
+                output_path = str(Path(final_dir).resolve())
 
             if push_to_hub:
                 if not repo_id or not hf_token:
@@ -464,6 +507,32 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
+                elif is_compressed and output_path and Path(output_path).is_dir():
+                    # The compressed model was already built locally in output_path; upload it
+                    # directly so we do not re-run the (expensive, OOM-prone) compression that
+                    # push_to_hub_merged(save_method=fp8/nvfp4) would otherwise do a second time.
+                    hf_api = HfApi(token = hf_token)
+                    repo_id = PushToHubMixin._create_repo(
+                        PushToHubMixin,
+                        repo_id = repo_id,
+                        private = private,
+                        token = hf_token,
+                    )
+                    content = MODEL_CARD.format(
+                        username = repo_id.split("/")[0],
+                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
+                        model_type = getattr(self.current_model.config, "model_type", "llm"),
+                        method = format_type,
+                        extra = "unsloth",
+                    )
+                    ModelCard(content).push_to_hub(
+                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                    )
+                    hf_api.upload_folder(
+                        folder_path = output_path,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                    )
                 else:
                     hub_save_method = save_method if save_method is not None else "merged_16bit"
                     self.current_model.push_to_hub_merged(
@@ -621,6 +690,7 @@ class ExportBackend:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -637,6 +707,19 @@ class ExportBackend:
         """
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+
+        # Only forward imatrix_file to an unsloth build that accepts it; otherwise even a plain
+        # no-imatrix export would fail with an unexpected-keyword error against an older unsloth.
+        if imatrix_file is not None and not _supports_kwarg(
+            self.current_model.save_pretrained_gguf, "imatrix_file"
+        ):
+            return (
+                False,
+                "This Unsloth build does not support GGUF imatrix export. "
+                "Upgrade unsloth and unsloth_zoo, or disable the imatrix option.",
+                None,
+            )
+        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
 
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
@@ -691,6 +774,7 @@ class ExportBackend:
                     _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
+                    **imatrix_kw,
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
@@ -757,6 +841,7 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    **imatrix_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 

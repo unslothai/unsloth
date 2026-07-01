@@ -683,7 +683,9 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -718,7 +720,9 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -2086,6 +2090,32 @@ def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[
     )
 
 
+def _carry_preserved_tensor_intent(
+    *, preserved: bool, same_model: bool, explicit_drop: bool
+) -> bool:
+    """Carry a preserved multi-GPU layer fallback forward only for a reload of the
+    SAME loaded model that doesn't explicitly drop tensor intent, so a fitting model
+    isn't collapsed to one GPU on a ctx-only change -- but an unrelated model switch
+    (without /unload) or an explicit tensor-off doesn't inherit it (#6659)."""
+    return preserved and same_model and not explicit_drop
+
+
+def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
+    """True only when the request explicitly selects a non-tensor --split-mode (e.g.
+    layer/row/none), a deliberate departure from a preserved tensor->layer fallback.
+
+    A bare tensor_parallel field is NOT a drop: the Studio UI always sends it and echoes
+    the /load response's resolved value back, so after a fallback every reload carries
+    tensor_parallel=false even though the user never changed it -- treating that as a drop
+    would collapse the preserved multi-GPU placement on the next ctx/settings reload. An
+    empty clear is not a drop either (a fallback always stores --split-mode layer, never a
+    tensor split mode, so a clear never wipes tensor intent), nor is an unrelated extra
+    (--top-k) or inherit (None). tensor_parallel=true / --split-mode tensor re-engage
+    tensor. Shared by the already-loaded dedup and the load carry-forward (#6659)."""
+    override = parse_split_mode_override(request.llama_extra_args)
+    return override is not None and override.strip().lower() != "tensor"
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
@@ -2123,6 +2153,13 @@ def _request_matches_loaded_settings(
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
+        return False
+    # Preserved tensor->layer fallback (both report tensor=off, so the check above
+    # matches): if the user now explicitly drops tensor intent, reload so placement
+    # re-selects instead of keeping the all-GPU mask (#6659). The effective check
+    # includes the env, so an env-only tensor (LLAMA_ARG_SPLIT_MODE=tensor) that
+    # can't actually be dropped falls through to the env-downgrade match, not a loop.
+    if llama_backend.layer_preserves_tensor_intent and _is_explicit_tensor_drop(request):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
@@ -2826,6 +2863,48 @@ async def load_model(
                     hf_variant = config.gguf_variant,
                 )
 
+            # Tensor intent for this load: the request itself, or a preserved
+            # multi-GPU layer fallback carried across a reload of the SAME model that
+            # doesn't drop it (e.g. a ctx-only change), so a fitting model doesn't
+            # silently collapse to one GPU. Only an explicit non-tensor --split-mode
+            # override counts as the drop -- the tensor field echo / unrelated extras keep
+            # the preserved placement; the same-model guard stops a switch-without-unload
+            # inheriting the prior model's intent.
+            _explicit_tensor_drop = _is_explicit_tensor_drop(request)
+            # Compare the resolved config.identifier (what load_model stores), not the
+            # raw request id: from_identifier normalizes shorthands (adds unsloth/, fixes
+            # case), so a reload with the shorthand would otherwise miss the match and
+            # drop the carry-forward. #6659
+            _same_model_loaded = (
+                llama_backend.is_loaded
+                and (llama_backend.model_identifier or "").lower()
+                == (config.identifier or "").lower()
+            )
+            # model_identifier is variant-agnostic for HF repos and dir-level for a
+            # local multi-variant directory, so also require the loaded quant to match
+            # (path else variant, mirroring _already_in_target_state) -- otherwise a
+            # different variant inherits the prior one's preserved intent. #6659
+            if _same_model_loaded:
+                if config.gguf_file and llama_backend.gguf_path:
+                    try:
+                        _same_model_loaded = (
+                            Path(llama_backend.gguf_path).resolve()
+                            == Path(config.gguf_file).resolve()
+                        )
+                    except OSError:
+                        _same_model_loaded = False
+                else:
+                    _same_model_loaded = (llama_backend.hf_variant or "").lower() == (
+                        config.gguf_variant or ""
+                    ).lower()
+            _tensor_intent_overall = _effective_tensor_parallel(
+                extra_llama_args, request.tensor_parallel
+            ) or _carry_preserved_tensor_intent(
+                preserved = llama_backend.layer_preserves_tensor_intent,
+                same_model = _same_model_loaded,
+                explicit_drop = _explicit_tensor_drop,
+            )
+
             # Run a single load attempt with the given tensor flag + extras.
             async def _attempt_gguf_load(
                 tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
@@ -2839,6 +2918,12 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
+                    # True on the layer fallback retry (tensor wanted overall but not on
+                    # this attempt): keep multi-GPU. Mirrors the fallback's key.
+                    preserve_multi_gpu_on_layer = bool(
+                        _tensor_intent_overall
+                        and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
+                    ),
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -6654,7 +6739,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
+            client = httpx.AsyncClient(
+                timeout = _llama_streaming_generation_timeout(),
+                trust_env = False,
+            )
             resp = None
             bytes_iter = None
             disconnect_event = threading.Event()
@@ -7729,7 +7817,10 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
+        client = httpx.AsyncClient(
+            timeout = _llama_streaming_generation_timeout(),
+            trust_env = False,
+        )
         resp = None
         lines_iter = None
         disconnect_watcher = None
@@ -9239,6 +9330,7 @@ async def _anthropic_passthrough_stream(
         client = httpx.AsyncClient(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
+            trust_env = False,
         )
         resp = None
         lines_iter = None
@@ -9765,6 +9857,7 @@ async def _openai_passthrough_stream(
         client = httpx.AsyncClient(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
+            trust_env = False,
         )
         resp = None
         _truncate_budget = (
