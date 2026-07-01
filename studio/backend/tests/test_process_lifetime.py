@@ -30,13 +30,20 @@ IS_LINUX = sys.platform.startswith("linux")
 
 @pytest.fixture(autouse = True)
 def _reset_module_state():
+    saved_parent_pid = os.environ.pop(pl._PARENT_PID_ENV, None)
     pl._tracked_pids.clear()
+    pl._parent_pid = None
     pl._win_job_handle = None
     pl._initialized = False
     yield
     pl._tracked_pids.clear()
+    pl._parent_pid = None
     pl._win_job_handle = None
     pl._initialized = False
+    if saved_parent_pid is None:
+        os.environ.pop(pl._PARENT_PID_ENV, None)
+    else:
+        os.environ[pl._PARENT_PID_ENV] = saved_parent_pid
 
 
 def _alive(pid: int) -> bool:
@@ -44,9 +51,18 @@ def _alive(pid: int) -> bool:
         return _win_alive(pid)
     try:
         os.kill(pid, 0)  # POSIX existence probe (on Windows this would terminate it)
-        return True
     except OSError:
         return False
+    if IS_LINUX and _linux_proc_state(pid) == "Z":
+        return False  # Unreaped zombies are already dead for PDEATHSIG assertions.
+    return True
+
+
+def _linux_proc_state(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding = "utf-8").split()[2]
+    except OSError:
+        return None
 
 
 def _win_alive(pid: int) -> bool:
@@ -72,12 +88,32 @@ def _wait_dead(pid: int, timeout: float) -> bool:
     return not _alive(pid)
 
 
+def _patch_fake_linux_pdeathsig(monkeypatch):
+    import ctypes
+
+    calls: list[str] = []
+
+    class _Libc:
+        def prctl(self, *a):
+            calls.append("prctl")
+            return 0
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: _Libc(), raising = False)
+    return calls
+
+
+def _mock_exit(code):
+    raise SystemExit(code)
+
+
 # ── No-op safety / composition ──
 
 
 def test_initialize_idempotent_and_noop_on_posix():
     pl.initialize_parent_lifetime()
     pl.initialize_parent_lifetime()  # second call short-circuits
+    assert os.environ[pl._PARENT_PID_ENV] == str(os.getpid())  # captured once at startup
     if IS_POSIX:
         assert pl._win_job_handle is None  # POSIX installs no job
 
@@ -110,6 +146,70 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
     assert pl.compose_preexec(None) is None
 
 
+def test_pdeathsig_child_survives_when_parent_is_pid1(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", 1)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    pl._pdeathsig_preexec()
+    assert calls == ["prctl"]
+
+
+def test_pdeathsig_child_still_exits_when_reparented_to_init(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", 4321)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    monkeypatch.setattr(pl.os, "_exit", _mock_exit)
+    with pytest.raises(SystemExit) as excinfo:
+        pl._pdeathsig_preexec()
+    assert excinfo.value.code == 1
+    assert calls == ["prctl"]
+
+
+def test_pdeathsig_without_expected_parent_preserves_legacy_noninit_case(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", None)
+    monkeypatch.delenv(pl._PARENT_PID_ENV, raising = False)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 4321)
+    pl._pdeathsig_preexec()
+    assert calls == ["prctl"]
+
+
+def test_bind_current_process_to_parent_lifetime_reads_shared_expected_parent(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", None)
+    monkeypatch.setenv(pl._PARENT_PID_ENV, "1")
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    pl.bind_current_process_to_parent_lifetime()
+    assert calls == ["prctl"]
+    assert pl._parent_pid == os.getpid()
+    assert os.environ[pl._PARENT_PID_ENV] == str(os.getpid())
+
+
+def test_bind_current_process_to_parent_lifetime_reads_expected_parent_in_fresh_interpreter(
+    tmp_path,
+):
+    child = tmp_path / "fresh_bind.py"
+    child.write_text(
+        "import ctypes, sys\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "import utils.process_lifetime as pl\n"
+        "class _Libc:\n"
+        "    def prctl(self, *a):\n"
+        "        return 0\n"
+        "ctypes.CDLL = lambda *a, **k: _Libc()\n"
+        "pl._is_linux = lambda: True\n"
+        "pl.os.getppid = lambda: 1\n"
+        "pl.bind_current_process_to_parent_lifetime()\n"
+        "print('ok')\n",
+        encoding = "utf-8",
+    )
+    env = os.environ.copy()
+    env[pl._PARENT_PID_ENV] = "1"
+    proc = subprocess.run([sys.executable, str(child)], capture_output = True, text = True, env = env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip() == "ok"
+
+
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
 
 
@@ -131,6 +231,39 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         proc.kill()  # hard-kill the parent (no graceful shutdown runs)
         proc.wait(timeout = 5)
         assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
+def test_bound_child_can_spawn_grandchild_with_refreshed_expected_parent(tmp_path):
+    mid = tmp_path / "mid_grandchild.py"
+    mid.write_text(
+        "import sys, subprocess, time\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "from utils.process_lifetime import (\n"
+        "    bind_current_process_to_parent_lifetime,\n"
+        "    child_popen_kwargs,\n"
+        ")\n"
+        "bind_current_process_to_parent_lifetime()\n"
+        "p = subprocess.Popen(['sleep', '300'], **child_popen_kwargs())\n"
+        "print(p.pid, flush = True)\n"
+        "time.sleep(300)\n"
+    )
+    env = os.environ.copy()
+    env[pl._PARENT_PID_ENV] = str(os.getpid())
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)],
+        stdout = subprocess.PIPE,
+        text = True,
+        env = env,
+    )
+    try:
+        grandchild_pid = int(proc.stdout.readline().strip())
+        assert _alive(grandchild_pid), "grandchild exited before the worker finished spawning it"
+        proc.kill()
+        proc.wait(timeout = 5)
+        assert _wait_dead(grandchild_pid, 5.0), "grandchild orphaned after worker SIGKILL"
     finally:
         proc.kill()
 

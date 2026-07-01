@@ -320,6 +320,7 @@ import utils.hardware.hardware as _hw_module
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
+from utils.process_lifetime import initialize_parent_lifetime
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -478,6 +479,7 @@ async def lifespan(app: FastAPI):
 
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
+    initialize_parent_lifetime()
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
