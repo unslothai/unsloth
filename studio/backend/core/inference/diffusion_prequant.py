@@ -33,6 +33,58 @@ from typing import Any, Optional
 # on-disk structure changes so an old/foreign artifact is rejected rather than mis-loaded.
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
+# Loading a checkpoint ends in ``torch.load(weights_only=False)``, which executes arbitrary
+# code embedded in the pickle. A hosted family *repo* checkpoint is first-party and trusted,
+# but a ``source.kind == "path"`` can originate from the ``transformer_prequant_path`` field
+# of a load request -- i.e. an authenticated API caller naming an arbitrary local file.
+# Unpickling that is remote code execution, so a request-supplied path is unpickled ONLY when
+# it resolves inside an operator-configured ALLOWLIST of directories. A bare on/off toggle is
+# deliberately NOT accepted as a wildcard: enabling local checkpoints for one trusted
+# directory must never also permit unpickling any other path a request happens to name. The
+# trusted hosted-repo path is unaffected.
+ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
+
+_PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
+
+
+def _allowed_prequant_roots() -> list:
+    """Operator-allowlisted directories whose pre-quant checkpoints may be unpickled.
+
+    Set ``UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH`` to one or more directories (separated by
+    ``os.pathsep``). A bare truthy/falsey toggle is ignored on purpose -- it must name a
+    directory, so there is no "allow everything" mode."""
+    import os
+
+    raw = (os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV) or "").strip()
+    if not raw:
+        return []
+    roots = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part or part.lower() in _PREQUANT_TOGGLE_TOKENS:
+            continue  # a bare on/off value is not a directory -> never a wildcard allow
+        try:
+            roots.append(os.path.realpath(os.path.expanduser(part)))
+        except Exception:  # noqa: BLE001 — a bad entry is simply not allowlisted
+            continue
+    return roots
+
+
+def _local_prequant_path_allowed(path: str) -> bool:
+    """True only when ``path`` resolves inside an operator-allowlisted directory; an
+    arbitrary request-supplied path is never unpickled. ``realpath`` first so a symlink
+    cannot point an allowlisted name at a file outside the allowed roots."""
+    import os
+
+    roots = _allowed_prequant_roots()
+    if not roots:
+        return False
+    try:
+        real = os.path.realpath(os.path.expanduser(path))
+    except Exception:  # noqa: BLE001
+        return False
+    return any(real == r or real.startswith(r + os.sep) for r in roots)
+
 
 @dataclass(frozen = True)
 class PrequantSource:
@@ -83,6 +135,7 @@ def load_prequantized_transformer(
     dtype: Any,
     hf_token: Optional[str] = None,
     scheme: str,
+    min_features: Optional[int] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
@@ -93,6 +146,21 @@ def load_prequantized_transformer(
     ordinary unavailable artifact.
     """
     try:
+        # weights_only=False (required below) executes pickle code, so a caller-supplied
+        # local path is unpickled ONLY when it resolves inside an operator-allowlisted
+        # directory. The hosted family repo is first-party and always allowed.
+        if source.kind == "path" and not _local_prequant_path_allowed(source.location):
+            _warn(
+                logger,
+                f"{scheme}:path",
+                RuntimeError(
+                    "request-supplied local pre-quant path refused (unpickling an arbitrary "
+                    f"file is unsafe); set {ALLOW_LOCAL_PREQUANT_PATH_ENV} to an allowlisted "
+                    "directory containing trusted checkpoints to permit it",
+                ),
+            )
+            return None
+
         path = _resolve_checkpoint_path(source, hf_token)
         if path is None:
             return None
@@ -100,11 +168,10 @@ def load_prequantized_transformer(
         import torch
 
         # torchao weight subclasses are not safetensors-serializable, so the checkpoint is
-        # a torch.save pickle. weights_only=False is required to rebuild those subclasses;
-        # only a configured family repo (first-party) or an explicit local path reaches
-        # here, which is the trust signal -- this never loads an arbitrary remote pickle.
+        # a torch.save pickle. weights_only=False is required to rebuild those subclasses.
+        # The local-path branch is gated above; the repo branch is a first-party artifact.
         ckpt = torch.load(path, weights_only = False, map_location = "cpu")
-        if not _validate_checkpoint(ckpt, scheme, base, logger):
+        if not _validate_checkpoint(ckpt, scheme, base, logger, min_features = min_features):
             return None
         state_dict = ckpt["state_dict"]
 
@@ -154,8 +221,19 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
     return None
 
 
-def _validate_checkpoint(ckpt: Any, scheme: str, base: str, logger: Any) -> bool:
-    """Reject a checkpoint that is the wrong format / scheme / base model."""
+def _validate_checkpoint(
+    ckpt: Any,
+    scheme: str,
+    base: str,
+    logger: Any,
+    min_features: Optional[int] = None,
+) -> bool:
+    """Reject a checkpoint that is the wrong format / scheme / base model / filter.
+
+    ``min_features`` (when given) is the runtime Linear-feature threshold: a checkpoint
+    built with a different ``--min-features`` quantises a different set of Linear layers,
+    so ``load_state_dict(assign=True)`` would silently install a model that does not match
+    what the dense path produces while status still reports the requested scheme. Reject it."""
     if not isinstance(ckpt, dict) or ckpt.get("format") != PREQUANT_FORMAT:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
@@ -167,21 +245,41 @@ def _validate_checkpoint(ckpt: Any, scheme: str, base: str, logger: Any) -> bool
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
     ckpt_base = meta.get("base_model_id")
-    if ckpt_base and base and ckpt_base != base:
+    if ckpt_base and base and not _same_base_model(ckpt_base, base):
         _warn(logger, scheme, ValueError(f"checkpoint base {ckpt_base!r} != {base!r}"))
         return False
+    if min_features is not None:
+        ckpt_min = meta.get("min_features")
+        if ckpt_min is not None and int(ckpt_min) != int(min_features):
+            _warn(
+                logger,
+                scheme,
+                ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
+            )
+            return False
     return True
+
+
+def _same_base_model(a: str, b: str) -> bool:
+    """Tolerant compare of two base-model ids: an exact match, or the same final
+    path/repo segment (so a local path or a fork id matches the canonical repo, e.g.
+    ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``)."""
+
+    def _tail(x: str) -> str:
+        return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+
+    return a == b or _tail(a) == _tail(b)
 
 
 def _has_meta_tensors(module: Any) -> bool:
     """True if any parameter or buffer is still on the meta device after loading."""
+    from itertools import chain
     try:
-        for tensor in list(module.parameters()) + list(module.buffers()):
-            if getattr(tensor, "is_meta", False):
-                return True
+        return any(
+            getattr(t, "is_meta", False) for t in chain(module.parameters(), module.buffers())
+        )
     except Exception:  # noqa: BLE001
         return False
-    return False
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

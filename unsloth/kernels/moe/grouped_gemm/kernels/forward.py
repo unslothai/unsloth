@@ -111,7 +111,7 @@ def _grouped_gemm_forward_kernel(
             while tidx >= processed_tiles and tidx < processed_tiles + num_tiles_per_expert:
                 tile_idx = tidx - processed_tiles
 
-                # Check if L2 cache re-use for this order is optimal
+                # Check if L2 cache reuse for this order is optimal
                 tile_m_idx = tile_idx % num_m_tiles
                 tile_n_idx = tile_idx // num_m_tiles
 

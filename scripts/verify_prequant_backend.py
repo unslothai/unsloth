@@ -19,17 +19,20 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
+_REPO = Path(__file__).resolve().parent.parent
+_RESEARCH = _REPO / "outputs" / "quant_research"
+BACKEND = _REPO / "studio" / "backend"
 BASE = "Tongyi-MAI/Z-Image-Turbo"
-CKPT = "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/prequant_fp8/transformer_fp8.pt"
+CKPT = os.environ.get("PREQUANT_CKPT", str(_RESEARCH / "prequant_fp8" / "transformer_fp8.pt"))
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/prequant_verify_images")
+OUT = Path(os.environ.get("PREQUANT_OUT_DIR", str(_RESEARCH / "prequant_verify_images")))
 
 logging.basicConfig(level = logging.INFO, format = "%(message)s")
 LOGGER = logging.getLogger("verify_prequant")

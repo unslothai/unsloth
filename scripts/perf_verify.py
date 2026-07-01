@@ -151,7 +151,12 @@ def main(argv = None) -> int:
         flush = True,
     )
 
-    ok = (leak_psnr == float("inf")) and (def_t < off_t) and (_psnr(off_img, def_img) >= 30)
+    ok = (
+        (leak_psnr == float("inf"))
+        and (bal_psnr == float("inf"))  # check 3: balanced must be bit-identical to off
+        and (def_t < off_t)
+        and (_psnr(off_img, def_img) >= 30)
+    )
     print(f"\nPERF-VERIFY {'OK' if ok else 'CHECK'}", flush = True)
     return 0 if ok else 1
 

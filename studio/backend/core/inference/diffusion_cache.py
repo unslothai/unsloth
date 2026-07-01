@@ -77,16 +77,22 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
+    # Only engage via the transformer's native enable_cache (the diffusers CacheMixin path).
+    # That mixin is present exactly when the pipeline wraps the transformer call in a
+    # cache_context, which the First-Block-Cache hook requires at run time. The lower-level
+    # apply_first_block_cache hook would install on a non-CacheMixin transformer too (e.g.
+    # Z-Image), but its pipeline opens no cache_context, so the first generation would crash
+    # inside the hook -- so a model without enable_cache runs uncached per the best-effort
+    # contract instead of being reported as cached and then failing.
+    enable_cache = getattr(transformer, "enable_cache", None)
+    if not callable(enable_cache):
+        _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))
+        return None
     try:
         from diffusers import FirstBlockCacheConfig
 
         config = FirstBlockCacheConfig(threshold = thr)
-        enable_cache = getattr(transformer, "enable_cache", None)
-        if callable(enable_cache):
-            enable_cache(config)
-        else:
-            from diffusers.hooks import apply_first_block_cache
-            apply_first_block_cache(transformer, config)
+        enable_cache(config)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"
         except Exception:  # noqa: BLE001 — marker is best-effort

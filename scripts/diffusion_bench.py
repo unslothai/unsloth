@@ -142,8 +142,10 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     import numpy as np
     from PIL import Image
 
-    a = np.asarray(Image.open(ref_png).convert("RGB"), dtype = np.float64)
-    b = np.asarray(Image.open(cand_png).convert("RGB"), dtype = np.float64)
+    with Image.open(ref_png) as im_a:
+        a = np.asarray(im_a.convert("RGB"), dtype = np.float64)
+    with Image.open(cand_png) as im_b:
+        b = np.asarray(im_b.convert("RGB"), dtype = np.float64)
     if a.shape != b.shape:
         # Different geometry means the comparison is meaningless; report worst case.
         return 0.0
@@ -368,9 +370,14 @@ def _compare(args: argparse.Namespace) -> int:
             print("   refusing noisy comparison (pass --force-compare to override).", flush = True)
             return 2
 
-    # PSNR vs the stored reference image.
+    # PSNR vs the stored reference image. The baseline stores an absolute reference_png,
+    # which breaks if the baseline directory was copied/moved, so fall back to reference.png
+    # next to the baseline JSON. A still-missing reference is a failure below, not a silent
+    # pass -- otherwise the benchmark would report PASS having done no image comparison.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
-    psnr = _psnr(ref_png, args._image_out) if ref_png.exists() else float("nan")
+    if not ref_png.is_file():
+        ref_png = baseline_path.parent / "reference.png"
+    psnr = _psnr(ref_png, args._image_out) if ref_png.is_file() else float("nan")
 
     base_gen = baseline.get("generate", {})
     cur_gen = metrics["generate"]
@@ -402,7 +409,9 @@ def _compare(args: argparse.Namespace) -> int:
         )
     if base_peak and cur_peak and vram_reg > args.max_vram_regression:
         failures.append(f"peak VRAM +{vram_reg * 100:.1f}% > {args.max_vram_regression * 100:.0f}%")
-    if not math.isnan(psnr) and psnr < args.min_psnr:
+    if math.isnan(psnr):
+        failures.append("PSNR reference image missing; cannot verify output quality")
+    elif psnr < args.min_psnr:
         failures.append(f"PSNR {psnr:.2f}dB < {args.min_psnr:.1f}dB (output changed)")
 
     if failures:
