@@ -1578,8 +1578,10 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                     HIGH,
                     package,
                     filename,
-                    f"Python wheel ships large ({len(content) // 1024} KB) JS bundle "
-                    "(uncommon; manually review)",
+                    # Size stays out of the check label (from main) so the baseline
+                    # key does not drift when a benign bundle grows; the full-content
+                    # digest below still binds the bytes so a payload swap reopens.
+                    "Python wheel ships large JS bundle (uncommon; manually review)",
                     f"sha256: {digest}",
                 )
             )

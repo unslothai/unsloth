@@ -91,14 +91,6 @@
       "evidence_hash": "894862e547cf91b90cd6e4b495db3fb05b7490ef0d63de7e795a7e3d9447d850"
     },
     {
-      "package": "fastapi",
-      "file": "fastapi/routing.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L586:                                 while True: sha256:4f8b3659bedc97ecb9b9ae20aa4fc57b1da466e3a803fcc5bf43f1082dc7dbce",
-      "evidence_hash": "96de8aa0caefc6559474a4cfc783186991e30de215f7b0a331e937c5f53e32da"
-    },
-    {
       "package": "fastmcp-slim",
       "file": "fastmcp/cli/apps_dev.py",
       "check": "Creates archive with sensitive data AND makes network calls",
@@ -1331,14 +1323,6 @@
       "evidence_hash": "ab4f5819576a70038301668b8f3e4a781c4b757b146117d5d93eab1896a5a6cd"
     },
     {
-      "package": "tensorboard",
-      "file": "tensorboard/plugins/projector/tf_projector_plugin/projector_binary.js",
-      "check": "Python wheel ships large (1918 KB) JS bundle (uncommon; manually review)",
-      "severity": "HIGH",
-      "evidence": "sha256: 1ed9dc3bb896b1e4e13fb87d8b2e5231bdc7f6a88cf3ae45e975db02149d5d08",
-      "evidence_hash": "794978e4a4742539d66121820315ac0f3dfb5997bfbb61cf300e17249764ae3c"
-    },
-    {
       "package": "torch",
       "file": "torch/_dynamo/bytecode_debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
@@ -1489,6 +1473,22 @@
       "severity": "CRITICAL",
       "evidence": "L3521:                     os.dup2(conn.fileno(), i) | L3553:                          \"test needs os.dup2()\") | L3571:             os.dup2(fd, newfd) | L20: import socket sha256:07d2933301c0dbeeb6e42381687827d8dd7cfd7471986c559ca64283d5ae6e24",
       "evidence_hash": "db1f4ca69865ec3911d7450fe11d212b817139deda21cd7a4ee32d547a8dc452"
+    },
+    {
+      "package": "fastapi",
+      "file": "fastapi/routing.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L586:                                 while True: sha256:bef9ea429314fad39e063895a37dc5cfe9b04561f3d1acbb3c99abb4e92e6cfe",
+      "evidence_hash": "b15773e1bc249713156a349278ea60f7c0e3dd7d537affe929ab51089e1942bb"
+    },
+    {
+      "package": "tensorboard",
+      "file": "tensorboard/plugins/projector/tf_projector_plugin/projector_binary.js",
+      "check": "Python wheel ships large JS bundle (uncommon; manually review)",
+      "severity": "HIGH",
+      "evidence": "sha256: 53c38430766be25dc672a30846ac3b9eba86aee35eb0746785ec012647c7d9a2",
+      "evidence_hash": "2c6384e8115a6d5dacf1f84d8f724832d8dc59feb442bb98ffae0857c0ccb381"
     }
   ]
 }

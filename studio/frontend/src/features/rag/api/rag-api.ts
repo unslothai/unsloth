@@ -39,9 +39,17 @@ async function ragRequest<T>(
   return json as T;
 }
 
-async function ragUpload(path: string, file: File): Promise<DocumentUploadResult> {
+async function ragUpload(
+  path: string,
+  file: File,
+  ocr?: boolean,
+  caption?: boolean,
+): Promise<DocumentUploadResult> {
   const form = new FormData();
   form.append("file", file);
+  // Per-upload overrides for the vision passes; omitted -> backend config default.
+  if (ocr !== undefined) form.append("ocr", String(ocr));
+  if (caption !== undefined) form.append("caption", String(caption));
   // No Content-Type: let the browser set the multipart boundary.
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: "POST",
@@ -103,10 +111,14 @@ export async function listKnowledgeBaseDocuments(
 export function uploadKnowledgeBaseDocument(
   kbId: string,
   file: File,
+  ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
   return ragUpload(
     `/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
     file,
+    ocr,
+    caption,
   );
 }
 
@@ -122,8 +134,15 @@ export async function listThreadDocuments(
 export function uploadThreadDocument(
   threadId: string,
   file: File,
+  ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
-  return ragUpload(`/threads/${encodeURIComponent(threadId)}/documents`, file);
+  return ragUpload(
+    `/threads/${encodeURIComponent(threadId)}/documents`,
+    file,
+    ocr,
+    caption,
+  );
 }
 
 export async function listProjectDocuments(
@@ -138,8 +157,15 @@ export async function listProjectDocuments(
 export function uploadProjectDocument(
   projectId: string,
   file: File,
+  ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
-  return ragUpload(`/projects/${encodeURIComponent(projectId)}/documents`, file);
+  return ragUpload(
+    `/projects/${encodeURIComponent(projectId)}/documents`,
+    file,
+    ocr,
+    caption,
+  );
 }
 
 // Cached "does this project have indexed sources?" probe so the chat adapter can
@@ -197,31 +223,40 @@ export async function* streamJobEvents(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
-      const dataLines: string[] = [];
-      for (const line of rawEvent.split(/\r?\n/)) {
-        if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
-      }
-      if (dataLines.length > 0) {
-        const dataText = dataLines.join("\n");
-        if (dataText === "[DONE]") return;
-        try {
-          yield JSON.parse(dataText) as JobEvent;
-        } catch {
-          // Ignore unparseable frames; [DONE] still ends the loop.
+        const dataLines: string[] = [];
+        for (const line of rawEvent.split(/\r?\n/)) {
+          if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
         }
+        if (dataLines.length > 0) {
+          const dataText = dataLines.join("\n");
+          if (dataText === "[DONE]") return;
+          try {
+            yield JSON.parse(dataText) as JobEvent;
+          } catch {
+            // Ignore unparseable frames; [DONE] still ends the loop.
+          }
+        }
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
+    }
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
     }
   }
 }

@@ -276,6 +276,33 @@ def iter_hf_cache_snapshots(repo_id: str):
     yield from snapshots
 
 
+def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
+    """Quant labels present only as an EMPTY snapshot ``<quant>/`` folder (an
+    interrupted split download); a quant with shards in any snapshot is excluded."""
+    empty: dict[str, str] = {}
+    nonempty: set[str] = set()
+    for snapshot in iter_hf_cache_snapshots(repo_id):
+        try:
+            entries = list(snapshot.iterdir())
+        except OSError:
+            continue
+        for sub in entries:
+            try:
+                if sub.is_symlink() or not sub.is_dir():
+                    continue
+                quant = extract_quant_token(sub.name)
+                if not quant:
+                    continue
+                has_child = any(sub.iterdir())
+            except OSError:
+                continue
+            if has_child:
+                nonempty.add(quant.lower())
+            else:
+                empty.setdefault(quant.lower(), quant)
+    return {label for key, label in empty.items() if key not in nonempty}
+
+
 def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     for snapshot in iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snapshot))
