@@ -105,6 +105,13 @@ redact() {
   done
 }
 
+# Print a file to the log with the key scrubbed, without mutating it (the raw file is
+# still needed to parse the real env). Use this instead of `cat` for any transcript that
+# carries an `export UNSLOTH_API_KEY=...` line, so a live key never reaches Actions logs.
+cat_redacted() {
+  sed "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$1"
+}
+
 # A reply must be non-empty and free of connection/auth errors.
 assert_reply() {
   local out="$1"
@@ -148,10 +155,10 @@ raw_env() {  # $1 = var name -> value (one shlex-quote layer stripped)
 parse_connect() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
   if ! unsloth start "$AGENT" --no-launch --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
-    cat "$raw"
+    cat_redacted "$raw"
     guide_fail "'unsloth start ${AGENT} --no-launch' exited non-zero"
   fi
-  echo "[$AGENT] connect --no-launch printed:"; cat "$raw"
+  echo "[$AGENT] connect --no-launch printed:"; cat_redacted "$raw"
   CONNECT_ENV="$(grep -E '^(export |unset )' "$raw" || true)"
   # The launch command is the last non-export, non-status line. start.py
   # prints "Studio <url> · model <id>" and "Updated ..." status lines first.

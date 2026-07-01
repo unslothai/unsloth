@@ -444,11 +444,17 @@ def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
 
 
 def _key_accepted(base: str, key: str) -> bool:
+    # Only a genuine auth rejection (401/403) means "this key is bad -- skip it and try
+    # the next cached key or mint a fresh one". A 5xx or a network blip is a server-side
+    # outage, not a bad key: let it propagate so we surface the outage instead of silently
+    # discarding a working key and minting extras against a struggling server.
     try:
         _http_json("GET", f"{base}/v1/models", key)
         return True
-    except Exception:
-        return False
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        raise
 
 
 def _agent_api_key(base: str, explicit: Optional[str]) -> str:
@@ -1179,7 +1185,14 @@ def codex(
         serve = serve,
         launch = launch,
     )
-    _require_gguf_for_codex(base, key, entry["id"])
+    # This preflight runs after _connect may have auto-started a server but before _run
+    # installs its teardown finally, so tear the server down here if it rejects the model
+    # (e.g. a transformers-backend model) rather than leaving it on the atexit backstop.
+    try:
+        _require_gguf_for_codex(base, key, entry["id"])
+    except BaseException:
+        _shutdown_auto_served()
+        raise
     command = [
         "codex",
         "--oss",

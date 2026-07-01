@@ -438,6 +438,33 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface", "sk-unsloth-stale"]
 
 
+def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_path, monkeypatch):
+    # A 5xx/timeout while checking a saved key is a server outage, not a rejected key:
+    # surface it instead of discarding the key and minting a new one against a sick server.
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-saved"]}}}))
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models") and token == "sk-unsloth-saved":
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code != 0, result.output
+    # The outage did not cause a fresh key to be minted.
+    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    assert mints == []
+
+
 def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
     # Legacy unscoped caches have no server binding (could leak across servers),
     # so they're ignored: a fresh key is minted and stored scoped to this server.
@@ -1009,6 +1036,47 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
     assert started["load"].gguf_variant == "UD-Q4_K_XL"
     assert started["base"] == BASE
     # Torn down after the agent session ended.
+    assert started.get("down") is fake
+
+
+def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):
+    # The Codex GGUF preflight runs after _connect may have auto-started a server but
+    # before _run's teardown finally, so a preflight rejection must not leave the server
+    # holding the port/GPU (waiting on the atexit backstop).
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {}
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(base, model, load):
+        started.update(base = base, model = model)
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(
+        start, "_shutdown_server", lambda server: started.__setitem__("down", server)
+    )
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": False, "model_identifier": "transformers-model"}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(
+        start.start_app, ["codex", "--model", "unsloth/Qwen3-1.7B", "--launch"]
+    )
+    assert result.exit_code != 0, result.output
+    assert "GGUF" in result.output
+    # Torn down at the point the preflight rejected the model, not only via atexit.
     assert started.get("down") is fake
 
 
