@@ -332,6 +332,15 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
 
+    def test_stray_close_after_real_call_not_treated_as_prefill(self):
+        """A real leading call followed by a stray </think> and no further call is
+        a normal answer, not prefilled reasoning; the call must still fire (the
+        virtual span only applies when a real call follows the close)."""
+        text = 'Now web_search[ARGS]{"query":"x"}</think> answer'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
     def test_mistral_bracket_with_whitespace(self):
         # Optional whitespace (including newlines) is permitted between
         # the name and the opening brace.

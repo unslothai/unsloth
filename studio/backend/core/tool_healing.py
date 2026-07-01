@@ -817,13 +817,17 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
     # Prefilled reasoning: the template opens <think> in the PROMPT, so the
     # generated text starts inside a thought and emits only a closing marker with
     # no opener. Add a leading span (0 .. first close) so a call rehearsed there is
-    # skipped, not executed -- unless that close sits inside a real call's
-    # arguments (a literal </think>), which the call-span guard preserves.
+    # skipped, not executed. Guards keep this narrow:
+    #  * the close must not sit inside a real call's arguments (a literal </think>);
+    #  * a real call must follow the close (the actual turn after the thought), so
+    #    a stray close in a normal answer does not swallow a genuine leading call.
     close = _THINK_CLOSE_RE.search(text)
     if close is not None:
         opener = _THINK_OPEN_RE.search(text)
-        if (opener is None or close.start() < opener.start()) and not any(
-            cs <= close.start() < ce for cs, ce in call_spans
+        if (
+            (opener is None or close.start() < opener.start())
+            and not any(cs <= close.start() < ce for cs, ce in call_spans)
+            and any(cs >= close.end() for cs, ce in call_spans)
         ):
             think_spans = [(0, close.end())] + think_spans
     if not think_spans:
