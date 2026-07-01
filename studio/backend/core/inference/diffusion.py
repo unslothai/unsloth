@@ -1188,9 +1188,7 @@ class DiffusionBackend:
                 "native engine for GGUF models."
             )
 
-        resolved = diffusion_lora.resolve_specs(
-            specs, hf_token = state.hf_token, cancel_event = cancel
-        )
+        resolved = diffusion_lora.resolve_specs(specs, hf_token = state.hf_token, cancel_event = cancel)
         # Unique adapter names (diffusers requires distinct names; sanitized stems can collide).
         uniq: list[tuple[str, str, float]] = []
         seen: set[str] = set()
