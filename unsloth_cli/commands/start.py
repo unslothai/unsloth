@@ -3,6 +3,7 @@
 
 """`unsloth start` — launch a coding agent against a running Studio server."""
 
+import atexit
 import contextlib
 import json
 import os
@@ -13,10 +14,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple, NoReturn, Optional
+from urllib.parse import urlparse
 
 import typer
 
@@ -63,6 +66,14 @@ _LAUNCH_OPTION = typer.Option(
     True,
     "--launch/--no-launch",
     help = "--no-launch prints the env and command instead (remote shells, WSL).",
+)
+_SERVE_OPTION = typer.Option(
+    True,
+    "--serve/--no-serve",
+    help = (
+        "If no Studio server is running, auto-start one for --model and stop it when the "
+        "agent exits. --no-serve keeps the old behavior of erroring out."
+    ),
 )
 # Model-load knobs mirrored from `unsloth run`; only used when --model triggers a
 # load on the server. Server-startup flags (--host/--port/--cloudflare/...) do not
@@ -170,15 +181,133 @@ def _http_json(
         _fail(f"{error}: {getattr(exc, 'reason', None) or exc}")
 
 
-def _require_studio() -> str:
+# A server that WE auto-started (never one we merely found). Kept at module scope so
+# _run's finally and the atexit backstop can tear it down without threading a handle
+# through all six agent commands. Only one agent runs per process, so one slot is enough.
+_auto_served_server: Optional[subprocess.Popen] = None
+# Model download + load can be slow; give the auto-started server room before giving up.
+_SERVER_START_TIMEOUT_S = 900
+
+
+def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
+    request = urllib.request.Request(
+        f"{base}/api/health", headers = {"User-Agent": _USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout = timeout) as response:
+            return json.loads(response.read(65536).decode() or "{}").get("status") == "healthy"
+    except Exception:
+        return False
+
+
+def _log_tail(path: Path, lines: int = 20) -> str:
+    try:
+        return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
+    except OSError:
+        return "(no server log)"
+
+
+def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
+    # Idempotent teardown of a server WE started, plus its own children (llama-server,
+    # cloudflared) via the process group. A no-op once the process is already gone.
+    if server is None or server.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(server.pid), signal.SIGTERM)
+    except (OSError, AttributeError):
+        server.terminate()
+    try:
+        server.wait(timeout = 15)
+    except Exception:
+        try:
+            os.killpg(os.getpgid(server.pid), signal.SIGKILL)
+        except (OSError, AttributeError):
+            server.kill()
+
+
+def _shutdown_auto_served() -> None:
+    global _auto_served_server
+    server, _auto_served_server = _auto_served_server, None
+    if server is not None and server.poll() is None:
+        typer.echo("Stopping the auto-started Studio server…")
+        _shutdown_server(server)
+
+
+def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess.Popen:
+    """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
+    global _auto_served_server
+    unsloth = shutil.which("unsloth") or "unsloth"
+    parsed = urlparse(base)
+    # --disable-tools = passthrough mode (relay the agent's own tools); --no-cloudflare =
+    # loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh.
+    command = [
+        unsloth, "run",
+        "-H", parsed.hostname or "127.0.0.1",
+        "-p", str(parsed.port or 8888),
+        "--disable-tools", "--no-cloudflare",
+        "--model", model,
+    ]
+    if load.gguf_variant:
+        command += ["--gguf-variant", load.gguf_variant]
+    if load.max_seq_length:
+        command += ["--context-length", str(load.max_seq_length)]
+    if not load.load_in_4bit:
+        command += ["--no-load-in-4bit"]
+    if load.tensor_parallel:
+        command += ["--tensor-parallel"]
+
+    log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
+    typer.echo(f"No Studio server at {base}. Starting one for {model} (loading the model can take a while)…")
+    typer.echo(f"Server log: {log_path}")
+    log = open(log_path, "wb")
+    # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
+    # server; we tear it down explicitly when the agent exits.
+    kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    server = subprocess.Popen(command, **kwargs)
+    _auto_served_server = server
+    atexit.register(_shutdown_auto_served)
+
+    deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if server.poll() is not None:
+            tail = _log_tail(log_path)
+            _shutdown_auto_served()
+            _fail(f"The Studio server stopped before it was ready. Last log lines:\n{tail}")
+        # `unsloth run` prints the minted key only after the server is up AND the model is
+        # loaded, so it is the fully-ready signal (same contract serve-unsloth-run.sh uses).
+        if _studio_healthy(base) and "sk-unsloth-" in _log_tail(log_path, lines = 400):
+            typer.echo(f"Studio server ready at {base}.")
+            return server
+        time.sleep(2.0)
+    _shutdown_auto_served()
+    _fail(f"The Studio server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}.")
+
+
+def _require_studio(
+    model: Optional[str] = None,
+    load: Optional[LoadOptions] = None,
+    *,
+    serve: bool = False,
+    launch: bool = True,
+) -> tuple:
+    """Return (base, server). server is a Popen only when WE auto-started it."""
     base = find_studio_server()
-    if base is None:
-        expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
-        _fail(
-            f"No running Studio server found at {expected}. Start one with "
-            "`unsloth studio`, or point UNSLOTH_STUDIO_URL at a remote server."
-        )
-    return base
+    if base is not None:
+        return base, None
+    expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    # Auto-start a local server only for an interactive launch with a model to serve, and
+    # only for a loopback target (never stand in for an explicit remote UNSLOTH_STUDIO_URL).
+    if serve and launch and model and is_loopback_url(expected):
+        return expected, _start_studio_server(expected, model, load or LoadOptions())
+    model_hint = "" if model else " Pass --model to have it start one for you, or"
+    _fail(
+        f"No running Studio server found at {expected}.{model_hint} start one with "
+        "`unsloth studio`, or point UNSLOTH_STUDIO_URL at a remote server."
+    )
 
 
 def _key_cache_path() -> Path:
@@ -636,10 +765,20 @@ def _connect(
     api_key: Optional[str],
     model: Optional[str],
     load: LoadOptions = LoadOptions(),
+    *,
+    serve: bool = False,
+    launch: bool = True,
 ) -> tuple:
-    base = _require_studio()
-    key = _agent_api_key(base, api_key)
-    return base, key, _resolve_model(base, key, model, load)
+    base, server = _require_studio(model, load, serve = serve, launch = launch)
+    try:
+        key = _agent_api_key(base, api_key)
+        # A server we just started has exactly the requested model loaded, so resolve to
+        # whatever it is serving instead of re-matching the raw --model string.
+        entry = _resolve_model(base, key, None if server is not None else model, load)
+    except BaseException:
+        _shutdown_auto_served()
+        raise
+    return base, key, entry
 
 
 def _run(
@@ -657,7 +796,11 @@ def _run(
     if not launch:
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
-    _launch(command, env, install_hint = install_hint, unset_env = unset_env)
+    try:
+        _launch(command, env, install_hint = install_hint, unset_env = unset_env)
+    finally:
+        # Tear down a server we auto-started once the agent session ends (no-op otherwise).
+        _shutdown_auto_served()
 
 
 def _agents_config_root() -> Path:
@@ -889,11 +1032,13 @@ def claude(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve, launch = launch,
     )
     model_id = entry["id"]
 
@@ -964,11 +1109,13 @@ def codex(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve, launch = launch,
     )
     _require_gguf_for_codex(base, key, entry["id"])
     command = [
@@ -995,11 +1142,13 @@ def openclaw(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
 ):
     """Point OpenClaw at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve, launch = launch,
     )
     command = ["openclaw", *ctx.args]
     install_hint = (
@@ -1026,11 +1175,13 @@ def opencode(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
 ):
     """Point OpenCode at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve, launch = launch,
     )
     command = ["opencode", *ctx.args]
     with _session_config("opencode", launch) as cfg:
@@ -1053,11 +1204,13 @@ def hermes(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve, launch = launch,
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = (
@@ -1082,11 +1235,13 @@ def pi(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
 ):
     """Point Pi (coding agent) at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve, launch = launch,
     )
     # Pi defaults to the google provider, so pin our provider/model on the command
     # line; the custom OpenAI-compatible endpoint itself is only configurable via

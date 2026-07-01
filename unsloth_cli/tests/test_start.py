@@ -863,6 +863,107 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
     assert "No running Studio server" in result.output
 
 
+@pytest.fixture(autouse = True)
+def _reset_auto_served():
+    # Never let a test leave a fake server in the module slot (an atexit backstop would
+    # otherwise try to signal it at interpreter shutdown).
+    yield
+    start._auto_served_server = None
+
+
+def test_start_studio_server_builds_command_and_waits(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            self.pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-abc123")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    server = start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL",
+        start.LoadOptions(
+            gguf_variant = "UD-Q4_K_XL", max_seq_length = 8192, load_in_4bit = True, tensor_parallel = True
+        ),
+    )
+    cmd = captured["command"]
+    assert cmd[1] == "run"
+    assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
+    assert cmd[cmd.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
+    assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
+    assert cmd[cmd.index("--context-length") + 1] == "8192"
+    assert "--tensor-parallel" in cmd
+    assert cmd[cmd.index("-p") + 1] == "8888"
+    assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
+    assert captured["kwargs"].get("start_new_session") is True  # own process group
+    assert server.pid == 4321
+
+
+def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {}
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(base, model, load):
+        started.update(base = base, model = model, load = load)
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: started.__setitem__("down", server))
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"]
+    )
+    assert result.exit_code == 0, result.output
+    assert started["model"] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
+    assert started["base"] == BASE
+    # Torn down after the agent session ended.
+    assert started.get("down") is fake
+
+
+def test_no_serve_preserves_error(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {"called": False}
+    monkeypatch.setattr(start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True))
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-serve"]
+    )
+    assert result.exit_code == 1
+    assert "No running Studio server" in result.output
+    assert started["called"] is False
+
+
+def test_no_launch_never_serves(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {"called": False}
+    monkeypatch.setattr(start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True))
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-launch"]
+    )
+    assert result.exit_code == 1
+    assert "No running Studio server" in result.output
+    assert started["called"] is False
+
+
+def test_no_server_no_model_hints_model_flag(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    result = CliRunner().invoke(start.start_app, ["claude"])
+    assert result.exit_code == 1
+    assert "--model" in result.output
+
+
 def test_connect_explicit_api_key_skips_mint(fake_studio):
     result = CliRunner().invoke(
         start.start_app,
