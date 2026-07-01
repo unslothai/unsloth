@@ -499,6 +499,7 @@ class ExportOrchestrator:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format."""
         return self._run_export(
@@ -509,6 +510,7 @@ class ExportOrchestrator:
                 "push_to_hub": push_to_hub,
                 "repo_id": repo_id,
                 "hf_token": hf_token,
+                "imatrix_file": imatrix_file,
             },
         )
 

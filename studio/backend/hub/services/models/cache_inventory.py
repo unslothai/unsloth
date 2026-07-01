@@ -39,8 +39,10 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
-_repo_size_cache: "OrderedDict[tuple[str, str], tuple[int, frozenset[str], float]]" = OrderedDict()
-_repo_size_neg_cache: "OrderedDict[tuple[str, str], float]" = OrderedDict()
+_repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = (
+    OrderedDict()
+)
+_repo_size_neg_cache: "OrderedDict[tuple[str, str, str], float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_POS_TTL = 60.0
 _REPO_SIZE_NEG_TTL = 60.0
@@ -52,7 +54,7 @@ def get_repo_snapshot_metadata_cached(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[int, frozenset[str]]:
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
-    cache_key = (repo_id, token_fp)
+    cache_key = (repo_id, token_fp, "snapshot")
     with _repo_size_cache_lock:
         cached = _repo_size_cache.get(cache_key)
         if cached is not None:
@@ -117,6 +119,52 @@ def _repo_gguf_size_bytes(repo_info) -> int:
 
 def _repo_has_gguf_files(repo_info) -> bool:
     return _repo_gguf_size_bytes(repo_info) > 0
+
+
+def _cached_repo_file_name(file_obj) -> str:
+    file_path = getattr(file_obj, "file_path", None)
+    if file_path:
+        try:
+            path = Path(file_path)
+            parts = path.parts
+            snapshots_idx = max(i for i, part in enumerate(parts) if part == "snapshots")
+            if len(parts) > snapshots_idx + 2:
+                return Path(*parts[snapshots_idx + 2 :]).as_posix()
+        except Exception:
+            pass
+    return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
+
+
+def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[str, set[str]]:
+    """Map each cached GGUF file's repo-relative name to the SET of its local
+    blob hashes across all cached revisions.
+
+    HF names each local cache blob FILE by the file's etag (lfs.sha256 else
+    blob_id), so a local file's blob hash == ``Path(blob_path).name``. An updated
+    repo keeps BOTH the old and new revision snapshots until HF garbage-collects
+    them, so the same file resolves to several blobs; collecting them ALL (not
+    just the first one seen, since ``repo_info.revisions`` is a frozenset and
+    yields them in arbitrary order) lets the remote-vs-local diff treat the file
+    as current when the remote (``main``) blob is present in any cached revision.
+    Mirrors the ``cached_blob_ids`` membership test in routes/models.py.
+
+    By default this keeps the historical MAIN-GGUF-only behavior. GGUF update
+    checks opt into companions so a shared mmproj/MTP blob can be compared too.
+    """
+    blob_map: dict[str, set[str]] = {}
+    for revision in repo_info.revisions:
+        for f in revision.files:
+            if include_companions:
+                if not _is_gguf_filename(f.file_name):
+                    continue
+            elif not _is_main_gguf_filename(f.file_name):
+                continue
+            blob_path = getattr(f, "blob_path", None)
+            if not blob_path:
+                continue
+            name = _cached_repo_file_name(f)
+            blob_map.setdefault(name, set()).add(Path(blob_path).name)
+    return blob_map
 
 
 def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
