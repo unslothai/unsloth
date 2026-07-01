@@ -18,7 +18,7 @@ import numpy as np
 
 BASE = "black-forest-labs/FLUX.1-dev"
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/fbcache_flux_images")
+OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "fbcache_flux_images"
 
 
 _LP = {"fn": None}
@@ -101,8 +101,13 @@ def run(
             from diffusers.hooks import apply_first_block_cache
             apply_first_block_cache(pipe.transformer, FirstBlockCacheConfig(threshold = threshold))
     if compile_:
+        # FBCache's per-step decision is a graph break, so a cached run must compile with
+        # fullgraph=False (mirroring the production path); fullgraph=True would fail the
+        # warmup compile and the row would silently fall back to an eager cached run,
+        # producing misleading speedup numbers.
+        fullgraph = threshold is None
         try:
-            pipe.transformer.compile_repeated_blocks(fullgraph = True, dynamic = True)
+            pipe.transformer.compile_repeated_blocks(fullgraph = fullgraph, dynamic = True)
         except Exception as exc:  # noqa: BLE001
             print(f"    [{tag}] compile {type(exc).__name__}: {str(exc)[:80]}", flush = True)
     try:
