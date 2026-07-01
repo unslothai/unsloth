@@ -1567,7 +1567,10 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # Load via native SentenceTransformer (bypasses Unsloth patching)
+            # Load via native SentenceTransformer (bypasses Unsloth patching). Forward cache_folder so
+            # this load reads the cache the prefetch warmed (as the for_inference branch does); a custom
+            # cache_folder would otherwise miss the warm and start an unprotected in-process Hub/Xet
+            # download. None keeps the default cache, matching the prefetch's cache_dir.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1575,6 +1578,7 @@ class FastSentenceTransformer(FastModel):
                 token = token,
                 revision = revision,
                 model_kwargs = model_kwargs,
+                cache_folder = kwargs.get("cache_folder"),
             )
 
             # Store metadata for get_peft_model

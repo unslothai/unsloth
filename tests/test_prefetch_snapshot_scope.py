@@ -570,3 +570,38 @@ def test_st_module_download_forwards_cache_folder():
     assert all(
         "cache_folder" in {kw.arg for kw in c.keywords} for c in calls
     ), "every load_dir_path call must forward cache_folder"
+
+
+def test_st_native_sentence_transformer_calls_forward_cache_folder():
+    """Every native SentenceTransformer(model_name, ...) load (for_inference AND fast-encoder) must
+    forward cache_folder, so a custom cache_folder reads the cache the prefetch warmed instead of
+    missing it and starting an unprotected in-process Hub/Xet download (Codex #6638). The modules-based
+    SentenceTransformer(modules=...) call builds from already-loaded modules and needs no cache_folder.
+    Static AST guard (importing ST pulls heavy optional deps)."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+    weight_loading_calls = []
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "SentenceTransformer"):
+            continue
+        kw_names = {kw.arg for kw in n.keywords}
+        # A modules-based build (SentenceTransformer(modules=...)) downloads nothing; only a
+        # repo-name load (positional model_name, no modules=) reads the cache.
+        if "modules" in kw_names:
+            continue
+        weight_loading_calls.append(n)
+    assert weight_loading_calls, "expected a repo-name SentenceTransformer load in sentence_transformer.py"
+    # cache_folder is forwarded either explicitly (fast-encoder branch) or via a **kwargs unpacking
+    # (for_inference branch builds st_kwargs incl. cache_folder). A ** unpacking has kw.arg == None.
+    for c in weight_loading_calls:
+        kw_names = {kw.arg for kw in c.keywords}
+        forwards = "cache_folder" in kw_names or None in kw_names
+        assert forwards, (
+            "a repo-name SentenceTransformer load must forward cache_folder "
+            f"(explicitly or via **kwargs) at line {c.lineno}"
+        )
