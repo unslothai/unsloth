@@ -530,6 +530,7 @@ type ChatRuntimeStore = {
   activePresetSource: ChatPresetSource;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
+  modelRuntimeHydrated: boolean;
   runningByThreadId: Record<string, boolean>;
   cancelByThreadId: Record<string, () => void>;
   autoTitle: boolean;
@@ -719,6 +720,7 @@ type ChatRuntimeStore = {
   setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
+  setModelRuntimeHydrated: (hydrated: boolean) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
@@ -1035,6 +1037,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
+  modelRuntimeHydrated: false,
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
@@ -1206,6 +1209,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
+  setModelRuntimeHydrated: (modelRuntimeHydrated) =>
+    set({ modelRuntimeHydrated }),
   setThreadRunning: (threadId, running) =>
     set((state) => {
       const next = { ...state.runningByThreadId };

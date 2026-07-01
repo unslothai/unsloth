@@ -385,11 +385,16 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function getIsLoraCompareSnapshot(): boolean {
-  const state = useChatRuntimeStore.getState();
+function getIsLoraCompareFromState(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+): boolean {
   const cp = state.params.checkpoint;
   const selected = cp ? state.loras.find((l) => l.id === cp) : undefined;
   return selected?.exportType === "lora";
+}
+
+function getIsLoraCompareSnapshot(): boolean {
+  return getIsLoraCompareFromState(useChatRuntimeStore.getState());
 }
 
 const CompareContent = memo(function CompareContent({
@@ -413,10 +418,26 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  // Freeze the compare variant for this pair. Generalized compare loads mutate
-  // the global checkpoint; if model 1 is a LoRA, a live subscription here would
-  // swap model1/model2 panes to base/lora panes mid-run.
-  const [isLoraCompare] = useState(getIsLoraCompareSnapshot);
+  const modelRuntimeHydrated = useChatRuntimeStore(
+    (state) => state.modelRuntimeHydrated,
+  );
+  const liveIsLoraCompare = useChatRuntimeStore(getIsLoraCompareFromState);
+  // Freeze the compare variant for this pair after the initial runtime refresh.
+  // Generalized compare loads mutate the global checkpoint; if model 1 is a LoRA,
+  // a live subscription here would swap model1/model2 panes to base/lora panes
+  // mid-run. Before refresh completes, keep the old live behavior so direct
+  // reloads into an already-loaded LoRA can hydrate into the base/lora layout.
+  const [frozenIsLoraCompare, setFrozenIsLoraCompare] = useState<boolean | null>(
+    () =>
+      useChatRuntimeStore.getState().modelRuntimeHydrated
+        ? getIsLoraCompareSnapshot()
+        : null,
+  );
+  useEffect(() => {
+    if (frozenIsLoraCompare !== null || !modelRuntimeHydrated) return;
+    setFrozenIsLoraCompare(liveIsLoraCompare);
+  }, [frozenIsLoraCompare, liveIsLoraCompare, modelRuntimeHydrated]);
+  const isLoraCompare = frozenIsLoraCompare ?? liveIsLoraCompare;
 
   return isLoraCompare ? (
     <LoraCompareContent

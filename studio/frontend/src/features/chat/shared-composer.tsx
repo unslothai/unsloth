@@ -1005,6 +1005,7 @@ export function SharedComposer({
         }
         compareLoadingModelRef.current = sel;
         useChatRuntimeStore.getState().setModelLoading(true);
+        let previousWasUnloaded = false;
         try {
           const validation = await validateModel(
             {
@@ -1052,6 +1053,7 @@ export function SharedComposer({
               { model_path: previousCheckpoint },
               { signal: compareSignal },
             );
+            previousWasUnloaded = true;
             throwIfCompareCancelled();
           }
 
@@ -1124,6 +1126,11 @@ export function SharedComposer({
             store.setModels(next);
           }
           return resp.status;
+        } catch (error) {
+          if (previousWasUnloaded) {
+            useChatRuntimeStore.getState().clearCheckpoint();
+          }
+          throw error;
         } finally {
           if (compareLoadingModelRef.current === sel) {
             compareLoadingModelRef.current = null;
@@ -1139,6 +1146,7 @@ export function SharedComposer({
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);
+      compareStepSucceededRef.current = false;
       onComparingChange?.(true);
       try {
         // Show user messages immediately on both sides. If either pane is not
@@ -1241,6 +1249,7 @@ export function SharedComposer({
     const loadingModel = compareLoadingModelRef.current;
     compareLoadAbortRef.current?.abort();
     if (comparing) {
+      compareStepSucceededRef.current = false;
       setComparing(false);
       onComparingChange?.(false);
     }
