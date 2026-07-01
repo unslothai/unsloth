@@ -566,29 +566,46 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
     gguf_path = gguf_files[0]
 
     with Phase("reload_gguf", metrics):
-        proc = subprocess.run(
-            [
-                str(llama_cli),
-                "-m",
-                str(gguf_path),
-                "-p",
-                PROMPT,
-                "-n",
-                "24",
-                "--temp",
-                "0",
-                "--seed",
-                str(SEED),
-                "-no-cnv",
-                "--no-warmup",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 300,
-            # Hand llama-cli an immediate EOF; without it -no-cnv can still leave the
-            # process blocked reading stdin, which times out instead of generating.
-            stdin = subprocess.DEVNULL,
-        )
+        argv = [
+            str(llama_cli),
+            "-m",
+            str(gguf_path),
+            "-p",
+            PROMPT,
+            "-n",
+            "24",
+            "--temp",
+            "0",
+            "--seed",
+            str(SEED),
+            # Bound the context: gemma-3's large default n_ctx builds a huge KV cache and
+            # Metal graph that times out on the runner. Mirrors the llama-server smoke step.
+            "-c",
+            "256",
+            "-no-cnv",
+            "--no-warmup",
+        ]
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output = True,
+                text = True,
+                timeout = 300,
+                # Hand llama-cli an immediate EOF so -no-cnv can't leave it blocked on stdin.
+                stdin = subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Surface whatever llama-cli emitted before the timeout so a future hang is
+            # diagnosable from the CI log. TimeoutExpired carries raw bytes even under
+            # text=True, so decode before printing (else it renders as b'...' repr).
+            def _decode(stream) -> str:
+                if isinstance(stream, bytes):
+                    return stream.decode("utf-8", errors = "replace")
+                return stream or ""
+
+            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
+            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
+            raise
 
     metrics["llama_cli_returncode"] = proc.returncode
     metrics["generation"] = (proc.stdout or "")[:1500]
