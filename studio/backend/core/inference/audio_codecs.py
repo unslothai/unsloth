@@ -223,6 +223,52 @@ class AudioCodecManager:
         waveform = audio.squeeze().cpu().numpy()
         return _numpy_to_wav_bytes(waveform, 24000), 24000
 
+    # SNAC frames per decode window and the sample slice taken from each window.
+    # Decoding a sliding window of 4 frames and emitting only the middle 2048
+    # samples per new frame is the standard Orpheus streaming recipe: the
+    # convolutional decoder has full context around the emitted slice, so the
+    # incremental output is click-free where naive per-frame decoding clicks.
+    SNAC_STREAM_FRAMES = 4
+    SNAC_STREAM_SLICE = (2048, 4096)
+
+    def decode_snac_window(self, codes: list, device: str) -> bytes:
+        """Decode one sliding window of SNAC codes for streaming playback.
+
+        ``codes`` are already de-offset values (token_id - 128266), length a
+        multiple of 7 (typically the last ``SNAC_STREAM_FRAMES`` frames = 28).
+        Returns raw little-endian PCM16 mono bytes at 24 kHz for the current
+        frame (the middle slice of the decoded window). Empty bytes if there is
+        not a full frame yet.
+        """
+        frames = len(codes) // 7
+        if frames == 0:
+            return b""
+
+        layer_1, layer_2, layer_3 = [], [], []
+        for i in range(frames):
+            layer_1.append(codes[7 * i])
+            layer_2.append(codes[7 * i + 1] - 4096)
+            layer_3.append(codes[7 * i + 2] - 8192)
+            layer_3.append(codes[7 * i + 3] - 12288)
+            layer_2.append(codes[7 * i + 4] - 16384)
+            layer_3.append(codes[7 * i + 5] - 20480)
+            layer_3.append(codes[7 * i + 6] - 24576)
+
+        snac_codes = [
+            torch.tensor(layer).unsqueeze(0).to(device)
+            for layer in (layer_1, layer_2, layer_3)
+        ]
+        with torch.no_grad():
+            audio = self._snac_model.decode(snac_codes)
+
+        lo, hi = self.SNAC_STREAM_SLICE
+        if audio.shape[-1] >= hi:
+            audio = audio[:, :, lo:hi]
+        waveform = audio.squeeze().detach().cpu().numpy()
+        pcm = np.clip(waveform, -1.0, 1.0)
+        pcm = (pcm * 32767).astype(np.int16)
+        return pcm.tobytes()
+
     def decode_csm(self, audio_values: torch.Tensor) -> Tuple[bytes, int]:
         """Decode CSM output (already a waveform). Returns (wav_bytes, 24000)."""
         waveform = audio_values[0].to(torch.float32).cpu().numpy()
