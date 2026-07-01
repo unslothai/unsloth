@@ -675,28 +675,30 @@ class DiffusionTrainingStartRequest(BaseModel):
     rest carry the trainer's defaults.
     """
 
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(protected_namespaces = ())
 
-    base_model: str = Field(..., description="HF repo id or local path to an SDXL pipeline")
-    data_dir: str = Field(..., description="Folder of training images (+ captions)")
-    output_dir: str = Field(..., description="Directory to write the LoRA .safetensors into")
+    base_model: str = Field(..., description = "HF repo id or local path to an SDXL pipeline")
+    data_dir: str = Field(..., description = "Folder of training images (+ captions)")
+    output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
     instance_prompt: Optional[str] = Field(
-        None, description="Dreambooth caption applied to images without their own caption"
+        None, description = "Dreambooth caption applied to images without their own caption"
     )
-    resolution: int = Field(1024, ge=64, le=2048, description="Square training resolution (multiple of 8)")
-    train_steps: int = Field(500, ge=1, le=100000)
-    learning_rate: float = Field(1e-4, gt=0)
-    train_batch_size: int = Field(1, ge=1, le=64)
-    gradient_accumulation_steps: int = Field(1, ge=1, le=256)
-    lora_rank: int = Field(16, ge=1, le=320)
-    lora_alpha: Optional[int] = Field(None, ge=1, le=640, description="Defaults to lora_rank")
-    lora_dropout: float = Field(0.0, ge=0.0, le=1.0)
+    resolution: int = Field(
+        1024, ge = 64, le = 2048, description = "Square training resolution (multiple of 8)"
+    )
+    train_steps: int = Field(500, ge = 1, le = 100000)
+    learning_rate: float = Field(1e-4, gt = 0)
+    train_batch_size: int = Field(1, ge = 1, le = 64)
+    gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
+    lora_rank: int = Field(16, ge = 1, le = 320)
+    lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
+    lora_dropout: float = Field(0.0, ge = 0.0, le = 1.0)
     seed: int = Field(42)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
-    snr_gamma: Optional[float] = Field(5.0, description="Min-SNR loss weighting; null disables")
+    snr_gamma: Optional[float] = Field(5.0, description = "Min-SNR loss weighting; null disables")
     gradient_checkpointing: bool = Field(True)
     lr_scheduler: str = Field("constant")
-    lr_warmup_steps: int = Field(0, ge=0)
+    lr_warmup_steps: int = Field(0, ge = 0)
     center_crop: bool = Field(False)
     random_flip: bool = Field(True)
     caption_column: str = Field("text")
