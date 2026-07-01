@@ -1390,6 +1390,59 @@ class TestLoopBehaviour:
         assert len(duplicate_nudges) == 1
         assert captured_tool_names[2] == ["web_search", "python"]
 
+    def test_duplicate_noop_does_not_consume_budget_at_small_cap(self):
+        # A duplicate/disabled no-op turn is a correction turn and must NOT spend the
+        # caller's tool budget, so with max_tool_iterations=2 the model can still make a
+        # DISTINCT valid call after repeating one. Only turns that actually execute a
+        # tool count -- matching the GGUF loop. (The budget used to be charged per
+        # non-re-prompt iteration, so the duplicate burned the second slot and the third
+        # turn was sent with no tools, dropping the ``python`` call.)
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (active_tools or [])
+                    if tool.get("function", {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result", "python-result"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
+        )
+
+        # Both distinct tools execute; the repeated call in between did not cost a slot.
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+        # The turn after the duplicate still offered tools (budget not yet spent).
+        assert captured_tool_names[2] == ["web_search", "python"]
+
     def test_repeated_duplicate_noop_transitions_to_final_attempt(self):
         captured_tool_names: list[list[str]] = []
         turns = iter(
