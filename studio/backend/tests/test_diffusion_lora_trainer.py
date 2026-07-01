@@ -32,12 +32,12 @@ def test_discover_prefers_metadata_then_sidecar_then_instance(tmp_path):
     _touch(tmp_path / "c.webp")
     # a.png captioned via metadata.jsonl
     (tmp_path / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding="utf-8"
+        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
     )
     # b.jpg captioned via sidecar
-    (tmp_path / "b.txt").write_text("from sidecar", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("from sidecar", encoding = "utf-8")
     # c.webp falls back to the instance prompt
-    pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt="from instance"))
+    pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt = "from instance"))
     assert pairs[str(tmp_path / "a.png")] == "from metadata"
     assert pairs[str(tmp_path / "b.jpg")] == "from sidecar"
     assert pairs[str(tmp_path / "c.webp")] == "from instance"
@@ -46,7 +46,7 @@ def test_discover_prefers_metadata_then_sidecar_then_instance(tmp_path):
 def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):
     _touch(tmp_path / "cap.png")
     _touch(tmp_path / "nocap.png")
-    (tmp_path / "cap.caption").write_text("a caption", encoding="utf-8")
+    (tmp_path / "cap.caption").write_text("a caption", encoding = "utf-8")
     pairs = discover_image_caption_pairs(tmp_path)
     assert pairs == [(str(tmp_path / "cap.png"), "a caption")]
 
@@ -54,7 +54,7 @@ def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):
 def test_discover_captions_jsonl_and_image_key(tmp_path):
     _touch(tmp_path / "x.png")
     (tmp_path / "captions.jsonl").write_text(
-        json.dumps({"image": "x.png", "text": "hi"}) + "\n", encoding="utf-8"
+        json.dumps({"image": "x.png", "text": "hi"}) + "\n", encoding = "utf-8"
     )
     assert discover_image_caption_pairs(tmp_path) == [(str(tmp_path / "x.png"), "hi")]
 
@@ -62,14 +62,14 @@ def test_discover_captions_jsonl_and_image_key(tmp_path):
 def test_discover_custom_caption_column(tmp_path):
     _touch(tmp_path / "x.png")
     (tmp_path / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "x.png", "caption": "col"}) + "\n", encoding="utf-8"
+        json.dumps({"file_name": "x.png", "caption": "col"}) + "\n", encoding = "utf-8"
     )
-    assert discover_image_caption_pairs(tmp_path, caption_column="caption")[0][1] == "col"
+    assert discover_image_caption_pairs(tmp_path, caption_column = "caption")[0][1] == "col"
 
 
 def test_discover_empty_raises(tmp_path):
     _touch(tmp_path / "x.png")  # no captions anywhere, no instance prompt
-    with pytest.raises(ValueError, match="No captioned images"):
+    with pytest.raises(ValueError, match = "No captioned images"):
         discover_image_caption_pairs(tmp_path)
 
 
@@ -79,7 +79,7 @@ def test_discover_missing_dir_raises(tmp_path):
 
 
 def test_config_normalized_defaults():
-    cfg = DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o").normalized()
+    cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o").normalized()
     assert cfg.lora_alpha == cfg.lora_rank  # alpha defaults to rank
     assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
 
@@ -98,7 +98,7 @@ def test_config_normalized_defaults():
 )
 def test_config_normalized_validation(kw):
     with pytest.raises(ValueError):
-        DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", **kw).normalized()
+        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw).normalized()
 
 
 def test_compute_sdxl_add_time_ids():
