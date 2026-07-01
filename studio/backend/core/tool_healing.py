@@ -31,6 +31,11 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
+# Closed JSON/function blocks, stripped before the quote-aware Gemma helper so a
+# Gemma opener sitting in their argument data (e.g. a "<|tool_call>call:t{"
+# string) cannot make the helper truncate the whole block, and text after it, to
+# EOF. Both are guarded below, so the pre-pass is skipped when absent.
+_TOOL_CLOSED_BLOCK_PATS = [_TC_JSON_CLOSED_PAT, _TC_FUNC_CLOSED_PAT]
 # A lazy closed-pair pattern rescans to EOF from every opener when its close
 # token is absent (O(n^2); O(n^3) re-run per streamed token). Skip the doomed
 # sweep when the token is missing -- identical output, no backtracking. The
@@ -540,6 +545,19 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def strip_tool_markup_final(text: str) -> str:
+    """Final display strip, shared by ``strip_tool_call_markup`` and the streaming
+    wrappers so all three order the passes the same way. Closed JSON/function
+    blocks go first, so a Gemma opener in their argument data cannot make the
+    quote-aware helper truncate the block (and text after it) to EOF; then
+    well-formed Gemma spans (quote-aware); then the regex sweeps mop up malformed
+    spans and drop any unclosed remainder to EOF. Surrounding whitespace is kept.
+    """
+    text = strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
+    text = _strip_gemma_native_spans(text, final = True)
+    return strip_tool_patterns(text, _TOOL_ALL_PATS)
+
+
 def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call XML markup from text.
 
@@ -547,9 +565,11 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
     """
-    # Well-formed Gemma spans first (quote-aware); the regex patterns below then
-    # mop up any malformed Gemma span the helper could not match.
-    text = _strip_gemma_native_spans(text, final = final)
-    patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    text = strip_tool_patterns(text, patterns)
-    return text.strip() if final else text
+    if final:
+        return strip_tool_markup_final(text).strip()
+    # Non-final: closed JSON/function blocks first (same reason as the final path),
+    # then keep any still-incomplete Gemma span (quote-aware), then the closed
+    # patterns mop up the rest without touching incomplete blocks.
+    text = strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
+    text = _strip_gemma_native_spans(text, final = False)
+    return strip_tool_patterns(text, _TOOL_CLOSED_PATS)

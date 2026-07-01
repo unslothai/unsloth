@@ -39,10 +39,8 @@ from core.inference.llama_server_args import (
     strip_split_mode_only,
 )
 from core.tool_healing import (
-    _TOOL_ALL_PATS,
-    _strip_gemma_native_spans,
     strip_tool_call_markup,
-    strip_tool_patterns,
+    strip_tool_markup_final,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -8071,10 +8069,7 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            # Quote-aware Gemma spans first, else a literal <tool_call|> inside a
-            # quoted argument truncates the regex match and leaks the suffix.
-            text = _strip_gemma_native_spans(text, final = True)
-            return strip_tool_patterns(text, _TOOL_ALL_PATS)
+            return strip_tool_markup_final(text)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its

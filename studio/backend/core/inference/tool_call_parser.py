@@ -13,6 +13,7 @@ from core import tool_healing as _tool_healing
 _TOOL_ALL_PATS = _tool_healing._TOOL_ALL_PATS
 _strip_gemma_native_spans = _tool_healing._strip_gemma_native_spans
 strip_tool_patterns = _tool_healing.strip_tool_patterns
+strip_tool_markup_final = _tool_healing.strip_tool_markup_final
 
 
 def parse_tool_calls_from_text(
