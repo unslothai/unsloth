@@ -152,3 +152,29 @@ def test_docx_extracts_table_cells(tmp_path):
     assert all(v in text for v in ("NAME", "SCORE", "Alice", "97pts"))  # cells kept
     assert "Alice | 97pts" in text  # row cells joined
     assert text.index("Intro") < text.index("NAME") < text.index("Outro")  # order kept
+
+
+def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
+    # Empty cells are kept (so columns stay aligned across rows) and a cell's internal
+    # newlines are collapsed to spaces (so a multi-paragraph cell can't break the row).
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    table = document.add_table(rows = 2, cols = 3)
+    table.cell(0, 0).text = "A"
+    table.cell(0, 1).text = ""  # empty middle cell
+    table.cell(0, 2).text = "C"
+    multiline = table.cell(1, 0)
+    multiline.text = "line1"
+    multiline.add_paragraph("line2")  # cell now holds an internal newline
+    table.cell(1, 1).text = "mid"
+    table.cell(1, 2).text = "end"
+    path = tmp_path / "aligned.docx"
+    document.save(str(path))
+
+    text = "\n".join(p.text for p in parsers.parse(str(path)))
+    assert "A |  | C" in text  # empty cell preserved -> columns line up
+    assert "line1 line2 | mid | end" in text  # internal newline collapsed to a space

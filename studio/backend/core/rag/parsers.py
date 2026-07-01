@@ -363,10 +363,10 @@ def _docx_table_rows(table) -> list[str]:
             if id(cell._tc) in seen:
                 continue
             seen.add(id(cell._tc))
-            value = cell.text.strip()
-            if value:
-                cells.append(value)
-        if cells:
+            # Collapse internal newlines/whitespace so a multi-paragraph cell stays on one
+            # row; keep empty cells so columns still line up across rows.
+            cells.append(" ".join(cell.text.split()))
+        if any(cells):
             rows.append(" | ".join(cells))
     return rows
 
