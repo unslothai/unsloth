@@ -20,6 +20,13 @@ def test_sanitize_alias_strips_path_ext_and_unsafe_chars():
     assert dl.sanitize_alias("owner/repo-name") == "repo-name"
     assert dl.sanitize_alias("weird:<>chars.gguf") == "weird_chars"
     assert dl.sanitize_alias("") == "lora"
+    # Internal dots (version tags like "V1.0") must be replaced: the alias becomes a
+    # diffusers PEFT adapter name and PEFT rejects "." in module/adapter names.
+    assert (
+        dl.sanitize_alias("Qwen-Image-2512-Lightning-8steps-V1.0-bf16")
+        == "Qwen-Image-2512-Lightning-8steps-V1_0-bf16"
+    )
+    assert "." not in dl.sanitize_alias("model.v1.0.safetensors")
 
 
 def test_inject_prompt_tags_appends_with_spacing():

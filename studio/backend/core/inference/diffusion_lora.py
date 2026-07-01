@@ -79,15 +79,18 @@ def sanitize_alias(raw: str) -> str:
     """Deterministic, filesystem- and prompt-tag-safe alias from an id/stem.
 
     The native `<lora:NAME:w>` tag resolves NAME as a filename stem, so the alias must
-    contain no path separators, spaces, colons, or angle brackets. Collisions across
-    sources are broken by the caller (materialize_native_dir) with a numeric suffix.
+    contain no path separators, spaces, colons, or angle brackets. It is also used as the
+    diffusers PEFT adapter name, which additionally forbids "." (PEFT treats it as a module
+    path separator), so dots are replaced too -- many real LoRA filenames carry a version
+    like "V1.0". Collisions across sources are broken by the caller (materialize_native_dir
+    / the diffusers manager) with a numeric suffix.
     """
     stem = raw.rsplit("/", 1)[-1]
     for ext in _ALL_EXTS:
         if stem.lower().endswith(ext):
             stem = stem[: -len(ext)]
             break
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_-")
     return stem or "lora"
 
 
