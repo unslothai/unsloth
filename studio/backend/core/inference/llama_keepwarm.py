@@ -219,18 +219,32 @@ class LlamaKeepWarmMiddleware:
             if not started:
                 _note_unpending()
         ended = {"done": False}
+        status = {"code": None}
 
         def _finish() -> None:
             # A route that untracked itself already decremented; don't double-count.
             if ended["done"]:
                 return
             ended["done"] = True
-            if not scope.get(_UNTRACKED_SCOPE_KEY):
+            if scope.get(_UNTRACKED_SCOPE_KEY):
+                return
+            # This middleware runs before FastAPI auth, so a 401/403 reaches here
+            # without ever touching llama.cpp. Decrement the in-flight count (to
+            # balance _note_start) but do NOT stamp activity, or repeated
+            # unauthenticated probes on an exposed server would keep the model warm
+            # and never let idle-unload free VRAM.
+            if status["code"] in (401, 403):
+                _note_untracked_end()
+            else:
                 _note_end()
 
         async def send_wrapper(message):
+            if message.get("type") == "http.response.start":
+                status["code"] = message.get("status")
             # Final body frame marks the end of a (possibly streaming) response.
-            if message.get("type") == "http.response.body" and not message.get("more_body", False):
+            elif message.get("type") == "http.response.body" and not message.get(
+                "more_body", False
+            ):
                 _finish()
             await send(message)
 

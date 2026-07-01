@@ -5394,6 +5394,14 @@ async def openai_chat_completions(
         # avoid decoding a valid upload twice).
         if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
             raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
+        # Reject streaming n>1 before the switch: only the non-streaming GGUF path
+        # returns multiple choices, so stream=true + n>1 is invalid on every local
+        # serving path (the external path already rejected it before its early
+        # return). Both fields are known here, so a bad shape must not load model B
+        # only to 400. The non-streaming n>1 cases stay post-switch, where the
+        # serving path decides whether the shape is supported.
+        if payload.stream and _wants_multiple_choices(payload):
+            _raise_unsupported_n("streaming chat completions")
         # Audio input rides the same companion-mmproj projector as vision, so a
         # text-only target can't serve it either; guard both before the switch.
         _needs_vision = (
@@ -7203,7 +7211,8 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    for entry in _openai_model_objects():
+    _loaded = _openai_model_objects()
+    for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
             return {**entry, "loaded": True}
@@ -7215,19 +7224,28 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
         if isinstance(mid, str) and mid.lower() == model_id.lower():
             return model
     # Backward compatibility: a client may still send the legacy raw identifier
-    # (e.g. an absolute .gguf path cached from an older /v1/models). Resolve it to
-    # the clean object so it keeps working, without ever echoing the path back.
+    # (e.g. an absolute .gguf path cached from an older /v1/models). Map it to the
+    # loaded model's object so it keeps working, without ever echoing the path back.
+    # Key each raw id to the SAME public id its /v1/models entry uses: an
+    # auto-switch load advertises a repo id while its identifier is the snapshot
+    # path, so public_model_id(path) would miss the advertised entry and 404 a
+    # model that is in fact loaded.
     llama_backend = get_llama_cpp_backend()
     backend = get_inference_backend()
-    for raw in (
-        llama_backend.model_identifier if llama_backend.is_loaded else None,
-        backend.active_model_name or None,
-    ):
-        if raw and model_id_matches(model_id, raw):
-            clean = public_model_id(raw)
-            for model in objects:
-                if model["id"] == clean:
-                    return model
+    raw_to_public: list[tuple[str, Optional[str]]] = []
+    if llama_backend.is_loaded and llama_backend.model_identifier:
+        raw_to_public.append(
+            (llama_backend.model_identifier, _llama_public_model_id(llama_backend))
+        )
+    if backend.active_model_name:
+        raw_to_public.append(
+            (backend.active_model_name, public_model_id(backend.active_model_name))
+        )
+    for raw, clean in raw_to_public:
+        if model_id_matches(model_id, raw):
+            for entry in _loaded:
+                if entry["id"] == clean:
+                    return {**entry, "loaded": True}
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(

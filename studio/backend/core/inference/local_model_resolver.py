@@ -226,7 +226,10 @@ def _index() -> dict[str, _LocalGgufEntry]:
         if now - ts < _CACHE_TTL_S:
             return cached
         fresh = _build_index()
-        _scan = (now, fresh)
+        # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on
+        # an install with many local models can itself exceed the TTL, which would
+        # store the cache already expired and make every request rebuild the index.
+        _scan = (time.monotonic(), fresh)
         return fresh
 
 

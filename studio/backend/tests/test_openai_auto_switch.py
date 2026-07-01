@@ -1868,6 +1868,112 @@ def test_retrieve_model_tolerates_non_string_id(monkeypatch):
     assert exc.value.status_code == 404
 
 
+def test_retrieve_model_resolves_raw_path_to_advertised_id(monkeypatch):
+    # Codex P2: a client caching the legacy absolute .gguf path must still retrieve
+    # a loaded auto-switch model. Its /v1/models entry is keyed by the advertised
+    # repo id (identifier = snapshot path), so the raw-path fallback must map the raw
+    # id to that advertised id, not public_model_id(path), or a loaded model 404s.
+    from types import SimpleNamespace
+
+    raw_path = "/cache/models--org--B-GGUF/snapshots/abc/model.gguf"
+    llama = SimpleNamespace(
+        is_loaded = True, model_identifier = raw_path, _openai_advertised_id = "org/B-GGUF"
+    )
+    infer = SimpleNamespace(active_model_name = None)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: infer)
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [{"id": "org/B-GGUF", "object": "model"}],
+    )
+
+    async def _empty():
+        return []
+
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _empty)
+    obj = asyncio.run(inference_route.openai_retrieve_model(raw_path, "tester"))
+    assert obj["id"] == "org/B-GGUF" and obj["loaded"] is True
+
+
+def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
+    # Codex P2: only the non-streaming GGUF path returns multiple choices, so
+    # stream=true + n>1 is invalid on every local serving path. Both fields are
+    # known pre-switch, so it must 400 before the switch rather than loading model B.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _chat_request(model = "org/B-GGUF", stream = True, n = 2)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_resolver_cache_stamped_after_slow_build(monkeypatch):
+    # Codex P2: the cache must be stamped AFTER _build_index. A scan slower than the
+    # TTL would otherwise store an already-expired cache and rebuild every request.
+    import core.inference.local_model_resolver as r
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(r.time, "monotonic", lambda: clock["t"])
+    calls = {"n": 0}
+
+    def _slow_build():
+        calls["n"] += 1
+        clock["t"] += r._CACHE_TTL_S + 10.0  # the scan itself outlasts the TTL
+        return {}
+
+    monkeypatch.setattr(r, "_build_index", _slow_build)
+    r._scan = (0.0, {})
+    r._index()  # builds once, stamps post-scan
+    r._index()  # immediately after: must reuse the cache, not rebuild
+    assert calls["n"] == 1
+
+
+def test_keepwarm_does_not_stamp_activity_on_401(monkeypatch):
+    # Codex P2: the keep-warm middleware runs before auth, so a 401 must decrement
+    # the in-flight count without stamping activity, or unauthenticated probes would
+    # keep the model warm and block idle-unload.
+    import core.inference.llama_keepwarm as kw
+
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    monkeypatch.setattr(kw, "_last_active", 100.0)
+
+    async def _recv():
+        return {"type": "http.request"}
+
+    async def _run(status_code):
+        async def _app(scope, receive, send):
+            await send({"type": "http.response.start", "status": status_code, "headers": []})
+            await send({"type": "http.response.body", "body": b"x", "more_body": False})
+
+        sent = []
+
+        async def _send(m):
+            sent.append(m)
+
+        mw = kw.LlamaKeepWarmMiddleware(_app)
+        await mw({"type": "http", "method": "POST", "path": "/v1/chat/completions"}, _recv, _send)
+
+    asyncio.run(_run(401))
+    assert kw._inflight == 0  # balanced (start then untracked end)
+    assert kw._last_active == 100.0  # activity NOT stamped for an auth failure
+    # A served (200) request still stamps activity.
+    asyncio.run(_run(200))
+    assert kw._inflight == 0
+    assert kw._last_active != 100.0
+
+
 # ── 10-reviewer round: automatic-load validation asymmetry, audio, preview, idle timer ──
 
 
