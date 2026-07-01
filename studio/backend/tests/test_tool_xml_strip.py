@@ -31,10 +31,11 @@ assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
 ), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
 # The regex reuses the parser's shared DeepSeek opener alternation; provide it so
 # the extracted ``_re.compile`` expression resolves the same source. The display
-# helper also delegates to _strip_tool_xml, which runs the parser's Mistral
-# [TOOL_CALLS] balanced strip, so provide _strip_mistral_closed_calls too.
+# helper delegates to _strip_tool_xml, which runs the parser's Mistral balanced
+# strip, the GLM scan, and the guarded function-XML scan, so provide those too.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 from core.inference.tool_call_parser import (
+    _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
     _strip_mistral_closed_calls,
@@ -46,6 +47,7 @@ _ns = {
     "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
     "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
     "_strip_glm_calls": _strip_glm_calls,
+    "_strip_function_xml_calls": _strip_function_xml_calls,
 }
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
@@ -449,3 +451,20 @@ def test_glm_normal_and_qwen_calls_still_stripped_by_route():
     assert _strip_tool_xml_for_display(glm, auto_heal_tool_calls = True).strip() == "ok"
     qwen = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call> after'
     assert _strip_tool_xml_for_display(qwen, auto_heal_tool_calls = True).strip() == "after"
+
+
+def test_route_strip_removes_param_alias_close_tag():
+    # The parser accepts the <param name="...">...</param> attribute-form alias of
+    # <parameter=...>; the route tail cleanup must strip an orphan </param> close too.
+    assert _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True) == "answer "
+    assert (
+        _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True) == "answer "
+    )
+
+
+def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
+    # A literal <function=...></function> inside a parameter value must not truncate
+    # the strip: the route now runs the parser's guarded function-XML scan
+    # (_inside_open_parameter) before the regex, matching the core strip.
+    text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"

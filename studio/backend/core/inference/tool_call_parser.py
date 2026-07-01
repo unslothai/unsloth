@@ -1344,24 +1344,29 @@ _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
 
 def _top_level_bare_json_name(probe: str) -> Optional[str]:
-    """Return the TOP-LEVEL ``"name"`` string value of a bare-JSON object, else None.
+    """Return the TOP-LEVEL call-name string value of a bare-JSON object, else None.
 
-    Walks only the object's top-level keys, skipping nested objects / arrays, so a
-    nested ``"name"`` -- e.g. ``{"result":{"name":"web_search",...}}`` -- is never
-    mistaken for the call name (a plain JSON answer must not be gated as a call just
-    because a nested field matches a tool). Tolerates a truncated tail: if a
-    top-level value is cut off before a top-level ``name`` is reached, returns None so
-    the caller keeps the text rather than dropping it."""
+    The name key is ``"name"`` or its ``"function"`` alias (the parser reads
+    ``obj.get("name") or obj.get("function")``); ``"name"`` takes precedence when both
+    are present. Walks only the object's top-level keys, skipping nested objects /
+    arrays, so a nested ``"name"`` -- e.g. ``{"result":{"name":"web_search",...}}`` --
+    is never mistaken for the call name (a plain JSON answer must not be gated as a
+    call just because a nested field matches a tool). Tolerates a truncated tail: if a
+    top-level value is cut off before a top-level name is reached, returns None so the
+    caller keeps the text rather than dropping it."""
     if not probe.startswith("{"):
         return None
     decoder = json.JSONDecoder()
+    function_value = None  # the ``"function"`` alias, used only if no ``"name"`` key
     i = 1
     n = len(probe)
     while i < n:
         while i < n and probe[i] in " \t\r\n,":
             i += 1
         if i >= n or probe[i] == "}":
-            return None
+            # End of the object with no top-level ``"name"``: fall back to a recorded
+            # ``"function"`` alias if one was seen.
+            return function_value
         if probe[i] != '"':
             return None
         try:
@@ -1386,6 +1391,17 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
                     return None
                 return value if isinstance(value, str) else None
             return None
+        if key == "function" and function_value is None and i < n and probe[i] == '"':
+            # ``"function"`` is an accepted alias for the call name. Record a string
+            # value but keep scanning: a top-level ``"name"`` still takes precedence.
+            try:
+                value, consumed = decoder.raw_decode(probe[i:])
+            except (json.JSONDecodeError, ValueError):
+                return None
+            if isinstance(value, str):
+                function_value = value
+            i += consumed
+            continue
         # Skip a non-name top-level value; a truncated one means we cannot prove a
         # top-level name exists, so return None (keep the text).
         if i < n and probe[i] == "{":
@@ -1404,7 +1420,8 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
             except (json.JSONDecodeError, ValueError):
                 return None
             i += consumed
-    return None
+    # No top-level ``"name"`` key: fall back to the ``"function"`` alias if seen.
+    return function_value
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
@@ -1422,7 +1439,7 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
     markerless object whose ``name`` is not an enabled tool is an ordinary JSON
     answer and must be kept, not suppressed. ``None`` keeps the prior behaviour."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
-    if not (probe.startswith("{") and '"name"' in probe):
+    if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
         return text
     if enabled_tool_names is not None:
         # Only suppress when the leading object is (or may be) a real call, i.e. its

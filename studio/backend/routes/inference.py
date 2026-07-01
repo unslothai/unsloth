@@ -1110,6 +1110,7 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
+    _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
     _strip_mistral_closed_calls,
@@ -1263,10 +1264,11 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
-# Whitespace/escape-tolerant ``{"name":`` detector for bare-JSON tool templates.
-# Matches ``{"name":``, ``{ "name" :`` (pretty-printed) and ``{\"name\":``
-# (JSON-escaped inside the template), mirroring the parser's whitespace tolerance.
-_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"name\\?"\s*:')
+# Whitespace/escape-tolerant bare-JSON tool-template detector. Matches ``{"name":``,
+# ``{ "name" :`` (pretty-printed) and ``{\"name\":`` (JSON-escaped in the template),
+# plus the ``"function"`` alias the parser accepts (``obj.get("name") or
+# obj.get("function")``), mirroring the parser's whitespace tolerance.
+_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
@@ -1626,21 +1628,27 @@ _TOOL_XML_RE = _re.compile(
     r"|" + _DS_OPEN_SRC + r".*?(?:<｜tool▁calls▁end｜>|\Z)"
     r"|<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)"
     r"|<\|tool_call_begin\|>.*?(?:<\|tool_call_end\|>|\Z)"
-    r"|</parameter>\s*\Z",
+    # ``</param>`` is the attribute-form alias of ``</parameter>`` (the parser accepts
+    # both); strip a tail-only orphan close of either spelling.
+    r"|</(?:parameter|param)>\s*\Z",
     _re.DOTALL,
 )
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Combine the Mistral and Gemma balanced-brace helpers with ``_TOOL_XML_RE``.
-    The Gemma ``call:NAME{...}`` wrapper-less form has no XML and is not in
-    ``_TOOL_XML_RE``; without this pass it leaks through Anthropic/display/history
-    cleanup while the core/streaming paths strip it. The GLM scan finds each call's
-    real ``</tool_call>`` so a literal ``</tool_call>`` inside an arg value is data,
-    not a leaked tail (the ``<tool_call>.*?</tool_call>`` regex arm stops at it)."""
+    """Combine the parser's scan-based strips with ``_TOOL_XML_RE``: the Mistral
+    ``[TOOL_CALLS]`` balanced-brace strip and the Gemma ``call:NAME{...}``
+    wrapper-less form (no XML, not in ``_TOOL_XML_RE``, else they leak through
+    Anthropic/display/history cleanup); the GLM scan (finds each call's real
+    ``</tool_call>`` so a literal ``</tool_call>`` in an arg value is data, not a
+    leaked tail); and the guarded function-XML scan (skips ``<function=`` openers
+    inside an open ``<parameter>`` value -- same ``_inside_open_parameter`` guard as
+    the parser -- so a literal nested ``<function=...></function>`` in an argument
+    does not truncate the strip and leak the tail)."""
     cleaned = _strip_glm_calls(
         _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text)), final = True
     )
+    cleaned = _strip_function_xml_calls(cleaned, final = True)
     return _TOOL_XML_RE.sub("", cleaned)
 
 

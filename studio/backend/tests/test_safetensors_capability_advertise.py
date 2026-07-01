@@ -700,3 +700,19 @@ def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, _TOOLS_ADVERTISED_NO_PARSEABLE_FORM)
     assert flags["supports_tools"] is False
+
+
+def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
+    # A template documenting the parser-supported {"function":...} bare-JSON alias
+    # must keep supports_tools, mirroring the {"name":...} form.
+    from routes.inference import _detect_safetensors_features
+
+    tpl = (
+        "{%- if tools %}\n"
+        'Respond with {"function": "fn", "parameters": {}}\n'
+        "{%- endif %}\n"
+        "{{ messages }}"
+    )
+    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    flags = _detect_safetensors_features(backend, tpl)
+    assert flags["supports_tools"] is True
