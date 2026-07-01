@@ -98,7 +98,7 @@ class DiffusionLoraConfig:
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
-        return replace(self, lora_alpha=alpha, lora_target_modules=targets)
+        return replace(self, lora_alpha = alpha, lora_target_modules = targets)
 
 
 def discover_image_caption_pairs(
@@ -123,9 +123,7 @@ def discover_image_caption_pairs(
     if not root.is_dir():
         raise FileNotFoundError(f"data_dir is not a directory: {data_dir}")
 
-    images = sorted(
-        p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS
-    )
+    images = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
 
     # 1. metadata.jsonl / captions.jsonl (either name accepted).
     meta_caption: dict[str, str] = {}
@@ -133,7 +131,7 @@ def discover_image_caption_pairs(
         meta_path = root / meta_name
         if not meta_path.is_file():
             continue
-        for line in meta_path.read_text(encoding="utf-8").splitlines():
+        for line in meta_path.read_text(encoding = "utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -154,7 +152,7 @@ def discover_image_caption_pairs(
             for ext in _CAPTION_EXTS:
                 sidecar = img.with_suffix(ext)
                 if sidecar.is_file():
-                    text = sidecar.read_text(encoding="utf-8").strip()
+                    text = sidecar.read_text(encoding = "utf-8").strip()
                     if text:
                         caption = text
                         break
@@ -195,7 +193,9 @@ def _load_image_tensor(
     img = Image.open(path).convert("RGB")
     w, h = img.size
     scale = resolution / min(w, h)
-    img = img.resize((max(resolution, round(w * scale)), max(resolution, round(h * scale))), Image.LANCZOS)
+    img = img.resize(
+        (max(resolution, round(w * scale)), max(resolution, round(h * scale))), Image.LANCZOS
+    )
     w, h = img.size
     if center_crop:
         left, top = (w - resolution) // 2, (h - resolution) // 2
@@ -205,11 +205,13 @@ def _load_image_tensor(
     img = img.crop((left, top, left + resolution, top + resolution))
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
-    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = np.asarray(img, dtype = np.float32) / 255.0
     return torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
 
 
-def _encode_sdxl_prompts(prompts: list[str], tokenizers: list, text_encoders: list, device: Any) -> tuple:
+def _encode_sdxl_prompts(
+    prompts: list[str], tokenizers: list, text_encoders: list, device: Any
+) -> tuple:
     """Encode a batch of prompts with both SDXL text encoders. Returns
     (prompt_embeds [B, T, 2048], pooled_prompt_embeds [B, 1280]). Text encoders are
     frozen, so this runs without grad."""
@@ -220,17 +222,17 @@ def _encode_sdxl_prompts(prompts: list[str], tokenizers: list, text_encoders: li
     for tokenizer, text_encoder in zip(tokenizers, text_encoders):
         tokens = tokenizer(
             prompts,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
+            padding = "max_length",
+            max_length = tokenizer.model_max_length,
+            truncation = True,
+            return_tensors = "pt",
         ).input_ids.to(device)
         with torch.no_grad():
-            out = text_encoder(tokens, output_hidden_states=True)
+            out = text_encoder(tokens, output_hidden_states = True)
         # The pooled embed always comes from the second (bigG) text encoder's [0] output.
         pooled = out[0]
         embeds_list.append(out.hidden_states[-2])
-    prompt_embeds = torch.concat(embeds_list, dim=-1)
+    prompt_embeds = torch.concat(embeds_list, dim = -1)
     return prompt_embeds, pooled
 
 
@@ -264,12 +266,12 @@ def run_diffusion_lora_training(
     ]
 
     pairs = discover_image_caption_pairs(
-        cfg.data_dir, instance_prompt=cfg.instance_prompt, caption_column=cfg.caption_column
+        cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
-    _emit(on_event, "model_load_started", num_images=len(pairs))
+    _emit(on_event, "model_load_started", num_images = len(pairs))
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
-        cfg.base_model, torch_dtype=weight_dtype, token=cfg.hf_token, add_watermarker=False
+        cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
     )
     unet, vae = pipe.unet, pipe.vae
     tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
@@ -279,36 +281,36 @@ def run_diffusion_lora_training(
     # Freeze the base; only the LoRA trains. The SDXL VAE overflows fp16, so keep it fp32.
     for m in (unet, vae, *text_encoders):
         m.requires_grad_(False)
-    vae.to(device, dtype=torch.float32)
+    vae.to(device, dtype = torch.float32)
     for m in (unet, *text_encoders):
-        m.to(device, dtype=weight_dtype)
+        m.to(device, dtype = weight_dtype)
 
     unet.add_adapter(
         LoraConfig(
-            r=cfg.lora_rank,
-            lora_alpha=cfg.lora_alpha,
-            lora_dropout=cfg.lora_dropout,
-            init_lora_weights="gaussian",
-            target_modules=list(cfg.lora_target_modules),
+            r = cfg.lora_rank,
+            lora_alpha = cfg.lora_alpha,
+            lora_dropout = cfg.lora_dropout,
+            init_lora_weights = "gaussian",
+            target_modules = list(cfg.lora_target_modules),
         )
     )
     if cfg.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
     # LoRA params must be fp32 for a stable optimizer under mixed precision.
     if weight_dtype != torch.float32:
-        cast_training_params(unet, dtype=torch.float32)
+        cast_training_params(unet, dtype = torch.float32)
 
     lora_params = [p for p in unet.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(lora_params, lr=cfg.learning_rate)
+    optimizer = torch.optim.AdamW(lora_params, lr = cfg.learning_rate)
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=cfg.lr_warmup_steps * cfg.gradient_accumulation_steps,
-        num_training_steps=cfg.train_steps * cfg.gradient_accumulation_steps,
+        optimizer = optimizer,
+        num_warmup_steps = cfg.lr_warmup_steps * cfg.gradient_accumulation_steps,
+        num_training_steps = cfg.train_steps * cfg.gradient_accumulation_steps,
     )
 
     add_time_ids = torch.tensor(
-        [compute_sdxl_add_time_ids(cfg.resolution)], device=device, dtype=weight_dtype
+        [compute_sdxl_add_time_ids(cfg.resolution)], device = device, dtype = weight_dtype
     )
     vae_scale = vae.config.scaling_factor
     prediction_type = noise_scheduler.config.prediction_type
@@ -316,7 +318,7 @@ def run_diffusion_lora_training(
     _emit(on_event, "model_load_completed")
 
     def _next_batch() -> tuple[list[str], list[str]]:
-        idx = rng.sample(range(len(pairs)), k=min(cfg.train_batch_size, len(pairs)))
+        idx = rng.sample(range(len(pairs)), k = min(cfg.train_batch_size, len(pairs)))
         chosen = [pairs[i] for i in idx]
         return [c[0] for c in chosen], [c[1] for c in chosen]
 
@@ -325,7 +327,7 @@ def run_diffusion_lora_training(
     micro = 0
     running_loss = 0.0
     for opt_step in range(cfg.train_steps):
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
             img_paths, captions = _next_batch()
@@ -334,26 +336,28 @@ def run_diffusion_lora_training(
                     _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
                     for p in img_paths
                 ]
-            ).to(device, dtype=torch.float32)
+            ).to(device, dtype = torch.float32)
 
             with torch.no_grad():
                 latents = vae.encode(pixel_values).latent_dist.sample() * vae_scale
-            latents = latents.to(dtype=weight_dtype)
+            latents = latents.to(dtype = weight_dtype)
 
             noise = torch.randn_like(latents)
             bsz = latents.shape[0]
             timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bsz,), device=device
+                0, noise_scheduler.config.num_train_timesteps, (bsz,), device = device
             ).long()
             noisy = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            prompt_embeds, pooled = _encode_sdxl_prompts(captions, tokenizers, text_encoders, device)
-            prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
-            pooled = pooled.to(dtype=weight_dtype)
+            prompt_embeds, pooled = _encode_sdxl_prompts(
+                captions, tokenizers, text_encoders, device
+            )
+            prompt_embeds = prompt_embeds.to(dtype = weight_dtype)
+            pooled = pooled.to(dtype = weight_dtype)
             added = {"text_embeds": pooled, "time_ids": add_time_ids.repeat(bsz, 1)}
 
             model_pred = unet(
-                noisy, timesteps, prompt_embeds, added_cond_kwargs=added, return_dict=False
+                noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
             )[0]
 
             if prediction_type == "v_prediction":
@@ -363,15 +367,15 @@ def run_diffusion_lora_training(
 
             if cfg.snr_gamma is not None:
                 snr = compute_snr(noise_scheduler, timesteps)
-                w = torch.stack(
-                    [snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim=1
-                ).min(dim=1)[0]
+                w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
+                    dim = 1
+                )[0]
                 w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-                loss = loss.mean(dim=list(range(1, loss.ndim))) * w
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                loss = loss.mean(dim = list(range(1, loss.ndim))) * w
                 loss = loss.mean()
             else:
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
 
             (loss / cfg.gradient_accumulation_steps).backward()
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
@@ -390,11 +394,11 @@ def run_diffusion_lora_training(
             _emit(
                 on_event,
                 "progress",
-                step=done,
-                total_steps=cfg.train_steps,
-                loss=round(step_loss, 5),
-                avg_loss=round(running_loss / done, 5),
-                learning_rate=lr_sched.get_last_lr()[0],
+                step = done,
+                total_steps = cfg.train_steps,
+                loss = round(step_loss, 5),
+                avg_loss = round(running_loss / done, 5),
+                learning_rate = lr_sched.get_last_lr()[0],
             )
 
         if should_stop is not None and should_stop():
@@ -403,22 +407,22 @@ def run_diffusion_lora_training(
 
     # Export the trained LoRA in diffusers format (loadable via load_lora_weights).
     out_dir = Path(cfg.output_dir).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents = True, exist_ok = True)
     unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
     StableDiffusionXLPipeline.save_lora_weights(
-        save_directory=str(out_dir),
-        unet_lora_layers=unet_lora,
-        safe_serialization=True,
-        weight_name=DEFAULT_LORA_FILENAME,
+        save_directory = str(out_dir),
+        unet_lora_layers = unet_lora,
+        safe_serialization = True,
+        weight_name = DEFAULT_LORA_FILENAME,
     )
     lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
     _emit(
         on_event,
         "complete",
-        output_dir=str(out_dir),
-        lora_path=lora_path,
-        stopped=stopped,
-        steps_run=done if cfg.train_steps else 0,
+        output_dir = str(out_dir),
+        lora_path = lora_path,
+        stopped = stopped,
+        steps_run = done if cfg.train_steps else 0,
     )
     return str(out_dir)
 
@@ -443,7 +447,7 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
 
     try:
         cfg = _config_from_dict(config)
-        run_diffusion_lora_training(cfg, on_event=on_event, should_stop=should_stop)
+        run_diffusion_lora_training(cfg, on_event = on_event, should_stop = should_stop)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the parent as an error event
         event_queue.put({"type": "error", "message": str(exc), "ts": time.time()})
 
@@ -459,45 +463,45 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="Train an SDXL LoRA and export it.")
-    p.add_argument("--base-model", required=True, help="HF repo or local path to an SDXL pipeline")
-    p.add_argument("--data-dir", required=True, help="Folder of images (+ captions)")
-    p.add_argument("--output-dir", required=True, help="Where to write the LoRA .safetensors")
-    p.add_argument("--instance-prompt", default=None)
-    p.add_argument("--resolution", type=int, default=1024)
-    p.add_argument("--train-steps", type=int, default=500)
-    p.add_argument("--learning-rate", type=float, default=1e-4)
-    p.add_argument("--train-batch-size", type=int, default=1)
-    p.add_argument("--gradient-accumulation-steps", type=int, default=1)
-    p.add_argument("--lora-rank", type=int, default=16)
-    p.add_argument("--lora-alpha", type=int, default=None)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--mixed-precision", default="bf16", choices=["bf16", "fp16", "no"])
-    p.add_argument("--snr-gamma", type=float, default=5.0)
-    p.add_argument("--no-snr", action="store_true", help="Disable min-SNR loss weighting")
-    p.add_argument("--no-gradient-checkpointing", action="store_true")
-    p.add_argument("--lr-scheduler", default="constant")
-    p.add_argument("--lr-warmup-steps", type=int, default=0)
+    p = argparse.ArgumentParser(description = "Train an SDXL LoRA and export it.")
+    p.add_argument("--base-model", required = True, help = "HF repo or local path to an SDXL pipeline")
+    p.add_argument("--data-dir", required = True, help = "Folder of images (+ captions)")
+    p.add_argument("--output-dir", required = True, help = "Where to write the LoRA .safetensors")
+    p.add_argument("--instance-prompt", default = None)
+    p.add_argument("--resolution", type = int, default = 1024)
+    p.add_argument("--train-steps", type = int, default = 500)
+    p.add_argument("--learning-rate", type = float, default = 1e-4)
+    p.add_argument("--train-batch-size", type = int, default = 1)
+    p.add_argument("--gradient-accumulation-steps", type = int, default = 1)
+    p.add_argument("--lora-rank", type = int, default = 16)
+    p.add_argument("--lora-alpha", type = int, default = None)
+    p.add_argument("--seed", type = int, default = 42)
+    p.add_argument("--mixed-precision", default = "bf16", choices = ["bf16", "fp16", "no"])
+    p.add_argument("--snr-gamma", type = float, default = 5.0)
+    p.add_argument("--no-snr", action = "store_true", help = "Disable min-SNR loss weighting")
+    p.add_argument("--no-gradient-checkpointing", action = "store_true")
+    p.add_argument("--lr-scheduler", default = "constant")
+    p.add_argument("--lr-warmup-steps", type = int, default = 0)
     args = p.parse_args(argv)
 
     cfg = DiffusionLoraConfig(
-        base_model=args.base_model,
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        instance_prompt=args.instance_prompt,
-        resolution=args.resolution,
-        train_steps=args.train_steps,
-        learning_rate=args.learning_rate,
-        train_batch_size=args.train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        seed=args.seed,
-        mixed_precision=args.mixed_precision,
-        snr_gamma=None if args.no_snr else args.snr_gamma,
-        gradient_checkpointing=not args.no_gradient_checkpointing,
-        lr_scheduler=args.lr_scheduler,
-        lr_warmup_steps=args.lr_warmup_steps,
+        base_model = args.base_model,
+        data_dir = args.data_dir,
+        output_dir = args.output_dir,
+        instance_prompt = args.instance_prompt,
+        resolution = args.resolution,
+        train_steps = args.train_steps,
+        learning_rate = args.learning_rate,
+        train_batch_size = args.train_batch_size,
+        gradient_accumulation_steps = args.gradient_accumulation_steps,
+        lora_rank = args.lora_rank,
+        lora_alpha = args.lora_alpha,
+        seed = args.seed,
+        mixed_precision = args.mixed_precision,
+        snr_gamma = None if args.no_snr else args.snr_gamma,
+        gradient_checkpointing = not args.no_gradient_checkpointing,
+        lr_scheduler = args.lr_scheduler,
+        lr_warmup_steps = args.lr_warmup_steps,
     )
 
     def on_event(ev: dict) -> None:
@@ -506,14 +510,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(
                 f"step {ev['step']}/{ev['total_steps']} loss={ev['loss']} "
                 f"avg={ev['avg_loss']} lr={ev['learning_rate']:.2e}",
-                flush=True,
+                flush = True,
             )
         elif t == "complete":
-            print(f"done: {ev['lora_path']} (stopped={ev['stopped']})", flush=True)
+            print(f"done: {ev['lora_path']} (stopped={ev['stopped']})", flush = True)
         else:
-            print(ev, flush=True)
+            print(ev, flush = True)
 
-    run_diffusion_lora_training(cfg, on_event=on_event)
+    run_diffusion_lora_training(cfg, on_event = on_event)
     return 0
 
 
