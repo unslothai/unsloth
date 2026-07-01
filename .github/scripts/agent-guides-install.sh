@@ -7,7 +7,7 @@
 # is the single biggest source of false reds, so installs retry with
 # backoff and the only ::error:: this script can emit is class (b). The
 # install recipes mirror the install_hint strings in
-# unsloth_cli/commands/connect.py at HEAD.
+# unsloth_cli/commands/start.py at HEAD.
 #
 # Usage: agent-guides-install.sh <agent>
 #   agent in: claude codex hermes openclaw opencode pi
@@ -60,30 +60,30 @@ curl_bash() {
 echo "[install] agent=$AGENT (log=$LOG)"
 case "$AGENT" in
   claude)
-    # connect.py install_hint: curl -fsSL https://claude.ai/install.sh | bash
+    # start.py install_hint: curl -fsSL https://claude.ai/install.sh | bash
     curl_bash "https://claude.ai/install.sh" || install_fail "claude installer failed"
     # The installer drops the binary under ~/.local/bin.
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
   codex)
-    # connect.py install_hint: npm install -g @openai/codex
+    # start.py install_hint: npm install -g @openai/codex
     npm_retry "@openai/codex" || install_fail "npm install -g @openai/codex failed"
     ;;
   opencode)
-    # connect.py install_hint: npm install -g opencode-ai
+    # start.py install_hint: npm install -g opencode-ai
     npm_retry "opencode-ai" || install_fail "npm install -g opencode-ai failed"
     ;;
   openclaw)
-    # connect.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
+    # start.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
     # npm is the more deterministic path in CI and matches the agent's docs;
-    # fall back to the connect.py curl installer if the npm tag is missing.
+    # fall back to the start.py curl installer if the npm tag is missing.
     if ! npm_retry "openclaw@latest"; then
       curl_bash "https://openclaw.ai/install.sh" || install_fail "openclaw install failed (npm + curl)"
       echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     fi
     ;;
   hermes)
-    # connect.py install_hint:
+    # start.py install_hint:
     #   curl -fsSL .../NousResearch/hermes-agent/main/scripts/install.sh | bash
     curl_bash "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh" \
       --non-interactive --skip-setup --skip-browser --no-skills \
@@ -91,7 +91,7 @@ case "$AGENT" in
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
   pi)
-    # No connect.py recipe; the agent's documented package name. The CLI moved
+    # No start.py recipe; the agent's documented package name. The CLI moved
     # from the now-deprecated @mariozechner scope to @earendil-works (the old
     # scope is frozen, so installing it would test a stale Pi against the API).
     npm_retry "@earendil-works/pi-coding-agent" \

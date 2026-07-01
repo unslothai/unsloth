@@ -355,6 +355,10 @@ export const en = {
       copy: "Copy",
       copied: "Copied",
       setupDocs: "Setup docs:",
+      codingAgents: "Coding agents",
+      codingAgentsHint:
+        "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
+      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
       relativeNever: "never",
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",
