@@ -56,6 +56,8 @@ from models import (
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
+)
+from models.training import (
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
