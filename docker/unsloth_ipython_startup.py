@@ -26,3 +26,13 @@ try:
 except Exception as _e:  # never break a kernel because of the helper
     import sys
     print(f"[unsloth-nb] startup hook skipped: {_e!r}", file = sys.stderr)
+
+# Colab cell-magic compatibility (hoist `%%capture` above a leading `#@title`
+# form so it fires instead of raising UsageError). Independent try/except so a
+# failure here never disables the transformers-sidecar hook above and vice versa.
+try:
+    import unsloth_colab_compat
+    unsloth_colab_compat.register_ipython()
+except Exception as _e:  # never break a kernel because of the helper
+    import sys
+    print(f"[unsloth-nb] colab-compat hook skipped: {_e!r}", file = sys.stderr)

@@ -1,0 +1,97 @@
+/* Unsloth Dark = Sublime/Colab "Monokai" palette, overriding JupyterLab Dark.
+ * Applied on :root because the theme manager only loads this file while the
+ * "Unsloth Dark" theme is active, so it never affects the light theme.
+ *
+ * Exact HSL from Sublime "Monokai":
+ *   bg hsl(70,8%,15%)  fg hsl(60,30%,96%)  selection hsla(55,8%,31%,.7)
+ *   comment hsl(50,11%,41%)  string hsl(54,70%,68%)  number hsl(261,100%,75%)
+ *   keyword hsl(338,95%,56%)  function hsl(80,76%,53%)  builtin hsl(190,81%,67%)
+ *   param hsl(32,98%,56%)  error hsl(0,93%,59%)
+ */
+:root {
+  /* surfaces */
+  --jp-layout-color0: hsl(70, 8%, 12%);
+  --jp-layout-color1: hsl(70, 8%, 15%);
+  --jp-layout-color2: hsl(70, 8%, 10%);
+  --jp-layout-color3: hsl(70, 8%, 8%);
+  --jp-layout-color4: hsl(70, 8%, 6%);
+  --jp-toolbar-background: hsl(70, 8%, 13%);
+  --jp-cell-editor-background: hsl(70, 8%, 15%);
+  --jp-cell-editor-active-background: hsl(70, 8%, 15%);
+  --jp-cell-editor-border-color: hsl(70, 8%, 22%);
+  --jp-rendermime-host-background: hsl(70, 8%, 15%);
+  --jp-rendermime-error-background: hsla(338, 50%, 56%, 0.15);
+  --jp-cell-prompt-not-active-font-color: hsl(60, 8%, 55%);
+  --jp-notebook-multiselected-color: hsla(80, 40%, 40%, 0.18);
+
+  /* inverse surfaces */
+  --jp-inverse-layout-color0: hsl(60, 30%, 98%);
+  --jp-inverse-layout-color1: hsl(60, 30%, 96%);
+  --jp-inverse-layout-color2: hsl(60, 10%, 72%);
+  --jp-inverse-layout-color3: hsl(60, 8%, 55%);
+
+  /* text */
+  --jp-ui-font-color0: hsl(60, 30%, 98%);
+  --jp-ui-font-color1: hsl(60, 18%, 90%);
+  --jp-ui-font-color2: hsl(60, 8%, 66%);
+  --jp-ui-font-color3: hsl(60, 6%, 46%);
+  --jp-content-font-color0: hsl(60, 30%, 98%);
+  --jp-content-font-color1: hsl(60, 30%, 96%);
+  --jp-content-font-color2: hsl(60, 12%, 72%);
+  --jp-content-font-color3: hsl(60, 8%, 52%);
+
+  /* borders */
+  --jp-border-color0: hsl(70, 8%, 26%);
+  --jp-border-color1: hsl(70, 8%, 22%);
+  --jp-border-color2: hsl(70, 8%, 18%);
+  --jp-border-color3: hsl(70, 8%, 14%);
+
+  /* accent / links / brand */
+  --jp-content-link-color: hsl(190, 81%, 67%);
+  --jp-brand-color0: hsl(190, 81%, 72%);
+  --jp-brand-color1: hsl(190, 70%, 58%);
+  --jp-brand-color2: hsl(190, 60%, 46%);
+  --jp-brand-color3: hsl(190, 55%, 36%);
+  --jp-accent-color1: hsl(80, 76%, 48%);
+  --jp-warn-color1: hsl(32, 98%, 56%);
+  --jp-error-color1: hsl(0, 93%, 59%);
+  --jp-success-color1: hsl(80, 76%, 45%);
+
+  /* selection / cursor */
+  --jp-editor-selected-background: hsla(55, 8%, 31%, 0.55);
+  --jp-editor-selected-focused-background: hsla(55, 8%, 31%, 0.75);
+  --jp-editor-cursor-color: hsl(60, 36%, 96%);
+
+  /* CodeMirror 6 syntax tokens (Monokai) */
+  --jp-mirror-editor-keyword-color: hsl(338, 95%, 56%);
+  --jp-mirror-editor-atom-color: hsl(261, 100%, 75%);
+  --jp-mirror-editor-number-color: hsl(261, 100%, 75%);
+  --jp-mirror-editor-def-color: hsl(80, 76%, 53%);
+  --jp-mirror-editor-variable-color: hsl(60, 30%, 96%);
+  --jp-mirror-editor-variable-2-color: hsl(32, 98%, 56%);
+  --jp-mirror-editor-variable-3-color: hsl(190, 81%, 67%);
+  --jp-mirror-editor-punctuation-color: hsl(60, 18%, 85%);
+  --jp-mirror-editor-property-color: hsl(80, 76%, 53%);
+  --jp-mirror-editor-operator-color: hsl(338, 95%, 56%);
+  --jp-mirror-editor-comment-color: hsl(50, 11%, 41%);
+  --jp-mirror-editor-string-color: hsl(54, 70%, 68%);
+  --jp-mirror-editor-string-2-color: hsl(54, 70%, 68%);
+  --jp-mirror-editor-meta-color: hsl(190, 81%, 67%);
+  --jp-mirror-editor-builtin-color: hsl(190, 81%, 67%);
+  --jp-mirror-editor-tag-color: hsl(338, 95%, 56%);
+  --jp-mirror-editor-attribute-color: hsl(80, 76%, 53%);
+  --jp-mirror-editor-header-color: hsl(338, 95%, 56%);
+  --jp-mirror-editor-quote-color: hsl(80, 76%, 53%);
+  --jp-mirror-editor-link-color: hsl(190, 81%, 67%);
+  --jp-mirror-editor-error-color: hsl(0, 93%, 59%);
+  --jp-mirror-editor-activeline-background: hsl(55, 11%, 22%);
+  --jp-mirror-editor-matchingbracket-color: hsl(54, 70%, 68%);
+}
+
+/* Active line tint inside the code editor (Monokai line_highlight). */
+.cm-editor .cm-activeLine {
+  background-color: hsla(55, 11%, 30%, 0.35);
+}
+.cm-editor .cm-activeLineGutter {
+  background-color: hsla(55, 11%, 30%, 0.35);
+}
