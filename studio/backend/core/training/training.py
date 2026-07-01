@@ -856,6 +856,9 @@ class TrainingBackend:
                         else None
                     )
                     interrupted_clear_output_dir = self._cancel_requested
+                    if interrupted_clear_output_dir:
+                        # /status serializes _output_dir; a cancelled run must not expose it.
+                        self._output_dir = None
                 self._finalize_run_in_db(
                     status = "stopped" if self._should_stop else "error",
                     error_message = None
