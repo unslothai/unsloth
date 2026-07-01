@@ -254,6 +254,44 @@ def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
+# ``NAME[ARGS]`` rehearsal name (word chars + hyphen, like the parser and the
+# safetensors ``_rehearsal_name_start``); ``[CALL_ID]...[ARGS]`` is the Mistral shape,
+# not a rehearsal, so it is excluded via the lookbehind.
+_GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
+
+
+def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
+    """Index of the first ``NAME[ARGS]`` in ``text`` whose NAME is an active tool, else
+    -1. A bare or inactive-name ``foo[ARGS]`` in prose is NOT a call, so it must not
+    drain the buffer or be parsed into a disabled no-op -- mirrors the safetensors
+    ``_earliest_tool_signal`` name-gating (there is no unrestricted GGUF mode)."""
+    active = set(_gguf_active_tool_names(active_tools))
+    if not active:
+        return -1
+    for m in _GGUF_REHEARSAL_ARGS_RE.finditer(text):
+        if m.group(1) in active:
+            return m.start()
+    return -1
+
+
+def _gguf_has_genuine_tool_signal(
+    text: str, signals, active_tools: list[dict]
+) -> bool:
+    """True when ``text`` holds a genuine tool-call boundary for one of ``signals``.
+
+    Unambiguous markers (``<tool_call>``, ``[TOOL_CALLS]``, ``<function=``) count on a
+    plain substring hit; an ``[ARGS]`` hit is genuine only when an active tool name
+    precedes it, so inactive-name prose is neither drained nor parsed."""
+    for sig in signals:
+        if sig == "[ARGS]":
+            if _gguf_rehearsal_signal_pos(text, active_tools) >= 0:
+                return True
+            continue
+        if sig in text:
+            return True
+    return False
+
+
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
     active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
@@ -8296,10 +8334,15 @@ class LlamaCppBackend:
                                                 is_prefix = True
                                                 break
                                             if sig == "[ARGS]":
-                                                # Rehearsal shape ``name[ARGS]`` only;
-                                                # a bare ``[ARGS]`` in prose is not a
-                                                # call start (re caches the pattern).
-                                                if re.search(r"[\w-]\[ARGS\]", stripped_buf):
+                                                # Rehearsal shape ``NAME[ARGS]`` whose
+                                                # NAME is an active tool only; a bare or
+                                                # inactive-name ``foo[ARGS]`` in prose is
+                                                # not a call start, so gate it the same
+                                                # way the safetensors loop does instead
+                                                # of draining/parsing prose.
+                                                if _gguf_rehearsal_signal_pos(
+                                                    stripped_buf, active_tools
+                                                ) >= 0:
                                                     is_match = True
                                                     break
                                             elif sig.startswith("[") and sig in stripped_buf:
@@ -8384,7 +8427,9 @@ class LlamaCppBackend:
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
-                    if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
+                    if stripped_buf and _gguf_has_genuine_tool_signal(
+                        stripped_buf, _tool_xml_signals, active_tools
+                    ):
                         detect_state = _S_DRAINING
                     elif content_accum or reasoning_accum:
                         detect_state = _S_STREAMING
@@ -8420,7 +8465,9 @@ class LlamaCppBackend:
                     # synthesis streams correctly even if content was emitted
                     # before the tool XML.
                     _safety_tc = None
-                    if any(s in content_accum for s in _tool_xml_signals):
+                    if _gguf_has_genuine_tool_signal(
+                        content_accum, _tool_xml_signals, active_tools
+                    ):
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
@@ -8549,7 +8596,9 @@ class LlamaCppBackend:
                             for i in sorted(tool_calls_acc)
                             if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
                         ] or None
-                    if not tool_calls and any(s in content_accum for s in _tool_xml_signals):
+                    if not tool_calls and _gguf_has_genuine_tool_signal(
+                        content_accum, _tool_xml_signals, active_tools
+                    ):
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,

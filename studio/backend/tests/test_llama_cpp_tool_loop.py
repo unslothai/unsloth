@@ -2025,3 +2025,40 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert content_texts, events
     assert content_texts[-1] == "Please pass foo[ARGS] <think>pause</think> to the template."
+
+
+def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
+    """BUG A: an inactive-name ``foo[ARGS]{...}`` in a prose answer must not be treated
+    as a tool call. The BUFFERING and end-of-stream safety-net ``[ARGS]`` checks gate on
+    active tool names (like the safetensors loop and the mid-stream path), so ``foo``
+    (``web_search`` is the only enabled tool) is neither drained/parsed into a disabled
+    no-op nor forced into another generation turn."""
+    first_stream = [
+        _sse({"content": 'foo[ARGS]{"x":1} is just syntax.'}),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [first_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "x"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    # No tool executed and no tool_start/tool_end events for the inactive name. Only
+    # ONE stream is supplied, so a spurious disabled-``foo`` no-op + re-prompt would
+    # exhaust the stream list and error -- the clean completion proves no retry turn.
+    assert calls == [], calls
+    assert not any(
+        e.get("type") in ("tool_start", "tool_end") for e in events
+    ), events
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("is just syntax." in t for t in content_texts), content_texts

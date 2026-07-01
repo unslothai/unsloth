@@ -218,6 +218,38 @@ class TestParser:
         assert not _detect_render_html_tool_start('python[ARGS]{"code":"render_html[ARGS]{}"}')
         assert not _detect_render_html_tool_start("use render_html[ARGS] to render")
 
+    def test_render_html_start_detector_skips_think_block_rehearsal(self):
+        # A render_html rehearsed inside a <think>/[THINK] block is skipped by the
+        # parser, so the provisional card must not fire for it -- else the loop shows
+        # a render_html card but executes the real (non-render_html) call after the
+        # block. The first EXECUTABLE call (outside think) decides.
+        assert not _detect_render_html_tool_start(
+            '<think>draft render_html[ARGS]{"code":"x"}</think>'
+            'python[ARGS]{"code":"print(1)"}'
+        )
+        assert not _detect_render_html_tool_start(
+            '[THINK]render_html[ARGS]{"code":"x"}[/THINK]web_search[ARGS]{"q":"y"}'
+        )
+        # A real render_html AFTER a rehearsed non-render_html inside think still fires.
+        assert _detect_render_html_tool_start(
+            '<think>web_search[ARGS]{"q":"x"}</think>render_html[ARGS]{"code":"<html>"}'
+        )
+        # A render_html rehearsed inside think with no real call after does not fire.
+        assert not _detect_render_html_tool_start(
+            '<think>render_html[ARGS]{"code":"x"}</think>'
+        )
+
+    def test_render_html_start_detector_reads_top_level_array_name(self):
+        # ``[TOOL_CALLS] [{...}]`` array: the real tool name is the object's top-level
+        # ``"name"``, not an argument key. A naive ``"name"`` search latched onto the
+        # nested ``render_html`` argument value and fired a false provisional card.
+        assert not _detect_render_html_tool_start(
+            '[TOOL_CALLS] [{"arguments":{"name":"render_html"},"name":"python"}]'
+        )
+        assert _detect_render_html_tool_start(
+            '[TOOL_CALLS] [{"arguments":{"name":"python"},"name":"render_html"}]'
+        )
+
     def test_strip_markup_closed(self):
         text = "before <tool_call>{}</tool_call> after"
         assert strip_tool_markup(text) == "before  after"
@@ -1188,6 +1220,44 @@ class TestLoopBasic:
         assert tool_starts[0]["tool_name"] == "python"
         assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
 
+    def test_render_html_rehearsed_in_think_block_emits_no_provisional_start(self):
+        # BUG B: a render_html rehearsed inside <think> followed by a real python call
+        # must NOT emit a provisional render_html card -- the parser executes python,
+        # so a render_html tool_start would corrupt the event stream (and reuse the
+        # python call id). Only the real, outside-think call may start a card.
+        exec_fn = FakeExecuteTool(["ok"])
+        turn_iter = iter(
+            [
+                [
+                    '<think>draft render_html[ARGS]{"code":"x"}</think>',
+                    'python[ARGS]{"code":"print(1)"}',
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "run code"}],
+            tools = [
+                {"type": "function", "function": {"name": "render_html"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert [e["tool_name"] for e in tool_starts] == ["python"], tool_starts
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
@@ -2045,3 +2115,36 @@ def test_prose_args_marker_before_real_call_does_not_drain_the_prose():
     assert any("foo[ARGS] syntax." in t for t in contents), contents
     # The real call markup is never shown as content.
     assert not any("web_search[ARGS]" in t for t in contents), contents
+
+
+def test_inactive_name_args_with_body_is_not_parsed_into_disabled_noop():
+    # BUG A: a whole-turn prose answer containing ``foo[ARGS]{...}`` (``foo`` is not an
+    # active tool) must not be drained/parsed into a disabled ``foo`` no-op that forces
+    # an extra generation turn. The BUFFERING and end-of-stream safety-net ``[ARGS]``
+    # checks gate on active tool names, matching the mid-stream path.
+    turns = [['foo[ARGS]{"x":1} is just syntax.']]
+    turn_calls: list[int] = []
+
+    def _gen(_messages):
+        turn_calls.append(1)
+        chunks = turns[len(turn_calls) - 1] if len(turn_calls) <= len(turns) else []
+        acc = ""
+        for chunk in chunks:
+            acc += chunk
+            yield acc
+
+    exec_fn = FakeExecuteTool([])
+    loop = run_safetensors_tool_loop(
+        single_turn = _gen,
+        messages = [{"role": "user", "content": "explain"}],
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        execute_tool = exec_fn,
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    assert not any(e["type"] in ("tool_start", "tool_end") for e in events), events
+    # Exactly one generation turn -- no disabled ``foo`` no-op re-prompt.
+    assert len(turn_calls) == 1, turn_calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert any("is just syntax." in t for t in contents), contents

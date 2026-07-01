@@ -14,6 +14,7 @@ parses tool calls from the cumulative text and dispatches via
 ``core.inference.tools``.
 """
 
+import bisect
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -29,7 +30,12 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
-from core.tool_healing import _TOOL_CLOSED_PATS, _strip_bracket_tag_calls, strip_outside_think
+from core.tool_healing import (
+    _TOOL_CLOSED_PATS,
+    _strip_bracket_tag_calls,
+    _think_spans_outside_tool_markup,
+    strip_outside_think,
+)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     coerce_tool_arguments,
@@ -180,6 +186,36 @@ def _earliest_tool_signal(
     return best
 
 
+def _has_genuine_tool_signal(
+    candidate: str,
+    signals,
+    active_tools: list[dict],
+    *,
+    unrestricted: bool = False,
+) -> bool:
+    """True when ``candidate`` holds a genuine tool-call boundary for one of ``signals``.
+
+    Non-``[ARGS]`` markers (``<tool_call>``, ``[TOOL_CALLS]``, ``<function=``) are
+    unambiguous, so a plain substring hit counts. An ``[ARGS]`` hit is only genuine
+    when an active tool name (or, in unrestricted mode, any name token) precedes it --
+    a literal ``foo[ARGS]`` in prose is NOT a call. This mirrors the name-gating the
+    streaming state already applies via ``_earliest_tool_signal``, so the BUFFERING
+    and end-of-stream safety-net checks do not drain / parse inactive-name prose."""
+    for sig in signals:
+        if sig == "[ARGS]":
+            if (
+                _earliest_tool_signal(
+                    candidate, ("[ARGS]",), active_tools, unrestricted = unrestricted
+                )
+                >= 0
+            ):
+                return True
+            continue
+        if sig in candidate:
+            return True
+    return False
+
+
 def strip_tool_markup_streaming(
     text: str,
     *,
@@ -247,28 +283,56 @@ def _detect_render_html_tool_start(content: str) -> bool:
     ``render_html[ARGS]...`` -- so the early provisional render-html card surfaces for
     the bracket-tag forms too (previously XML-only). A render_html marker that is NOT
     the earliest tool call (e.g. inside another tool's argument) is data, not the
-    first call, so the earliest marker wins."""
+    first call, so the earliest marker wins.
+
+    A marker rehearsed inside a ``<think>`` / ``[THINK]`` reasoning block is skipped by
+    the parser (``parse_tool_calls_from_text``), so it must not fire a provisional card
+    the loop never executes; candidates that START inside a think span are dropped, and
+    the first marker of each shape that lands OUTSIDE the blocks is used instead."""
+    think_spans = _think_spans_outside_tool_markup(content)
+    _think_starts = [s for s, _e in think_spans]
+
+    def _in_think(pos: int) -> bool:
+        if not think_spans:
+            return False
+        i = bisect.bisect_right(_think_starts, pos) - 1
+        return i >= 0 and think_spans[i][0] <= pos < think_spans[i][1]
+
+    def _first_outside(start: int, finder) -> int:
+        # First occurrence at/after ``start`` that is not inside a think span.
+        pos = finder(start)
+        while pos >= 0 and _in_think(pos):
+            pos = finder(pos + 1)
+        return pos
+
     candidates: list[tuple[int, str]] = []
-    fm = _FUNCTION_SIGNAL_RE.search(content)
-    if fm:
-        candidates.append((fm.start(), fm.group(1)))
-    tc = content.find("<tool_call>")
+    for fm in _FUNCTION_SIGNAL_RE.finditer(content):
+        if not _in_think(fm.start()):
+            candidates.append((fm.start(), fm.group(1)))
+            break
+    tc = _first_outside(0, lambda i: content.find("<tool_call>", i))
     if tc >= 0:
         nm = _TOOL_CALL_NAME_RE.search(content[tc:])
         candidates.append((tc, nm.group(1) if nm else ""))
-    mt = content.find("[TOOL_CALLS]")
+    mt = _first_outside(0, lambda i: content.find("[TOOL_CALLS]", i))
     if mt >= 0:
         mm = _MISTRAL_RENDER_NAME_RE.match(content, mt)
         if mm:
             candidates.append((mt, mm.group(1)))
         else:
-            # Array / single-object shape: ``[TOOL_CALLS] [{"name":...}]``.
-            nm = _TOOL_CALL_NAME_RE.search(content[mt:])
-            if nm:
-                candidates.append((mt, nm.group(1)))
-    rm = _REHEARSAL_RENDER_NAME_RE.search(content)
-    if rm:
-        candidates.append((rm.start(1), rm.group(1)))
+            # Array / single-object shape: ``[TOOL_CALLS] [{"name":...}]``. A bare
+            # ``"name"`` search can latch onto an argument key before the real tool
+            # name (``[{"arguments":{"name":"render_html"},"name":"python"}]``), so
+            # resolve the first call through the parser, which reads top-level names.
+            arr_calls = parse_tool_calls_from_text(content[mt:])
+            if arr_calls:
+                candidates.append(
+                    (mt, (arr_calls[0].get("function") or {}).get("name") or "")
+                )
+    for rm in _REHEARSAL_RENDER_NAME_RE.finditer(content):
+        if not _in_think(rm.start(1)):
+            candidates.append((rm.start(1), rm.group(1)))
+            break
 
     if not candidates:
         return False
@@ -555,10 +619,21 @@ def run_safetensors_tool_loop(
                     break
                 # Bracket-tag forms arrive mid-buffer (``name[ARGS]{...}``,
                 # ``[TOOL_CALLS]...``), so also do a substring check -- mirrors the
-                # GGUF loop. ``[ARGS]`` must be the rehearsal shape ``name[ARGS]``;
-                # a bare ``[ARGS]`` in prose is not a call start.
+                # GGUF loop. ``[ARGS]`` must be a rehearsal ``NAME[ARGS]`` whose NAME is
+                # an active tool (or any name in unrestricted mode); a bare or
+                # inactive-name ``foo[ARGS]`` in prose is not a call start -- gate it
+                # the same way the STREAMING state does, so prose is not drained and
+                # parsed into a disabled no-op.
                 if sig == "[ARGS]":
-                    if re.search(r"[\w-]\[ARGS\]", stripped):
+                    if (
+                        _earliest_tool_signal(
+                            stripped,
+                            ("[ARGS]",),
+                            active_tools,
+                            unrestricted = unrestricted_tools,
+                        )
+                        >= 0
+                    ):
                         is_match = True
                         break
                 elif sig.startswith("[") and sig in stripped:
@@ -643,12 +718,19 @@ def run_safetensors_tool_loop(
             return
 
         if detect_state == _state_buffering:
-            # Buffer never resolved -- tool XML or plain content?
+            # Buffer never resolved -- tool XML or plain content? Gate ``[ARGS]`` on an
+            # active tool name (like the mid-stream checks) so a whole-turn prose
+            # answer containing a literal ``foo[ARGS]{...}`` is not drained/parsed.
             stripped = content_buffer.lstrip()
             if (
                 stripped
                 and tool_protocol_active
-                and any(sig in stripped for sig in tool_xml_signals)
+                and _has_genuine_tool_signal(
+                    stripped,
+                    tool_xml_signals,
+                    active_tools,
+                    unrestricted = unrestricted_tools,
+                )
             ):
                 detect_state = _state_draining
             else:
@@ -666,10 +748,15 @@ def run_safetensors_tool_loop(
                 return
 
         if detect_state == _state_streaming:
-            # No tool detected mid-stream -- check for late tool XML.
+            # No tool detected mid-stream -- check for late tool XML. ``[ARGS]`` is
+            # gated on an active tool name so an inactive-name ``foo[ARGS]`` in prose
+            # is not parsed into a disabled no-op that forces an extra turn.
             safety_tc = None
-            saw_tool_signal = tool_protocol_active and any(
-                sig in content_accum for sig in tool_xml_signals
+            saw_tool_signal = tool_protocol_active and _has_genuine_tool_signal(
+                content_accum,
+                tool_xml_signals,
+                active_tools,
+                unrestricted = unrestricted_tools,
             )
             if saw_tool_signal:
                 safety_tc = parse_tool_calls_from_text(
