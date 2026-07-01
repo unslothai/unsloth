@@ -586,8 +586,11 @@ def test_st_native_sentence_transformer_calls_forward_cache_folder():
         tree = ast.parse(f.read())
     weight_loading_calls = []
     for n in ast.walk(tree):
-        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                and n.func.id == "SentenceTransformer"):
+        if not (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "SentenceTransformer"
+        ):
             continue
         kw_names = {kw.arg for kw in n.keywords}
         # A modules-based build (SentenceTransformer(modules=...)) downloads nothing; only a
@@ -595,7 +598,9 @@ def test_st_native_sentence_transformer_calls_forward_cache_folder():
         if "modules" in kw_names:
             continue
         weight_loading_calls.append(n)
-    assert weight_loading_calls, "expected a repo-name SentenceTransformer load in sentence_transformer.py"
+    assert (
+        weight_loading_calls
+    ), "expected a repo-name SentenceTransformer load in sentence_transformer.py"
     # cache_folder is forwarded either explicitly (fast-encoder branch) or via a **kwargs unpacking
     # (for_inference branch builds st_kwargs incl. cache_folder). A ** unpacking has kw.arg == None.
     for c in weight_loading_calls:
