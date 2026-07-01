@@ -556,7 +556,10 @@ class FastSentenceTransformer(FastModel):
                 modules_json_path = os.path.join(model_name, "modules.json")
             else:
                 modules_json_path = hf_hub_download(
-                    model_name, "modules.json", token = token, cache_dir = cache_dir,
+                    model_name,
+                    "modules.json",
+                    token = token,
+                    cache_dir = cache_dir,
                     revision = revision,
                 )
 
@@ -975,7 +978,10 @@ class FastSentenceTransformer(FastModel):
             else:
                 try:
                     return hf_hub_download(
-                        model_name, "modules.json", token = token, cache_dir = cache_dir,
+                        model_name,
+                        "modules.json",
+                        token = token,
+                        cache_dir = cache_dir,
                         revision = revision,
                     )
                 except:
@@ -1195,8 +1201,11 @@ class FastSentenceTransformer(FastModel):
                     else:
                         try:
                             load_path = load_dir_path(
-                                model_name, module_path, token = token,
-                                cache_folder = cache_dir, revision = revision,
+                                model_name,
+                                module_path,
+                                token = token,
+                                cache_folder = cache_dir,
+                                revision = revision,
                             )
                         except Exception as e:
                             print(f"Unsloth Warning: Could not download module {module_path}: {e}")
