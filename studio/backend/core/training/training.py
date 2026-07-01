@@ -1072,8 +1072,6 @@ class TrainingBackend:
                     "error_message": event.get("error", "Unknown error"),
                     "output_dir": self._output_dir,
                     "clear_output_dir": self._cancel_requested,
-                    # resume_blocked: only stale checkpoints remain, so a resume
-                    # would silently roll the run back past its final step.
                     "resume_blocked": bool(event.get("resume_blocked")),
                 }
 

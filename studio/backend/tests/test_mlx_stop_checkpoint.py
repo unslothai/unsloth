@@ -84,6 +84,26 @@ def test_write_mlx_stop_checkpoint_returns_false_without_optimizer(tmp_path):
     assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 5), None, out) is False
 
 
+def test_write_mlx_stop_checkpoint_accepts_existing_checkpoint_without_optimizer(tmp_path):
+    # A checkpoint at the current step counts even when no optimizer was captured.
+    out = tmp_path / "outputs" / "run_x"
+    ckpt = out / "checkpoint-5"
+    ckpt.mkdir(parents = True)
+    (ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
+
+    assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 5), None, out) is True
+
+
+def test_write_mlx_stop_checkpoint_ignores_stale_checkpoint_without_optimizer(tmp_path):
+    # An older checkpoint does not cover the current step, so this still fails.
+    out = tmp_path / "outputs" / "run_x"
+    ckpt = out / "checkpoint-5"
+    ckpt.mkdir(parents = True)
+    (ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
+
+    assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 10), None, out) is False
+
+
 def test_write_mlx_stop_checkpoint_returns_false_when_save_fails(tmp_path, monkeypatch):
     out = tmp_path / "outputs" / "run_x"
     out.mkdir(parents = True)

@@ -2062,8 +2062,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     # A user stop normally finalizes as 'stopped'; this failure
                     # must keep its error status so history explains it.
                     keep_error_status = True,
-                    # Older periodic checkpoints may exist under output_dir, but
-                    # resuming from one would silently roll back past this stop.
+                    # Older checkpoints are stale; resuming would roll back past this stop.
                     resume_blocked = True,
                 )
                 return
@@ -3209,10 +3208,11 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     Returns True when a checkpoint for the current training step exists.
     """
     step = int(getattr(trainer, "_global_step", 0) or 0)
-    if step <= 0 or optimizer is None:
-        return False
+    # A periodic save or a resumed run may already cover the current step.
     if _mlx_has_checkpoint_at_step(output_dir, step):
         return True
+    if step <= 0 or optimizer is None:
+        return False
     ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
     try:
         ckpt_dir.mkdir(parents = True, exist_ok = True)

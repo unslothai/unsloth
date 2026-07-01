@@ -403,9 +403,8 @@ def test_can_resume_run_rejects_resume_blocked_run(monkeypatch):
 
 
 def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(monkeypatch, tmp_path):
-    # An MLX stop-and-save that failed to write the current-step checkpoint
-    # must not offer Resume just because an older periodic checkpoint exists;
-    # resuming would silently roll back past the recorded final step.
+    # A failed stop-and-save must not offer Resume from an older periodic
+    # checkpoint; that would roll back past the recorded final step.
     from core.training.training import TrainingBackend
     from storage import studio_db
 
