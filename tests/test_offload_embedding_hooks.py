@@ -58,7 +58,6 @@ def test_cuda_offloaded_weight_roundtrip():
     x = torch.randint(0, 32, (2, 5), device = "cuda")
     out = emb(x)
     assert out.device.type == "cuda", out.device
-    assert emb._unsloth_saved_device.type == "cuda"
 
 
 def test_cuda_weight_pulled_back_to_gpu():

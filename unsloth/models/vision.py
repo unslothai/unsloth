@@ -257,7 +257,7 @@ def _unsloth_generate_accepts_kwarg(model, key):
 def _install_offload_embedding_hooks(embed_tokens):
     # Run the (offloaded) embedding lookup on the weight's CURRENT device, then move the
     # output back. Read at call time so a bf16 embedding pulled back to GPU by a later
-    # model.to(...) still works; origin device is saved on the module (pre-hook copies).
+    # model.to(...) still works; origin device rides on the moved tensor (thread-safe).
     if embed_tokens is None:
         return False
     if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
@@ -269,15 +269,17 @@ def _install_offload_embedding_hooks(embed_tokens):
         inp = args[0]
         if not hasattr(inp, "device"):
             return args
-        module._unsloth_saved_device = inp.device
         weight = getattr(module, "weight", None)
         target = weight.device if weight is not None else inp.device
         if inp.device == target:
             return args
-        return (inp.to(target),) + tuple(args[1:])
+        moved = inp.to(target)
+        moved._unsloth_saved_device = inp.device
+        return (moved,) + tuple(args[1:])
 
     def _unsloth_offload_post_hook(module, args, output):
-        dev = getattr(module, "_unsloth_saved_device", None)
+        inp = args[0] if args else None
+        dev = getattr(inp, "_unsloth_saved_device", None)
         if dev is not None and hasattr(output, "device") and output.device != dev:
             return output.to(dev)
         return output
