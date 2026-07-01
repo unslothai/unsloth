@@ -270,6 +270,11 @@ export function ProgressSection({
             >
               {t(phaseLabelKeys[data.phase])}
             </span>
+            {data.projectName && (
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+                {data.projectName}
+              </span>
+            )}
             <span className="text-[10px] tabular-nums text-muted-foreground">
               {t("studio.progress.epoch", {
                 value: formatNumber(data.currentEpoch, 2),
@@ -290,7 +295,7 @@ export function ProgressSection({
               </span>
               <span>{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-foreground/[0.05]" />
+            <Progress value={pct} className="h-2 bg-foreground/5" />
           </div>
 
           {!isHistorical && (
@@ -307,7 +312,12 @@ export function ProgressSection({
             </p>
           )}
 
-          <div className="grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2 xl:grid-cols-5">
+          <div
+            className={cn(
+              "grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2",
+              data.projectName ? "xl:grid-cols-6" : "xl:grid-cols-5",
+            )}
+          >
             <MetricStat
               label={t("studio.progress.loss")}
               valueClassName="text-2xl font-bold tracking-tight"
@@ -318,6 +328,11 @@ export function ProgressSection({
             <MetricStat label={t("studio.progress.gradNorm")}>
               {formatNumber(stoppedGradNorm, 3)}
             </MetricStat>
+            {data.projectName && (
+              <MetricStat label={t("studio.progress.project")} valueClassName="truncate">
+                {data.projectName}
+              </MetricStat>
+            )}
             <MetricStat label={t("studio.progress.model")} valueClassName="truncate">
               {data.modelName || "--"}
             </MetricStat>
