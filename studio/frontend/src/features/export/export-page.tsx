@@ -83,6 +83,7 @@ import {
   getEstimatedSize,
 } from "./constants";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
+import { usePlatformStore } from "@/config/env";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -213,6 +214,9 @@ export function ExportPage() {
   // NVIDIA-only compressed-tensors formats are hidden on non-NVIDIA hardware; portable torchao and
   // 16-bit always remain. cuda!=null && rocm==null marks a real CUDA (not ROCm) box.
   const hardware = useHardwareInfo();
+  // The server's OS (`/api/health` device_type). llama.cpp GGUF LoRA conversion is not available on
+  // the macOS / MLX export path (the backend rejects it), so gate that option out on a Mac host.
+  const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Export needs a supported accelerator (NVIDIA/AMD/Intel GPU or Apple MLX); Unsloth has no CPU
   // path. Only gray out once we have an authoritative response that says unsupported; if the
@@ -364,6 +368,14 @@ export function ExportPage() {
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
   const isQuantized = !!selectedModelData?.is_quantized;
+  // `isAdapter` / `isQuantized` come from the selected checkpoint's metadata. In Local Model /
+  // Hugging Face ("model") source mode we export a direct base model, not that checkpoint, so these
+  // are stale there and must not gate the export: otherwise LoRA stays wrongly enabled for a base
+  // model (the backend then rejects it with "No adapter to export"), and a stale "quantized" flag
+  // disables every method for an unrelated, exportable model. Treat both as false outside
+  // checkpoint mode.
+  const effectiveIsAdapter = sourceMode === "checkpoint" && isAdapter;
+  const effectiveIsQuantized = sourceMode === "checkpoint" && isQuantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
   const trainingMethodLabel = selectedModelData?.peft_type
     ? "LoRA / QLoRA"
@@ -489,14 +501,14 @@ export function ExportPage() {
   useEffect(() => {
     // LoRA-only export needs a real adapter; Merged and GGUF work for non-PEFT base models too
     // (Local Model / Hugging Face sources), so only reset the adapter-only method here.
-    if (!isAdapter && exportMethod === "lora") {
+    if (!effectiveIsAdapter && exportMethod === "lora") {
       setExportMethod(null);
     }
     // Quantized non-PEFT models can't export to any format
-    if (!isAdapter && isQuantized && exportMethod !== null) {
+    if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
-  }, [isAdapter, isQuantized, exportMethod]);
+  }, [effectiveIsAdapter, effectiveIsQuantized, exportMethod]);
 
   const handleSourceTabChange = useCallback((next: string) => {
     if (next === "checkpoint") {
@@ -696,7 +708,7 @@ export function ExportPage() {
       quantLevels,
       useImatrix: effectiveImatrix,
       mergedSelections: selectedFormats.map((v) => mergedFormatPayload(v)),
-      loraGguf: loraAsGguf,
+      loraGguf: loraAsGguf && !isMacHost,
       loraGgufOuttype,
       saveDirectory,
       destination,
@@ -727,6 +739,7 @@ export function ExportPage() {
     effectiveImatrix,
     selectedFormats,
     loraAsGguf,
+    isMacHost,
     loraGgufOuttype,
     exportUnsupported,
     destination,
@@ -1249,18 +1262,18 @@ export function ExportPage() {
                 disabledMethods={
                   exportUnsupported
                     ? ["merged", "lora", "gguf"]
-                    : !isAdapter && isQuantized
+                    : !effectiveIsAdapter && effectiveIsQuantized
                       ? ["merged", "lora", "gguf"]
-                      : !isAdapter
+                      : !effectiveIsAdapter
                         ? ["lora"]
                         : []
                 }
                 disabledReason={
                   exportUnsupported
                     ? exportUnsupportedMessage
-                    : !isAdapter && isQuantized
+                    : !effectiveIsAdapter && effectiveIsQuantized
                       ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                      : !isAdapter
+                      : !effectiveIsAdapter
                         ? "LoRA-only export needs a LoRA adapter checkpoint"
                         : undefined
                 }
@@ -1384,7 +1397,7 @@ export function ExportPage() {
                 </div>
               )}
 
-              {exportMethod === "lora" && isAdapter && !exportUnsupported && (
+              {exportMethod === "lora" && effectiveIsAdapter && !exportUnsupported && (
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <div className="text-sm font-medium">Adapter format</div>
@@ -1402,16 +1415,23 @@ export function ExportPage() {
                         type="button"
                         variant={loraAsGguf ? "default" : "outline"}
                         size="sm"
+                        disabled={isMacHost}
                         onClick={() => setLoraAsGguf(true)}
-                        title="llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                        title={
+                          isMacHost
+                            ? "GGUF LoRA export is not available on macOS/MLX. Use the safetensors adapter."
+                            : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                        }
                       >
                         GGUF adapter
                       </Button>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {loraAsGguf
-                        ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
-                        : "Standard PEFT adapter files. Pair with the base model at inference."}
+                      {isMacHost
+                        ? "GGUF LoRA is not available on macOS/MLX; exporting the safetensors adapter."
+                        : loraAsGguf
+                          ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                          : "Standard PEFT adapter files. Pair with the base model at inference."}
                     </div>
                   </div>
 

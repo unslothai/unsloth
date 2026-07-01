@@ -1055,7 +1055,11 @@ class ExportBackend:
                     f"Choose one of {', '.join(_GGUF_LORA_OUTTYPES)}.",
                     None,
                 )
-            if not _supports_kwarg(self.current_model.save_pretrained_gguf, "save_method"):
+            # Older Unsloth builds may not have save_pretrained_gguf at all; use getattr so a
+            # missing method returns this clean "not supported" message instead of raising an
+            # AttributeError (which would surface as a generic 500) before the try block below.
+            _save_gguf_fn = getattr(self.current_model, "save_pretrained_gguf", None)
+            if _save_gguf_fn is None or not _supports_kwarg(_save_gguf_fn, "save_method"):
                 return (
                     False,
                     "This Unsloth build does not support GGUF LoRA adapter export. "
@@ -1078,6 +1082,10 @@ class ExportBackend:
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
+                        # Forward the token so convert_lora_to_gguf.py can fetch a gated/private
+                        # base model's config (it sets HF_TOKEN from this); without it the load can
+                        # succeed but the GGUF conversion fails for gated bases.
+                        token = hf_token or None,
                     )
                     final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
                     logger.info(
