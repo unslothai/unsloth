@@ -1538,7 +1538,9 @@ class DiffusionBackend:
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
-                    self._align_vae_dtype(pipe, getattr(state.family, "denoiser_attr", "transformer"))
+                    self._align_vae_dtype(
+                        pipe, getattr(state.family, "denoiser_attr", "transformer")
+                    )
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the
                 # input image and may reject width/height; a distilled pipe may take no

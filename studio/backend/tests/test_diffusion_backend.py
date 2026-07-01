@@ -889,9 +889,7 @@ def test_load_sdxl_single_file_uses_pipeline_from_single_file(fake_runtime, tmp_
     assert status["loaded"] is True
     assert status["family"] == "sdxl"
     # The whole-pipeline single-file path was taken with the base repo as config.
-    assert _FakePipeline.last_single_file["path"] == str(
-        (tmp_path / "sdxl.safetensors").resolve()
-    )
+    assert _FakePipeline.last_single_file["path"] == str((tmp_path / "sdxl.safetensors").resolve())
     assert _FakePipeline.last_single_file["config"] == "stabilityai/stable-diffusion-xl-base-1.0"
     # The transformer-only single-file build was NOT taken.
     assert _FakeTransformer.last == {}
