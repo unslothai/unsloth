@@ -21,7 +21,12 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-def _backend(gguf_path, *, healthy, pid = 4321):
+def _backend(
+    gguf_path,
+    *,
+    healthy,
+    pid = 4321,
+):
     # Bare instance: exercise load_progress() without the heavy real __init__.
     be = object.__new__(LlamaCppBackend)
     be._process = types.SimpleNamespace(pid = pid)
