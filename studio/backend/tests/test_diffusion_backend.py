@@ -209,10 +209,17 @@ class _FakePipe:
 
 class _FakePipeline:
     last: dict = {}
+    last_single_file: dict = {}
 
     @classmethod
     def from_pretrained(cls, base, **kwargs):
         _FakePipeline.last = {"base": base, **kwargs}
+        return _FakePipe()
+
+    @classmethod
+    def from_single_file(cls, path, **kwargs):
+        # SDXL-style single-file: the WHOLE pipeline comes from one .safetensors file.
+        _FakePipeline.last_single_file = {"path": path, **kwargs}
         return _FakePipe()
 
 
@@ -330,6 +337,13 @@ def fake_runtime(monkeypatch):
     diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
     # Instruction-editing pipeline (Qwen-Image-Edit): its own pipeline IS the loaded one.
     diffusers.QwenImageEditPlusPipeline = _FakePipeline
+    # SDXL: a U-Net family. Its single-file checkpoint is the whole pipeline, so the
+    # pipeline class carries from_single_file; UNet2DConditionModel is the denoiser
+    # class (fetched but unused on the pipeline/single-file-pipeline paths).
+    diffusers.StableDiffusionXLPipeline = _FakePipeline
+    diffusers.UNet2DConditionModel = _FakeTransformer
+    diffusers.StableDiffusionXLImg2ImgPipeline = _FakeImg2ImgPipeline
+    diffusers.StableDiffusionXLInpaintPipeline = _FakeInpaintPipeline
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -337,6 +351,7 @@ def fake_runtime(monkeypatch):
     # run real hardware detection against the stubbed torch.
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
     _FakePipeline.last = {}
+    _FakePipeline.last_single_file = {}
     _FakeTransformer.last = {}
     _FakeImg2ImgPipeline.built_from = None
     _FakeImg2ImgPipe.last_kwargs = {}
@@ -847,10 +862,62 @@ def test_load_single_file_safetensors_no_gguf_config(fake_runtime, tmp_path):
     assert "transformer" in _FakePipeline.last
 
 
+def test_load_sdxl_pipeline_from_pretrained(fake_runtime):
+    """SDXL as a full pipeline (no single-file name) loads via pipeline_cls.from_pretrained
+    on the allowlisted official base repo -- no U-Net single-file build, no GGUF config.
+    A U-Net family must NOT try to build a transformer from a single file."""
+    backend = DiffusionBackend()
+    status = backend.load_pipeline("stabilityai/stable-diffusion-xl-base-1.0")
+    assert status["loaded"] is True
+    assert status["family"] == "sdxl"
+    assert _FakePipeline.last["base"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    assert "transformer" not in _FakePipeline.last
+    # Neither single-file path (transformer-only nor whole-pipeline) was taken.
+    assert _FakeTransformer.last == {}
+    assert _FakePipeline.last_single_file == {}
+
+
+def test_load_sdxl_single_file_uses_pipeline_from_single_file(fake_runtime, tmp_path):
+    """A single-file SDXL *.safetensors is the WHOLE pipeline: it must load via
+    pipeline_cls.from_single_file(path, config=base), NOT transformer_cls.from_single_file
+    (UNet2DConditionModel has no companion-transformer assembly here)."""
+    (tmp_path / "sdxl.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "sdxl.safetensors", family_override = "sdxl"
+    )
+    assert status["loaded"] is True
+    assert status["family"] == "sdxl"
+    # The whole-pipeline single-file path was taken with the base repo as config.
+    assert _FakePipeline.last_single_file["path"] == str(
+        (tmp_path / "sdxl.safetensors").resolve()
+    )
+    assert _FakePipeline.last_single_file["config"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    # The transformer-only single-file build was NOT taken.
+    assert _FakeTransformer.last == {}
+
+
+def test_load_sdxl_allowlisted_turbo_repo_is_trusted(fake_runtime):
+    """The official sdxl-turbo repo is on the non-GGUF allowlist, so a full-pipeline load
+    is permitted even though it is not under unsloth/*."""
+    backend = DiffusionBackend()
+    status = backend.load_pipeline("stabilityai/sdxl-turbo")
+    assert status["loaded"] is True
+    assert status["family"] == "sdxl"
+
+
 def test_load_pipeline_rejects_non_unsloth_repo(fake_runtime):
     backend = DiffusionBackend()
     with pytest.raises(ValueError, match = "unsloth"):
         backend.load_pipeline("randomorg/Z-Image-bnb-4bit", family_override = "z-image")
+
+
+def test_load_sdxl_rejects_untrusted_repo(fake_runtime):
+    """A random non-allowlisted, non-unsloth repo is still rejected for a full pipeline
+    load even when it detects as SDXL -- the allowlist is exact-match only."""
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "unsloth"):
+        backend.load_pipeline("randomorg/my-sdxl-merge", family_override = "sdxl")
 
 
 def test_detect_family_rejects_layered():
