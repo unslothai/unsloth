@@ -36,8 +36,8 @@ class DiffusionFamily:
     # promotes a resolved float16 to float32 for these at load time.
     fp16_incompatible: bool = False
     # False for families whose denoiser block doesn't compile cleanly with
-    # regional torch.compile (Z-Image). The GGUF transformer compiles cleanly, so
-    # this gates the opt-in speed-mode compile for every family.
+    # regional torch.compile (Z-Image). Only consulted on the non-GGUF path; the
+    # GGUF transformer is never compiled regardless.
     supports_torch_compile: bool = True
 
 

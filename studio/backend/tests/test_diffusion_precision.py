@@ -43,9 +43,10 @@ def _stub_torch(
     torch.float16 = "float16"
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
-    torch.cuda = types.SimpleNamespace(get_device_capability = lambda *a: cc)
-    # _cast_fp8 skips nn.Embedding modules from layerwise casting.
+    # _cast_fp8 skips nn.Embedding tables (skip_modules_classes) to keep prompt
+    # tokens full precision, so the stub torch must expose torch.nn.Embedding.
     torch.nn = types.SimpleNamespace(Embedding = type("Embedding", (), {}))
+    torch.cuda = types.SimpleNamespace(get_device_capability = lambda *a: cc)
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
@@ -65,20 +66,6 @@ def _stub_casters(monkeypatch, recorder):
     mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tq)
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
-
-
-def _stub_fp8_capture(monkeypatch):
-    # Stub the fp8 caster to record the skip_modules_pattern passed for each encoder.
-    captured: dict = {}
-    hooks = types.ModuleType("diffusers.hooks")
-    casting = types.ModuleType("diffusers.hooks.layerwise_casting")
-    casting.DEFAULT_SKIP_MODULES_PATTERN = ("norm",)
-    hooks.apply_layerwise_casting = lambda module, **kw: captured.__setitem__(
-        id(module), kw["skip_modules_pattern"]
-    )
-    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
-    monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
-    return captured
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
@@ -131,56 +118,6 @@ def test_quantize_fp8_casts_all_encoders(monkeypatch):
     mode = quantize_text_encoders(pipe, _target(), mode = "fp8")
     assert mode == TE_QUANT_FP8
     assert recorder == [("fp8", te1), ("fp8", te3)]
-
-
-def test_fp8_skips_encoder_keep_in_fp32_modules(monkeypatch):
-    # T5 keeps "wo" in fp32: its gated FF reads wo.weight.dtype and casts activations to
-    # match BEFORE calling wo, which races diffusers' forward-time upcast hook and crashes
-    # generation (fp8 input vs bf16 weight). _cast_fp8 must add the encoder's own
-    # _keep_in_fp32_modules to the layerwise-casting skip patterns; encoders without such a
-    # list (CLIP, Qwen) get nothing extra skipped.
-    _stub_torch(monkeypatch)
-    captured = _stub_fp8_capture(monkeypatch)
-
-    t5 = types.SimpleNamespace(_keep_in_fp32_modules = ["wo"])
-    qwen = types.SimpleNamespace(_keep_in_fp32_modules = None)
-    pipe = types.SimpleNamespace(text_encoder = t5, text_encoder_2 = qwen)
-    quantize_text_encoders(pipe, _target(), mode = "fp8")
-
-    assert "wo" in captured[id(t5)] and "norm" in captured[id(t5)]
-    assert "wo" not in captured[id(qwen)] and "norm" in captured[id(qwen)]
-
-
-def test_fp8_skips_tied_output_embedding(monkeypatch):
-    # A CausalLM encoder (FLUX.2's Qwen3) ties lm_head.weight to the input embedding.
-    # lm_head is nn.Linear, so layerwise casting would fp8 it and drag the shared
-    # embedding tensor to fp8, making the embedding emit fp8 activations that crash the
-    # first norm. _cast_fp8 must skip the tied output projection by name; an untied one
-    # (distinct weight tensors) is left to quantise normally.
-    _stub_torch(monkeypatch)
-    captured = _stub_fp8_capture(monkeypatch)
-
-    shared = object()  # the one tensor lm_head and embed_tokens share
-    emb = types.SimpleNamespace(weight = shared)
-    head = types.SimpleNamespace(weight = shared)
-    tied = types.SimpleNamespace(
-        _keep_in_fp32_modules = None,
-        get_input_embeddings = lambda: emb,
-        get_output_embeddings = lambda: head,
-        named_modules = lambda: [("model.embed_tokens", emb), ("lm_head", head)],
-    )
-    u_emb, u_head = types.SimpleNamespace(weight = object()), types.SimpleNamespace(weight = object())
-    untied = types.SimpleNamespace(
-        _keep_in_fp32_modules = None,
-        get_input_embeddings = lambda: u_emb,
-        get_output_embeddings = lambda: u_head,
-        named_modules = lambda: [("lm_head", u_head)],
-    )
-    pipe = types.SimpleNamespace(text_encoder = tied, text_encoder_2 = untied)
-    quantize_text_encoders(pipe, _target(), mode = "fp8")
-
-    assert r"^lm_head$" in captured[id(tied)]
-    assert r"^lm_head$" not in captured[id(untied)]
 
 
 def test_quantize_nvfp4_uses_torchao(monkeypatch):

@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,17 +31,20 @@ from .diffusion_families import (
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
+    diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
 from .diffusion_memory import (
     OFFLOAD_NONE,
     apply_memory_plan,
+    estimate_gguf_dense_mib,
     estimate_image_runtime_mib,
     file_size_mib,
+    infer_gguf_quant_label,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
-from .diffusion_speed import SPEED_OFF, apply_speed_optims, restore_tf32
+from .diffusion_speed import SPEED_OFF, apply_speed_optims
 from .diffusion_precision import quantize_text_encoders
 
 logger = get_logger(__name__)
@@ -149,20 +152,28 @@ class DiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
-        """The device target for the current host with the family fp16 guard applied:
-        promote float16 -> float32 for fp16-incompatible families (Z-Image), whose
-        activations overflow float16 and render a black image. The capability flags
-        carry through unchanged; only the dtype moves."""
+    def _pick_device_and_dtype(self) -> tuple[str, Any]:
+        """(device, dtype) for the current host. Thin wrapper over the device
+        policy module, kept as a method so tests can still monkeypatch it."""
         target = resolve_diffusion_device_target()
-        effective = _resolve_diffusion_compute_dtype(fam, target.dtype)
-        if effective is target.dtype:
-            return target
-        logger.warning(
-            "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
-            getattr(fam, "name", None),
-        )
-        return replace(target, dtype = effective)
+        return target.device, target.dtype
+
+    def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
+        """The device target with the family fp16 guard applied.
+
+        Routes through _pick_device_and_dtype() (so a monkeypatched override still
+        drives the result), then promotes float16 -> float32 for fp16-incompatible
+        families (Z-Image), rebuilding the target so dtype + capability flags stay
+        consistent with the effective dtype.
+        """
+        device, dtype = self._pick_device_and_dtype()
+        effective = _resolve_diffusion_compute_dtype(fam, dtype)
+        if effective is not dtype:
+            logger.warning(
+                "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
+                getattr(fam, "name", None),
+            )
+        return diffusion_device_target_from_torch_device(device, effective)
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -263,6 +274,7 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
+        cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
@@ -293,6 +305,7 @@ class DiffusionBackend:
                 base_repo = base_repo,
                 family_override = family_override,
                 hf_token = hf_token,
+                cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 text_encoder_quant = text_encoder_quant,
@@ -415,47 +428,6 @@ class DiffusionBackend:
             return 0  # repo not in cache yet
         return total
 
-    @staticmethod
-    def _cache_bytes_loaded(repo_id: str) -> int:
-        """Cached bytes of only the base-repo files the GGUF pipeline actually loads.
-
-        Walks the snapshot dir (filename -> blob symlinks) and keeps the files
-        ``_base_file_downloaded`` accepts, so the companion-memory estimate counts just
-        the VAE + text encoders. The raw ``_cache_bytes`` blob sum would also include any
-        dense ``transformer/`` shards left in the cache by a previous diffusers run, which
-        the GGUF path never loads -- inflating companion memory and pushing the auto plan
-        toward needless offload/tiling. Returns 0 when the repo isn't cached or has no
-        snapshot layout; the planner then treats companion size as unknown."""
-        from huggingface_hub import constants
-
-        snaps = Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
-        total = 0
-        counted: set = set()
-        try:
-            snap_dirs = list(snaps.iterdir())
-        except OSError:
-            return 0  # repo not in cache yet
-        if not snap_dirs:
-            return 0
-        for snap in snap_dirs:
-            try:
-                for f in snap.rglob("*"):
-                    if not f.is_file():
-                        continue
-                    if not _base_file_downloaded(f.relative_to(snap).as_posix()):
-                        continue
-                    try:
-                        blob = f.resolve()
-                        if blob in counted:  # same blob shared across snapshots
-                            continue
-                        counted.add(blob)
-                        total += blob.stat().st_size
-                    except OSError:
-                        continue
-            except OSError:
-                continue
-        return total
-
     # ── Synchronous load / generate / unload ───────────────────────────────
 
     def load_pipeline(
@@ -466,6 +438,7 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
+        cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
@@ -488,18 +461,12 @@ class DiffusionBackend:
         # The cancel makes that wait ~one step (or the rest of the denoise for a
         # pipeline that ignores the step callback).
         with self._lock:
-            # Check the token BEFORE cancelling: a superseded/cancelled worker (its
-            # token already bumped by unload or a newer load) must not abort the
-            # current model's unrelated in-flight generation on its way out.
-            if _load_token is not None and _load_token != self._load_token:
-                raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
         with self._generate_lock:
             with self._lock:
-                # Re-check under the lock (we dropped it to wait on _generate_lock): an
-                # unload/eviction or a newer load may have superseded this one while we
-                # waited, and the slow VRAM-heavy build below must not run if so.
+                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
+                # newer load superseded this one while we were resolving/downloading.
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Diffusion load was cancelled.")
 
@@ -533,6 +500,7 @@ class DiffusionBackend:
                 speed_applied = apply_speed_optims(
                     pipe,
                     target,
+                    is_gguf = bool(gguf_filename),
                     family = fam,
                     speed_mode = speed_mode or SPEED_OFF,
                     logger = logger,
@@ -550,8 +518,11 @@ class DiffusionBackend:
                 # estimated resident size (transformer GGUF dequantised + the
                 # companion text-encoder / VAE already cached for `base`), then
                 # apply it. Computed here, after the build but before placement,
-                # because the weights are still on CPU so free VRAM is the real budget.
-                plan = self._plan_memory(target, gguf_path, gguf_filename, base, fam, memory_mode)
+                # because the weights are still on CPU so free VRAM is the real
+                # budget. `cpu_offload=True` stays an explicit override.
+                plan = self._plan_memory(
+                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
+                )
                 # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
                 # may fall back to whole-module offload, and tiling is a no-op on a
                 # pipeline with no tiling control), so status stays honest.
@@ -594,28 +565,24 @@ class DiffusionBackend:
         base: str,
         fam: DiffusionFamily,
         memory_mode: Optional[str],
+        cpu_offload: bool,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
         offload policy + VAE memory savers. Kept on the backend so the cached base
         repo (companion text-encoder / VAE) feeds the size estimate."""
         device_memory = snapshot_device_memory(target)
-        # diffusers keeps the GGUF transformer PACKED on the device (uint8) and
-        # dequantises each layer transiently during the forward, so its resident
-        # footprint is ~the on-disk file size, NOT the dequantised dense size. (The
-        # transient per-layer dequant + activations are covered by the planner's
-        # runtime headroom + base overhead.) Measured: a 2463 MiB Q4 GGUF sits resident
-        # at ~2482 MiB.
-        transformer_resident = file_size_mib(gguf_path)
-        # The companion components (VAE + text encoders) load dense, near their on-disk
-        # size; sum only the base-repo files the GGUF pipeline actually loads (NOT any
-        # leftover dense transformer/ shards), so the plan isn't skewed toward offload.
-        companion = self._cache_bytes_loaded(base)
+        transformer_dense = estimate_gguf_dense_mib(
+            file_size_mib(gguf_path), infer_gguf_quant_label(gguf_filename)
+        )
+        # The companion components (VAE + text encoders) load near their on-disk
+        # size; sum whatever the prefetch already placed in the base-repo cache.
+        companion = self._cache_bytes(base)
         companion_mib = int(companion // (1024 * 1024)) if companion else None
         model_dense_mib = None
-        if transformer_resident is not None:
-            model_dense_mib = transformer_resident + (companion_mib or 0)
-        runtime_headroom = estimate_image_runtime_mib(family = fam.name)
+        if transformer_dense is not None:
+            model_dense_mib = transformer_dense + (companion_mib or 0)
+        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
         return plan_diffusion_memory(
             target = target,
             device_memory = device_memory,
@@ -623,6 +590,7 @@ class DiffusionBackend:
             companion_dense_mib = companion_mib,
             runtime_headroom_mib = runtime_headroom,
             requested_mode = memory_mode,
+            explicit_offload = cpu_offload,
         )
 
     def generate(
@@ -751,32 +719,22 @@ class DiffusionBackend:
         # Abort an in-flight download so unload/an eviction returns promptly instead
         # of waiting it out (the download runs without _lock and checks this event).
         self._cancel_event.set()
-        # Signal an in-flight denoise, then WAIT on _generate_lock for it to exit
-        # before freeing _state. The GPU arbiter releases diffusion ownership and
-        # hands the card to chat the instant this returns, so chat must not start
-        # allocating VRAM while the old pipeline is still resident — that transient
-        # overlap is an OOM risk. The cancel bounds the wait to ~one step (the same
-        # bound the replacement-load path in load_pipeline already relies on).
         with self._lock:
+            # Abort an in-flight denoise too by setting ITS cancel event, so the step
+            # callback stops it. unload does NOT take _generate_lock — it must return
+            # promptly; the running generate keeps its own pipe reference, so freeing
+            # _state here can't crash it, and its VRAM is reclaimed when it returns
+            # (within ~one step thanks to the cancel).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-        with self._generate_lock:
-            with self._lock:
-                self._unload_locked()
-                # Cancel any in-flight load (its worker checks this token before
-                # committing) and drop the marker so the next load starts clean.
-                self._load_token += 1
-                self._loading = None
+            self._unload_locked()
+            # Cancel any in-flight load (its worker checks this token before
+            # committing) and drop the marker so the next load starts clean.
+            self._load_token += 1
+            self._loading = None
         return self.status()
 
     def _unload_locked(self) -> None:
-        # Restore TF32 before the no-state early return: a speed_mode="max" load flips
-        # process-global TF32 (in apply_speed_optims) and can then fail before _state is
-        # committed, leaving the flag on with _state still None. This is the universal
-        # handoff gate (explicit unload, an arbiter eviction for chat, and the start of
-        # the next load all route here), so it's the only place that reliably puts TF32
-        # back before the next tenant runs. No-op when no max load ever flipped it.
-        restore_tf32()
         state = self._state
         if state is None:
             return

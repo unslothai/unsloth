@@ -53,6 +53,8 @@ OFFLOAD_SEQUENTIAL = "sequential"
 # = lower peak VRAM, more host<->device traffic. One is the lowest-VRAM setting.
 DEFAULT_GROUP_BLOCKS = 1
 
+DEFAULT_IMAGE_WIDTH = 1024
+DEFAULT_IMAGE_HEIGHT = 1024
 # A flat allowance for the pipeline's fixed costs (scheduler, embeddings, the
 # CUDA context, fragmentation) on top of the model weights and per-step runtime.
 DEFAULT_BASE_OVERHEAD_MIB = 2048
@@ -61,10 +63,8 @@ DEFAULT_BASE_OVERHEAD_MIB = 2048
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested mode, accepting dashes; None passes through.
 
-    Raises ValueError for an unsupported mode. The route already rejects bad values
-    at the Pydantic Literal boundary (422, before any GPU work); this is a defense-in-
-    depth guard for direct / script callers (bench, quality harness) that bypass it,
-    and runs on the load thread."""
+    Raises ValueError for an unsupported mode so a bad request can be rejected
+    cheaply (the route surfaces it as a 4xx before any GPU work)."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")
@@ -93,6 +93,15 @@ class DeviceMemory:
     def is_unified(self) -> bool:
         return self.memory_kind in ("unified_memory", "system_memory")
 
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "device": self.device,
+            "memory_kind": self.memory_kind,
+            "free_mib": self.free_mib,
+            "total_mib": self.total_mib,
+        }
+
 
 @dataclass(frozen = True)
 class MemoryPlan:
@@ -103,7 +112,23 @@ class MemoryPlan:
     vae_tiling: bool
     vae_slicing: bool
     device_memory: DeviceMemory
+    estimates: dict[str, Optional[int]]
     reasons: tuple[str, ...] = ()
+
+    @property
+    def engages_offload(self) -> bool:
+        return self.offload_policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "requested_mode": self.requested_mode,
+            "offload_policy": self.offload_policy,
+            "vae_tiling": self.vae_tiling,
+            "vae_slicing": self.vae_slicing,
+            "device_memory": self.device_memory.as_public_dict(),
+            "estimates": dict(self.estimates),
+            "reasons": list(self.reasons),
+        }
 
 
 # ── hardware snapshot ─────────────────────────────────────────────────────────
@@ -193,17 +218,73 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
-def estimate_image_runtime_mib(*, family: Optional[str] = None) -> int:
-    """Per-call activation / latent headroom for an image generation (at the
-    default ~1MP resolution the planner budgets for). Distilled / turbo models
-    (few steps, no CFG) need less; editing pipelines need more."""
+def infer_gguf_quant_label(filename: Optional[str]) -> Optional[str]:
+    """Pull a quant tag (Q4_K_M, Q8_0, BF16, ...) out of a GGUF filename."""
+    if not filename:
+        return None
+    from pathlib import Path
+
+    stem = Path(filename).name
+    if stem.lower().endswith(".gguf"):
+        stem = stem[:-5]
+    parts = [p.upper() for p in stem.replace("-", "_").split("_") if p]
+    for index, part in enumerate(parts):
+        if part in ("BF16", "F16", "FP16", "FP8", "Q8", "Q6", "Q5", "Q4", "Q3", "Q2"):
+            suffix = parts[index + 1 :]
+            # Quant names carry either a K-family suffix (Q4_K_M) or a legacy
+            # numeric one (Q8_0, Q5_1); keep up to two suffix tokens.
+            if suffix and suffix[0] in ("K", "M", "S", "L", "XS", "XXS", "0", "1"):
+                return "_".join([part] + suffix[:2])
+            return part
+        if part.startswith("IQ") or part.startswith("UD"):
+            return "_".join(parts[index : index + 3])
+    return None
+
+
+def estimate_gguf_dense_mib(storage_mib: Optional[int], quant: Optional[str]) -> Optional[int]:
+    """Approximate the dequantised (device) size of a GGUF from its on-disk size
+    and quant label. The compute dtype is bf16/fp16, so a 4-bit file roughly
+    quadruples once unpacked; higher-bit quants expand less."""
+    if storage_mib is None:
+        return None
+    q = (quant or "").upper()
+    if any(t in q for t in ("BF16", "F16", "FP16")):
+        return storage_mib
+    if "FP8" in q or "Q8" in q:
+        return int(storage_mib * 2.0)
+    if "Q6" in q:
+        return int(storage_mib * 2.8)
+    if "Q5" in q:
+        return int(storage_mib * 3.3)
+    if "Q4" in q or "IQ4" in q or "UD" in q:
+        return int(storage_mib * 4.0)
+    if "Q3" in q or "IQ3" in q:
+        return int(storage_mib * 5.3)
+    if "Q2" in q or "Q1" in q or "IQ2" in q or "IQ1" in q:
+        return int(storage_mib * 8.0)
+    return int(storage_mib * 4.0)  # unknown: assume 4-bit-ish
+
+
+def estimate_image_runtime_mib(
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    family: Optional[str] = None,
+) -> int:
+    """Per-call activation / latent headroom for an image generation, scaled by
+    pixel area and batch. Distilled / turbo models (few steps, no CFG) need less."""
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    batch = max(1, int(batch_size or 1))
+    pixel_scale = (w * h * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
     fam = (family or "").lower()
     multiplier = 1.0
     if "edit" in fam:
         multiplier *= 1.35
     if "turbo" in fam or "distilled" in fam or "schnell" in fam:
         multiplier *= 0.85
-    return max(1024, int(8192 * multiplier))
+    return max(1024, int(8192 * max(0.25, pixel_scale) * multiplier))
 
 
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -242,13 +323,15 @@ def plan_diffusion_memory(
     companion_dense_mib: Optional[int] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
+    explicit_offload: bool = False,
 ) -> MemoryPlan:
     """Pick an offload policy + VAE memory savers for the current load.
 
     ``model_dense_mib`` is the estimated resident device size of all weights
     (transformer + companion text-encoder / VAE); ``companion_dense_mib`` is just
     the companions, which stay resident under streamed (group) offload while the
-    transformer is streamed block by block.
+    transformer is streamed block by block. ``explicit_offload`` is the back-compat
+    ``cpu_offload=True`` request: it forces whole-module offload.
 
     Policy meanings, ordered by measured speed/VRAM tradeoff:
       none   - everything resident: fastest, highest VRAM.
@@ -263,6 +346,15 @@ def plan_diffusion_memory(
     # The resident floor under group offload: companions stay, the transformer streams.
     group_floor = _sum_required(companion_dense_mib, runtime_headroom_mib, base_overhead_mib)
     reasons: list[str] = []
+    estimates: dict[str, Optional[int]] = {
+        "safe_device_budget_mib": budget,
+        "model_dense_mib": model_dense_mib,
+        "companion_dense_mib": companion_dense_mib,
+        "runtime_headroom_mib": runtime_headroom_mib,
+        "base_overhead_mib": base_overhead_mib,
+        "resident_required_mib": required,
+        "group_floor_mib": group_floor,
+    }
 
     def _group_fits() -> bool:
         # Group offload only helps if the resident remainder (companions) fits; when
@@ -304,25 +396,23 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
 
-    # VAE TILING decodes in spatially-overlapping chunks and blends the seams,
-    # capping the decode-time VRAM spike at high resolution -- but it is LOSSY above
-    # the tile threshold (diffusers blends overlapping tiles), so only engage it when
-    # weights are being offloaded (the device is already tight) or there is no spare
-    # device pool to offload to -- unified / system memory, i.e. MPS, CPU, and
-    # integrated / unified-memory CUDA (which is_unified covers; a backend-string
-    # check would miss it). On a roomy discrete GPU it stays off so output is
-    # bit-identical.
-    tile = policy != OFFLOAD_NONE or device_memory.is_unified
-    # VAE SLICING decodes one batch element at a time and concatenates (no blending):
-    # bit-identical to a non-sliced decode, and diffusers no-ops it below batch>1, so
-    # it's free at the batch=1 size every request uses today. Always on -- it never
-    # changes output and a future batched caller gets the memory saving for free.
+    if explicit_offload and policy == OFFLOAD_NONE and can_offload and not device_memory.is_unified:
+        policy = OFFLOAD_MODEL
+        reasons.append("explicit cpu_offload overrides resident placement")
+
+    # VAE tiling/slicing decode the image in chunks, capping the decode-time spike
+    # that often dominates peak VRAM at high resolution. Turn it on whenever weights
+    # are being offloaded (the device is already tight) or the backend has no spare
+    # device pool (MPS/CPU). On a roomy discrete GPU it stays off so output is
+    # bit-identical to a plain resident run.
+    tile = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
         vae_tiling = tile,
-        vae_slicing = True,
+        vae_slicing = tile,
         device_memory = device_memory,
+        estimates = estimates,
         reasons = tuple(reasons),
     )
 

@@ -10,15 +10,14 @@ lossless-to-near-lossless speedups in the order the diffusers guides recommend
 
   off     - nothing (default).
   default - lossless: channels_last VAE memory format + regional torch.compile of
-            the denoiser's repeated block WHERE eligible (bf16, CUDA, and a
-            compile-friendly family).
+            the denoiser's repeated block WHERE eligible (non-GGUF, bf16, CUDA, and
+            a compile-friendly family).
   max     - default plus near-lossless TF32 matmul and fused QKV projections.
 
-Regional compile is gated only by family compatibility (Z-Image's block is flagged
-off) and a bf16 / CUDA target. A GGUF transformer compiles cleanly on diffusers'
-native dequant path -- verified empirically: fullgraph, zero graph breaks, ~1.35-1.44x
-faster with lower peak VRAM (the per-op dequant is pure tensor ops inductor fuses) --
-so it is NOT excluded. torch is imported lazily.
+Regional compile is gated off for the GGUF transformer (it dequantises per-op and
+doesn't compile cleanly) and for families flagged not compile-friendly (Z-Image), so
+on today's GGUF path only channels_last / TF32 engage; the compile path activates
+automatically once a non-GGUF bf16 transformer is loaded. torch is imported lazily.
 """
 
 from __future__ import annotations
@@ -45,12 +44,14 @@ def normalize_speed_mode(value: Optional[str]) -> str:
     return normalized
 
 
-def compile_eligible(target: Any, *, family: Any) -> bool:
+def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     """Whether the denoiser's repeated block should be regionally compiled.
 
-    Only on CUDA (incl. ROCm via supports_default_torch_compile), for a bf16
-    transformer, on a compile-friendly family. A GGUF transformer IS eligible -- it
-    compiles cleanly on diffusers' native dequant path (verified ~1.4x faster)."""
+    Only on CUDA (incl. ROCm via supports_default_torch_compile), for a non-GGUF
+    bf16 transformer, on a compile-friendly family. The GGUF transformer is never
+    compiled (it dequantises per-op)."""
+    if is_gguf:
+        return False
     if not bool(getattr(target, "supports_default_torch_compile", False)):
         return False
     if not bool(getattr(family, "supports_torch_compile", True)):
@@ -70,6 +71,7 @@ def apply_speed_optims(
     pipe: Any,
     target: Any,
     *,
+    is_gguf: bool,
     family: Any,
     speed_mode: str = SPEED_OFF,
     logger: Any = None,
@@ -92,7 +94,7 @@ def apply_speed_optims(
     applied["channels_last"] = _vae_channels_last(pipe, logger)
 
     # Lossless-ish: regional compile of the repeated denoiser block, where eligible.
-    if compile_eligible(target, family = family):
+    if compile_eligible(target, is_gguf = is_gguf, family = family):
         applied["compiled"] = _compile_repeated_blocks(pipe, logger)
 
     if mode == SPEED_MAX:

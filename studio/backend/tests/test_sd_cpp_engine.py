@@ -1,0 +1,354 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Unit tests for the sd-cli engine + routing (``sd_cpp_engine.py``).
+
+Hermetic: the binary finder is driven against a tmp filesystem, and ``generate``
+runs a fake ``subprocess.Popen`` that emits canned lines and writes the output
+PNG -- no real ``sd-cli``, no GPU.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+from core.inference import sd_cpp_engine as eng
+from core.inference.sd_cpp_engine import (
+    ENGINE_DIFFUSERS,
+    ENGINE_SD_CPP,
+    SdCppEngine,
+    find_sd_cpp_binary,
+    runtime_env,
+    select_diffusion_engine,
+)
+from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles
+
+
+# ── binary discovery ────────────────────────────────────────────────────────
+
+
+def _clear_env(monkeypatch):
+    monkeypatch.delenv("SD_CLI_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
+
+
+def test_find_prefers_sd_cli_path_env(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    binary = tmp_path / "sd-cli"
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("SD_CLI_PATH", str(binary))
+    # even with PATH empty, the direct env wins
+    monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
+    assert find_sd_cpp_binary() == str(binary)
+
+
+def test_find_custom_install_dir_build_layout(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    root = tmp_path / "sdcpp"
+    built = root / "build" / "bin" / "sd-cli"
+    built.parent.mkdir(parents = True)
+    built.write_text("x")
+    monkeypatch.setenv("UNSLOTH_SD_CPP_PATH", str(root))
+    monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
+    assert find_sd_cpp_binary() == str(built)
+
+
+def test_find_falls_back_to_path(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(
+        eng.shutil, "which", lambda stem: "/usr/bin/sd-cli" if stem == "sd-cli" else None
+    )
+    assert find_sd_cpp_binary() == "/usr/bin/sd-cli"
+
+
+def test_find_returns_none_when_absent(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
+    assert find_sd_cpp_binary() is None
+
+
+# ── availability / version ──────────────────────────────────────────────────
+
+
+def test_engine_unavailable_when_no_binary(monkeypatch):
+    # Hermetic: force discovery to find nothing so a real sd-cli installed on the host
+    # (e.g. ~/.unsloth) can't leak in and make binary=None resolve to a real binary.
+    monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
+    e = SdCppEngine(binary = None)
+    assert e.is_available() is False
+    assert e.version() is None
+
+
+def test_engine_version_parsed_and_cached(tmp_path, monkeypatch):
+    binary = tmp_path / "sd-cli"
+    binary.write_text("x")
+    e = SdCppEngine(binary = str(binary))
+    calls = {"n": 0}
+
+    def _fake_run(*_a, **_k):
+        calls["n"] += 1
+        return types.SimpleNamespace(stdout = "stable-diffusion.cpp version master-721\n", stderr = "")
+
+    monkeypatch.setattr(eng.subprocess, "run", _fake_run)
+    assert e.version() == "stable-diffusion.cpp version master-721"
+    assert e.version() == "stable-diffusion.cpp version master-721"
+    assert calls["n"] == 1  # cached after the first probe
+
+
+# ── runtime env (bundled shared libs) ───────────────────────────────────────
+
+
+def test_runtime_env_prepends_binary_dir_to_lib_path():
+    var = eng._lib_path_var()
+    env = runtime_env("/opt/sdcpp/bin/sd-cli", {var: "/existing"})
+    first = env[var].split(os.pathsep)[0]
+    assert first == "/opt/sdcpp/bin"
+    assert "/existing" in env[var]
+
+
+def test_runtime_env_handles_missing_lib_path():
+    var = eng._lib_path_var()
+    env = runtime_env("/opt/sdcpp/bin/sd-cli", {})
+    assert env[var] == "/opt/sdcpp/bin"
+
+
+# ── generate (fake subprocess) ──────────────────────────────────────────────
+
+
+class _FakePopen:
+    """Stand-in for subprocess.Popen: streams ``lines`` then writes ``out_file``
+    (unless ``write`` is False) and exits with ``returncode``."""
+
+    captured_cmd: list[str] = []
+    captured_env: dict = {}
+
+    def __init__(
+        self,
+        cmd,
+        *,
+        lines,
+        returncode,
+        out_file,
+        write,
+        env = None,
+    ):
+        type(self).captured_cmd = list(cmd)
+        type(self).captured_env = dict(env or {})
+        self._lines = list(lines)
+        self.returncode = returncode
+        self._out_file = out_file
+        self._write = write
+
+    @property
+    def stdout(self):
+        return iter(self._lines)
+
+    def wait(self, timeout = None):
+        if self._write:
+            Path(self._out_file).write_bytes(b"\x89PNG\r\n")
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def _patch_popen(
+    monkeypatch,
+    *,
+    lines,
+    returncode,
+    out_file,
+    write = True,
+):
+    def _factory(cmd, **kw):
+        return _FakePopen(
+            cmd,
+            lines = lines,
+            returncode = returncode,
+            out_file = out_file,
+            write = write,
+            env = kw.get("env"),
+        )
+
+    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
+
+
+def _engine(tmp_path):
+    binary = tmp_path / "sd-cli"
+    binary.write_text("x")
+    return SdCppEngine(binary = str(binary))
+
+
+def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(
+        monkeypatch, lines = ["loading model", "step 1/8", "done"], returncode = 0, out_file = out
+    )
+    seen: list[str] = []
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
+    params = SdCppGenParams(prompt = "a cat", steps = 8, seed = 1)
+
+    result = e.generate(files, params, output_path = str(out), on_log = seen.append)
+
+    assert result == out and out.is_file()
+    assert seen == ["loading model", "step 1/8", "done"]
+    # the real argv was built and handed to Popen
+    assert "--diffusion-model" in _FakePopen.captured_cmd
+    assert str(out) == _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--output") + 1]
+    # the subprocess env carries the binary's dir on the library path
+    var = eng._lib_path_var()
+    assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
+
+
+def test_generate_collects_batch_output_paths(tmp_path, monkeypatch):
+    # batch_count > 1: stable-diffusion.cpp writes "<stem>_<idx><suffix>"
+    # (img_0.png, img_1.png, ...) rather than the literal --output path, so the
+    # single-path check must fall back to the numbered siblings.
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+
+    def _factory(cmd, **kw):
+        # Emulate batch save_results(): write the numbered files, NOT the literal path.
+        (tmp_path / "img_0.png").write_bytes(b"\x89PNG\r\n")
+        (tmp_path / "img_1.png").write_bytes(b"\x89PNG\r\n")
+        return _FakePopen(
+            cmd, lines = ["done"], returncode = 0, out_file = out, write = False, env = kw.get("env")
+        )
+
+    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
+    result = e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x", batch_count = 2),
+        output_path = str(out),
+    )
+    assert result == tmp_path / "img_0.png" and result.is_file()
+    assert not out.exists()  # the literal --output path was never written
+
+
+def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["boom: bad gguf"], returncode = 1, out_file = out, write = False)
+    with pytest.raises(RuntimeError, match = "exited 1"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(out),
+        )
+
+
+def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
+    with pytest.raises(RuntimeError, match = "no image"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(out),
+        )
+
+
+def test_generate_raises_when_binary_missing():
+    e = SdCppEngine(binary = None)
+    with pytest.raises(RuntimeError, match = "not found"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = "/tmp/x.png",
+        )
+
+
+def test_generate_times_out_even_when_stdout_blocks(tmp_path, monkeypatch):
+    # A sd-cli that hangs WITHOUT closing stdout must still hit the wall-clock timeout:
+    # the reader drains on a thread while the main thread waits on the PROCESS, so the
+    # timeout can no longer be bypassed by an unending stdout stream.
+    import subprocess as _sp
+    import threading as _threading
+
+    released = _threading.Event()
+
+    class _Block:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            # Models a hung stream that only ends once the process is killed.
+            if not released.wait(5.0):
+                raise AssertionError("stdout was never released by kill()")
+            raise StopIteration
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kw):
+            self.killed = False
+
+        @property
+        def stdout(self):
+            return _Block()
+
+        def wait(self, timeout = None):
+            raise _sp.TimeoutExpired(cmd = "sd-cli", timeout = timeout)
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+            released.set()  # killing closes the pipe, so the reader unblocks
+
+    holder: dict = {}
+
+    def _factory(cmd, **kw):
+        holder["proc"] = _HangingPopen(cmd, **kw)
+        return holder["proc"]
+
+    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
+
+    e = _engine(tmp_path)
+    with pytest.raises(RuntimeError, match = "timed out"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(tmp_path / "o.png"),
+            timeout = 0.01,
+        )
+    assert holder["proc"].killed is True
+
+
+# ── engine routing ──────────────────────────────────────────────────────────
+
+
+def test_routing_gpu_backends_use_diffusers():
+    for backend in ("cuda", "rocm", "xpu"):
+        assert select_diffusion_engine(backend, native_available = True) == ENGINE_DIFFUSERS
+
+
+def test_routing_cpu_and_mps_use_native_when_available():
+    assert select_diffusion_engine("cpu", native_available = True) == ENGINE_SD_CPP
+    assert select_diffusion_engine("mps", native_available = True) == ENGINE_SD_CPP
+
+
+def test_routing_cpu_falls_back_to_diffusers_without_binary():
+    assert select_diffusion_engine("cpu", native_available = False) == ENGINE_DIFFUSERS
+
+
+def test_routing_prefer_native_overrides_gpu():
+    assert (
+        select_diffusion_engine("cuda", native_available = True, prefer_native = True) == ENGINE_SD_CPP
+    )
+    # but only if a binary is actually available
+    assert (
+        select_diffusion_engine("cuda", native_available = False, prefer_native = True)
+        == ENGINE_DIFFUSERS
+    )

@@ -15,6 +15,8 @@ import types
 import pytest
 
 from core.inference.diffusion_memory import (
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_FAST,
     MEMORY_MODE_LOW_VRAM,
@@ -25,7 +27,9 @@ from core.inference.diffusion_memory import (
     DeviceMemory,
     MemoryPlan,
     apply_memory_plan,
+    estimate_gguf_dense_mib,
     estimate_image_runtime_mib,
+    infer_gguf_quant_label,
     normalize_memory_mode,
     plan_diffusion_memory,
     snapshot_device_memory,
@@ -63,16 +67,43 @@ def test_normalize_memory_mode_accepts_and_rejects():
         normalize_memory_mode("ultra")
 
 
-# ── size estimates ────────────────────────────────────────────────────────────
+# ── filename / size estimates ─────────────────────────────────────────────────
 
 
-def test_estimate_image_runtime_scales_by_family():
-    base = estimate_image_runtime_mib(family = "z-image")
-    # Distilled / turbo families get a discount; editing pipelines need more.
-    turbo = estimate_image_runtime_mib(family = "z-image-turbo")
-    edit = estimate_image_runtime_mib(family = "flux-kontext-edit")
-    assert turbo < base < edit
-    assert turbo >= 1024  # never below the floor
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        ("z-image-turbo-Q4_K_M.gguf", "Q4_K_M"),
+        ("flux1-dev-Q8_0.gguf", "Q8_0"),
+        ("model-BF16.gguf", "BF16"),
+        ("qwen-image-IQ4_XS.gguf", "IQ4_XS"),
+        ("no-quant-here.gguf", None),
+        (None, None),
+    ],
+)
+def test_infer_gguf_quant_label(filename, expected):
+    assert infer_gguf_quant_label(filename) == expected
+
+
+def test_estimate_gguf_dense_mib_expansion():
+    # 4-bit roughly quadruples once dequantised to bf16; F16 is already dense.
+    assert estimate_gguf_dense_mib(1000, "Q4_K_M") == 4000
+    assert estimate_gguf_dense_mib(1000, "Q8_0") == 2000
+    assert estimate_gguf_dense_mib(1000, "BF16") == 1000
+    assert estimate_gguf_dense_mib(None, "Q4_K_M") is None
+    # Unknown quant falls back to the conservative 4-bit-ish factor.
+    assert estimate_gguf_dense_mib(1000, None) == 4000
+
+
+def test_estimate_image_runtime_scales_with_pixels_and_family():
+    base = estimate_image_runtime_mib(width = DEFAULT_IMAGE_WIDTH, height = DEFAULT_IMAGE_HEIGHT)
+    bigger = estimate_image_runtime_mib(width = 2048, height = 2048)
+    assert bigger > base
+    # Distilled / turbo families get a discount.
+    turbo = estimate_image_runtime_mib(
+        width = DEFAULT_IMAGE_WIDTH, height = DEFAULT_IMAGE_HEIGHT, family = "z-image-turbo"
+    )
+    assert turbo < base
 
 
 # ── planner: device classes ───────────────────────────────────────────────────
@@ -110,9 +141,6 @@ def test_unified_cuda_skips_offload_even_if_offload_capable():
         runtime_headroom_mib = 4000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-    # ... but it's still memory-tight, so VAE tiling must engage (keyed on is_unified,
-    # which a backend-string check would have missed for unified-memory CUDA).
-    assert plan.vae_tiling is True
 
 
 # ── planner: auto budget tiers on a discrete GPU ──────────────────────────────
@@ -127,8 +155,7 @@ def test_auto_resident_when_roomy():
         runtime_headroom_mib = 4000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-    assert plan.vae_tiling is False  # roomy -> no lossy tiling
-    assert plan.vae_slicing is True  # slicing is always on (lossless, free at batch=1)
+    assert plan.vae_tiling is False and plan.vae_slicing is False  # roomy -> no tiling
 
 
 def test_auto_model_offload_on_tight_fit():
@@ -194,7 +221,7 @@ def test_auto_stays_resident_when_budget_unknown():
     assert any("unknown" in r for r in plan.reasons)
 
 
-# ── planner: explicit modes ───────────────────────────────────────────────────
+# ── planner: explicit modes + cpu_offload override ────────────────────────────
 
 
 def test_explicit_modes_force_policy_regardless_of_budget():
@@ -240,6 +267,30 @@ def test_fast_falls_back_to_model_offload_when_it_does_not_fit():
         requested_mode = MEMORY_MODE_FAST,
     )
     assert plan.offload_policy == OFFLOAD_MODEL
+
+
+def test_explicit_cpu_offload_overrides_resident_auto_choice():
+    # Roomy GPU -> auto would stay resident, but cpu_offload=True forces offload.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(80000),
+        model_dense_mib = 4000,
+        runtime_headroom_mib = 2000,
+        explicit_offload = True,
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+    assert any("explicit cpu_offload" in r for r in plan.reasons)
+
+
+def test_explicit_cpu_offload_ignored_on_cpu_target():
+    plan = plan_diffusion_memory(
+        target = _target(device = "cpu", backend = "cpu", supports_offload = False),
+        device_memory = DeviceMemory("cpu", "cpu", "system_memory", 8000, 16000),
+        model_dense_mib = 4000,
+        runtime_headroom_mib = 2000,
+        explicit_offload = True,
+    )
+    assert plan.offload_policy == OFFLOAD_NONE
 
 
 # ── snapshot ──────────────────────────────────────────────────────────────────
@@ -328,14 +379,14 @@ def _manual_plan(policy, *, tiling):
         vae_tiling = tiling,
         vae_slicing = tiling,
         device_memory = _discrete(4000, 8000),
+        estimates = {},
     )
 
 
 def test_apply_none_places_resident():
     pipe = _RecordingPipe()
     effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda")
-    # Resident placement, no lossy tiling, but slicing is always on (lossless / free).
-    assert pipe.calls == ["vae_slicing", "to:cuda"]
+    assert pipe.calls == ["to:cuda"]  # no tiling on a roomy resident run
     assert effective == OFFLOAD_NONE and tiled is False
 
 

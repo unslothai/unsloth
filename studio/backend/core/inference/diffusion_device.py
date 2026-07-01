@@ -30,6 +30,21 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
 
+    @property
+    def is_cuda_torch_device(self) -> bool:
+        return self.device == "cuda"
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "device": self.device,
+            "dtype": str(self.dtype).replace("torch.", ""),
+            "backend": self.backend,
+            "vendor": self.vendor,
+            "supports_model_cpu_offload": self.supports_model_cpu_offload,
+            "supports_default_torch_compile": self.supports_default_torch_compile,
+            "supports_pinned_transfer": self.supports_pinned_transfer,
+        }
+
 
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
     """True if ``studio_device`` equals ``DeviceType.<name>`` (when that member exists)."""
@@ -80,6 +95,53 @@ def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
             pass
 
     return _mps_or_cpu_target(torch)
+
+
+def diffusion_device_target_from_torch_device(
+    torch_device: str, dtype: Any
+) -> DiffusionDeviceTarget:
+    """Reconstruct a target from a (device, dtype) pair.
+
+    Keeps the ``_pick_device_and_dtype`` shim / monkeypatch path working: a caller
+    that overrides the (device, dtype) tuple can still recover the capability flags.
+    """
+    device = str(torch_device).split(":", 1)[0]
+    if device == "cuda":
+        try:
+            import torch
+            is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+        except Exception:
+            is_rocm = False
+        return DiffusionDeviceTarget(
+            device = "cuda",
+            dtype = dtype,
+            backend = "rocm" if is_rocm else "cuda",
+            vendor = "amd" if is_rocm else "nvidia",
+            supports_model_cpu_offload = True,
+            supports_default_torch_compile = not is_rocm,
+            supports_pinned_transfer = True,
+        )
+    if device == "xpu":
+        return DiffusionDeviceTarget(
+            device = "xpu",
+            dtype = dtype,
+            backend = "xpu",
+            vendor = "intel",
+            supports_model_cpu_offload = True,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        )
+    if device == "mps":
+        return DiffusionDeviceTarget(
+            device = "mps",
+            dtype = dtype,
+            backend = "mps",
+            vendor = "apple",
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        )
+    return _cpu_target(torch = None, dtype = dtype)
 
 
 def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
@@ -175,10 +237,12 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     return _cpu_target(torch)
 
 
-def _cpu_target(torch: Any) -> DiffusionDeviceTarget:
+def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
+    if dtype is None:
+        dtype = torch.float32
     return DiffusionDeviceTarget(
         device = "cpu",
-        dtype = torch.float32,
+        dtype = dtype,
         backend = "cpu",
         vendor = None,
         supports_model_cpu_offload = False,
