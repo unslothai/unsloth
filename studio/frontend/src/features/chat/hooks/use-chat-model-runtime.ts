@@ -315,6 +315,7 @@ export function useChatModelRuntime() {
   const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
     const signal = options?.signal;
     setModelsError(null);
+    useChatRuntimeStore.getState().setModelRuntimeHydrated(false);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
         listModels(),
@@ -357,6 +358,10 @@ export function useChatModelRuntime() {
       toast.error("Failed to refresh models", {
         description: message,
       });
+    } finally {
+      if (!signal?.aborted) {
+        useChatRuntimeStore.getState().setModelRuntimeHydrated(true);
+      }
     }
   }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
 
