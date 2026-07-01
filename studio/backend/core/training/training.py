@@ -1099,7 +1099,6 @@ class TrainingBackend:
             return
         try:
             from storage.studio_db import update_run_output_dir
-
             update_run_output_dir(self.current_job_id, self._output_dir)
         except Exception:
             logger.warning("Failed to persist output_dir", exc_info = True)

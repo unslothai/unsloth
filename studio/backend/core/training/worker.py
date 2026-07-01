@@ -2031,6 +2031,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
 
     if callable(_orig_build_optimizer):
+
         def _capture_optimizer(total_steps):
             _opt_ref[0] = _orig_build_optimizer(total_steps)
             return _opt_ref[0]
@@ -3166,9 +3167,7 @@ def _send_status(event_queue: Any, message: str) -> None:
 
 def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
     try:
-        event_queue.put(
-            {"type": "output_dir", "output_dir": output_dir, "ts": time.time()}
-        )
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
     except Exception:
         pass
 
