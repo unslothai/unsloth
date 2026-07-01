@@ -29,9 +29,28 @@ class _FakeBackend:
     def is_loaded(self) -> bool:
         return self.loaded
 
+    def validate_load_request(
+        self,
+        model_path,
+        *,
+        gguf_filename = None,
+        family_override = None,
+    ):
+        # Mirror the real backend's cheap validation so the route's
+        # validate-before-evict ordering is exercised.
+        from core.inference.diffusion_families import detect_family
+
+        if not gguf_filename:
+            raise ValueError("gguf_filename is required.")
+        fam = detect_family(model_path, family_override)
+        if fam is None:
+            raise ValueError(f"Could not infer a diffusion family for '{model_path}'.")
+        return fam
+
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
+        self.last_load_kwargs = dict(kwargs)
         return {
             "loaded": True,
             "repo_id": model_path,
@@ -40,6 +59,9 @@ class _FakeBackend:
             "device": "cpu",
             "dtype": "float32",
             "cpu_offload": False,
+            "offload_policy": "none",
+            "vae_tiling": False,
+            "memory_mode": kwargs.get("memory_mode") or "auto",
         }
 
     def load_progress(self):
@@ -223,18 +245,83 @@ def test_generate_without_load_returns_409(client):
     assert resp.status_code == 409
 
 
+def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
+    # A loaded model that fails mid-pipeline (CUDA OOM, a RuntimeError) is a server
+    # failure: 500 with a generic message, not a 409 echoing the raw exception.
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _oom(**kwargs):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (24.00 GiB total)")
+
+    monkeypatch.setattr(backend, "generate", _oom)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
+    assert "CUDA" not in resp.json()["detail"]
+
+
 def test_load_unknown_family_returns_400(client, monkeypatch):
     def _raise(*a, **k):
-        raise ValueError("Could not infer a diffusion family for 'x/y'.")
+        raise ValueError("'x/y' isn't a supported image-generation model. Supported: Z-Image.")
 
     backend = _FakeBackend()
-    backend.begin_load = _raise
+    # Validation runs in the pre-flight (before the GPU is taken), so that is
+    # where an unsupported model is rejected now.
+    backend.validate_load_request = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     resp = client.post(
         "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
     )
     assert resp.status_code == 400
-    assert "family" in resp.json()["detail"]
+    assert "isn't a supported image-generation model" in resp.json()["detail"]
+
+
+def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
+    # A rejected image-model pick must not tear down the user's loaded chat model:
+    # validation runs before acquire_for, so chat keeps the GPU on a 400.
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+
+    backend = _FakeBackend()
+
+    def _raise(*a, **k):
+        raise ValueError("'x/y' isn't a supported image-generation model.")
+
+    backend.validate_load_request = _raise
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 400
+    assert evicted == []  # chat backend was never evicted
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
+def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):
+    # An image load while training is active is refused (409) before the GPU is
+    # taken, so the training run and the loaded chat model are both untouched.
+    import core.training as core_training
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+
+    class _Training:
+        def is_training_active(self):
+            return True
+
+    monkeypatch.setattr(core_training, "get_training_backend", lambda: _Training())
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 409
+    assert "training" in resp.json()["detail"].lower()
+    assert evicted == []  # chat backend was never evicted
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_load_progress_route(client):
@@ -255,3 +342,67 @@ def test_routes_require_auth():
     app.include_router(studio_router, prefix = "/api/inference")
     unauth = TestClient(app)
     assert unauth.get("/api/inference/images/status").status_code in (401, 403)
+
+
+def test_invalid_family_returns_400_without_evicting_chat(client):
+    # An undetectable family fails validation BEFORE the GPU handoff, so the
+    # arbiter is never acquired and a loaded chat model would not be evicted.
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 400
+    assert "family" in resp.json()["detail"]
+    assert gpu_arbiter._owner is None
+
+
+def test_validate_filenotfound_maps_to_400_without_eviction(client, monkeypatch):
+    def _raise_fnf(*a, **k):
+        raise FileNotFoundError("'q.gguf' not found under /models/x.")
+
+    backend = _FakeBackend()
+    backend.validate_load_request = _raise_fnf
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "/models/x", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 400
+    assert gpu_arbiter._owner is None
+
+
+def test_memory_mode_threads_through_to_backend(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "memory_mode": "low_vram"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["memory_mode"] == "low_vram"
+    assert backend.last_load_kwargs.get("memory_mode") == "low_vram"
+
+
+def test_invalid_memory_mode_returns_422_without_eviction(client):
+    # An unsupported memory_mode is rejected by the request schema (Literal), so the
+    # GPU is never acquired and no chat model is evicted.
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "memory_mode": "ultra"},
+    )
+    assert resp.status_code == 422
+    assert gpu_arbiter._owner is None
+
+
+def test_in_progress_returns_409_after_validation_passes(client, monkeypatch):
+    def _busy(*a, **k):
+        raise RuntimeError("A diffusion load is already in progress.")
+
+    backend = _FakeBackend()
+    backend.begin_load = _busy
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 409
+    # Validation passed first, so the GPU WAS acquired before begin_load reported busy.
+    assert gpu_arbiter._owner == gpu_arbiter.DIFFUSION

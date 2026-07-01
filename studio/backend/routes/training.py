@@ -255,6 +255,7 @@ async def start_training(
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
+            "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
@@ -361,6 +362,27 @@ async def start_training(
                     exp_backend.is_peft = False
             except Exception as e:
                 logger.warning("Could not shut down export subprocess: %s", e)
+
+            try:
+                # A resident or in-flight diffusion (Images) pipeline also holds
+                # GPU memory the training run needs, and it can't be cheaply sized,
+                # so tear it down unconditionally like the export subprocess above
+                # (the chat block below fit-checks; diffusion can't). unload() is a
+                # no-op when nothing is loaded and also preempts an in-flight load;
+                # release the arbiter so it doesn't think the gone pipeline owns
+                # the GPU. Must precede the chat block, which early-returns.
+                from core.inference import gpu_arbiter
+                from core.inference.diffusion import get_diffusion_backend
+
+                diffusion = get_diffusion_backend()
+                if diffusion.is_loaded:
+                    logger.info(
+                        "Unloading diffusion (Images) model to free GPU memory for training"
+                    )
+                diffusion.unload()
+                gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+            except Exception as e:
+                logger.warning("Could not unload diffusion model for training: %s", e)
 
             try:
                 from routes.training_vram import (
@@ -847,6 +869,11 @@ async def stream_training_progress(
         )
 
         while backend.is_training_active():
+            # Client gone: end the generator without falling through to the final
+            # "complete" frame, which a buffered/proxy consumer could otherwise read
+            # as a finished run while training is still active.
+            if await request.is_disconnected():
+                return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0

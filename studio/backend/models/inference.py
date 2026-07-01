@@ -106,8 +106,7 @@ class LoadRequest(BaseModel):
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Studio-managed flags (model identity, port, context length, GPU placement, "
-            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
-            "non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
 
@@ -1700,7 +1699,25 @@ class DiffusionLoadRequest(BaseModel):
         None, description = "Force a family when it can't be inferred from the repo id"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
-    cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
+        None,
+        description = "Memory policy: auto (measured), fast (resident), balanced "
+        "(stream the transformer, near-resident speed, moderate VRAM "
+        "cut), low_vram (offload every component, lowest VRAM, slower).",
+    )
+    speed_mode: Optional[Literal["off", "default", "max"]] = Field(
+        None,
+        description = "Opt-in speed optims (default off -> bit-identical output): "
+        "default (channels_last + regional torch.compile where eligible), "
+        "max (also TF32 + fused QKV).",
+    )
+    text_encoder_quant: Optional[Literal["fp8", "nvfp4"]] = Field(
+        None,
+        description = "Quantise the companion text encoder(s): fp8 (~2x smaller, "
+        "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "memory-vs-quality tradeoff (shifts fine detail), not free; "
+        "pairs well with balanced mode.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1747,6 +1764,9 @@ class GalleryImage(BaseModel):
     guidance: float = Field(..., description = "Guidance scale")
     seed: int = Field(..., description = "Seed used")
     batch_index: int = Field(0, description = "Position within its batch (0-based)")
+    batch_size: int = Field(
+        1, description = "Batch size used; with batch_index it lets restore replay this image"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
 
@@ -1796,6 +1816,18 @@ class DiffusionStatusResponse(BaseModel):
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
+    offload_policy: Optional[str] = Field(
+        None, description = "Resolved offload policy: none | group | model | sequential"
+    )
+    vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
+    memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
+    speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
+    speed_optims: list[str] = Field(
+        default_factory = list, description = "Speed optimisations actually engaged"
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
+    )
 
 
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──

@@ -14,6 +14,7 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -30,6 +31,14 @@ class DiffusionFamily:
     cfg_kwarg: str = "guidance_scale"
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
+    # True for families whose activations overflow float16's finite range
+    # (~6.5e4) and produce inf -> NaN latents -> a black image. The backend
+    # promotes a resolved float16 to float32 for these at load time.
+    fp16_incompatible: bool = False
+    # False for families whose denoiser block doesn't compile cleanly with
+    # regional torch.compile (Z-Image). The GGUF transformer compiles cleanly, so
+    # this gates the opt-in speed-mode compile for every family.
+    supports_torch_compile: bool = True
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -70,12 +79,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         aliases = ("zimage", "z_image"),
+        # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
+        fp16_incompatible = True,
+        # Z-Image's denoiser block is excluded from regional torch.compile.
+        supports_torch_compile = False,
     ),
 )
 
 # Editing / inpaint checkpoints share an arch keyword but need a different
 # pipeline and an input image, which this text-to-image backend doesn't drive.
-_EDIT_KEYWORDS = ("edit", "kontext", "inpaint")
+_EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "inpainting")
 
 
 def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[DiffusionFamily]:
@@ -92,7 +105,13 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
                 return fam
         return None
     needle = repo_id.lower()
-    if any(kw in needle for kw in _EDIT_KEYWORDS):
+    # Match edit keywords as whole id segments, not raw substrings, so a normal
+    # text-to-image repo like ".../some-image-edition" isn't misread as an editing
+    # checkpoint. Qwen-Image-Edit / FLUX.1-Kontext still match (edit/kontext are
+    # whole tokens there). Split on both path separators so a Windows local path
+    # is segmented too.
+    segments = set(re.split(r"[-_./\\]+", needle))
+    if any(kw in segments for kw in _EDIT_KEYWORDS):
         return None
     for fam in _FAMILIES:
         if fam.name in needle or any(alias in needle for alias in fam.aliases):
@@ -160,6 +179,6 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     child = repo_root.joinpath(*rel.parts).resolve()
     if child != repo_real and repo_real not in child.parents:
         raise ValueError("gguf_filename must resolve to a file inside the repo.")
-    if not child.exists():
-        raise FileNotFoundError(f"'{gguf_filename}' not found under {repo_root}.")
+    if not child.is_file():
+        raise FileNotFoundError(f"'{gguf_filename}' is not a file under {repo_root}.")
     return child
