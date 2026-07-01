@@ -1045,16 +1045,17 @@ function useStudioRuntimeAdapters(
   return adapters;
 }
 
-const chatAdapter = createOpenAIStreamAdapter();
-
 function useRuntimeHook(
   modelType: ModelType,
   pairId?: string,
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(modelType, pairId);
   const persistedChatAdapter = useMemo(
-    () => createPersistedRunAdapter(chatAdapter),
-    [],
+    () =>
+      createPersistedRunAdapter(
+        createOpenAIStreamAdapter({ modelType, pairId }),
+      ),
+    [modelType, pairId],
   );
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }
