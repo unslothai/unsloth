@@ -46,7 +46,7 @@ def test_sdxl_detection_by_repo_and_override():
     assert detect_family("stabilityai/sdxl-turbo").name == "sdxl"
     assert detect_family("some-org/My-Cool-SDXL-Merge").name == "sdxl"
     assert detect_family("some-org/stable-diffusion-xl-anime").name == "sdxl"
-    assert detect_family("x", override="sdxl").name == "sdxl"
+    assert detect_family("x", override = "sdxl").name == "sdxl"
     # A GGUF DiT family must NOT be swallowed by the SDXL match.
     assert detect_family("unsloth/FLUX.1-schnell-GGUF").name == "flux.1"
 
@@ -91,9 +91,9 @@ class _FakeVae:
         self.moved_to = None
 
     def parameters(self):
-        yield types.SimpleNamespace(dtype=self._dtype)
+        yield types.SimpleNamespace(dtype = self._dtype)
 
-    def to(self, dtype=None):
+    def to(self, dtype = None):
         self.moved_to = dtype
         self._dtype = dtype
 
@@ -101,29 +101,29 @@ class _FakeVae:
 def test_align_vae_dtype_uses_unet_denoiser():
     # For SDXL the denoiser lives at pipe.unet; _align_vae_dtype must read it (a pipe
     # with only .unet and no .transformer) and cast the VAE to the U-Net's dtype.
-    vae = _FakeVae(dtype="float32")
-    pipe = types.SimpleNamespace(unet=types.SimpleNamespace(dtype="bfloat16"), vae=vae)
+    vae = _FakeVae(dtype = "float32")
+    pipe = types.SimpleNamespace(unet = types.SimpleNamespace(dtype = "bfloat16"), vae = vae)
     DiffusionBackend._align_vae_dtype(pipe, "unet")
     assert vae.moved_to == "bfloat16"
 
 
 def test_align_vae_dtype_transformer_default_unchanged():
     # DiT default: reads pipe.transformer; a pipe with no transformer is a safe no-op.
-    vae = _FakeVae(dtype="float32")
-    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace(dtype="bfloat16"), vae=vae)
+    vae = _FakeVae(dtype = "float32")
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = "bfloat16"), vae = vae)
     DiffusionBackend._align_vae_dtype(pipe)
     assert vae.moved_to == "bfloat16"
     # No denoiser attribute -> no-op (does not raise, does not move the VAE).
-    vae2 = _FakeVae(dtype="float32")
-    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(vae=vae2), "unet")
+    vae2 = _FakeVae(dtype = "float32")
+    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(vae = vae2), "unet")
     assert vae2.moved_to is None
 
 
 def test_sdxl_lora_supported_on_diffusers():
     # SDXL is bf16/bnb-4bit on diffusers -> LoRA is allowed (unlike GGUF-via-diffusers).
     assert diffusion_lora.supports_lora(
-        engine="diffusers", family="sdxl", model_kind="pipeline", transformer_quant=None
+        engine = "diffusers", family = "sdxl", model_kind = "pipeline", transformer_quant = None
     )
     assert diffusion_lora.supports_lora(
-        engine="diffusers", family="sdxl", model_kind="single_file", transformer_quant=None
+        engine = "diffusers", family = "sdxl", model_kind = "single_file", transformer_quant = None
     )
