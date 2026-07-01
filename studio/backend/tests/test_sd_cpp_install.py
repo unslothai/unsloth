@@ -17,7 +17,15 @@ _STUDIO = Path(__file__).resolve().parents[2]
 if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))
 
-from install_sd_cpp_prebuilt import default_install_dir, resolve_release_asset  # noqa: E402
+import zipfile  # noqa: E402
+
+import pytest  # noqa: E402
+
+from install_sd_cpp_prebuilt import (  # noqa: E402
+    _safe_extractall,
+    default_install_dir,
+    resolve_release_asset,
+)
 
 # A real stable-diffusion.cpp latest-release asset list.
 _ASSETS = [
@@ -114,3 +122,45 @@ def test_default_install_dir_is_sibling_of_llama(monkeypatch):
     d = default_install_dir()
     assert d.name == "stable-diffusion.cpp"
     assert d.parent.name == ".unsloth"
+
+
+# ── safe extraction (Zip-Slip guard) ─────────────────────────────────────────
+
+
+def test_safe_extractall_rejects_path_traversal(tmp_path):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("sd-cli", b"ok")
+        zf.writestr("../escape.txt", b"pwned")  # escapes the install dir
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe path"):
+            _safe_extractall(zf, target)
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_safe_extractall_extracts_normal_members(tmp_path):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "ok.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"ok")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"ok"
+
+
+def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
+    # A binary installed under a custom Studio root must be discovered without also
+    # setting UNSLOTH_SD_CPP_PATH (matches default_install_dir's env handling).
+    from core.inference import sd_cpp_engine as eng
+
+    monkeypatch.delenv("SD_CLI_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
+    studio_home = tmp_path / "studio_root"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    binary = tmp_path / "stable-diffusion.cpp" / "build" / "bin" / "sd-cli"
+    binary.parent.mkdir(parents = True)
+    binary.write_bytes(b"x")
+    assert eng.find_sd_cpp_binary() == str(binary)

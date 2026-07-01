@@ -106,8 +106,7 @@ class LoadRequest(BaseModel):
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Studio-managed flags (model identity, port, context length, GPU placement, "
-            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
-            "non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
 
@@ -1797,6 +1796,9 @@ class GalleryImage(BaseModel):
     guidance: float = Field(..., description = "Guidance scale")
     seed: int = Field(..., description = "Seed used")
     batch_index: int = Field(0, description = "Position within its batch (0-based)")
+    batch_size: int = Field(
+        1, description = "Batch size used; with batch_index it lets restore replay this image"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
 

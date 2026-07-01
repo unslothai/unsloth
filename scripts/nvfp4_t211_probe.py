@@ -32,30 +32,38 @@ def diagnostics() -> None:
     import torch
     import torchao
 
-    print("== A. diagnostics ==", flush=True)
-    print(f"  torch    {torch.__version__}", flush=True)
-    print(f"  torchao  {torchao.__version__}", flush=True)
-    print(f"  cuda     {torch.version.cuda}", flush=True)
+    print("== A. diagnostics ==", flush = True)
+    print(f"  torch    {torch.__version__}", flush = True)
+    print(f"  torchao  {torchao.__version__}", flush = True)
+    print(f"  cuda     {torch.version.cuda}", flush = True)
     if torch.cuda.is_available():
-        print(f"  device   {torch.cuda.get_device_name(0)} sm{torch.cuda.get_device_capability(0)}", flush=True)
-    print(f"  torch.ops.torchao present: {hasattr(torch.ops, 'torchao')}", flush=True)
-    print(f"  fp4 primitives: e2m1={hasattr(torch, 'float4_e2m1fn_x2')} "
-          f"e8m0={hasattr(torch, 'float8_e8m0fnu')} _scaled_mm={hasattr(torch, '_scaled_mm')}", flush=True)
+        print(
+            f"  device   {torch.cuda.get_device_name(0)} sm{torch.cuda.get_device_capability(0)}",
+            flush = True,
+        )
+    print(f"  torch.ops.torchao present: {hasattr(torch.ops, 'torchao')}", flush = True)
+    print(
+        f"  fp4 primitives: e2m1={hasattr(torch, 'float4_e2m1fn_x2')} "
+        f"e8m0={hasattr(torch, 'float8_e8m0fnu')} _scaled_mm={hasattr(torch, '_scaled_mm')}",
+        flush = True,
+    )
     # torchao prints "Skipping import of cpp extensions ..." to stderr at import on torch<2.11.
     # On 2.11 that line is absent -> the CUTLASS FP4 GEMM extension is live.
-    print("  (no 'Skipping import of cpp extensions' line above => cpp/CUTLASS ext loaded)", flush=True)
+    print(
+        "  (no 'Skipping import of cpp extensions' line above => cpp/CUTLASS ext loaded)",
+        flush = True,
+    )
 
 
 # ----------------------------------------------------------------------------- micro
 def _configs():
     from torchao.quantization import Float8DynamicActivationFloat8WeightConfig as FP8
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig as NV
-
     return {
         "bf16": None,
         "fp8": FP8(),
-        "nvfp4_cutlass": NV(use_triton_kernel=False),
-        "nvfp4_triton": NV(use_triton_kernel=True),
+        "nvfp4_cutlass": NV(use_triton_kernel = False),
+        "nvfp4_triton": NV(use_triton_kernel = True),
     }
 
 
@@ -66,11 +74,11 @@ def _bench_linear(K, N, M, cfg, iters, compile_):
 
     torch.compiler.reset()
     torch.cuda.empty_cache()
-    m = nn.Sequential(nn.Linear(K, N, bias=False)).cuda().to(torch.bfloat16)
+    m = nn.Sequential(nn.Linear(K, N, bias = False)).cuda().to(torch.bfloat16)
     if cfg is not None:
         quantize_(m, cfg)
-    fn = torch.compile(m, fullgraph=True, dynamic=False) if compile_ else m
-    x = torch.randn(M, K, device="cuda", dtype=torch.bfloat16)
+    fn = torch.compile(m, fullgraph = True, dynamic = False) if compile_ else m
+    x = torch.randn(M, K, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
         for _ in range(3):  # warmup / compile
             fn(x)
@@ -89,12 +97,12 @@ def _bench_linear(K, N, M, cfg, iters, compile_):
 
 
 def micro(M, iters, compile_):
-    print(f"\n== B. GEMM micro (M={M}, compile={compile_}, iters={iters}) ==", flush=True)
+    print(f"\n== B. GEMM micro (M={M}, compile={compile_}, iters={iters}) ==", flush = True)
     # (K, N): qkv-ish, mlp-up, mlp-down for a ~3072-dim DiT
     shapes = [(3072, 3072), (3072, 12288), (12288, 3072)]
     cfgs = _configs()
     for K, N in shapes:
-        print(f"  shape K={K} N={N}:", flush=True)
+        print(f"  shape K={K} N={N}:", flush = True)
         base_ms = None
         fp8_ms = None
         for name, cfg in cfgs.items():
@@ -107,9 +115,12 @@ def micro(M, iters, compile_):
                     fp8_ms = ms
                 vs_bf16 = f"{base_ms/ms:.2f}x" if base_ms else "-"
                 vs_fp8 = f"{fp8_ms/ms:.2f}x" if fp8_ms else "-"
-                print(f"    {name:16s} {ms:7.3f} ms  {tfl:7.1f} TFLOPS  vs_bf16={vs_bf16:>6s}  vs_fp8={vs_fp8:>6s}", flush=True)
+                print(
+                    f"    {name:16s} {ms:7.3f} ms  {tfl:7.1f} TFLOPS  vs_bf16={vs_bf16:>6s}  vs_fp8={vs_fp8:>6s}",
+                    flush = True,
+                )
             except Exception as exc:  # noqa: BLE001
-                print(f"    {name:16s} FAILED: {type(exc).__name__}: {str(exc)[:120]}", flush=True)
+                print(f"    {name:16s} FAILED: {type(exc).__name__}: {str(exc)[:120]}", flush = True)
 
 
 # ----------------------------------------------------------------------------- e2e
@@ -125,8 +136,9 @@ def _lpips(ref, arr):
     try:
         import lpips
         import torch
+
         if _LP["fn"] is None:
-            _LP["fn"] = lpips.LPIPS(net="alex", verbose=False).cuda().eval()
+            _LP["fn"] = lpips.LPIPS(net = "alex", verbose = False).cuda().eval()
 
         def t(x):
             return (torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0).cuda()
@@ -134,7 +146,7 @@ def _lpips(ref, arr):
         with torch.no_grad():
             return float(_LP["fn"](t(ref), t(arr)).item())
     except Exception as exc:  # noqa: BLE001
-        print(f"    (lpips: {type(exc).__name__})", flush=True)
+        print(f"    (lpips: {type(exc).__name__})", flush = True)
         return None
 
 
@@ -143,8 +155,9 @@ def _load_dense():
     import torch
 
     t = diffusers.ZImageTransformer2DModel.from_pretrained(
-        BASE, subfolder="transformer", torch_dtype=torch.bfloat16)
-    pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16, transformer=t)
+        BASE, subfolder = "transformer", torch_dtype = torch.bfloat16
+    )
+    pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype = torch.bfloat16, transformer = t)
     pipe.to("cuda")
     return pipe
 
@@ -152,11 +165,17 @@ def _load_dense():
 def _gen(pipe, steps, seed, res):
     import torch
 
-    g = torch.Generator(device="cuda").manual_seed(seed)
+    g = torch.Generator(device = "cuda").manual_seed(seed)
     torch.cuda.synchronize()
     t0 = time.time()
-    img = pipe(prompt=PROMPT, width=res, height=res, num_inference_steps=steps,
-               guidance_scale=0.0, generator=g).images[0]
+    img = pipe(
+        prompt = PROMPT,
+        width = res,
+        height = res,
+        num_inference_steps = steps,
+        guidance_scale = 0.0,
+        generator = g,
+    ).images[0]
     torch.cuda.synchronize()
     return img, time.time() - t0
 
@@ -169,24 +188,31 @@ def e2e(steps, res, seed, iters, mf):
     import torch
     import torch.nn as nn
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    OUT.mkdir(parents = True, exist_ok = True)
 
-    def filt(mod, fqn=""):
+    def filt(mod, fqn = ""):
         return isinstance(mod, nn.Linear) and mod.in_features >= mf and mod.out_features >= mf
 
-    def run(tag, *, cfg=None, compile=True):
+    def run(
+        tag,
+        *,
+        cfg = None,
+        compile = True,
+    ):
         torch.compiler.reset()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         pipe = _load_dense()
         if cfg is not None:
             from torchao.quantization import quantize_
-            quantize_(pipe.transformer, cfg, filter_fn=filt)
+            quantize_(pipe.transformer, cfg, filter_fn = filt)
         if compile:
             try:
-                pipe.transformer.compile_repeated_blocks(fullgraph=True, dynamic=True)
+                pipe.transformer.compile_repeated_blocks(fullgraph = True, dynamic = True)
             except Exception as exc:  # noqa: BLE001
-                print(f"    [{tag}] compile failed: {type(exc).__name__}: {str(exc)[:90]}", flush=True)
+                print(
+                    f"    [{tag}] compile failed: {type(exc).__name__}: {str(exc)[:90]}", flush = True
+                )
         _gen(pipe, steps, seed, res)  # warmup / compile
         dts, img = [], None
         for _ in range(iters):
@@ -202,58 +228,71 @@ def e2e(steps, res, seed, iters, mf):
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig as NV
     from torchao.quantization import Float8DynamicActivationFloat8WeightConfig as FP8
 
-    print(f"\n== C. end-to-end (Z-Image dense, {res}px, {steps} steps, min_feat={mf}) ==", flush=True)
-    bref, ref, _ = run("bf16_eager", cfg=None, compile=False)
-    print(f"  bf16 eager ref: {bref:.3f}s", flush=True)
+    print(
+        f"\n== C. end-to-end (Z-Image dense, {res}px, {steps} steps, min_feat={mf}) ==", flush = True
+    )
+    bref, ref, _ = run("bf16_eager", cfg = None, compile = False)
+    print(f"  bf16 eager ref: {bref:.3f}s", flush = True)
     rows = [("bf16_eager", bref, float("inf"), 0.0, None)]
 
     specs = [
         ("bf16_compile", None, True),
         ("fp8_compile", FP8(), True),
-        ("nvfp4_cutlass_compile", NV(use_triton_kernel=False), True),
-        ("nvfp4_triton_compile", NV(use_triton_kernel=True), True),
+        ("nvfp4_cutlass_compile", NV(use_triton_kernel = False), True),
+        ("nvfp4_triton_compile", NV(use_triton_kernel = True), True),
     ]
     for tag, cfg, comp in specs:
         try:
-            med, arr, gp = run(tag, cfg=cfg, compile=comp)
+            med, arr, gp = run(tag, cfg = cfg, compile = comp)
             ps, lp = _psnr(ref, arr), _lpips(ref, arr)
             rows.append((tag, med, ps, lp, gp))
-            print(f"  {tag:24s} {med:.3f}s ({bref/med:.2f}x vs eager) PSNR={ps:.1f} LPIPS={lp} VRAM={gp:.1f}G", flush=True)
+            print(
+                f"  {tag:24s} {med:.3f}s ({bref/med:.2f}x vs eager) PSNR={ps:.1f} LPIPS={lp} VRAM={gp:.1f}G",
+                flush = True,
+            )
         except Exception as exc:  # noqa: BLE001
             import traceback
+
             traceback.print_exc()
-            print(f"  {tag:24s} FAILED: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
+            print(f"  {tag:24s} FAILED: {type(exc).__name__}: {str(exc)[:160]}", flush = True)
             rows.append((tag, None, None, None, None))
 
     fp8 = next((r[1] for r in rows if r[0] == "fp8_compile" and r[1]), None)
-    print("\n==== SUMMARY (ref = bf16 dense eager) ====", flush=True)
+    print("\n==== SUMMARY (ref = bf16 dense eager) ====", flush = True)
     for tag, med, ps, lp, gp in rows:
         if med is None:
             print(f"  {tag:24s} FAILED")
             continue
         vs_fp8 = f"{fp8/med:.2f}x" if fp8 else "-"
         psv = "inf" if ps == float("inf") else f"{ps:.1f}"
-        lpv = "ref" if (lp == 0.0 and tag == "bf16_eager") else (f"{lp:.3f}" if lp is not None else "n/a")
-        print(f"  {tag:24s} {med:.3f}s  vs_fp8:{vs_fp8:>6s}  PSNR={psv:>5s}  LPIPS={lpv:>6s}", flush=True)
+        lpv = (
+            "ref"
+            if (lp == 0.0 and tag == "bf16_eager")
+            else (f"{lp:.3f}" if lp is not None else "n/a")
+        )
+        print(
+            f"  {tag:24s} {med:.3f}s  vs_fp8:{vs_fp8:>6s}  PSNR={psv:>5s}  LPIPS={lpv:>6s}",
+            flush = True,
+        )
 
 
-def main(argv=None) -> int:
+def main(argv = None) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--steps", type=int, default=8)
-    p.add_argument("--res", type=int, default=1024)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--iters", type=int, default=3)
-    p.add_argument("--micro-M", type=int, default=4096)
-    p.add_argument("--min-feat", type=int, default=512)
-    p.add_argument("--only", choices=["diag", "micro", "e2e", "all"], default="all")
+    p.add_argument("--steps", type = int, default = 8)
+    p.add_argument("--res", type = int, default = 1024)
+    p.add_argument("--seed", type = int, default = 42)
+    p.add_argument("--iters", type = int, default = 3)
+    p.add_argument("--micro-M", type = int, default = 4096)
+    p.add_argument("--min-feat", type = int, default = 512)
+    p.add_argument("--only", choices = ["diag", "micro", "e2e", "all"], default = "all")
     args = p.parse_args(argv)
 
     diagnostics()
     if args.only in ("micro", "all"):
-        micro(args.micro_M, args.iters, compile_=True)
+        micro(args.micro_M, args.iters, compile_ = True)
     if args.only in ("e2e", "all"):
         e2e(args.steps, args.res, args.seed, args.iters, args.min_feat)
-    print("NVFP4-T211-PROBE-DONE", flush=True)
+    print("NVFP4-T211-PROBE-DONE", flush = True)
     return 0
 
 

@@ -283,6 +283,11 @@
     </div>
     <script>
       const base = location.pathname.replace(/\/+$/, "");
+      // The capability token rides in ?k=; location.pathname drops it, so carry it
+      // onto the chat request explicitly. Not stored or logged.
+      const k = new URLSearchParams(location.search).get("k");
+      const chatUrl =
+        base + "/v1/chat/completions" + (k ? "?k=" + encodeURIComponent(k) : "");
       const log = document.getElementById("log"),
         thread = document.getElementById("thread"),
         welcome = document.getElementById("welcome");
@@ -328,7 +333,7 @@
         out.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
         let acc = "";
         try {
-          const r = await fetch(base + "/v1/chat/completions", {
+          const r = await fetch(chatUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

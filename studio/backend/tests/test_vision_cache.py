@@ -71,7 +71,7 @@ class TestVisionCacheHitMiss:
         """Two calls for the same model invoke the uncached fn once."""
         assert is_vision_model("org/my-vlm") is True
         assert is_vision_model("org/my-vlm") is True
-        mock_uncached.assert_called_once_with("org/my-vlm", None)
+        mock_uncached.assert_called_once_with("org/my-vlm", None, local_files_only = False)
 
     @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
     def test_different_models_each_detected(self, mock_uncached):
@@ -97,7 +97,7 @@ class TestVisionCacheStoresFalse:
         assert is_vision_model("org/text-only") is False
         assert is_vision_model("org/text-only") is False
         mock_uncached.assert_called_once()
-        assert _vision_detection_cache[("org/text-only", None)] is False
+        assert _vision_detection_cache[("org/text-only", None, False)] is False
 
 
 # Subprocess path (transformers 5.x) caching
@@ -120,7 +120,7 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/Qwen3.5-2B") is True
 
         mock_subprocess.assert_called_once()
-        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
+        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None, False)] is True
 
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
     @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
@@ -133,7 +133,9 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
 
-        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
+        mock_raw_config.assert_called_once_with(
+            "unsloth/gemma-4-E4B-it", hf_token = None, local_files_only = False
+        )
         mock_subprocess.assert_not_called()
 
 
@@ -405,6 +407,43 @@ class TestVisionCacheTokenHandling:
         mock_uncached.assert_called_once()
 
 
+class TestVisionCacheLocalOnly:
+    """local_files_only is in the cache key: an offline negative must not be reused by a
+    later online probe (else a VLM is routed through the text loader until restart)."""
+
+    def test_local_only_negative_does_not_poison_online(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        mc._vision_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        # Pin env-offline off so the key tracks the kwarg.
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+
+        seen = []
+
+        def _probe(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
+            seen.append(local_files_only)
+            # Offline can't fetch -> not a VLM; online reveals the VLM.
+            return False if local_files_only else True
+
+        monkeypatch.setattr(mc, "_is_vision_model_uncached", _probe)
+
+        # Offline probe caches False under a local-only key.
+        assert mc.is_vision_model("some/vlm", local_files_only = True) is False
+        # A later online probe must re-run (different key) and detect the VLM.
+        assert mc.is_vision_model("some/vlm", local_files_only = False) is True
+        assert seen == [True, False]
+        # The online positive is then cached for subsequent online callers.
+        assert mc.is_vision_model("some/vlm", local_files_only = False) is True
+        assert seen == [True, False]
+        mc._vision_detection_cache.clear()
+
+
 # ---------------------------------------------------------------------------
 # Direct unit tests for _raw_config_has_vision_config
 # ---------------------------------------------------------------------------
@@ -570,7 +609,11 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
         calls = []
 
-        def _fake(name, hf_token = None):
+        def _fake(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             calls.append(hf_token)
             # Gated repo: only an authenticated probe can read the tokenizer.
             return ("bicodec", True) if hf_token else (None, True)
@@ -601,7 +644,11 @@ class TestAudioDetectionCacheTokenAware:
 
         transient_calls = []
 
-        def _transient(name, hf_token = None):
+        def _transient(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             transient_calls.append(hf_token)
             return (None, False)  # network/5xx -- not cacheable
 
@@ -613,7 +660,11 @@ class TestAudioDetectionCacheTokenAware:
 
         definitive_calls = []
 
-        def _definitive(name, hf_token = None):
+        def _definitive(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             definitive_calls.append(hf_token)
             return (None, True)  # read the config, no audio tokens
 
@@ -623,3 +674,94 @@ class TestAudioDetectionCacheTokenAware:
         # Probed once: the definitive None was cached.
         assert definitive_calls == [None]
         mc._audio_detection_cache.clear()
+
+    def test_local_only_negative_does_not_poison_online(self, monkeypatch):
+        """An offline negative must not be reused by a later online probe (else an audio
+        model is routed through the text loader until restart)."""
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        # Pin env-offline off so the key tracks the kwarg.
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+
+        seen = []
+
+        def _probe(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
+            seen.append(local_files_only)
+            # Offline: nothing on disk -> not audio; online reveals the audio model.
+            return (None, True) if local_files_only else ("snac", True)
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
+
+        # Offline probe caches None under a local-only key.
+        assert mc.detect_audio_type("some/audio-model", local_files_only = True) is None
+        # A later online probe must re-run (different key) and detect the audio model.
+        assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
+        assert seen == [True, False]
+        # The online positive is then cached for subsequent online callers.
+        assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
+        assert seen == [True, False]
+        mc._audio_detection_cache.clear()
+
+    def test_env_offline_negative_does_not_poison_online(self, monkeypatch):
+        """An env-offline probe (default local_files_only=False) must cache under the
+        effective-offline key, so clearing the env var later doesn't leak a stale negative."""
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+
+        env_offline = {"v": True}
+        monkeypatch.setattr(mc, "_env_offline", lambda: env_offline["v"])
+
+        seen = []
+
+        def _probe(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
+            seen.append(local_files_only)
+            return (None, True) if local_files_only else ("snac", True)
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
+
+        # Env offline + default kwarg -> probe runs offline; None cached under the offline key.
+        assert mc.detect_audio_type("some/audio-model") is None
+        assert seen == [True]
+        # Env var cleared: a fresh online probe must re-run (different key) and detect.
+        env_offline["v"] = False
+        assert mc.detect_audio_type("some/audio-model") == "snac"
+        assert seen == [True, False]
+        mc._audio_detection_cache.clear()
+
+
+class TestEnvOfflineParsing:
+    """_env_offline accepts the canonical truthy set (strip+lower, on/true/yes/1); it gates
+    the requests.get fallback and the cache keys, so 'on' or ' 1 ' must still count as offline."""
+
+    def test_truthy_values_recognized(self, monkeypatch):
+        import utils.models.model_config as mc
+        for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            for val in ("1", "true", "TRUE", "yes", "Yes", "on", "ON", " 1 ", " on ", "\ttrue\n"):
+                monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+                monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+                monkeypatch.setenv(var, val)
+                assert mc._env_offline() is True, f"{var}={val!r} should be offline"
+
+    def test_falsy_values_not_offline(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        assert mc._env_offline() is False
+        for val in ("", "0", "false", "no", "off", "2", "onn"):
+            monkeypatch.setenv("HF_HUB_OFFLINE", val)
+            assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"

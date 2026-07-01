@@ -16,7 +16,7 @@ import numpy as np
 
 BASE = "Tongyi-MAI/Z-Image-Turbo"
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/nvfp4_images")
+OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "nvfp4_images"
 
 
 def _psnr(a, b):
@@ -84,11 +84,15 @@ def main(argv = None) -> int:
     p.add_argument("--seed", type = int, default = 42)
     p.add_argument("--iters", type = int, default = 3)
     p.add_argument("--min-feat", type = int, default = 512)
+    p.add_argument("--out-dir", default = None, help = "image output dir (default: repo outputs/)")
     args = p.parse_args(argv)
     steps, res, seed, mf = args.steps, args.res, args.seed, args.min_feat
     import torch
     import torch.nn as nn
 
+    global OUT
+    if args.out_dir:
+        OUT = Path(args.out_dir).expanduser()
     OUT.mkdir(parents = True, exist_ok = True)
 
     def filt(mod, fqn = ""):
