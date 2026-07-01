@@ -310,7 +310,9 @@ def test_strip_final_keeps_text_after_closed_block_with_call_form_gemma_opener()
     # quote-aware helper must not treat the inner opener as an incomplete span and
     # truncate the block (and the visible text after it) to EOF.
     xml = "<function=python><parameter=code><|tool_call>call:t{</parameter></function>"
-    json_block = '<tool_call>{"name":"python","arguments":{"code":"<|tool_call>call:t{"}}</tool_call>'
+    json_block = (
+        '<tool_call>{"name":"python","arguments":{"code":"<|tool_call>call:t{"}}</tool_call>'
+    )
     for block in (xml, json_block):
         text = "before " + block + " after"
         assert strip_tool_call_markup(text, final = True) == "before  after", block
