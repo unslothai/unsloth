@@ -152,13 +152,23 @@ def _install_windows_job() -> None:
 # ── Child binding ──
 
 
-def _pdeathsig_preexec() -> None:
-    # Runs in the forked child before exec. prctl is Linux-only; the getppid
-    # check closes the race where the parent died before this ran.
+def _arm_parent_death_signal() -> None:
+    # Linux-only: ask the kernel to send us SIGTERM if our parent dies later.
+    import ctypes
+    ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
+def _pdeathsig_preexec(expected_parent_pid: int) -> None:
+    # Runs in the forked child before exec. Arm PDEATHSIG first, then close the
+    # race where the parent died between fork and here: if we have been
+    # reparented our parent is no longer the process that forked us, so bail.
+    # Comparing against the real parent pid -- captured in the parent before the
+    # fork -- rather than the literal 1 keeps this correct when Studio itself is
+    # PID 1 (a container with no init), where every healthy child has
+    # getppid() == 1 from birth and must not be mistaken for an orphan.
     try:
-        import ctypes
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-        if os.getppid() == 1:
+        _arm_parent_death_signal()
+        if os.getppid() != expected_parent_pid:
             os._exit(1)
     except Exception:
         pass
@@ -169,19 +179,23 @@ def bind_current_process_to_parent_lifetime() -> None:
     children, which cannot take a preexec_fn, so the parent cannot set
     PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
     if _is_linux():
-        _pdeathsig_preexec()
+        _pdeathsig_preexec(os.getppid())
 
 
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
-    """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
+    """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only).
+
+    The parent pid is captured here -- in the parent, before the fork -- so the
+    child can tell a genuine reparent (parent died) from being a healthy child
+    of a PID-1 parent."""
     if not _is_linux():
         return existing
-    if existing is None:
-        return _pdeathsig_preexec
+    parent_pid = os.getpid()
 
     def _composed() -> None:
-        _pdeathsig_preexec()
-        existing()
+        _pdeathsig_preexec(parent_pid)
+        if existing is not None:
+            existing()
 
     return _composed
 

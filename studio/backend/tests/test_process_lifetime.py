@@ -98,7 +98,7 @@ def test_child_popen_kwargs_linux_vs_other(monkeypatch):
 def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
     calls = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
-    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda: calls.append("death"))
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda _ppid: calls.append("death"))
     pl.compose_preexec(lambda: calls.append("existing"))()
     assert calls == ["death", "existing"]  # ordering matters for sandbox hooks
 
@@ -108,6 +108,47 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
     sentinel = lambda: None  # noqa: E731
     assert pl.compose_preexec(sentinel) is sentinel
     assert pl.compose_preexec(None) is None
+
+
+def test_compose_preexec_passes_real_parent_pid(monkeypatch):
+    # The pid handed to the child must be the spawner's own pid (captured before
+    # the fork), not the literal 1 -- otherwise a PID-1 parent is indistinguishable
+    # from a dead one.
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl.os, "getpid", lambda: 4321)
+    seen = []
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda ppid: seen.append(ppid))
+    pl.compose_preexec(None)()
+    assert seen == [4321]
+
+
+# ── reparent guard: fire on a real orphan, never on a healthy PID-1 child ──
+
+
+class _Exited(BaseException):  # not an Exception, so it escapes the guard's try
+    pass
+
+
+def test_pdeathsig_bails_when_reparented(monkeypatch):
+    # Parent died between fork and here: our parent is no longer the one that
+    # forked us, so the guard must fire.
+    monkeypatch.setattr(pl, "_arm_parent_death_signal", lambda: None)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 999)
+    monkeypatch.setattr(pl.os, "_exit", lambda _code: (_ for _ in ()).throw(_Exited()))
+    with pytest.raises(_Exited):
+        pl._pdeathsig_preexec(42)  # expected parent 42, but reparented to 999
+
+
+def test_pdeathsig_survives_healthy_child_of_pid1(monkeypatch):
+    # Studio running as PID 1 (container with no init): a healthy child has
+    # getppid() == 1 from birth, which must NOT be read as a dead parent
+    # (regression for the guard killing every child when Studio is PID 1).
+    monkeypatch.setattr(pl, "_arm_parent_death_signal", lambda: None)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    exits = []
+    monkeypatch.setattr(pl.os, "_exit", lambda code: exits.append(code))
+    pl._pdeathsig_preexec(1)  # expected parent == getppid() == 1
+    assert exits == []  # left alone
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
