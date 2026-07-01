@@ -52,8 +52,7 @@ def test_write_mlx_stop_checkpoint_returns_true_when_current_step_checkpoint_exi
 
 
 def test_write_mlx_stop_checkpoint_writes_current_step_when_only_older_checkpoint_exists(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
     out = tmp_path / "outputs" / "run_x"
     old_ckpt = out / "checkpoint-5"
