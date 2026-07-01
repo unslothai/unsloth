@@ -424,6 +424,47 @@ jobs:
           if (!linuxdeployLines.some((line) => line.includes('1-alpha-20250213-2/linuxdeploy-x86_64.AppImage'))) {
             throw new Error('Desktop Linux release must pin linuxdeploy 1-alpha-20250213-2');
           }
+          // A pinned version/path is reproducibility, not integrity: the asset
+          // can be replaced after upload. Require the immutable SHA-256 digest
+          // to be pinned AND verified before chmod +x. Scope every check to the
+          // real "Pin linuxdeploy for AppImage" step so this guard cannot
+          // satisfy itself; a file-wide scan would match the guard's own code.
+          const expectedLinuxdeployDigest = '4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a';
+          const isComment = (line) => {
+            const trimmed = line.trim();
+            return trimmed.startsWith('#') || trimmed.startsWith('//');
+          };
+          const stepStart = lines.findIndex((line) => /^\s*- name: Pin linuxdeploy for AppImage\s*$/.test(line));
+          if (stepStart === -1) {
+            throw new Error('Desktop Linux release must keep the "Pin linuxdeploy for AppImage" step');
+          }
+          const stepIndent = lines[stepStart].search(/\S/);
+          let stepEnd = lines.length;
+          for (let i = stepStart + 1; i < lines.length; i += 1) {
+            const line = lines[i];
+            if (line.trim() === '') continue;
+            const indent = line.search(/\S/);
+            // The next sibling step ('- ...') at the same indent, or any dedent
+            // below the step, ends this step's block.
+            if (indent < stepIndent || (indent === stepIndent && /^\s*-\s/.test(line))) {
+              stepEnd = i;
+              break;
+            }
+          }
+          const stepLines = lines.slice(stepStart, stepEnd);
+          const digestEnvRe = /^\s*LINUXDEPLOY_SHA256:\s*["']([0-9a-f]{64})["']\s*$/;
+          const digestEnvLine = stepLines.find((line) => digestEnvRe.test(line));
+          if (!digestEnvLine || digestEnvLine.match(digestEnvRe)[1] !== expectedLinuxdeployDigest) {
+            throw new Error('Desktop Linux release must pin the linuxdeploy SHA-256 digest in the LINUXDEPLOY_SHA256 env');
+          }
+          const sha256Idx = stepLines.findIndex((line) => !isComment(line) && line.includes('sha256sum -c'));
+          if (sha256Idx === -1) {
+            throw new Error('Desktop Linux release must verify the linuxdeploy digest with sha256sum -c before use');
+          }
+          const chmodIdx = stepLines.findIndex((line) => !isComment(line) && /chmod\s+\+x/.test(line));
+          if (chmodIdx !== -1 && sha256Idx > chmodIdx) {
+            throw new Error('Desktop Linux release must verify the linuxdeploy digest before chmod +x');
+          }
           const releaseBodies = [];
           for (let i = 0; i < lines.length; i += 1) {
             const match = lines[i].match(/^(\s*)releaseBody:\s*\|\s*$/);
@@ -587,14 +628,28 @@ jobs:
       - name: Pin linuxdeploy for AppImage
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
+        env:
+          # Pinning the versioned release path is reproducibility, not
+          # integrity: a GitHub release asset can be replaced (or its delivery
+          # path compromised) after upload. The SHA-256 below is the immutable
+          # digest of this exact asset and is the integrity gate. If linuxdeploy
+          # publishes a new build under this tag, this run fails closed and the
+          # digest must be re-pinned deliberately.
+          LINUXDEPLOY_URL: "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage"
+          LINUXDEPLOY_SHA256: "4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a"
         run: |
           set -euo pipefail
           tools_dir="$RUNNER_TEMP/tauri-tools-cache/tauri"
           mkdir -p "$tools_dir"
-          curl -fsSL \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage" \
-            -o "$tools_dir/linuxdeploy-x86_64.AppImage"
-          chmod +x "$tools_dir/linuxdeploy-x86_64.AppImage"
+          dest="$tools_dir/linuxdeploy-x86_64.AppImage"
+          curl -fsSL "$LINUXDEPLOY_URL" -o "$dest"
+          # Verify the digest BEFORE the binary is ever marked executable. The
+          # next step builds the AppImage with the Tauri signing key and a
+          # contents:write GITHUB_TOKEN in scope, so a substituted linuxdeploy
+          # that ran here could exfiltrate signing material or tamper with
+          # published release artifacts. Fail closed on any mismatch.
+          echo "${LINUXDEPLOY_SHA256}  ${dest}" | sha256sum -c -
+          chmod +x "$dest"
 
       # ── Linux: build + sign + upload ──
       - name: Build Linux app

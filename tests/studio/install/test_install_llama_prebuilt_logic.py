@@ -22,6 +22,9 @@ SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
+is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
+scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
+isolated_runtime_home = INSTALL_LLAMA_PREBUILT.isolated_runtime_home
 HostInfo = INSTALL_LLAMA_PREBUILT.HostInfo
 AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
 ApprovedArtifactHash = INSTALL_LLAMA_PREBUILT.ApprovedArtifactHash
@@ -777,6 +780,259 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
         str(bin_dir) in ld_dirs
     ), f"binary_path.parent ({bin_dir}) must be in LD_LIBRARY_PATH, got: {ld_dirs}"
     assert str(install_dir) in ld_dirs
+
+
+def test_scrub_env_drops_secrets_and_keeps_runtime_vars():
+    raw = {
+        # secrets
+        "HF_TOKEN": "hf_x",
+        "HUGGING_FACE_HUB_TOKEN": "hf_y",
+        "GH_TOKEN": "gh_x",
+        "GITHUB_TOKEN": "gh_y",
+        "WANDB_API_KEY": "wandb_x",
+        "AWS_SECRET_ACCESS_KEY": "aws_x",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc_x",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc",
+        "SOME_VENDOR_API_KEY": "vendor_x",
+        "DB_PASSWORD": "pw",
+        "MY_PRIVATE_KEY": "pk",
+        "KUBECONFIG": "/home/runner/.kube/config",
+        "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock",
+        "SSH_PASSPHRASE": "ssh_pass",
+        # runtime vars to keep
+        "PATH": "/usr/bin",
+        "LD_LIBRARY_PATH": "/opt/lib",
+        "DYLD_LIBRARY_PATH": "/opt/dyld",
+        "HOME": "/home/runner",
+        "TMPDIR": "/tmp",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+    }
+
+    cleaned = scrub_env(raw)
+
+    for secret in (
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "WANDB_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "SOME_VENDOR_API_KEY",
+        "DB_PASSWORD",
+        "MY_PRIVATE_KEY",
+        "KUBECONFIG",
+        "SSH_AUTH_SOCK",
+        "SSH_PASSPHRASE",
+    ):
+        assert secret not in cleaned, f"{secret} must be stripped from binary env"
+
+    for keep in (
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "HOME",
+        "TMPDIR",
+        "CUDA_VISIBLE_DEVICES",
+        "HSA_OVERRIDE_GFX_VERSION",
+    ):
+        assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
+
+    # no bare "KEY" marker: benign KEY-containing names survive
+    assert is_secret_env_name("API_KEY") is True
+    assert is_secret_env_name("SSH_KEYFILE_PATH") is False
+    assert is_secret_env_name("PATH") is False
+
+
+def test_scrub_env_drops_proxy_index_and_embedded_url_credentials():
+    raw = {
+        # proxy / package-index URLs whose values commonly embed credentials
+        "HTTPS_PROXY": "https://user:secret@proxy:8080",
+        "https_proxy": "https://user:secret@proxy:8080",  # lower-case variant
+        "ALL_PROXY": "socks5://user:secret@proxy:1080",
+        "PIP_INDEX_URL": "https://u:p@pypi.internal/simple",
+        "UV_INDEX_URL": "https://u:p@index.internal/simple",
+        # credentials embedded in an otherwise benign-named variable's value
+        "MY_DB_DSN": "postgres://admin:secret@db:5432/app",
+        # benign vars the binary needs, including a URL with no userinfo
+        "PATH": "/usr/bin",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NO_PROXY": "localhost,127.0.0.1",
+        "SOME_ENDPOINT": "https://example.com:8080/v1",
+    }
+
+    cleaned = scrub_env(raw)
+
+    for secret in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "PIP_INDEX_URL",
+        "UV_INDEX_URL",
+        "MY_DB_DSN",
+    ):
+        assert secret not in cleaned, f"{secret} must be stripped from binary env"
+    for keep in ("PATH", "CUDA_VISIBLE_DEVICES", "NO_PROXY", "SOME_ENDPOINT"):
+        assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
+
+    assert is_secret_env_name("HTTPS_PROXY") is True
+    assert is_secret_env_name("https_proxy") is True
+    assert is_secret_env_name("NO_PROXY") is False
+
+
+def test_binary_env_strips_secrets_from_downloaded_binary_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_from_ci")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh_secret_from_ci")
+    monkeypatch.setenv("GH_TOKEN", "gh_secret_from_ci")
+    monkeypatch.setenv("WANDB_API_KEY", "wandb_secret_from_ci")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+
+    env = binary_env(binary_path, install_dir, host)
+
+    assert "HF_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "GH_TOKEN" not in env
+    assert "WANDB_API_KEY" not in env
+    # library/runtime resolution unaffected
+    assert str(bin_dir) in env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_binary_env_redirects_home_away_from_real_credential_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+
+    real_home = str(tmp_path / "real_home")
+    monkeypatch.setenv("HOME", real_home)
+    monkeypatch.setenv("HF_HOME", real_home + "/.cache/huggingface")
+
+    env = binary_env(binary_path, install_dir, host)
+
+    # HOME and the cache pointers are redirected to a single empty, existing dir.
+    assert env["HOME"] != real_home
+    assert env["HF_HOME"] == env["HOME"]
+    assert env["HOME"] == isolated_runtime_home()
+    assert os.path.isdir(env["HOME"])
+    assert os.listdir(env["HOME"]) == []
+    # Windows reconstructs the profile from HOMEDRIVE + HOMEPATH.
+    assert env["HOMEDRIVE"] + env["HOMEPATH"] == env["HOME"]
+
+
+def test_scrub_env_drops_token_only_url_userinfo():
+    raw = {
+        "GENERIC_REPO": "https://ghp_tokenonly@github.com/org/repo",
+        "GENERIC_OK": "https://example.com:8080/v1",
+    }
+    cleaned = scrub_env(raw)
+    assert "GENERIC_REPO" not in cleaned
+    assert cleaned["GENERIC_OK"] == raw["GENERIC_OK"]
+
+
+def test_binary_env_drops_explicit_credential_file_pointers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+    dropped = (
+        "NETRC",
+        "PIP_CONFIG_FILE",
+        "DOCKER_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_OUTPUT",
+        "GITHUB_STEP_SUMMARY",
+        "BASH_ENV",
+    )
+    for var in dropped:
+        monkeypatch.setenv(var, "/home/realuser/secret")
+
+    env = binary_env(tmp_path / "llama-server", tmp_path, host)
+
+    for var in dropped:
+        assert var not in env
+
+
+def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    def fake_missing(binary_path, *, env = None):
+        captured["env"] = env
+        return []
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_missing_libraries", fake_missing)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh_secret")
+
+    INSTALL_LLAMA_PREBUILT.linux_runtime_dirs(Path("/fake/llama-server"))
+
+    probe_env = captured["env"]
+    assert probe_env is not None
+    assert "HF_TOKEN" not in probe_env
+    assert "GITHUB_TOKEN" not in probe_env
 
 
 def test_install_prebuilt_falls_back_to_older_release_plan(

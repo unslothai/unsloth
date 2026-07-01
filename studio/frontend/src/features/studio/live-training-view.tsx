@@ -33,6 +33,8 @@ export function LiveTrainingView(): ReactElement {
       evalEnabled: state.evalEnabled,
       outputDir: state.outputDir,
       isTrainingRunning: state.isTrainingRunning,
+      startModelName: state.startModelName,
+      startProjectName: state.startProjectName,
       lossHistory: state.lossHistory,
       lrHistory: state.lrHistory,
       gradNormHistory: state.gradNormHistory,
@@ -45,9 +47,15 @@ export function LiveTrainingView(): ReactElement {
   const config = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,
+      projectName: state.projectName,
       trainingMethod: state.trainingMethod,
     })),
   );
+
+  const activeProjectName =
+    runtime.startProjectName !== null
+      ? runtime.startProjectName.trim() || null
+      : (config.projectName || "").trim() || null;
 
   const viewData: TrainingViewData = {
     phase: runtime.phase,
@@ -66,7 +74,8 @@ export function LiveTrainingView(): ReactElement {
     message: runtime.message,
     error: runtime.error,
     isTrainingRunning: runtime.isTrainingRunning,
-    modelName: config.selectedModel ?? "",
+    modelName: runtime.startModelName ?? config.selectedModel ?? "",
+    projectName: activeProjectName,
     trainingMethod: config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
