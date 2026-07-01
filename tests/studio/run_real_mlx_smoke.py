@@ -565,39 +565,57 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(f"no .gguf files in {save_dir}")
     gguf_path = gguf_files[0]
 
-    # This is a save/reload-integrity smoke (assert below only needs a few chars),
-    # so keep generation short. BF16 GGUF decode is CPU-bound on the macOS runner
-    # (~10s+/token); 24 tokens sat right on the 300s cliff. Generate a handful of
-    # tokens with explicit threads, both env-tunable.
+    # Save/reload-integrity smoke (assert below only needs a few chars). Earlier this
+    # timed out even at 8 tokens (>420s), i.e. a fixed hang, not per-token cost: on the
+    # paravirtual macOS runner GPU, llama.cpp's Metal backend stalls, and the gemma3
+    # GGUF advertises a 32768 context that llama-cli would otherwise fully allocate.
+    # Force CPU (-ngl 0), cap the context (-c 256), and keep generation short; all
+    # env-tunable.
     n_predict = os.environ.get("UNSLOTH_GGUF_RELOAD_N", "8")
     n_threads = os.environ.get("UNSLOTH_GGUF_RELOAD_THREADS", str(os.cpu_count() or 4))
+    n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
+    n_gpu_layers = os.environ.get("UNSLOTH_GGUF_RELOAD_NGL", "0")
     reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
+    llama_cli_cmd = [
+        str(llama_cli),
+        "-m",
+        str(gguf_path),
+        "-p",
+        PROMPT,
+        "-n",
+        n_predict,
+        "-t",
+        n_threads,
+        "-c",
+        n_ctx,
+        "-ngl",
+        n_gpu_layers,
+        "--temp",
+        "0",
+        "--seed",
+        str(SEED),
+        "-no-cnv",
+        "--no-warmup",
+    ]
     with Phase("reload_gguf", metrics):
-        proc = subprocess.run(
-            [
-                str(llama_cli),
-                "-m",
-                str(gguf_path),
-                "-p",
-                PROMPT,
-                "-n",
-                n_predict,
-                "-t",
-                n_threads,
-                "--temp",
-                "0",
-                "--seed",
-                str(SEED),
-                "-no-cnv",
-                "--no-warmup",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = reload_timeout,
-            # Hand llama-cli an immediate EOF; without it -no-cnv can still leave the
-            # process blocked reading stdin, which times out instead of generating.
-            stdin = subprocess.DEVNULL,
-        )
+        try:
+            proc = subprocess.run(
+                llama_cli_cmd,
+                capture_output = True,
+                text = True,
+                timeout = reload_timeout,
+                # Hand llama-cli an immediate EOF; without it -no-cnv can still leave
+                # the process blocked reading stdin, which times out instead of
+                # generating.
+                stdin = subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Surface llama.cpp's partial output so a hang (Metal init, context
+            # allocation, ...) is diagnosable instead of an opaque timeout.
+            print(f"  [reload:gguf] TIMEOUT running: {' '.join(llama_cli_cmd)}", flush = True)
+            print(f"  [reload:gguf] stdout head:\n{(exc.stdout or '')[:800]}", flush = True)
+            print(f"  [reload:gguf] stderr head:\n{(exc.stderr or '')[:800]}", flush = True)
+            raise
 
     metrics["llama_cli_returncode"] = proc.returncode
     metrics["generation"] = (proc.stdout or "")[:1500]
