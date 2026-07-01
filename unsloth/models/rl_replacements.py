@@ -29,6 +29,7 @@ from collections import defaultdict
 from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
+    create_completion_attention_mask,
     chunked_selective_log_softmax,
     _unsloth_get_mm_token_id,
     _unsloth_fix_mm_token_type_ids,
@@ -48,7 +49,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 import textwrap
-from ._utils import _get_inference_mode_context_manager
+from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
 
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
@@ -1357,6 +1358,217 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
+            # ---- Sequence packing (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
+            # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] loop: the exact
+            # per-row result, and it fixes the padded path's left-pad RoPE error. Self-verified against
+            # the per-row forward (shape/RoPE-aware, re-checked as T grows); falls back if a backend
+            # ignores packed_seq_lengths. lm_head runs on completion positions only.
+            logprobs = None
+            _pk_result = None
+            _pk_use = False
+            _pk_enabled = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
+                "0",
+                "false",
+                "no",
+                "off",
+            )
+            _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
+            if (
+                _pk_enabled
+                and pixel_values is None
+                and token_type_ids is None
+                and mm_token_type_ids is None
+                and _pk_ok is not False
+            ):
+                try:
+                    _pk_pad = self.processing_class.pad_token_id
+                    _pk_keep = input_ids != _pk_pad
+                    _pk_len = _pk_keep.sum(dim = 1)
+                    _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
+                    _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
+                    _pk_flat = input_ids[_pk_keep].unsqueeze(0)
+                    _pk_T = _pk_flat.shape[1]
+                    _pk_L = input_ids.shape[1]
+                    _pk_W = logits_to_keep + max_left_pad
+                    _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
+                    # sliding-window models lose the per-sequence local window in a packed stream
+                    _pk_sw = getattr(
+                        getattr(unwrapped_model, "config", None), "sliding_window", None
+                    )
+                    _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
+                    # exact per-row completion mask (same one the loss uses); a row is active only if
+                    # it has real completion tokens, so prompt-only rows can't satisfy the >= 2 guard
+                    _pk_cmask = create_completion_attention_mask(
+                        input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                    )
+                    _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                    if (
+                        _pk_T >= 2
+                        and len(_pk_nz_cpu) > 0
+                        and _pk_sw_ok
+                        and (_pk_ok is True or _pk_active >= 2)
+                    ):
+                        # reset 0-based position_ids per segment
+                        _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
+                        _pk_chunks = max(1, total_rows * multiplier)
+                        _pk_nz_idx = _pk_keep.nonzero(
+                            as_tuple = False
+                        )  # [T, 2] = (row, col), row-major
+                        _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
+                        # completion start is per-row after left-packing: (L - logits_to_keep) minus
+                        # that row's left-pad (matches create_completion_attention_mask exactly)
+                        _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
+                        _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                        with _get_inference_mode_context_manager(model):
+                            with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                                # use_cache=False: a KV cache silently disables varlen packing
+                                _pk_hidden = unwrapped_model(
+                                    input_ids = _pk_flat,
+                                    position_ids = _pk_pos,
+                                    packed_seq_lengths = torch.tensor(
+                                        _pk_nz_cpu, dtype = torch.int32, device = input_ids.device
+                                    ),
+                                    use_cache = False,
+                                ).logits
+                                _pk_sel = chunked_hidden_states_selective_log_softmax(
+                                    _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0),
+                                    lm_head,
+                                    _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0),
+                                    _pk_chunks,
+                                    logit_scale_multiply,
+                                    logit_scale_divide,
+                                    logit_softcapping,
+                                    temperature,
+                                )[0]
+                        # GPT-OSS offload race guard (matches the padded loop)
+                        device_synchronize()
+                        # scatter each completion logprob back to its (row, col) so [:, -_pk_W:] matches padded
+                        _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
+                        _pk_result = (
+                            torch.zeros(
+                                total_rows * _pk_L,
+                                dtype = torch.float32,
+                                device = input_ids.device,
+                            )
+                            .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
+                            .view(total_rows, _pk_L)[:, -_pk_W:]
+                        )
+                        # trust decision: re-verify when T or the longest segment grows past what was
+                        # verified (a LongRoPE cache switch can change the result)
+                        _pk_vT = int(
+                            getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
+                        )
+                        _pk_vS = int(
+                            getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
+                        )
+                        _pk_unsafe = getattr(
+                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
+                        )
+                        _pk_force_verify = (
+                            os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+                        )
+                        if (
+                            (not _pk_force_verify)
+                            and _pk_ok is True
+                            and _pk_T <= _pk_vT
+                            and _pk_maxseg <= _pk_vS
+                        ):
+                            _pk_use = True  # already verified for this shape
+                        elif _pk_unsafe is not None and _pk_T >= _pk_unsafe:
+                            _pk_use = False  # known-unsafe length region
+                        else:
+                            # verify against the per-row clean forward (exact ground truth)
+                            _pk_ref = torch.zeros_like(_pk_result)
+                            with _get_inference_mode_context_manager(model):
+                                with torch.amp.autocast(
+                                    device_type = "cuda", dtype = self._autocast_dtype
+                                ):
+                                    for _pk_i in range(total_rows):
+                                        _pk_ni = _pk_len_cpu[_pk_i]
+                                        if _pk_ni < 2:
+                                            continue
+                                        _pk_rmask = _pk_keep[_pk_i]
+                                        _pk_real = input_ids[_pk_i][_pk_rmask].unsqueeze(0)
+                                        _pk_rpos = torch.arange(
+                                            _pk_ni, device = input_ids.device
+                                        ).unsqueeze(0)
+                                        _pk_rh = unwrapped_model(
+                                            input_ids = _pk_real,
+                                            position_ids = _pk_rpos,
+                                            use_cache = False,
+                                        ).logits
+                                        _pk_rsel = chunked_hidden_states_selective_log_softmax(
+                                            _pk_rh[:, :-1, :],
+                                            lm_head,
+                                            _pk_real[:, 1:],
+                                            1,
+                                            logit_scale_multiply,
+                                            logit_scale_divide,
+                                            logit_softcapping,
+                                            temperature,
+                                        )[0]
+                                        _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[
+                                            1:
+                                        ] - (_pk_L - _pk_W)
+                                        _pk_rkeep = _pk_rcols >= 0
+                                        _pk_ref[_pk_i, _pk_rcols[_pk_rkeep]] = _pk_rsel[
+                                            _pk_rkeep
+                                        ].to(torch.float32)
+                            device_synchronize()
+                            # compare over the exact loss-mask region (same mask the loss uses)
+                            _pk_cm = _pk_cmask.float()
+                            _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
+                            if UNSLOTH_ENABLE_LOGGING:
+                                print(
+                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
+                                    flush = True,
+                                )
+                            # floor ~0.25 through different kernels; cross-sample contamination is >= 2.4
+                            if _pk_diff < 7e-1:
+                                unwrapped_model._unsloth_seq_packing_nograd_ok = True
+                                unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
+                                    _pk_vT, _pk_T
+                                )
+                                unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
+                                    _pk_vS, _pk_maxseg
+                                )
+                                _pk_ok = True
+                                _pk_use = True
+                            else:
+                                _pk_use = False
+                                if _pk_diff >= 1.5:
+                                    # large mismatch = contamination (attention ignores the packed
+                                    # mask, e.g. some MoE): disable packing for this model
+                                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                                else:
+                                    # moderate mismatch -> likely a length boundary (LongRoPE): mark
+                                    # unsafe but keep packing for smaller shapes
+                                    unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
+                                        _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                                    )
+                                if UNSLOTH_ENABLE_LOGGING:
+                                    print(
+                                        f"[Unsloth] GRPO seq-packing (no-grad) fell back at T={_pk_T} (diff={_pk_diff:.3f})",
+                                        flush = True,
+                                    )
+                except Exception as _pk_err:
+                    # any failure -> drop intermediates, use the padded loop, do not retry
+                    _pk_hidden = None
+                    _pk_sel = None
+                    _pk_result = None
+                    _pk_use = False
+                    if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
+                        torch.cuda.empty_cache()
+                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                    if UNSLOTH_ENABLE_LOGGING:
+                        print(
+                            f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
+                            flush = True,
+                        )
+            if _pk_use and _pk_result is not None:
+                logprobs = _pk_result  # verified -> skip the loop
+                zipped_inputs = []
+
             with _get_inference_mode_context_manager(model):
                 for (
                     input_ids_chunk,
@@ -1441,7 +1653,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # However, it seems that this line does not slow down or disrupt models.
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
-                logprobs = torch.cat(all_logprobs_list, dim = 0)
+                if logprobs is None:
+                    # padded fallback (packing disabled / unsupported / not verified for this length)
+                    logprobs = torch.cat(all_logprobs_list, dim = 0)
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
