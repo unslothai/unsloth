@@ -541,12 +541,14 @@ def _find_llama_cli() -> Path | None:
         for rel in ("llama-cli", "build/bin/llama-cli"):
             cand = base / rel
             if cand.is_file() and os.access(cand, os.X_OK):
-                return cand
+                # Absolute: a separator-less relative path would send subprocess
+                # to a PATH lookup instead of running the file.
+                return cand.resolve()
         # Last resort: the binary may sit under an unexpected build subdir.
         if base.is_dir():
             for cand in sorted(base.glob("**/llama-cli")):
                 if cand.is_file() and os.access(cand, os.X_OK):
-                    return cand
+                    return cand.resolve()
     return None
 
 
