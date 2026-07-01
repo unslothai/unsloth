@@ -1874,6 +1874,10 @@ class TestGGUFSafetensorsHealingParity:
             "I can help with that.",
             "I should mention",
             "Let's go.",
+            # Negated intent is a refusal, not a plan: neither backend may
+            # force a tool-call re-prompt on it.
+            "I will not search the web for that.",
+            "I'll never call that tool.",
         ):
             assert not gguf_re.search(plain), f"GGUF wrongly fired on {plain!r}"
             assert not sf_re.search(plain), f"safetensors wrongly fired on {plain!r}"

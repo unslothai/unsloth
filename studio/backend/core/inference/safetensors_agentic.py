@@ -61,10 +61,11 @@ _MAX_BARE_JSON_BUFFER = 16384
 
 # Forward-looking intent ("I'll", "First,", "Step 1:") => model is planning, not
 # answering; used to nudge a tool call. Excludes "I can/should/want", "let's"
-# (they also appear in plain answers). Mirrors GGUF.
+# (they also appear in plain answers). The negative lookahead drops negated forms
+# ("I will not", "I'll never") so a refusal doesn't trigger a re-prompt. Mirrors GGUF.
 _INTENT_SIGNAL = re.compile(
     r"(?i)("
-    r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
     r"|\b(?:first\b|step \d+:?|here['’]?s (?:my |the |a )?(?:plan|approach))"
     r"|\b(?:now i|next i)\b"
     r")"
