@@ -650,10 +650,19 @@ class DiffusionBackend:
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                for s in info.siblings:
-                    if _pipeline_file_downloaded(s.rfilename):
-                        base_files.append(s.rfilename)
-                        total += s.size or 0
+                picked = [s for s in info.siblings if _pipeline_file_downloaded(s.rfilename)]
+                # diffusers prefers safetensors per component: drop a .bin whose
+                # directory also carries a picked .safetensors weight.
+                st_dirs = {
+                    s.rfilename.rsplit("/", 1)[0]
+                    for s in picked
+                    if s.rfilename.endswith(".safetensors")
+                }
+                for s in picked:
+                    if s.rfilename.endswith(".bin") and s.rfilename.rsplit("/", 1)[0] in st_dirs:
+                        continue
+                    base_files.append(s.rfilename)
+                    total += s.size or 0
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info(repo_id) would
             # raise on a filesystem path and (caught below) skip the base-repo lookup too,
@@ -1867,12 +1876,25 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
 
     Like ``_base_file_downloaded`` but for the ``pipeline`` kind, where the repo
     supplies its OWN transformer weights, so the ``transformer/`` subfolder is kept.
-    Top-level docs (README/PDF/images) and ``assets/`` are still skipped so the
-    progress estimate matches what actually lands on disk.
+    Top-level docs (README/PDF/images) and ``assets/`` are skipped, and so are
+    artifacts the torch loader never touches -- ONNX / OpenVINO / Flax exports and
+    dtype-variant twins (``*.fp16.safetensors``: the loader requests the default
+    variant) -- so an official repo that ships many formats (e.g. SDXL Base) does
+    not prefetch tens of GB it will not load.
     """
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
-    return not rfilename.startswith("assets/")
+    lower = rfilename.lower()
+    if lower.startswith(("assets/", "onnx/", "openvino/")):
+        return False
+    name = lower.rsplit("/", 1)[1]
+    if name.startswith(("openvino_", "flax_")):
+        return False
+    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5", ".ckpt")):
+        return False
+    if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
+        return False
+    return True
 
 
 def _progress(
