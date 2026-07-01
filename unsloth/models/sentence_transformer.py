@@ -1188,7 +1188,9 @@ class FastSentenceTransformer(FastModel):
                         load_path = os.path.join(model_name, module_path)
                     else:
                         try:
-                            load_path = load_dir_path(model_name, module_path, token = token)
+                            load_path = load_dir_path(
+                                model_name, module_path, token = token, cache_folder = cache_dir
+                            )
                         except Exception as e:
                             print(f"Unsloth Warning: Could not download module {module_path}: {e}")
                             continue
@@ -1415,6 +1417,7 @@ class FastSentenceTransformer(FastModel):
             token = token,
             revision = revision,
             cache_dir = kwargs.get("cache_folder"),
+            local_files_only = kwargs.get("local_files_only", False),
         )
 
         # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues

@@ -958,6 +958,11 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
     "target.spm",
     "bpe.codes",
     "vocab.bpe",
+    # sentencepiece.model (RemBERT) and vocab-src.json / vocab-tgt.json (FSMT) are VOCAB_FILES_NAMES
+    # not covered by the names above; a distinct-tokenizer-repo warm must cache them too.
+    "sentencepiece.model",
+    "vocab-src.json",
+    "vocab-tgt.json",
     "chat_template.jinja",
     "chat_template.json",
     # A non-default chat_template="<name>" load fetches additional_chat_templates/<name>.jinja.
@@ -1083,12 +1088,19 @@ def _prefetch_ignore_patterns(
     from_tf = False,
     from_flax = False,
     variant = None,
+    weights_at_root = False,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the checkpoint guard when
     loading from a checkpoint-* subfolder, minus the weight format the load will not read. Explicit
     use_safetensors acts as a format allowlist (True -> skip *.bin, False -> skip *.safetensors); auto
     (None) skips *.bin only when in-scope safetensors are also shipped (Transformers prefers them).
-    from_tf / from_flax keep the *.h5 / *.msgpack weights they read as the actual weights."""
+    from_tf / from_flax keep the *.h5 / *.msgpack weights they read as the actual weights.
+
+    The cross-format drop is suppressed for a WHOLE multi-component snapshot (weights_at_root=False and
+    no subfolder: a SentenceTransformer / diffusers repo whose modules ship weights in per-module
+    subfolders, each in its own format). HF fnmatch "*" spans "/", so dropping "*.bin" there would strip
+    a subdir module's only weight and leave the module load to an in-process Xet fetch. The redundancy
+    reasoning holds only for a single-scope (root / subfolder) load."""
     # Keep checkpoint-*/* when loading from such a subfolder; keep *.h5 / *.msgpack under from_tf/flax.
     ignore_patterns = [
         pattern
@@ -1104,8 +1116,14 @@ def _prefetch_ignore_patterns(
         )
     ]
     # Drop the format the load will not read (Transformers reads exactly one; the other doubles the
-    # download we optimize).
-    if from_tf or from_flax:
+    # download we optimize). Skipped for a whole multi-component snapshot (see docstring): each subdir
+    # module ships its own format, so keep every format rather than strip a module's only weight.
+    whole_multi_component = not weights_at_root and not (
+        isinstance(subfolder, str) and subfolder.strip("/")
+    )
+    if whole_multi_component:
+        pass
+    elif from_tf or from_flax:
         # TF / Flax loads never touch the PyTorch formats; drop safetensors and .bin outright.
         ignore_patterns.extend(
             (
@@ -1233,6 +1251,7 @@ def maybe_prefetch_hf_snapshot(
             from_tf = from_tf,
             from_flax = from_flax,
             variant = variant,
+            weights_at_root = weights_at_root,
         )
     )
     # Narrow the warm to what the load reads, so a repo shipping extra weights (alternate checkpoints,

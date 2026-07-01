@@ -233,10 +233,10 @@ def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
     pytorch_model.fp16.bin redundant: dropping it would leave the variant load to fetch the .bin
     in-process over Xet. The .bin stays warmed (Codex #6638)."""
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"])
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16")
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" not in ig
     # No variant: the default safetensors DOES make .bin redundant (existing behavior).
-    ig_default = U._prefetch_ignore_patterns("org/repo")
+    ig_default = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
     assert "*.bin" in ig_default
 
 
@@ -244,7 +244,7 @@ def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
     """When a variant-matching safetensors (model.fp16.safetensors) is shipped, the variant load
     reads it and the variant .bin is redundant, so .bin is dropped from the warm."""
     _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16")
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" in ig
 
 
@@ -280,7 +280,7 @@ def test_variant_drops_bin_for_sharded_variant_safetensors(monkeypatch):
             "pytorch_model.fp16-00001-of-00002.bin",
         ],
     )
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16")
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
     assert "*.bin" in ig
 
 
@@ -332,7 +332,7 @@ def test_optimizer_safetensors_does_not_drop_bin(monkeypatch):
     whose real weights are pytorch_model.bin alongside an optimizer.safetensors must keep its .bin,
     else the in-process load fetches the only weights over Xet without the fallback (Codex #6638)."""
     _install_fake_model_info(monkeypatch, ["pytorch_model.bin", "optimizer.safetensors"])
-    ig = U._prefetch_ignore_patterns("org/repo")
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
     assert "*.bin" not in ig  # .bin is the only real weight -> not dropped
 
 
@@ -342,8 +342,21 @@ def test_model_safetensors_still_drops_bin(monkeypatch):
     _install_fake_model_info(
         monkeypatch, ["model.safetensors", "pytorch_model.bin", "optimizer.safetensors"]
     )
-    ig = U._prefetch_ignore_patterns("org/repo")
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
     assert "*.bin" in ig
+
+
+def test_whole_multi_component_snapshot_keeps_subdir_bin(monkeypatch):
+    """A whole multi-component snapshot (weights_at_root=False, no subfolder: a SentenceTransformer /
+    diffusers repo) must NOT drop *.bin even when root safetensors exist -- HF's "*" spans "/", so the
+    drop would strip a subdir module's only weight (1_Dense/pytorch_model.bin) and leave the module load
+    to an in-process Xet fetch. A root-scoped load of the same repo still drops the redundant root .bin
+    (Codex #6638)."""
+    _install_fake_model_info(monkeypatch, ["model.safetensors", "1_Dense/pytorch_model.bin"])
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = False)
+    assert "*.bin" not in ig
+    ig_root = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    assert "*.bin" in ig_root
 
 
 def test_is_model_weight_safetensors_classification():
@@ -361,10 +374,14 @@ def test_is_model_weight_safetensors_classification():
 def test_tokenizer_only_warms_slow_sentencepiece_vocab(capture):
     """tokenizer_only must warm the slow-tokenizer SentencePiece / BPE vocab files AutoTokenizer
     fetches first (sentencepiece.bpe.model for XLM-R / mBART, source.spm / target.spm for Marian,
-    bpe.codes / vocab.bpe), so they are not left to an in-process Xet fetch (Codex #6638)."""
+    bpe.codes / vocab.bpe, sentencepiece.model for RemBERT, vocab-src.json / vocab-tgt.json for FSMT),
+    so they are not left to an in-process Xet fetch (Codex #6638)."""
     _, st = capture(tokenizer_only = True)
     allow = st["allow_patterns"]
-    for name in ("sentencepiece.bpe.model", "source.spm", "target.spm", "bpe.codes", "vocab.bpe"):
+    for name in (
+        "sentencepiece.bpe.model", "source.spm", "target.spm", "bpe.codes", "vocab.bpe",
+        "sentencepiece.model", "vocab-src.json", "vocab-tgt.json",
+    ):
         assert name in allow, name
 
 
@@ -520,3 +537,32 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
         prefetch_pos is not None
     ), "from_pretrained must call maybe_prefetch_hf_snapshot at top level"
     assert prefetch_pos < return_pos, "prefetch must run before any top-level return"
+    # local_files_only must be forwarded so an offline / cache-only load does not start a Hub download
+    # via the prefetch before the ST load sees the flag (Codex #6638).
+    prefetch_call = fp.body[prefetch_pos].value
+    assert "local_files_only" in {kw.arg for kw in prefetch_call.keywords}, (
+        "prefetch must forward local_files_only"
+    )
+
+
+def test_st_module_download_forwards_cache_folder():
+    """_load_modules must forward the custom cache_folder into load_dir_path so per-module subdirs are
+    read from the warmed cache rather than the default one, avoiding a second in-process Hub/Xet fetch
+    (Codex #6638). Static AST guard (importing ST pulls heavy optional deps)."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "load_dir_path"
+    ]
+    assert calls, "expected a load_dir_path call in sentence_transformer.py"
+    assert all("cache_folder" in {kw.arg for kw in c.keywords} for c in calls), (
+        "every load_dir_path call must forward cache_folder"
+    )
