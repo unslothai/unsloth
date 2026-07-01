@@ -1816,6 +1816,42 @@ class LoraSpec(BaseModel):
     )
 
 
+class ControlNetSpec(BaseModel):
+    """A ControlNet to condition this generation on: a discovery id plus a control image.
+
+    The id resolves against the backend's ControlNet catalog + local scan (see
+    core/inference/diffusion_controlnet.py); the client never supplies a raw filesystem path.
+    ``image`` is either an already-made control map (``control_type='passthrough'``) or a source
+    image the backend turns into a map (``control_type='canny'``). strength 0 disables it.
+    """
+
+    id: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 512,
+        description = "ControlNet discovery id (repo id or local name)",
+    )
+    image: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL control image (a source image or a preprocessed map)",
+    )
+    control_type: str = Field(
+        "passthrough",
+        description = "How to derive the control map: 'passthrough' (already a map) or 'canny'",
+    )
+    strength: float = Field(
+        1.0, ge = 0.0, le = 2.0, description = "ControlNet conditioning scale; 0 disables"
+    )
+    guidance_start: float = Field(
+        0.0, ge = 0.0, le = 1.0, description = "Fraction of steps at which ControlNet begins"
+    )
+    guidance_end: float = Field(
+        1.0, ge = 0.0, le = 1.0, description = "Fraction of steps at which ControlNet ends"
+    )
+
+
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
@@ -1880,6 +1916,12 @@ class DiffusionGenerateRequest(BaseModel):
         "Omitted/empty applies none and behaves exactly as before. Rejected with a clear "
         "message when the loaded model or its quantisation can't apply LoRA.",
     )
+    controlnet: Optional[ControlNetSpec] = Field(
+        None,
+        description = "ControlNet conditioning for this generation (id + control image + strength). "
+        "Omitted applies none and behaves exactly as before. Rejected with a clear message when "
+        "the loaded model or its quantisation can't apply ControlNet.",
+    )
 
     @field_validator("reference_images")
     @classmethod
@@ -1919,6 +1961,9 @@ class GalleryImage(BaseModel):
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     loras: list[str] = Field(
         default_factory = list, description = "LoRA adapters applied, formatted as 'id:weight'"
+    )
+    controlnet: Optional[str] = Field(
+        None, description = "ControlNet applied, formatted as 'id:control_type:strength'"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
 
@@ -2009,4 +2054,10 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
         "LoRA picker's enabled state). False on unsupported families/quant (e.g. torchao fp8/int8 "
         "dense, GGUF-via-diffusers, or Qwen-Image on the native engine).",
+    )
+    supports_controlnet: bool = Field(
+        False,
+        description = "Whether the loaded model can apply a ControlNet (drives the ControlNet "
+        "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
+        "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )

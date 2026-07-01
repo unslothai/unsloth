@@ -46,6 +46,8 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
 import {
+  type ControlNetSpecInput,
+  type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
   type DiffusionLoadProgress,
   type DiffusionLoraInfo,
@@ -59,6 +61,7 @@ import {
   getDiffusionStatus,
   getGallery,
   getGenerateProgress,
+  listDiffusionControlNets,
   listDiffusionLoras,
   loadDiffusionModel,
   unloadDiffusionModel,
@@ -877,6 +880,14 @@ export function ImagesPage() {
   // offers. Applied at generate time; available adapters are refreshed per loaded family.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // ControlNet for the next generation: the chosen model id, a control image (data URL),
+  // how to derive the control map, and the conditioning strength. Available models refresh
+  // per loaded family; applied at generate time only when a model + control image are set.
+  const [controlnetId, setControlnetId] = useState<string>("");
+  const [controlImage, setControlImage] = useState<string | null>(null);
+  const [controlType, setControlType] = useState<"passthrough" | "canny">("passthrough");
+  const [controlStrength, setControlStrength] = useState(0.7);
+  const [availableControlNets, setAvailableControlNets] = useState<DiffusionControlNetInfo[]>([]);
   // Advanced options live in a right-docked panel (like Chat's settings panel). Closed by
   // default; a single fixed toggle in the top bar opens/closes it (the icon never moves).
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -961,6 +972,31 @@ export function ImagesPage() {
       cancelled = true;
     };
   }, [loraCapable, status?.family]);
+
+  // Refresh the ControlNet picker's options when the loaded model (family) changes, and clear
+  // a stale selection the new model can't use so an incompatible ControlNet is never sent.
+  const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
+  useEffect(() => {
+    if (!controlnetCapable) {
+      setAvailableControlNets([]);
+      setControlnetId("");
+      setControlImage(null);
+      return;
+    }
+    let cancelled = false;
+    listDiffusionControlNets(status?.family ?? undefined)
+      .then((list) => {
+        if (cancelled) return;
+        setAvailableControlNets(list);
+        setControlnetId((prev) => (list.some((c) => c.id === prev) ? prev : ""));
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableControlNets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [controlnetCapable, status?.family]);
 
   const selected = useMemo(
     () => images.find((i) => i.id === selectedId) ?? images[0] ?? null,
@@ -1386,6 +1422,17 @@ export function ImagesPage() {
           reference_images: condRefImages,
           // Drop zero-weight rows so the recipe records only adapters that actually applied.
           loras: loras.length ? loras.filter((l) => l.weight > 0) : undefined,
+          // ControlNet: sent only when a model + control image are chosen; v1 conditions plain
+          // text-to-image only, so skip it for image-conditioned workflows.
+          controlnet:
+            controlnetCapable && controlnetId && controlImage && workflow === "txt2img"
+              ? {
+                  id: controlnetId,
+                  image: controlImage,
+                  control_type: controlType,
+                  strength: controlStrength,
+                }
+              : undefined,
         });
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
@@ -1402,7 +1449,7 @@ export function ImagesPage() {
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, ensureSrc]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc]);
 
   // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
   // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first
@@ -1917,6 +1964,58 @@ export function ImagesPage() {
                     <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
                     Add LoRA
                   </Button>
+                )}
+              </div>
+            </Field>
+          )}
+          {/* ControlNet: shown when the loaded model supports it, a model is discoverable, and
+              the plain text-to-image workflow is active (v1 conditions txt2img only). Pick a
+              model, add a control image, choose how to derive the map, and set the strength. */}
+          {controlnetCapable && availableControlNets.length > 0 && workflow === "txt2img" && (
+            <Field
+              label="ControlNet"
+              hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
+            >
+              <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
+                <Select value={controlnetId} onValueChange={setControlnetId}>
+                  <SelectTrigger className="h-8 w-full text-xs">
+                    <SelectValue placeholder="Select a ControlNet" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableControlNets.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.display_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {controlnetId && (
+                  <>
+                    <ImageDropzone value={controlImage} onChange={setControlImage} />
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
+                      <Select
+                        value={controlType}
+                        onValueChange={(v) => setControlType(v as "passthrough" | "canny")}
+                      >
+                        <SelectTrigger className="h-8 flex-1 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="passthrough">Passthrough (already a map)</SelectItem>
+                          <SelectItem value="canny">Canny (trace edges)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <SliderField
+                      label="Strength"
+                      value={controlStrength}
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      onChange={setControlStrength}
+                    />
+                  </>
                 )}
               </div>
             </Field>
