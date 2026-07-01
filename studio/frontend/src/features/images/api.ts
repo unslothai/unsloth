@@ -254,3 +254,62 @@ export async function fetchGalleryObjectUrl(url: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   return URL.createObjectURL(await res.blob());
 }
+
+// ── Diffusion (SDXL) LoRA training ────────────────────────────────────────────
+// Mirrors DiffusionTrainingStartRequest on the backend; only the paths are required.
+export interface DiffusionTrainingStartRequest {
+  base_model: string;
+  data_dir: string;
+  output_dir: string;
+  instance_prompt?: string | null;
+  resolution?: number;
+  train_steps?: number;
+  learning_rate?: number;
+  train_batch_size?: number;
+  gradient_accumulation_steps?: number;
+  lora_rank?: number;
+  lora_alpha?: number | null;
+  seed?: number;
+  mixed_precision?: "bf16" | "fp16" | "no";
+  gradient_checkpointing?: boolean;
+  lr_scheduler?: string;
+}
+
+// A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
+export interface DiffusionTrainingStatus {
+  active: boolean;
+  job_id: string | null;
+  status: string;
+  message: string;
+  step: number;
+  total_steps: number;
+  loss: number | null;
+  avg_loss: number | null;
+  learning_rate: number | null;
+  num_images: number | null;
+  in_model_load: boolean;
+  output_dir: string | null;
+  lora_path: string | null;
+  started_at: number | null;
+  updated_at: number | null;
+}
+
+export async function startDiffusionTraining(
+  body: DiffusionTrainingStartRequest,
+): Promise<{ job_id: string; status: string }> {
+  return parseJson(
+    await authFetch("/api/train/diffusion/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function stopDiffusionTraining(): Promise<{ status: string }> {
+  return parseJson(await authFetch("/api/train/diffusion/stop", { method: "POST" }));
+}
+
+export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
+  return parseJson(await authFetch("/api/train/diffusion/status"));
+}

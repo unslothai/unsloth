@@ -66,6 +66,7 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import { DiffusionTrainDialog } from "./diffusion-train-dialog";
 
 // Curated diffusion GGUFs the picker recommends. The backend resolves each one's
 // pipeline + base diffusers repo from its repo id, so the rail just lists them;
@@ -907,6 +908,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // offers. Applied at generate time; available adapters are refreshed per loaded family.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // "Train a LoRA" dialog (SDXL). Independent of the loaded generation model.
+  const [trainOpen, setTrainOpen] = useState(false);
   // ControlNet for the next generation: the chosen model id, a control image (data URL),
   // how to derive the control map, and the conditioning strength. Available models refresh
   // per loaded family; applied at generate time only when a model + control image are set.
@@ -1732,24 +1735,43 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           open={active && selectorOpen}
           onOpenChange={(o) => setSelectorOpen(active && o)}
         />
-        {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
-            toggle, same icon in both states so it never moves). Highlighted when open. */}
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen((o) => !o)}
-          aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-          aria-pressed={advancedOpen}
-          title="Advanced options"
-          className={cn(
-            "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            advancedOpen
-              ? "bg-muted text-foreground"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-        >
-          <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Train a LoRA (SDXL): opens a self-contained dialog; available regardless of
+              whether a generation model is loaded. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-[34px]"
+            onClick={() => setTrainOpen(true)}
+            title="Train a LoRA adapter (SDXL)"
+          >
+            Train LoRA
+          </Button>
+          {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
+              toggle, same icon in both states so it never moves). Highlighted when open. */}
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
+            aria-pressed={advancedOpen}
+            title="Advanced options"
+            className={cn(
+              "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              advancedOpen
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+          </button>
+        </div>
       </div>
+      <DiffusionTrainDialog
+        open={trainOpen}
+        onOpenChange={setTrainOpen}
+        defaultBaseModel={status?.family === "sdxl" ? status?.repo_id ?? undefined : undefined}
+      />
 
       {/* ── Controls rail + preview canvas. Padding mirrors the other tabs
           (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */}
