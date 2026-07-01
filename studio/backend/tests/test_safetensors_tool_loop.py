@@ -319,9 +319,7 @@ class TestParser:
         so generated content starts inside the thought and carries only a closing
         </think>. A call rehearsed in that leading thought must be skipped, while a
         real call after the close still fires."""
-        text = (
-            'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}'
-        )
+        text = 'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"

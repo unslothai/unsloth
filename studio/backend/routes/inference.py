@@ -6083,7 +6083,9 @@ async def openai_chat_completions(
     # THIS request. gpt-oss (reasoning_style "reasoning_effort", explicit tags via
     # HarmonyTextStreamer) is excluded and uses the normal extractor mode.
     _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features, payload.enable_thinking, _sf_tpl,
+        _sf_features,
+        payload.enable_thinking,
+        _sf_tpl,
         reasoning_effort = payload.reasoning_effort,
     )
 
