@@ -886,6 +886,49 @@ def test_mlx_trl_star_import_exports_public_shims():
     assert namespace["SFTConfig"] is unsloth.UnslothTrainingArguments
 
 
+def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
+    """GRPO/DPO/ORPO trainers have no MLX path, so the shim retargets the ones trl
+    exposes to a clear NotImplementedError instead of a confusing CUDA crash, and
+    never invents trainers trl does not have."""
+    unsloth = _import_mlx_unsloth()
+    trl = types.ModuleType("trl")
+    trl.__path__ = ["real-trainer-package"]
+
+    class _RealTrainer:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("the real torch/CUDA trainer must not run on MLX")
+
+    trl.GRPOTrainer = _RealTrainer
+    trl.DPOTrainer = _RealTrainer
+    monkeypatch.setitem(sys.modules, "trl", trl)
+
+    unsloth._install_mlx_trl_sft_shim()
+
+    for name in ("GRPOTrainer", "DPOTrainer"):
+        assert getattr(trl, name) is not _RealTrainer
+        with pytest.raises(NotImplementedError) as exc:
+            getattr(trl, name)(model = None, args = None)
+        assert "MLX" in str(exc.value) and name in str(exc.value)
+    # trainers trl never exposed must not be invented
+    assert not hasattr(trl, "PPOTrainer")
+    # idempotent: a second install keeps the same stub
+    stub = trl.GRPOTrainer
+    unsloth._install_mlx_trl_sft_shim()
+    assert trl.GRPOTrainer is stub
+
+
+def test_mlx_preserve_dataset_order_is_accepted():
+    """preserve_dataset_order=True must be accepted (it is a real MLX config field),
+    not rejected as an unknown/unsupported argument."""
+    unsloth = _import_mlx_unsloth()
+    args = unsloth.UnslothTrainingArguments(
+        output_dir = "mlx-out",
+        max_steps = 10,
+        preserve_dataset_order = True,
+    )
+    assert getattr(args, "preserve_dataset_order", False) is True
+
+
 def test_mlx_vision_collator_is_constructor_compatible():
     """Vision notebooks should be able to instantiate the collator placeholder."""
     unsloth = _import_mlx_unsloth()

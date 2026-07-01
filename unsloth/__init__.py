@@ -351,7 +351,9 @@ if _IS_MLX:
             "torch_compile",
         )
     )
-    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(("image_size", "warmup_ratio"))
+    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(
+        ("image_size", "preserve_dataset_order", "warmup_ratio")
+    )
     _MLX_ALLOWED_EXTRA_ARGUMENTS = _MLX_COMPAT_EXTRA_ARGUMENTS | _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
     _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset(
         (
@@ -1067,6 +1069,28 @@ if _IS_MLX:
                 safe_exports.append(name)
         return safe_exports
 
+    # trl trainers with no MLX implementation yet. Swap them for stubs that fail
+    # with a clear message instead of importing the real torch/CUDA trainer and
+    # crashing deep inside it, so an unmigrated GRPO/DPO/ORPO notebook is legible.
+    _MLX_UNSUPPORTED_TRL_TRAINERS = (
+        "GRPOTrainer",
+        "DPOTrainer",
+        "ORPOTrainer",
+        "KTOTrainer",
+        "PPOTrainer",
+        "RewardTrainer",
+    )
+
+    def _make_mlx_unsupported_trl_trainer(name):
+        def __init__(self, *args, **kwargs):
+            raise NotImplementedError(
+                f"Unsloth: {name} is not yet supported on the MLX (Apple Silicon) "
+                f"backend. Only SFT training runs on MLX today; use a CUDA/ROCm GPU "
+                f"for {name}."
+            )
+
+        return type(name, (), {"__init__": __init__, "_unsloth_mlx_unsupported": True})
+
     def _install_mlx_trl_sft_shim():
         """Install MLX-backed TRL SFT shims without replacing the TRL module."""
         _trl = _sys.modules.get("trl")
@@ -1083,6 +1107,12 @@ if _IS_MLX:
 
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = UnslothTrainingArguments
+        # Only retarget trainers the installed trl actually exposes (don't invent
+        # attributes); idempotent so re-importing unsloth is a no-op.
+        for _name in _MLX_UNSUPPORTED_TRL_TRAINERS:
+            _existing = getattr(_trl, _name, None)
+            if _existing is not None and not getattr(_existing, "_unsloth_mlx_unsupported", False):
+                setattr(_trl, _name, _make_mlx_unsupported_trl_trainer(_name))
         _trl.__all__ = _safe_mlx_trl_star_exports(_trl)
         _trl.__UNSLOTH_MLX_COMPAT__ = True
 
