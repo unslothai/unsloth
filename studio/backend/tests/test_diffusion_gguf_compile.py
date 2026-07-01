@@ -18,7 +18,7 @@ gguf_utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
 from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clean():
     # Always start and end from a clean, unpatched state so tests do not leak the
     # process-wide patch into each other.
@@ -59,7 +59,7 @@ def test_compiled_dequant_kill_switch(monkeypatch):
 
 def test_compiled_dequant_on_by_default(monkeypatch):
     # The compiled dequant is the real win, so it is ON without any env opt-in.
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising=False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising = False)
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
 

@@ -255,8 +255,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         # matched family does not itself declare, reject so the load fails fast + clearly.
         matched_tokens = (match.name, *match.aliases)
         if any(
-            kw in needle and not any(kw in tok for tok in matched_tokens)
-            for kw in _EDIT_KEYWORDS
+            kw in needle and not any(kw in tok for tok in matched_tokens) for kw in _EDIT_KEYWORDS
         ):
             return None
         return match

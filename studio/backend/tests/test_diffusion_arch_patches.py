@@ -21,7 +21,7 @@ pytest.importorskip("diffusers")
 from core.inference import diffusion_arch_patches as ap  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clean():
     ap.uninstall_arch_patches()
     yield
@@ -40,7 +40,7 @@ def test_qwen_modulate_matches_stock_global_and_indexed():
     # _modulate uses no real `self` state, so call it unbound with self=None.
     ref_x, ref_g = Q._modulate(None, x, mod)
     got_x, got_g = ap._qwen_modulate(None, x, mod)
-    torch.testing.assert_close(got_x, ref_x, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(got_x, ref_x, atol = 1e-5, rtol = 1e-4)
     assert torch.equal(got_g, ref_g)
 
     # per-token `index` branch (mod batch is 2*B).
@@ -48,7 +48,7 @@ def test_qwen_modulate_matches_stock_global_and_indexed():
     mod2 = torch.randn(2 * B, 3 * D)
     ref2_x, ref2_g = Q._modulate(None, x, mod2, idx)
     got2_x, got2_g = ap._qwen_modulate(None, x, mod2, idx)
-    torch.testing.assert_close(got2_x, ref2_x, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(got2_x, ref2_x, atol = 1e-5, rtol = 1e-4)
     assert torch.equal(got2_g, ref2_g)
 
 
@@ -61,18 +61,23 @@ class _AttnStub(torch.nn.Module):
 
     def __init__(self, dim):
         super().__init__()
-        self.proj = torch.nn.Linear(dim, dim, bias=False)
+        self.proj = torch.nn.Linear(dim, dim, bias = False)
 
     def forward(self, h, **kwargs):
         return self.proj(h)
 
 
-def _zimage_block(dim=64, heads=4):
+def _zimage_block(dim = 64, heads = 4):
     from diffusers.models.transformers.transformer_z_image import ZImageTransformerBlock
 
     blk = ZImageTransformerBlock(
-        layer_id=0, dim=dim, n_heads=heads, n_kv_heads=heads,
-        norm_eps=1e-5, qk_norm=True, modulation=True,
+        layer_id = 0,
+        dim = dim,
+        n_heads = heads,
+        n_kv_heads = heads,
+        norm_eps = 1e-5,
+        qk_norm = True,
+        modulation = True,
     ).eval()
     blk.attention = _AttnStub(dim).eval()
     return blk
@@ -93,9 +98,9 @@ def test_zimage_forward_matches_stock_global_modulation():
     adaln = torch.randn(B, _adaln_dim(D))
 
     with torch.inference_mode():
-        ref = ZImageTransformerBlock.forward(blk, x, None, None, adaln_input=adaln).clone()
-        got = ap._zimage_forward(blk, x, None, None, adaln_input=adaln)
-    torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-4)
+        ref = ZImageTransformerBlock.forward(blk, x, None, None, adaln_input = adaln).clone()
+        got = ap._zimage_forward(blk, x, None, None, adaln_input = adaln)
+    torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
 
 
 def test_zimage_forward_matches_stock_per_token_modulation():
@@ -112,14 +117,24 @@ def test_zimage_forward_matches_stock_per_token_modulation():
 
     with torch.inference_mode():
         ref = ZImageTransformerBlock.forward(
-            blk, x, None, None, noise_mask=noise_mask,
-            adaln_noisy=adaln_noisy, adaln_clean=adaln_clean,
+            blk,
+            x,
+            None,
+            None,
+            noise_mask = noise_mask,
+            adaln_noisy = adaln_noisy,
+            adaln_clean = adaln_clean,
         ).clone()
         got = ap._zimage_forward(
-            blk, x, None, None, noise_mask=noise_mask,
-            adaln_noisy=adaln_noisy, adaln_clean=adaln_clean,
+            blk,
+            x,
+            None,
+            None,
+            noise_mask = noise_mask,
+            adaln_noisy = adaln_noisy,
+            adaln_clean = adaln_clean,
         )
-    torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
 
 
 # ── flux.1 / flux.2 block forwards (modulation + gated-residual addcmul) ─────────
@@ -130,10 +145,15 @@ class _Tuple2AttnStub(torch.nn.Module):
 
     def __init__(self, dim):
         super().__init__()
-        self.pi = torch.nn.Linear(dim, dim, bias=False)
-        self.pc = torch.nn.Linear(dim, dim, bias=False)
+        self.pi = torch.nn.Linear(dim, dim, bias = False)
+        self.pc = torch.nn.Linear(dim, dim, bias = False)
 
-    def forward(self, hidden_states, encoder_hidden_states=None, **kwargs):
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        **kwargs,
+    ):
         return self.pi(hidden_states), self.pc(encoder_hidden_states)
 
 
@@ -142,7 +162,7 @@ class _SingleAttnStub(torch.nn.Module):
 
     def __init__(self, dim):
         super().__init__()
-        self.p = torch.nn.Linear(dim, dim, bias=False)
+        self.p = torch.nn.Linear(dim, dim, bias = False)
 
     def forward(self, hidden_states, **kwargs):
         return self.p(hidden_states)
@@ -152,9 +172,9 @@ def _close_any(got, ref):
     if isinstance(ref, tuple):
         assert len(got) == len(ref)
         for g, r in zip(got, ref):
-            torch.testing.assert_close(g, r, atol=1e-5, rtol=1e-4)
+            torch.testing.assert_close(g, r, atol = 1e-5, rtol = 1e-4)
     else:
-        torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-4)
+        torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
 
 
 D, H = 64, 4
@@ -165,7 +185,7 @@ def test_flux_double_forward_matches_stock():
     from diffusers.models.transformers.transformer_flux import FluxTransformerBlock
 
     torch.manual_seed(0)
-    blk = FluxTransformerBlock(dim=D, num_attention_heads=H, attention_head_dim=D // H).eval()
+    blk = FluxTransformerBlock(dim = D, num_attention_heads = H, attention_head_dim = D // H).eval()
     blk.attn = _Tuple2AttnStub(D).eval()
     hs, ehs, temb = torch.randn(B, L, D), torch.randn(B, LC, D), torch.randn(B, D)
     with torch.inference_mode():
@@ -178,7 +198,7 @@ def test_flux_single_forward_matches_stock():
     from diffusers.models.transformers.transformer_flux import FluxSingleTransformerBlock
 
     torch.manual_seed(1)
-    blk = FluxSingleTransformerBlock(dim=D, num_attention_heads=H, attention_head_dim=D // H).eval()
+    blk = FluxSingleTransformerBlock(dim = D, num_attention_heads = H, attention_head_dim = D // H).eval()
     blk.attn = _SingleAttnStub(D).eval()
     hs, ehs, temb = torch.randn(B, L, D), torch.randn(B, LC, D), torch.randn(B, D)
     with torch.inference_mode():
@@ -191,7 +211,7 @@ def test_flux2_double_forward_matches_stock():
     from diffusers.models.transformers.transformer_flux2 import Flux2TransformerBlock
 
     torch.manual_seed(2)
-    blk = Flux2TransformerBlock(dim=D, num_attention_heads=H, attention_head_dim=D // H).eval()
+    blk = Flux2TransformerBlock(dim = D, num_attention_heads = H, attention_head_dim = D // H).eval()
     blk.attn = _Tuple2AttnStub(D).eval()
     hs, ehs = torch.randn(B, L, D), torch.randn(B, LC, D)
     tmi, tmt = torch.randn(B, 6 * D), torch.randn(B, 6 * D)
@@ -205,7 +225,9 @@ def test_flux2_single_forward_matches_stock():
     from diffusers.models.transformers.transformer_flux2 import Flux2SingleTransformerBlock
 
     torch.manual_seed(3)
-    blk = Flux2SingleTransformerBlock(dim=D, num_attention_heads=H, attention_head_dim=D // H).eval()
+    blk = Flux2SingleTransformerBlock(
+        dim = D, num_attention_heads = H, attention_head_dim = D // H
+    ).eval()
     blk.attn = _SingleAttnStub(D).eval()
     hs, ehs, tm = torch.randn(B, L, D), torch.randn(B, LC, D), torch.randn(B, 3 * D)
     with torch.inference_mode():

@@ -404,8 +404,12 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
 
     loaded_pipe = backend._state.pipe
     out = backend.generate(
-        prompt = "a car at sunset", steps = 4, guidance = 0.0, seed = 3,
-        init_image = _tiny_png_b64(), strength = 0.5,
+        prompt = "a car at sunset",
+        steps = 4,
+        guidance = 0.0,
+        seed = 3,
+        init_image = _tiny_png_b64(),
+        strength = 0.5,
     )
     assert len(out["images"]) == 1
     # from_pipe was handed the loaded text-to-image pipe (component reuse, no reload).
@@ -414,7 +418,7 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     # both upcasts the reused bf16 modules and crashes on torchao-quantized weights.
     assert _FakeImg2ImgPipeline.from_pipe_kwargs.get("torch_dtype", "MISSING") is None
     call = _FakeImg2ImgPipe.last_kwargs
-    assert call["image"] is not None          # decoded source image passed through
+    assert call["image"] is not None  # decoded source image passed through
     assert call["strength"] == 0.5
     assert "width" not in call and "height" not in call  # img2img derives size from image
 
@@ -461,8 +465,12 @@ def test_generate_upscale_enlarges_and_low_strength(fake_runtime, tmp_path):
 
     loaded_pipe = backend._state.pipe
     out = backend.generate(
-        prompt = "a crisp photo", steps = 4, guidance = 0.0, seed = 3,
-        init_image = _tiny_png_b64(), upscale = 2.0,  # 64 -> 128, no explicit strength
+        prompt = "a crisp photo",
+        steps = 4,
+        guidance = 0.0,
+        seed = 3,
+        init_image = _tiny_png_b64(),
+        upscale = 2.0,  # 64 -> 128, no explicit strength
     )
     assert len(out["images"]) == 1
     # Reuses the resident modules via from_pipe (no reload, no extra VRAM).
@@ -475,14 +483,22 @@ def test_generate_upscale_enlarges_and_low_strength(fake_runtime, tmp_path):
 
     # The factor is capped at 4x so a large request can't blow up the VAE/transformer.
     backend.generate(
-        prompt = "x", steps = 4, seed = 1, init_image = _tiny_png_b64(), upscale = 99.0,
+        prompt = "x",
+        steps = 4,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        upscale = 99.0,
     )
     assert _FakeImg2ImgPipe.last_kwargs["image"].size == (256, 256)  # 64 * 4 (capped)
 
     # An explicit strength overrides the hires-fix default.
     backend.generate(
-        prompt = "x", steps = 4, seed = 1, init_image = _tiny_png_b64(),
-        upscale = 1.5, strength = 0.2,
+        prompt = "x",
+        steps = 4,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        upscale = 1.5,
+        strength = 0.2,
     )
     assert _FakeImg2ImgPipe.last_kwargs["strength"] == 0.2
     # 64 * 1.5 = 96, already a multiple of 16.
@@ -562,8 +578,12 @@ def test_inpaint_snaps_image_and_mask_together(fake_runtime, tmp_path):
         str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
     )
     backend.generate(
-        prompt = "x", steps = 4, seed = 1,
-        init_image = _png_b64(186), mask_image = _mask_b64(186), strength = 0.5,
+        prompt = "x",
+        steps = 4,
+        seed = 1,
+        init_image = _png_b64(186),
+        mask_image = _mask_b64(186),
+        strength = 0.5,
     )
     assert _FakeInpaintPipe.last_kwargs["image"].size == (192, 192)
     assert _FakeInpaintPipe.last_kwargs["mask_image"].size == (192, 192)
@@ -581,7 +601,9 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
         family_override = "flux.2-klein",
     )
     # FLUX.2-klein: txt2img + reference (own pipe) + inpaint (dedicated pipe). No img2img class,
@@ -590,14 +612,20 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
 
     loaded_pipe = backend._state.pipe
     out = backend.generate(
-        prompt = "a portrait in this style", steps = 6, guidance = 4.0, seed = 5,
-        width = 768, height = 512, init_image = _tiny_png_b64(), strength = 0.5,
+        prompt = "a portrait in this style",
+        steps = 6,
+        guidance = 4.0,
+        seed = 5,
+        width = 768,
+        height = 512,
+        init_image = _tiny_png_b64(),
+        strength = 0.5,
     )
     assert len(out["images"]) == 1
     call = loaded_pipe.last_kwargs
-    assert call["image"] is not None                 # reference handed to the loaded pipe
+    assert call["image"] is not None  # reference handed to the loaded pipe
     assert call["width"] == 768 and call["height"] == 512  # OUTPUT size = sliders, not input
-    assert "strength" not in call                     # reference conditioning has no strength
+    assert "strength" not in call  # reference conditioning has no strength
     assert "mask_image" not in call
     # Guidance flows via guidance_scale (FLUX.2 default behaviour).
     assert call["guidance_scale"] == 4.0
@@ -605,8 +633,13 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
     # Multi-reference: extra reference_images are combined with init_image into a LIST so the
     # model can blend several references (subject + style).
     backend.generate(
-        prompt = "combine these", steps = 6, seed = 9, width = 1024, height = 1024,
-        init_image = _tiny_png_b64(), reference_images = [_tiny_png_b64(), _tiny_png_b64()],
+        prompt = "combine these",
+        steps = 6,
+        seed = 9,
+        width = 1024,
+        height = 1024,
+        init_image = _tiny_png_b64(),
+        reference_images = [_tiny_png_b64(), _tiny_png_b64()],
     )
     img_arg = loaded_pipe.last_kwargs["image"]
     assert isinstance(img_arg, list) and len(img_arg) == 3  # primary + 2 extras
@@ -614,10 +647,14 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
     # Branch ordering: an init image + MASK on a reference family must route to inpaint (the
     # dedicated pipeline), NOT be swallowed by the reference branch (which ignores the mask).
     backend.generate(
-        prompt = "repaint here", steps = 6, seed = 2,
-        init_image = _tiny_png_b64(), mask_image = _tiny_mask_b64(), strength = 0.8,
+        prompt = "repaint here",
+        steps = 6,
+        seed = 2,
+        init_image = _tiny_png_b64(),
+        mask_image = _tiny_mask_b64(),
+        strength = 0.8,
     )
-    assert _FakeInpaintPipeline.built_from is loaded_pipe   # built via from_pipe off the load
+    assert _FakeInpaintPipeline.built_from is loaded_pipe  # built via from_pipe off the load
     assert _FakeInpaintPipe.last_kwargs["mask_image"] is not None
     assert _FakeInpaintPipe.last_kwargs["strength"] == 0.8
 
@@ -653,8 +690,13 @@ def test_generate_inpaint_uses_from_pipe(fake_runtime, tmp_path):
     )
     loaded_pipe = backend._state.pipe
     out = backend.generate(
-        prompt = "a red door", steps = 4, guidance = 0.0, seed = 5,
-        init_image = _tiny_png_b64(), mask_image = _tiny_mask_b64(), strength = 0.7,
+        prompt = "a red door",
+        steps = 4,
+        guidance = 0.0,
+        seed = 5,
+        init_image = _tiny_png_b64(),
+        mask_image = _tiny_mask_b64(),
+        strength = 0.7,
     )
     assert len(out["images"]) == 1
     # The inpaint pipe (not img2img) was selected and built from the loaded pipe.
@@ -725,7 +767,9 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "Qwen/Qwen-Image-Edit-2511",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
         family_override = "qwen-image-edit",
     )
     # Edit families advertise only the edit workflow (no txt2img / img2img / inpaint).
@@ -733,7 +777,10 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
     loaded_pipe = backend._state.pipe
 
     out = backend.generate(
-        prompt = "make it night", steps = 8, guidance = 4.0, seed = 1,
+        prompt = "make it night",
+        steps = 8,
+        guidance = 4.0,
+        seed = 1,
         init_image = _tiny_png_b64(),
     )
     assert len(out["images"]) == 1
@@ -1240,9 +1287,7 @@ def test_callback_cancellation_interrupts_denoise(fake_runtime):
 def test_validate_load_request(tmp_path):
     backend = DiffusionBackend()
     # No filename + unsloth repo -> a full-pipeline load (allowed for unsloth/*).
-    assert (
-        backend.validate_load_request("unsloth/Z-Image-Turbo-unsloth-bnb-4bit").name == "z-image"
-    )
+    assert backend.validate_load_request("unsloth/Z-Image-Turbo-unsloth-bnb-4bit").name == "z-image"
     # No filename + non-unsloth repo -> a pipeline load, gated to unsloth/* -> rejected.
     with pytest.raises(ValueError, match = "unsloth"):
         backend.validate_load_request("some-org/Z-Image-bnb-4bit")

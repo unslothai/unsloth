@@ -49,9 +49,7 @@ def apply_patch(
     except Exception:  # noqa: BLE001 — no unsloth_zoo / no-GPU host -> optimisation skipped
         return False
     try:
-        return bool(
-            patch_function(target, attr, new_fn, match_level=match_level, force=force)
-        )
+        return bool(patch_function(target, attr, new_fn, match_level = match_level, force = force))
     except Exception:  # noqa: BLE001 — best-effort; leave the original in place
         return False
 

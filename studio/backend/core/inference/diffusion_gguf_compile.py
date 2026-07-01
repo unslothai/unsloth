@@ -56,7 +56,6 @@ def _gguf_utils():
     """The diffusers GGUF utils module, or None if this diffusers build lacks it."""
     try:
         from diffusers.quantizers.gguf import utils as gguf_utils  # noqa: PLC0415
-
         return gguf_utils
     except Exception:  # noqa: BLE001 — old/!GGUF diffusers -> accelerator is a no-op
         return None
@@ -91,10 +90,10 @@ def install_compiled_dequant(logger: Any = None) -> bool:
     try:
         import torch  # noqa: PLC0415
 
-        compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic=True)
+        compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic = True)
         # force=True: the new callable is the SAME function compiled, so its fingerprint
         # differs from the original and can_safely_patch would (correctly) reject it.
-        if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force=True):
+        if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             return True
         return False

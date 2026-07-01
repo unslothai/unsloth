@@ -60,6 +60,7 @@ def _pinned_tag() -> Optional[str]:
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
 
+
 # accelerator -> the token that must appear in a Linux/Windows asset name.
 _LINUX_ACCEL_TOKEN = {"rocm": "rocm", "vulkan": "vulkan"}
 _WINDOWS_ACCEL_TOKEN = {
@@ -131,8 +132,11 @@ def resolve_release_asset(
 
 
 def _fetch_release(
-    tag: Optional[str] = None, *, repo: Optional[str] = None,
-    token: Optional[str] = None, timeout: float = 30.0,
+    tag: Optional[str] = None,
+    *,
+    repo: Optional[str] = None,
+    token: Optional[str] = None,
+    timeout: float = 30.0,
 ) -> dict:
     """GET a release JSON from GitHub. With ``tag`` set, fetch that exact release (and fall
     back to latest if the tag is gone upstream); otherwise fetch latest. ``token`` is
@@ -154,7 +158,9 @@ def _fetch_release(
         except urllib.error.HTTPError as exc:  # pinned tag removed upstream -> latest
             if exc.code != 404:
                 raise
-            print(f"sd-cli: pinned tag {tag} not found on {repo}; falling back to latest", flush = True)
+            print(
+                f"sd-cli: pinned tag {tag} not found on {repo}; falling back to latest", flush = True
+            )
     return _get(f"{base}/latest")
 
 
@@ -172,7 +178,9 @@ def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
         return
     algo, _, want = expected_digest.partition(":")
     if algo.lower() != "sha256" or not want:
-        print(f"sd-cli: WARNING unrecognised digest {expected_digest!r}; skipping check", flush = True)
+        print(
+            f"sd-cli: WARNING unrecognised digest {expected_digest!r}; skipping check", flush = True
+        )
         return
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -180,9 +188,7 @@ def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
             h.update(chunk)
     got = h.hexdigest()
     if got != want.lower():
-        raise RuntimeError(
-            f"sha256 mismatch for {path.name}: expected {want.lower()}, got {got}"
-        )
+        raise RuntimeError(f"sha256 mismatch for {path.name}: expected {want.lower()}, got {got}")
 
 
 def default_install_dir() -> Path:
@@ -199,7 +205,12 @@ def _make_executable(path: Path) -> None:
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _download(url: str, dest: Path, *, timeout: float = 300.0) -> None:
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    timeout: float = 300.0,
+) -> None:
     """Stream a release asset to ``dest`` with a timeout. ``urlretrieve`` has no timeout,
     so a stalled connection would hang the lazy first-load (ensure_sd_cpp_binary) forever.
     Anonymous, matching the public release URL -- the API fetch carries any token."""

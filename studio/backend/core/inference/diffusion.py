@@ -143,7 +143,7 @@ def _decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
         # data:[<mime>][;base64],<payload>
         _, _, raw = raw.partition(",")
     try:
-        blob = base64.b64decode(raw, validate=False)
+        blob = base64.b64decode(raw, validate = False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"Invalid base64 image data: {exc}") from exc
     try:
@@ -418,9 +418,7 @@ class DiffusionBackend:
         path_shaped = repo_id.startswith(("/", "~", "./", "../")) or local_root.is_absolute()
         if kind in ("gguf", "single_file"):
             if not gguf_filename:
-                raise ValueError(
-                    f"a single-file checkpoint name is required for a '{kind}' load."
-                )
+                raise ValueError(f"a single-file checkpoint name is required for a '{kind}' load.")
             if local_root.exists():
                 resolve_local_gguf_child(local_root, gguf_filename)
             elif path_shaped:
@@ -525,7 +523,11 @@ class DiffusionBackend:
                 )
             kwargs["base_repo"] = base
             expected, base_files = self._estimate_download_bytes(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token"), kind = kind
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                base,
+                kwargs.get("hf_token"),
+                kind = kind,
             )
             loading = self._loading
             if loading is not None:
@@ -669,7 +671,9 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         # For a full pipeline the repo itself supplies every component, so it is its
         # own base; the single-file kinds resolve the companion base diffusers repo.
-        base = repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        base = (
+            repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        )
         target = self._resolve_device_target(fam)
         device, dtype = target.device, target.dtype
 
@@ -786,7 +790,9 @@ class DiffusionBackend:
                             )
                         # A safetensors single-file (e.g. fp8) carries its own dtype, so no
                         # GGUF dequant config is passed.
-                        transformer = transformer_cls.from_single_file(single_file_path, **sf_kwargs)
+                        transformer = transformer_cls.from_single_file(
+                            single_file_path, **sf_kwargs
+                        )
 
                         pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
                         if hf_token:
@@ -1138,7 +1144,7 @@ class DiffusionBackend:
         try:
             target_dtype = transformer.dtype
             if next(vae.parameters()).dtype != target_dtype:
-                vae.to(dtype=target_dtype)
+                vae.to(dtype = target_dtype)
         except (StopIteration, AttributeError, RuntimeError):
             pass
 
@@ -1261,8 +1267,7 @@ class DiffusionBackend:
                     # Additional references (FLUX.2 accepts a list): decode them so the
                     # conditioning combines all of them. Capped to keep VRAM bounded.
                     ref_extra = [
-                        _decode_b64_image(x, mode = "RGB")
-                        for x in (reference_images or [])[:3]
+                        _decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
                     ]
                 elif init_image is not None:
                     workflow = "img2img"
@@ -1279,7 +1284,6 @@ class DiffusionBackend:
                     init_pil = _snap_to_multiple(init_pil, 16)
                     if mask_pil is not None and mask_pil.size != init_pil.size:
                         from PIL import Image as _PILImage
-
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.

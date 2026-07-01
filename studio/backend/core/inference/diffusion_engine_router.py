@@ -100,7 +100,10 @@ def _activate(name: str, reason: Optional[str]) -> Any:
 
 
 def select_and_activate_engine(
-    fam: DiffusionFamily, *, hf_token: Optional[str] = None, model_kind: Optional[str] = None
+    fam: DiffusionFamily,
+    *,
+    hf_token: Optional[str] = None,
+    model_kind: Optional[str] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 

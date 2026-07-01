@@ -19,17 +19,17 @@ import pytest
 from core.inference import diffusion_compile_cache as cc
 
 
-def _transformer(blocks=("FluxTransformerBlock", "FluxSingleTransformerBlock")):
-    return types.SimpleNamespace(_repeated_blocks=list(blocks))
+def _transformer(blocks = ("FluxTransformerBlock", "FluxSingleTransformerBlock")):
+    return types.SimpleNamespace(_repeated_blocks = list(blocks))
 
 
 _BEGIN_KW = dict(
-    family="flux.1",
-    dtype="torch.bfloat16",
-    quant=None,
-    attention_backend="_native_cudnn",
-    compile_kwargs={"fullgraph": True, "dynamic": True},
-    shape_bucket="1024x1024",
+    family = "flux.1",
+    dtype = "torch.bfloat16",
+    quant = None,
+    attention_backend = "_native_cudnn",
+    compile_kwargs = {"fullgraph": True, "dynamic": True},
+    shape_bucket = "1024x1024",
 )
 
 
@@ -43,25 +43,47 @@ def test_environment_fingerprint_has_hard_dimensions():
 def test_cache_key_stable_across_kwarg_order():
     efp = cc.environment_fingerprint()
     t = _transformer()
-    a = cc.model_fingerprint(family="flux.1", transformer=t, dtype="bf16", quant=None,
-                             attention_backend="x", compile_kwargs={"fullgraph": True, "dynamic": True})
-    b = cc.model_fingerprint(family="flux.1", transformer=t, dtype="bf16", quant=None,
-                             attention_backend="x", compile_kwargs={"dynamic": True, "fullgraph": True})
+    a = cc.model_fingerprint(
+        family = "flux.1",
+        transformer = t,
+        dtype = "bf16",
+        quant = None,
+        attention_backend = "x",
+        compile_kwargs = {"fullgraph": True, "dynamic": True},
+    )
+    b = cc.model_fingerprint(
+        family = "flux.1",
+        transformer = t,
+        dtype = "bf16",
+        quant = None,
+        attention_backend = "x",
+        compile_kwargs = {"dynamic": True, "fullgraph": True},
+    )
     assert cc.cache_key(efp, a) == cc.cache_key(efp, b)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("family", "qwen-image"),
-    ("dtype", "torch.float16"),
-    ("quant", "int8"),
-    ("attention_backend", "native"),
-    ("shape_bucket", "512x512"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("family", "qwen-image"),
+        ("dtype", "torch.float16"),
+        ("quant", "int8"),
+        ("attention_backend", "native"),
+        ("shape_bucket", "512x512"),
+    ],
+)
 def test_cache_key_sensitive_to_model_dims(field, value):
     efp = cc.environment_fingerprint()
     t = _transformer()
-    base = dict(family="flux.1", transformer=t, dtype="bf16", quant=None,
-                attention_backend="x", compile_kwargs={"fullgraph": True}, shape_bucket="1024x1024")
+    base = dict(
+        family = "flux.1",
+        transformer = t,
+        dtype = "bf16",
+        quant = None,
+        attention_backend = "x",
+        compile_kwargs = {"fullgraph": True},
+        shape_bucket = "1024x1024",
+    )
     k0 = cc.cache_key(efp, cc.model_fingerprint(**base))
     base[field] = value
     assert cc.cache_key(efp, cc.model_fingerprint(**base)) != k0
@@ -69,32 +91,58 @@ def test_cache_key_sensitive_to_model_dims(field, value):
 
 def test_repeated_blocks_change_key():
     efp = cc.environment_fingerprint()
-    k1 = cc.cache_key(efp, cc.model_fingerprint(family="f", transformer=_transformer(("A",)),
-                      dtype="bf16", quant=None, attention_backend="x", compile_kwargs={}))
-    k2 = cc.cache_key(efp, cc.model_fingerprint(family="f", transformer=_transformer(("B",)),
-                      dtype="bf16", quant=None, attention_backend="x", compile_kwargs={}))
+    k1 = cc.cache_key(
+        efp,
+        cc.model_fingerprint(
+            family = "f",
+            transformer = _transformer(("A",)),
+            dtype = "bf16",
+            quant = None,
+            attention_backend = "x",
+            compile_kwargs = {},
+        ),
+    )
+    k2 = cc.cache_key(
+        efp,
+        cc.model_fingerprint(
+            family = "f",
+            transformer = _transformer(("B",)),
+            dtype = "bf16",
+            quant = None,
+            attention_backend = "x",
+            compile_kwargs = {},
+        ),
+    )
     assert k1 != k2
 
 
 # ----------------------------------------------------------------------------- env knobs
-@pytest.mark.parametrize("raw,expected", [
-    ("0", "off"), ("off", "off"), ("1", "on"), ("on", "on"),
-    ("auto", "auto"), ("", "auto"), ("garbage", "auto"),
-])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("0", "off"),
+        ("off", "off"),
+        ("1", "on"),
+        ("on", "on"),
+        ("auto", "auto"),
+        ("", "auto"),
+        ("garbage", "auto"),
+    ],
+)
 def test_cache_mode(monkeypatch, raw, expected):
     monkeypatch.setenv(cc._ENV_MODE, raw)
     assert cc.cache_mode() == expected
 
 
 def test_cache_mode_default_auto(monkeypatch):
-    monkeypatch.delenv(cc._ENV_MODE, raising=False)
+    monkeypatch.delenv(cc._ENV_MODE, raising = False)
     assert cc.cache_mode() == "auto"
 
 
 # ------------------------------------------------------------------------------ disabled
 def test_begin_returns_none_when_disabled(monkeypatch):
     monkeypatch.setenv(cc._ENV_MODE, "0")
-    assert cc.begin(transformer=_transformer(), **_BEGIN_KW) is None
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
 
 
 def test_begin_returns_none_without_megacache_api(monkeypatch):
@@ -102,7 +150,7 @@ def test_begin_returns_none_without_megacache_api(monkeypatch):
     fake_torch = types.ModuleType("torch")
     fake_torch.compiler = types.SimpleNamespace()  # no save/load attrs
     monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
-    assert cc.begin(transformer=_transformer(), **_BEGIN_KW) is None
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
 
 
 # ----------------------------------------------------------------- megacache fake + flow
@@ -120,23 +168,23 @@ def fake_megacache(monkeypatch):
         state["loaded_with"] = data
         return object() if data == b"ARTIFACT-BYTES" else None
 
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", fake_save, raising=False)
-    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", fake_load, raising=False)
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", fake_save, raising = False)
+    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", fake_load, raising = False)
     return state
 
 
 def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
-    monkeypatch.setenv(cc._ENV_MODE, "on")          # load + save
+    monkeypatch.setenv(cc._ENV_MODE, "on")  # load + save
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
     # First load: cold (no bundle yet).
-    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx is not None and ctx.hit is False
     assert cc.save(ctx) is True
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
     # Second load with the SAME fingerprint: warm hit.
-    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2 is not None and ctx2.hit is True
     assert fake_megacache["loaded_with"] == b"ARTIFACT-BYTES"
     assert ctx2.key == ctx.key
@@ -144,17 +192,17 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
 
 def test_no_save_in_auto_mode(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SAVE, raising=False)
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
-    assert cc.save(ctx) is False           # auto without SAVE opt-in does not write
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is False  # auto without SAVE opt-in does not write
     assert not ctx.bundle.exists()
 
 
 def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.save(ctx)
 
     # Tamper the manifest's env fingerprint -> exact-match guard must reject the bundle.
@@ -162,28 +210,29 @@ def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
     manifest["env"]["torch"] = "0.0.0-other"
     ctx.manifest_path.write_text(json.dumps(manifest))
 
-    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
-    assert ctx2.hit is False               # mismatch -> local compile, non-fatal
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx2.hit is False  # mismatch -> local compile, non-fatal
 
 
 def test_corrupt_bundle_rejected(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.save(ctx)
-    ctx.bundle.write_bytes(b"CORRUPTED")   # manifest sha256 no longer matches
+    ctx.bundle.write_bytes(b"CORRUPTED")  # manifest sha256 no longer matches
 
-    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is False
 
 
 # ------------------------------------------------------------------------------- restore
 def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     import os
+
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/tmp/prior-inductor")
-    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
-    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"   # redirected
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"  # redirected
     cc.restore(ctx)
-    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"   # restored
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored

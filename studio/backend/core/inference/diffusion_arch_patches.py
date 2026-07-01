@@ -69,11 +69,16 @@ def _body_has(fn: Callable, *needles: str) -> bool:
 # =====================================================================================
 # qwen-image: QwenImageTransformerBlock._modulate  (modulation addcmul, all 4 call sites)
 # =====================================================================================
-def _qwen_modulate(self, x, mod_params, index=None):
+def _qwen_modulate(
+    self,
+    x,
+    mod_params,
+    index = None,
+):
     """diffusers 0.38 ``QwenImageTransformerBlock._modulate`` with the final
     ``x*(1+scale)+shift`` fused to ``torch.addcmul`` (covers both the global and the
     per-token ``index`` branches, since both end in that same expression)."""
-    shift, scale, gate = mod_params.chunk(3, dim=-1)
+    shift, scale, gate = mod_params.chunk(3, dim = -1)
 
     if index is not None:
         actual_batch = shift.size(0) // 2
@@ -101,7 +106,9 @@ def _qwen_modulate(self, x, mod_params, index=None):
 
 def _spec_qwen_modulate():
     try:
-        from diffusers.models.transformers.transformer_qwenimage import QwenImageTransformerBlock as cls
+        from diffusers.models.transformers.transformer_qwenimage import (
+            QwenImageTransformerBlock as cls,
+        )
     except Exception:  # noqa: BLE001
         return None
     orig = getattr(cls, "_modulate", None)
@@ -135,8 +142,12 @@ def _zimage_forward(
             mod_noisy = self.adaLN_modulation(adaln_noisy)
             mod_clean = self.adaLN_modulation(adaln_clean)
 
-            scale_msa_noisy, gate_msa_noisy, scale_mlp_noisy, gate_mlp_noisy = mod_noisy.chunk(4, dim=1)
-            scale_msa_clean, gate_msa_clean, scale_mlp_clean, gate_mlp_clean = mod_clean.chunk(4, dim=1)
+            scale_msa_noisy, gate_msa_noisy, scale_mlp_noisy, gate_mlp_noisy = mod_noisy.chunk(
+                4, dim = 1
+            )
+            scale_msa_clean, gate_msa_clean, scale_mlp_clean, gate_mlp_clean = mod_clean.chunk(
+                4, dim = 1
+            )
 
             gate_msa_noisy, gate_mlp_noisy = gate_msa_noisy.tanh(), gate_mlp_noisy.tanh()
             gate_msa_clean, gate_mlp_clean = gate_msa_clean.tanh(), gate_mlp_clean.tanh()
@@ -150,13 +161,13 @@ def _zimage_forward(
             gate_mlp = select_per_token(gate_mlp_noisy, gate_mlp_clean, noise_mask, seq_len)
         else:
             mod = self.adaLN_modulation(adaln_input)
-            scale_msa, gate_msa, scale_mlp, gate_mlp = mod.unsqueeze(1).chunk(4, dim=2)
+            scale_msa, gate_msa, scale_mlp, gate_mlp = mod.unsqueeze(1).chunk(4, dim = 2)
             gate_msa, gate_mlp = gate_msa.tanh(), gate_mlp.tanh()
             scale_msa, scale_mlp = 1.0 + scale_msa, 1.0 + scale_mlp
 
         # Attention block -- fused gated residual: x + gate_msa * attention_norm2(attn_out)
         attn_out = self.attention(
-            self.attention_norm1(x) * scale_msa, attention_mask=attn_mask, freqs_cis=freqs_cis
+            self.attention_norm1(x) * scale_msa, attention_mask = attn_mask, freqs_cis = freqs_cis
         )
         x = torch.addcmul(x, gate_msa, self.attention_norm2(attn_out))
 
@@ -165,7 +176,9 @@ def _zimage_forward(
             x, gate_mlp, self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
         )
     else:
-        attn_out = self.attention(self.attention_norm1(x), attention_mask=attn_mask, freqs_cis=freqs_cis)
+        attn_out = self.attention(
+            self.attention_norm1(x), attention_mask = attn_mask, freqs_cis = freqs_cis
+        )
         x = x + self.attention_norm2(attn_out)
         x = x + self.ffn_norm2(self.feed_forward(self.ffn_norm1(x)))
 
@@ -193,17 +206,24 @@ def _spec_zimage_forward():
 #  here we fuse the inline norm2 modulation + the gated residual adds.)
 # =====================================================================================
 def _flux_double_forward(
-    self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None, joint_attention_kwargs=None
+    self,
+    hidden_states,
+    encoder_hidden_states,
+    temb,
+    image_rotary_emb = None,
+    joint_attention_kwargs = None,
 ):
-    norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
-    norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
-        encoder_hidden_states, emb=temb
+    norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
+        hidden_states, emb = temb
+    )
+    norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = (
+        self.norm1_context(encoder_hidden_states, emb = temb)
     )
     joint_attention_kwargs = joint_attention_kwargs or {}
     attention_outputs = self.attn(
-        hidden_states=norm_hidden_states,
-        encoder_hidden_states=norm_encoder_hidden_states,
-        image_rotary_emb=image_rotary_emb,
+        hidden_states = norm_hidden_states,
+        encoder_hidden_states = norm_encoder_hidden_states,
+        image_rotary_emb = image_rotary_emb,
         **joint_attention_kwargs,
     )
     if len(attention_outputs) == 2:
@@ -216,14 +236,18 @@ def _flux_double_forward(
 
     norm_hidden_states = self.norm2(hidden_states)
     # fused: norm * (1 + scale_mlp) + shift_mlp
-    norm_hidden_states = torch.addcmul(shift_mlp[:, None], norm_hidden_states, 1 + scale_mlp[:, None])
+    norm_hidden_states = torch.addcmul(
+        shift_mlp[:, None], norm_hidden_states, 1 + scale_mlp[:, None]
+    )
 
     ff_output = self.ff(norm_hidden_states)
     hidden_states = torch.addcmul(hidden_states, gate_mlp.unsqueeze(1), ff_output)
     if len(attention_outputs) == 3:
         hidden_states = hidden_states + ip_attn_output
 
-    encoder_hidden_states = torch.addcmul(encoder_hidden_states, c_gate_msa.unsqueeze(1), context_attn_output)
+    encoder_hidden_states = torch.addcmul(
+        encoder_hidden_states, c_gate_msa.unsqueeze(1), context_attn_output
+    )
 
     norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
     norm_encoder_hidden_states = torch.addcmul(
@@ -231,7 +255,9 @@ def _flux_double_forward(
     )
 
     context_ff_output = self.ff_context(norm_encoder_hidden_states)
-    encoder_hidden_states = torch.addcmul(encoder_hidden_states, c_gate_mlp.unsqueeze(1), context_ff_output)
+    encoder_hidden_states = torch.addcmul(
+        encoder_hidden_states, c_gate_mlp.unsqueeze(1), context_ff_output
+    )
     if encoder_hidden_states.dtype == torch.float16:
         encoder_hidden_states = encoder_hidden_states.clip(-65504, 65504)
 
@@ -255,29 +281,37 @@ def _spec_flux_double():
 
 
 def _flux_single_forward(
-    self, hidden_states, encoder_hidden_states, temb, image_rotary_emb=None, joint_attention_kwargs=None
+    self,
+    hidden_states,
+    encoder_hidden_states,
+    temb,
+    image_rotary_emb = None,
+    joint_attention_kwargs = None,
 ):
     text_seq_len = encoder_hidden_states.shape[1]
-    hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+    hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
 
     residual = hidden_states
-    norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
+    norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
     mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
-        hidden_states=norm_hidden_states,
-        image_rotary_emb=image_rotary_emb,
+        hidden_states = norm_hidden_states,
+        image_rotary_emb = image_rotary_emb,
         **joint_attention_kwargs,
     )
 
-    hidden_states = torch.cat([attn_output, mlp_hidden_states], dim=2)
+    hidden_states = torch.cat([attn_output, mlp_hidden_states], dim = 2)
     gate = gate.unsqueeze(1)
     # fused: residual + gate * proj_out(hidden_states)
     hidden_states = torch.addcmul(residual, gate, self.proj_out(hidden_states))
     if hidden_states.dtype == torch.float16:
         hidden_states = hidden_states.clip(-65504, 65504)
 
-    encoder_hidden_states, hidden_states = hidden_states[:, :text_seq_len], hidden_states[:, text_seq_len:]
+    encoder_hidden_states, hidden_states = (
+        hidden_states[:, :text_seq_len],
+        hidden_states[:, text_seq_len:],
+    )
     return encoder_hidden_states, hidden_states
 
 
@@ -302,27 +336,36 @@ def _spec_flux_single():
 #  the gated residuals; scale/shift/gate are [B,1,dim] so no [:, None] is needed.)
 # =====================================================================================
 def _flux2_double_forward(
-    self, hidden_states, encoder_hidden_states, temb_mod_img, temb_mod_txt,
-    image_rotary_emb=None, joint_attention_kwargs=None,
+    self,
+    hidden_states,
+    encoder_hidden_states,
+    temb_mod_img,
+    temb_mod_txt,
+    image_rotary_emb = None,
+    joint_attention_kwargs = None,
 ):
     from diffusers.models.transformers.transformer_flux2 import Flux2Modulation
 
     joint_attention_kwargs = joint_attention_kwargs or {}
-    (shift_msa, scale_msa, gate_msa), (shift_mlp, scale_mlp, gate_mlp) = Flux2Modulation.split(temb_mod_img, 2)
-    (c_shift_msa, c_scale_msa, c_gate_msa), (c_shift_mlp, c_scale_mlp, c_gate_mlp) = Flux2Modulation.split(
-        temb_mod_txt, 2
+    (shift_msa, scale_msa, gate_msa), (shift_mlp, scale_mlp, gate_mlp) = Flux2Modulation.split(
+        temb_mod_img, 2
+    )
+    (c_shift_msa, c_scale_msa, c_gate_msa), (c_shift_mlp, c_scale_mlp, c_gate_mlp) = (
+        Flux2Modulation.split(temb_mod_txt, 2)
     )
 
     norm_hidden_states = self.norm1(hidden_states)
     norm_hidden_states = torch.addcmul(shift_msa, norm_hidden_states, 1 + scale_msa)
 
     norm_encoder_hidden_states = self.norm1_context(encoder_hidden_states)
-    norm_encoder_hidden_states = torch.addcmul(c_shift_msa, norm_encoder_hidden_states, 1 + c_scale_msa)
+    norm_encoder_hidden_states = torch.addcmul(
+        c_shift_msa, norm_encoder_hidden_states, 1 + c_scale_msa
+    )
 
     attention_outputs = self.attn(
-        hidden_states=norm_hidden_states,
-        encoder_hidden_states=norm_encoder_hidden_states,
-        image_rotary_emb=image_rotary_emb,
+        hidden_states = norm_hidden_states,
+        encoder_hidden_states = norm_encoder_hidden_states,
+        image_rotary_emb = image_rotary_emb,
         **joint_attention_kwargs,
     )
     attn_output, context_attn_output = attention_outputs
@@ -338,7 +381,9 @@ def _flux2_double_forward(
     encoder_hidden_states = torch.addcmul(encoder_hidden_states, c_gate_msa, context_attn_output)
 
     norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
-    norm_encoder_hidden_states = torch.addcmul(c_shift_mlp, norm_encoder_hidden_states, 1 + c_scale_mlp)
+    norm_encoder_hidden_states = torch.addcmul(
+        c_shift_mlp, norm_encoder_hidden_states, 1 + c_scale_mlp
+    )
 
     context_ff_output = self.ff_context(norm_encoder_hidden_states)
     encoder_hidden_states = torch.addcmul(encoder_hidden_states, c_gate_mlp, context_ff_output)
@@ -365,14 +410,20 @@ def _spec_flux2_double():
 
 
 def _flux2_single_forward(
-    self, hidden_states, encoder_hidden_states, temb_mod, image_rotary_emb=None,
-    joint_attention_kwargs=None, split_hidden_states=False, text_seq_len=None,
+    self,
+    hidden_states,
+    encoder_hidden_states,
+    temb_mod,
+    image_rotary_emb = None,
+    joint_attention_kwargs = None,
+    split_hidden_states = False,
+    text_seq_len = None,
 ):
     from diffusers.models.transformers.transformer_flux2 import Flux2Modulation
 
     if encoder_hidden_states is not None:
         text_seq_len = encoder_hidden_states.shape[1]
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
 
     mod_shift, mod_scale, mod_gate = Flux2Modulation.split(temb_mod, 1)[0]
 
@@ -381,8 +432,8 @@ def _flux2_single_forward(
 
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
-        hidden_states=norm_hidden_states,
-        image_rotary_emb=image_rotary_emb,
+        hidden_states = norm_hidden_states,
+        image_rotary_emb = image_rotary_emb,
         **joint_attention_kwargs,
     )
 
@@ -391,7 +442,10 @@ def _flux2_single_forward(
         hidden_states = hidden_states.clip(-65504, 65504)
 
     if split_hidden_states:
-        encoder_hidden_states, hidden_states = hidden_states[:, :text_seq_len], hidden_states[:, text_seq_len:]
+        encoder_hidden_states, hidden_states = (
+            hidden_states[:, :text_seq_len],
+            hidden_states[:, text_seq_len:],
+        )
         return encoder_hidden_states, hidden_states
     else:
         return hidden_states
@@ -399,7 +453,9 @@ def _flux2_single_forward(
 
 def _spec_flux2_single():
     try:
-        from diffusers.models.transformers.transformer_flux2 import Flux2SingleTransformerBlock as cls
+        from diffusers.models.transformers.transformer_flux2 import (
+            Flux2SingleTransformerBlock as cls,
+        )
     except Exception:  # noqa: BLE001
         return None
     orig = getattr(cls, "forward", None)
@@ -444,16 +500,21 @@ def install_arch_patches() -> int:
         try:
             spec = resolve()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("arch-patch: resolver %s failed: %s", getattr(resolve, "__name__", resolve), exc)
+            logger.warning(
+                "arch-patch: resolver %s failed: %s", getattr(resolve, "__name__", resolve), exc
+            )
             spec = None
         if spec is None:
             continue
         cls, attr, new_fn = spec
-        if apply_patch(cls, attr, new_fn, match_level="relaxed"):
+        if apply_patch(cls, attr, new_fn, match_level = "relaxed"):
             _patched.append((cls, attr))
         else:
-            logger.warning("arch-patch: skipping %s.%s (signature mismatch / unavailable)",
-                           getattr(cls, "__name__", cls), attr)
+            logger.warning(
+                "arch-patch: skipping %s.%s (signature mismatch / unavailable)",
+                getattr(cls, "__name__", cls),
+                attr,
+            )
     logger.info("arch-patch: installed %d/%d per-arch fusions", len(_patched), len(_SPECS))
     return len(_patched)
 

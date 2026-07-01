@@ -117,6 +117,7 @@ def environment_fingerprint() -> dict[str, Any]:
     }
     try:
         import torch  # noqa: PLC0415
+
         fp["torch"] = str(torch.__version__)
         fp["torch_cuda"] = str(torch.version.cuda)
         if torch.cuda.is_available():
@@ -157,7 +158,7 @@ def model_fingerprint(
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
-    payload = json.dumps({"env": env_fp, "model": model_fp}, sort_keys=True, default=str)
+    payload = json.dumps({"env": env_fp, "model": model_fp}, sort_keys = True, default = str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
@@ -200,8 +201,10 @@ def begin(
         return None
     try:
         import torch  # noqa: PLC0415
-        if not (hasattr(torch.compiler, "save_cache_artifacts")
-                and hasattr(torch.compiler, "load_cache_artifacts")):
+        if not (
+            hasattr(torch.compiler, "save_cache_artifacts")
+            and hasattr(torch.compiler, "load_cache_artifacts")
+        ):
             _warn(logger, "Mega-cache API unavailable (need torch >= 2.7); skipping")
             return None
     except Exception as exc:  # noqa: BLE001
@@ -210,20 +213,29 @@ def begin(
 
     env_fp = environment_fingerprint()
     model_fp = model_fingerprint(
-        family=family, transformer=transformer, dtype=dtype, quant=quant,
-        attention_backend=attention_backend, compile_kwargs=compile_kwargs,
-        shape_bucket=shape_bucket,
+        family = family,
+        transformer = transformer,
+        dtype = dtype,
+        quant = quant,
+        attention_backend = attention_backend,
+        compile_kwargs = compile_kwargs,
+        shape_bucket = shape_bucket,
     )
     key = cache_key(env_fp, model_fp)
     cdir = cache_root() / key
     ctx = CacheContext(
-        key=key, dir=cdir, bundle=cdir / _BUNDLE_NAME,
-        manifest_path=cdir / _MANIFEST_NAME, env_fp=env_fp, model_fp=model_fp, mode=mode,
+        key = key,
+        dir = cdir,
+        bundle = cdir / _BUNDLE_NAME,
+        manifest_path = cdir / _MANIFEST_NAME,
+        env_fp = env_fp,
+        model_fp = model_fp,
+        mode = mode,
     )
 
     # Isolate inductor's on-disk cache per key so bundles never cross-contaminate.
     try:
-        cdir.mkdir(parents=True, exist_ok=True)
+        cdir.mkdir(parents = True, exist_ok = True)
         ctx.prev_inductor_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
         ctx.prev_inductor_dir_set = True
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cdir / "inductor")
@@ -264,6 +276,7 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
 
     try:
         import torch  # noqa: PLC0415
+
         info = torch.compiler.load_cache_artifacts(data)
         if info is None:
             _warn(logger, "compile-cache: load_cache_artifacts returned None (no hit)")
@@ -295,7 +308,7 @@ def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
 
     data = result[0]
     try:
-        ctx.dir.mkdir(parents=True, exist_ok=True)
+        ctx.dir.mkdir(parents = True, exist_ok = True)
         ctx.bundle.write_bytes(data)
         manifest = {
             "format": _FORMAT_VERSION,
@@ -306,7 +319,7 @@ def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
             "env": ctx.env_fp,
             "model": ctx.model_fp,
         }
-        ctx.manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str))
+        ctx.manifest_path.write_text(json.dumps(manifest, indent = 2, sort_keys = True, default = str))
         ctx.saved = True
         _info(logger, f"compile-cache: saved bundle ({len(data)} bytes) for key {ctx.key}")
         return True

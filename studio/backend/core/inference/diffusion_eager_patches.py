@@ -59,6 +59,7 @@ _ENV_ENABLE = "UNSLOTH_DIFFUSION_EAGER_PATCHES"
 def _patches_enabled() -> bool:
     return (os.environ.get(_ENV_ENABLE) or "").strip().lower() not in ("0", "off", "false", "no")
 
+
 # --------------------------------------------------------------------------- #
 # Resolve the diffusers classes we patch. Any import failure -> that patch is
 # simply unavailable (None) and is skipped at install time.
@@ -86,24 +87,35 @@ except Exception:  # noqa: BLE001
 # --------------------------------------------------------------------------- #
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
-    scale, shift = torch.chunk(emb, 2, dim=1)
+    scale, shift = torch.chunk(emb, 2, dim = 1)
     # original: self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
     return torch.addcmul(shift[:, None, :], self.norm(x), 1 + scale[:, None, :])
 
 
-def _adaln_zero_forward(self, x, timestep=None, class_labels=None, hidden_dtype=None, emb=None):
+def _adaln_zero_forward(
+    self,
+    x,
+    timestep = None,
+    class_labels = None,
+    hidden_dtype = None,
+    emb = None,
+):
     if self.emb is not None:
-        emb = self.emb(timestep, class_labels, hidden_dtype=hidden_dtype)
+        emb = self.emb(timestep, class_labels, hidden_dtype = hidden_dtype)
     emb = self.linear(self.silu(emb))
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim=1)
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim = 1)
     # original: self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     x = torch.addcmul(shift_msa[:, None], self.norm(x), 1 + scale_msa[:, None])
     return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
-def _adaln_zero_single_forward(self, x, emb=None):
+def _adaln_zero_single_forward(
+    self,
+    x,
+    emb = None,
+):
     emb = self.linear(self.silu(emb))
-    shift_msa, scale_msa, gate_msa = emb.chunk(3, dim=1)
+    shift_msa, scale_msa, gate_msa = emb.chunk(3, dim = 1)
     x = torch.addcmul(shift_msa[:, None], self.norm(x), 1 + scale_msa[:, None])
     return x, gate_msa
 
@@ -122,12 +134,7 @@ def _rmsnorm_forward(self, hidden_states):
     #   * dtype mismatch (e.g. fp32 activations into an fp16/bf16-weight norm) -> diffusers
     #     computes the variance in fp32 from the ORIGINAL tensor and only casts before the
     #     weight multiply, so casting first would change the variance.
-    if (
-        _NPU
-        or self.bias is not None
-        or _orig_rmsnorm_forward is None
-        or len(tuple(self.dim)) != 1
-    ):
+    if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
     if weight is None:
@@ -178,14 +185,18 @@ def install_compile_safe_patches() -> int:
         # to it for the uncommon (NPU / bias / fp32-weight / tuple-dim) cases.
         if cls is _RMSNorm:
             _orig_rmsnorm_forward = cls.forward
-        if apply_patch(cls, "forward", new_fn, match_level="relaxed"):
+        if apply_patch(cls, "forward", new_fn, match_level = "relaxed"):
             _patched.append(cls)
         else:
-            logger.warning("eager-patch: skipping %s (signature mismatch / unavailable)",
-                           getattr(cls, "__name__", cls))
+            logger.warning(
+                "eager-patch: skipping %s (signature mismatch / unavailable)",
+                getattr(cls, "__name__", cls),
+            )
             if cls is _RMSNorm:
                 _orig_rmsnorm_forward = None
-    logger.info("eager-patch: installed %d/%d shared diffusion patches", len(_patched), len(_specs()))
+    logger.info(
+        "eager-patch: installed %d/%d shared diffusion patches", len(_patched), len(_specs())
+    )
     return len(_patched)
 
 

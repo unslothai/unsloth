@@ -233,7 +233,11 @@ def _stub_release(monkeypatch, *, zip_bytes: bytes, digest: str):
     release = {
         "tag_name": "master-1-deadbee",
         "assets": [
-            {"name": name, "browser_download_url": f"https://example.invalid/{name}", "digest": digest}
+            {
+                "name": name,
+                "browser_download_url": f"https://example.invalid/{name}",
+                "digest": digest,
+            }
         ],
     }
     monkeypatch.setattr(sdmod, "_fetch_release", lambda *a, **k: release)
@@ -245,7 +249,9 @@ def _stub_release(monkeypatch, *, zip_bytes: bytes, digest: str):
 
 def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
     zb = _zip_with_sd_cli()
-    name = _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    name = _stub_release(
+        monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest()
+    )
     sd_cli = install(install_dir = tmp_path)
     assert sd_cli.name == "sd-cli" and sd_cli.is_file()
     assert not (tmp_path / name).exists()  # archive cleaned up after extract
