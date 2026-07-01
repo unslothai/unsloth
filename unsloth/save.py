@@ -205,6 +205,30 @@ COMPRESSED_EXPORT_SCHEMES = {
 }
 
 
+# torchao "portable" quant export: device-agnostic FP8 / INT8 that needs NO NVIDIA GPU to
+# produce (unlike compressed-tensors, which gate on CUDA). alias -> (kind, sibling suffix).
+# FP8 serializes to safetensors (loads in vLLM); INT8 serializes to .bin (torchao only
+# whitelists float8 configs for safetensors). Both verified to load in vLLM.
+TORCHAO_EXPORT_SCHEMES = {
+    "torchao_fp8": ("fp8", "torchao-fp8"),
+    "torchao_int8": ("int8", "torchao-int8"),
+    "portable_fp8": ("fp8", "torchao-fp8"),
+    "portable_int8": ("int8", "torchao-int8"),
+}
+
+
+def _normalize_torchao_method(save_method):
+    """Return (kind, suffix) if `save_method` is a torchao portable FP8/INT8 export, else None.
+
+    Kept separate from `_normalize_compressed_method` so torchao aliases route to the
+    device-agnostic torchao path instead of the NVIDIA-gated llm-compressor path.
+    """
+    if not isinstance(save_method, str):
+        return None
+    key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
+    return TORCHAO_EXPORT_SCHEMES.get(key)
+
+
 def _normalize_compressed_method(save_method):
     """Return (scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed
     export, else None (so normal lora / merged_16bit / merged_4bit handling proceeds).
@@ -215,6 +239,10 @@ def _normalize_compressed_method(save_method):
     if not isinstance(save_method, str):
         return None
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
+    # torchao portable aliases (e.g. "torchao_fp8") are handled by the torchao path, not here;
+    # return None so the "fp8" substring below does not raise a compressed near-miss error.
+    if key in TORCHAO_EXPORT_SCHEMES:
+        return None
     if key in COMPRESSED_EXPORT_SCHEMES:
         return COMPRESSED_EXPORT_SCHEMES[key]
     if any(tag in key for tag in ("fp8", "fp4", "mxfp", "nvfp", "w4a", "w8a", "int4", "int8")):
@@ -2001,10 +2029,40 @@ def unsloth_save_pretrained_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = push_to_hub,
+            token = token,
+            is_main_process = is_main_process,
+            # Forward standard save kwargs to the 16bit merge.
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     del arguments["self"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -2085,6 +2143,37 @@ def unsloth_push_to_hub_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = repo_id,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = True,
+            token = token,
+            is_main_process = True,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+            # Forward standard save kwargs to the 16bit merge.
+            use_temp_dir = use_temp_dir,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     arguments["save_directory"] = repo_id
@@ -2092,6 +2181,7 @@ def unsloth_push_to_hub_merged(
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -3790,10 +3880,40 @@ def unsloth_generic_save_pretrained_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = push_to_hub,
+            token = token,
+            is_main_process = is_main_process,
+            # Forward standard save kwargs to the 16bit merge.
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     del arguments["self"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -3874,6 +3994,37 @@ def unsloth_generic_push_to_hub_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = repo_id,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = True,
+            token = token,
+            is_main_process = True,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+            # Forward standard save kwargs to the 16bit merge.
+            use_temp_dir = use_temp_dir,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     arguments["save_directory"] = repo_id
@@ -3881,6 +4032,7 @@ def unsloth_generic_push_to_hub_merged(
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -4347,6 +4499,220 @@ def _unsloth_save_compressed_tensors(
                 )
         if calib_tmp is not None and os.path.isdir(calib_tmp):
             shutil.rmtree(calib_tmp, ignore_errors = True)
+        if work_tmp is not None:
+            shutil.rmtree(work_tmp, ignore_errors = True)
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+
+def _unsloth_save_torchao(
+    model,
+    save_directory: Union[str, os.PathLike],
+    tokenizer,
+    kind: str,
+    suffix: str,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    **merge_kwargs,
+):
+    """Export a device-agnostic torchao FP8 / INT8 "portable" checkpoint (no NVIDIA GPU needed).
+
+    Mirrors `_unsloth_save_compressed_tensors`: LoRA is first merged into the base model at
+    16bit (in an isolated staging dir), then torchao weight-only quantization is applied via
+    `TorchAoConfig` and the quantized checkpoint is written to `save_directory + "-" + suffix`.
+    Unlike the llm-compressor path this needs no calibration, no subprocess, and no CUDA - it
+    quantizes on whatever device is present (CPU included) and is intended for vLLM /
+    transformers inference. `kind` is "fp8" (Float8WeightOnlyConfig, saved to safetensors) or
+    "int8" (Int8WeightOnlyConfig, saved to .bin - torchao only whitelists float8 for safetensors).
+    """
+    import tempfile
+
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+    if token is None:
+        token = get_token()
+
+    # Only the main process merges, quantizes, and uploads; other ranks return at once.
+    if not is_main_process:
+        return None
+
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        AutoModelForImageTextToText,
+        AutoProcessor,
+        TorchAoConfig,
+    )
+    from torchao.quantization import Float8WeightOnlyConfig, Int8WeightOnlyConfig
+
+    if kind == "fp8":
+        quant_type = Float8WeightOnlyConfig()
+        safe_serialization = True
+    elif kind == "int8":
+        quant_type = Int8WeightOnlyConfig()
+        safe_serialization = False  # torchao only supports safetensors for float8 configs
+    else:
+        raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
+
+    # Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
+    # quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
+    repo_id, work_tmp, model_dev = None, None, None
+    if push_to_hub:
+        repo_id = os.fspath(save_directory)
+        work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
+        local_dir = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
+    else:
+        # Drop trailing separators so the sibling "<dir>-<suffix>" is not nested inside <dir>.
+        local_dir = os.fspath(save_directory)
+        local_dir = local_dir.rstrip("/\\") or local_dir
+
+    api = None
+    try:
+        if push_to_hub:
+            from huggingface_hub import HfApi
+            api = HfApi(token = token)
+            api.create_repo(
+                repo_id = repo_id,
+                repo_type = "model",
+                private = merge_kwargs.get("private", None),
+                exist_ok = True,
+            )
+
+        # 1) Merge to 16bit at a staging dir via unsloth_generic_save (handles LoRA merges and
+        #    full-finetuned/base models alike). The torchao reload below reads default weight
+        #    filenames, so never write variant-named shards here.
+        merge_kwargs.pop("variant", None)
+        print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
+        merge_args = dict(merge_kwargs)
+        merge_args.update(
+            dict(
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = local_dir,
+                save_method = "merged_16bit",
+                push_to_hub = False,
+                token = token,
+                is_main_process = is_main_process,
+            )
+        )
+        unsloth_generic_save(**merge_args)
+
+        # 2) Detect VLM so the right auto class reloads the staged checkpoint.
+        is_vlm = False
+        if hasattr(model, "config") and hasattr(model.config, "architectures"):
+            archs = getattr(model.config, "architectures", None) or []
+            is_vlm = any(
+                x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in archs
+            )
+            is_vlm = is_vlm or hasattr(model.config, "vision_config")
+        auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
+        auto_processor = AutoProcessor if is_vlm else AutoTokenizer
+
+        # 3) Free the in-memory model's CUDA memory before reloading a fresh copy from disk.
+        try:
+            if (
+                torch.cuda.is_available()
+                and hasattr(model, "parameters")
+                and not getattr(model, "is_loaded_in_4bit", False)
+                and not getattr(model, "is_loaded_in_8bit", False)
+                and not getattr(model, "is_quantized", False)
+            ):
+                _devs = {str(p.device) for p in model.parameters()}
+                if len(_devs) == 1 and next(iter(_devs)).startswith("cuda"):
+                    _dev = next(model.parameters()).device
+                    model.to("cpu")
+                    model_dev = _dev
+        except Exception:
+            model_dev = None
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # 4) Reload the staged 16bit checkpoint with torchao quantization applied. torchao
+        #    requires bfloat16 loading (float16 fails). device_map="auto" uses a GPU if present
+        #    and falls back to CPU otherwise, so this produces a checkpoint on any hardware.
+        print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
+        dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
+        quantized_model = auto_model.from_pretrained(
+            local_dir,
+            device_map = "auto",
+            quantization_config = TorchAoConfig(quant_type = quant_type),
+            **dtype_kw,
+        )
+        staged_tokenizer = auto_processor.from_pretrained(local_dir)
+
+        out_dir = local_dir + "-" + suffix
+        quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
+        staged_tokenizer.save_pretrained(out_dir)
+        del quantized_model
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # 5) Validate the artifact.
+        cfg_path = os.path.join(out_dir, "config.json")
+        cfg = {}
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding = "utf-8") as f:
+                cfg = json.load(f)
+        if "quantization_config" not in cfg:
+            raise RuntimeError(
+                f"Unsloth: torchao {kind} export failed - no quantization_config written to "
+                f"{cfg_path}"
+            )
+
+        # 6) Remove the intermediate 16bit staging dir for a local save (kept only for the merge);
+        #    the torchao "<dir>-<suffix>" sibling is the reported output. For a hub push the whole
+        #    work_tmp is cleaned in finally.
+        if not push_to_hub and os.path.isdir(local_dir):
+            try:
+                shutil.rmtree(local_dir)
+            except Exception:
+                pass
+
+        # 7) Optional hub upload of the quantized artifact.
+        if push_to_hub:
+            print(f"Unsloth: Uploading torchao {kind} checkpoint to '{repo_id}' ...")
+            api.upload_folder(
+                folder_path = out_dir,
+                repo_id = repo_id,
+                repo_type = "model",
+                commit_message = merge_kwargs.get("commit_message", None),
+                commit_description = merge_kwargs.get("commit_description", None),
+                create_pr = merge_kwargs.get("create_pr", False),
+                revision = merge_kwargs.get("revision", None),
+            )
+            datasets = merge_kwargs.get("datasets", None)
+            if datasets:
+                try:
+                    from huggingface_hub import metadata_update
+                    metadata_update(repo_id, {"datasets": datasets}, overwrite = True, token = token)
+                except Exception as meta_err:
+                    logger.warning_once(
+                        f"Unsloth: could not update datasets metadata for {repo_id}: {meta_err}"
+                    )
+
+        result = repo_id if push_to_hub else out_dir
+        print(
+            f"Unsloth: Saved torchao {kind} checkpoint to '{result}'.\n"
+            f"Unsloth: This is portable (produced on any device, no NVIDIA GPU required). Load it "
+            f"with vLLM or transformers; FP8/INT8 acceleration is available on supported GPUs."
+        )
+        return result
+    finally:
+        if model_dev is not None:
+            try:
+                model.to(model_dev)
+            except Exception:
+                logger.warning_once(
+                    "Unsloth: could not restore the model to its original device after torchao "
+                    "export; it may remain on CPU."
+                )
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):

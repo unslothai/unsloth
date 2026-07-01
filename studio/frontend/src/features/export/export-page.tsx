@@ -20,12 +20,18 @@ import {
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -61,17 +67,17 @@ import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
 import {
-  COMPRESSED_GROUPS,
-  COMPRESSED_SCHEMES,
   EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
   MERGED_FORMATS,
-  type MergedFormat,
+  type MergedFormatOption,
+  mergedFormatPayload,
   QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
+import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -181,9 +187,31 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
-  const [mergedFormat, setMergedFormat] = useState<MergedFormat>("16-bit (FP16)");
-  // "More formats" dropdown: a compressed-tensors scheme alias that overrides mergedFormat when set.
-  const [compressedMethod, setCompressedMethod] = useState<string | null>(null);
+  // Merged export precision: one or more selected formats (values from MERGED_FORMATS). Multiple
+  // may be selected to export several precisions in one run.
+  const [selectedFormats, setSelectedFormats] = useState<string[]>(["16-bit"]);
+  // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
+  const [loraAsGguf, setLoraAsGguf] = useState(false);
+  const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("f16");
+
+  // NVIDIA-only compressed-tensors formats are hidden on non-NVIDIA hardware; portable torchao and
+  // 16-bit always remain. cuda!=null && rocm==null marks a real CUDA (not ROCm) box.
+  const hardware = useHardwareInfo();
+  const hasNvidia = hardware.cuda != null && hardware.rocm == null;
+  const availableFormats = useMemo<MergedFormatOption[]>(
+    () => MERGED_FORMATS.filter((f) => hasNvidia || !f.needsNvidia),
+    [hasNvidia],
+  );
+  const toggleFormat = useCallback((value: string) => {
+    setSelectedFormats((prev) =>
+      prev.includes(value)
+        ? prev.filter((v) => v !== value)
+        : [...prev, value],
+    );
+  }, []);
+  // NVIDIA-only formats are never rendered on non-NVIDIA hardware (see availableFormats), so the
+  // selection can only ever contain formats valid for the current hardware; no pruning effect is
+  // needed. The default is 16-bit, which is available everywhere.
   // IQ quants are imatrix-only, so force it on when one is selected; otherwise we would submit
   // an IQ quant with no imatrix and llama.cpp would reject it.
   const requiresImatrix = quantLevels.some(
@@ -433,7 +461,9 @@ export function ExportPage() {
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
-    if (!isAdapter && (exportMethod === "merged" || exportMethod === "lora")) {
+    // LoRA-only export needs a real adapter; Merged and GGUF work for non-PEFT base models too
+    // (Local Model / Hugging Face sources), so only reset the adapter-only method here.
+    if (!isAdapter && exportMethod === "lora") {
       setExportMethod(null);
     }
     // Quantized non-PEFT models can't export to any format
@@ -448,7 +478,8 @@ export function ExportPage() {
     } else if (next === "hf" || next === "local") {
       setSourceMode("model");
       setModelSource(next);
-      setExportMethod("gguf");
+      // Do not force GGUF: Local Model / Hugging Face sources can export Merged (16-bit /
+      // compressed / portable) too. A stale LoRA-only pick is cleared by the auto-reset effect.
     } else {
       return;
     }
@@ -517,7 +548,8 @@ export function ExportPage() {
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
-    (exportMethod !== "gguf" || quantLevels.length > 0)
+    (exportMethod !== "gguf" || quantLevels.length > 0) &&
+    (exportMethod !== "merged" || selectedFormats.length > 0)
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -634,8 +666,9 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
-      mergedFormat,
-      compressedMethod,
+      mergedSelections: selectedFormats.map((v) => mergedFormatPayload(v)),
+      loraGguf: loraAsGguf,
+      loraGgufOuttype,
       saveDirectory,
       destination,
       repoId,
@@ -663,8 +696,9 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
-    mergedFormat,
-    compressedMethod,
+    selectedFormats,
+    loraAsGguf,
+    loraGgufOuttype,
     destination,
     saveDirectory,
     hfUsername,
@@ -1177,94 +1211,188 @@ export function ExportPage() {
                 disabledMethods={
                   !isAdapter && isQuantized
                     ? ["merged", "lora", "gguf"]
-                    : !isAdapter || sourceMode === "model"
-                      ? ["merged", "lora"]
+                    : !isAdapter
+                      ? ["lora"]
                       : []
                 }
                 disabledReason={
                   !isAdapter && isQuantized
                     ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                    : sourceMode === "model"
-                      ? "Only GGUF export is available for direct model export"
-                      : !isAdapter
-                        ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
-                        : undefined
+                    : !isAdapter
+                      ? "LoRA-only export needs a LoRA adapter checkpoint"
+                      : undefined
                 }
               />
 
-              {exportMethod === "merged" && isAdapter && (
+              {exportMethod === "merged" && (
                 <div className="space-y-3">
                   <div className="space-y-2">
-                    <div className="text-sm font-medium">Precision</div>
-                    <div className="flex flex-wrap gap-2">
-                      {MERGED_FORMATS.map((f) => (
-                        <Button
-                          key={f.value}
-                          type="button"
-                          variant={
-                            !compressedMethod && mergedFormat === f.value
-                              ? "default"
-                              : "outline"
-                          }
-                          size="sm"
-                          onClick={() => {
-                            setMergedFormat(f.value);
-                            setCompressedMethod(null);
-                          }}
-                          title={f.hint}
-                        >
-                          {f.label}
-                        </Button>
-                      ))}
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">Precision</div>
+                      <span className="text-[11px] text-muted-foreground/70">
+                        — select one or more
+                      </span>
                     </div>
-                    {!compressedMethod && (
-                      <div className="text-xs text-muted-foreground">
-                        {
-                          MERGED_FORMATS.find((f) => f.value === mergedFormat)
-                            ?.hint
-                        }
+                    <div className="flex flex-wrap gap-2">
+                      {availableFormats
+                        .filter((f) => f.common)
+                        .map((f) => {
+                          const active = selectedFormats.includes(f.value);
+                          return (
+                            <Button
+                              key={f.value}
+                              type="button"
+                              variant={active ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => toggleFormat(f.value)}
+                              title={f.hint}
+                            >
+                              {f.label}
+                              {f.needsCalibration ? " *" : ""}
+                            </Button>
+                          );
+                        })}
+
+                      {availableFormats.some((f) => !f.common) && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild={true}>
+                            <Button type="button" variant="outline" size="sm">
+                              More formats
+                              {selectedFormats.some((v) =>
+                                availableFormats.find(
+                                  (f) => f.value === v && !f.common,
+                                ),
+                              )
+                                ? " ✓"
+                                : "…"}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-64">
+                            <DropdownMenuLabel>
+                              Additional formats
+                            </DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            {availableFormats
+                              .filter((f) => !f.common)
+                              .map((f) => (
+                                <DropdownMenuCheckboxItem
+                                  key={f.value}
+                                  checked={selectedFormats.includes(f.value)}
+                                  onCheckedChange={() => toggleFormat(f.value)}
+                                  onSelect={(e) => e.preventDefault()}
+                                >
+                                  <span className="flex flex-col">
+                                    <span>
+                                      {f.label}
+                                      {f.needsCalibration ? " *" : ""}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {f.hint}
+                                    </span>
+                                  </span>
+                                </DropdownMenuCheckboxItem>
+                              ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </div>
+
+                    {selectedFormats.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="text-[11px] text-muted-foreground">
+                          {selectedFormats.length} selected:{" "}
+                          {selectedFormats
+                            .map(
+                              (v) =>
+                                MERGED_FORMATS.find((f) => f.value === v)
+                                  ?.label ?? v,
+                            )
+                            .join(", ")}
+                        </span>
+                        {selectedFormats.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedFormats(["16-bit"])}
+                            className="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
+                          >
+                            Reset to 16-bit
+                          </button>
+                        )}
                       </div>
                     )}
+
+                    {selectedFormats.some(
+                      (v) =>
+                        MERGED_FORMATS.find((f) => f.value === v)
+                          ?.needsCalibration,
+                    ) && (
+                      <div className="text-[11px] text-muted-foreground">
+                        * calibrates on data (uses a small calibration set).
+                      </div>
+                    )}
+
+                    {!hasNvidia && (
+                      <div className="text-[11px] text-muted-foreground">
+                        No NVIDIA GPU detected: compressed-tensors formats are
+                        hidden. 16-bit and portable FP8/INT8 (torchao) still
+                        work here and load in vLLM.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {exportMethod === "lora" && isAdapter && (
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Adapter format</div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant={!loraAsGguf ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setLoraAsGguf(false)}
+                        title="Standard PEFT adapter (adapter_model.safetensors)."
+                      >
+                        Adapter (safetensors)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={loraAsGguf ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setLoraAsGguf(true)}
+                        title="llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                      >
+                        GGUF adapter
+                      </Button>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {loraAsGguf
+                        ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                        : "Standard PEFT adapter files. Pair with the base model at inference."}
+                    </div>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <div className="text-sm font-medium">
-                      More formats (vLLM compressed-tensors)
+                  {loraAsGguf && (
+                    <div className="space-y-1.5">
+                      <div className="text-sm font-medium">Output type</div>
+                      <Select
+                        value={loraGgufOuttype}
+                        onValueChange={(v) => setLoraGgufOuttype(v)}
+                      >
+                        <SelectTrigger className="w-full sm:w-56">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {["f16", "bf16", "f32", "q8_0", "auto"].map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {t.toUpperCase()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
-                    <Select
-                      value={compressedMethod ?? ""}
-                      onValueChange={(v) => setCompressedMethod(v || null)}
-                    >
-                      <SelectTrigger className="w-full sm:w-72">
-                        <SelectValue placeholder="Choose a compressed-tensors scheme…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {COMPRESSED_GROUPS.map((group) => (
-                          <SelectGroup key={group}>
-                            <SelectLabel>{group}</SelectLabel>
-                            {COMPRESSED_SCHEMES.filter(
-                              (s) => s.group === group,
-                            ).map((s) => (
-                              <SelectItem key={s.value} value={s.value}>
-                                {s.label}
-                                {s.needsCalibration ? " (calibrates)" : ""}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {compressedMethod && (
-                      <div className="text-xs text-muted-foreground">
-                        {
-                          COMPRESSED_SCHEMES.find(
-                            (s) => s.value === compressedMethod,
-                          )?.hint
-                        }{" "}
-                        Pick a precision button above to clear.
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
               )}
 

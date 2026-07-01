@@ -109,11 +109,113 @@ def test_export_merged_maps_compressed_to_save_method():
 
 
 def test_compressed_hub_push_uploads_local_dir_without_recompressing():
-    # A compressed Hub push must upload the already-built output_path, not re-run compression
-    # via push_to_hub_merged (which would compress a second time).
+    # A compressed / torchao Hub push must upload the already-built output_path, not re-run the
+    # quantization via push_to_hub_merged (which would quantize a second time).
     m = _func_src("core/export/export.py", "export_merged_model")
-    assert "elif is_compressed and output_path and Path(output_path).is_dir():" in m
+    assert "elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():" in m
     assert "hf_api.upload_folder(" in m and "folder_path = output_path" in m
+
+
+# -- torchao portable FP8/INT8 (device-agnostic, no NVIDIA GPU) ---------------------------------
+
+
+def test_merged_request_accepts_torchao_aliases():
+    # Portable torchao aliases pass through compressed_method (validated in the backend registry).
+    for alias in ("torchao_fp8", "torchao_int8"):
+        r = ExportMergedModelRequest(save_directory = "/tmp/x", compressed_method = alias)
+        assert r.compressed_method == alias
+
+
+def test_export_merged_routes_torchao_and_skips_nvidia_guard():
+    m = _func_src("core/export/export.py", "export_merged_model")
+    # torchao is classified separately and its suffix comes from the torchao normalizer.
+    assert "_normalize_torchao_method(compressed_alias)" in m
+    assert "is_torchao = torchao_info is not None" in m
+    assert "is_compressed = compressed_alias is not None and not is_torchao" in m
+    # The NVIDIA guard applies to compressed-tensors only, not torchao.
+    assert "_has_nvidia_gpu()" in m
+    # torchao routes through save_method just like compressed.
+    assert "elif is_compressed or is_torchao:" in m
+
+
+def test_export_merged_nvidia_guard_present():
+    m = _func_src("core/export/export.py", "export_merged_model")
+    assert "requires an NVIDIA GPU" in m
+
+
+def test_has_nvidia_gpu_helper_reads_hardware_module():
+    h = _func_src("core/export/export.py", "_has_nvidia_gpu")
+    assert "DeviceType.CUDA" in h and "IS_ROCM" in h
+
+
+def test_export_merged_relaxes_is_peft_guard():
+    # Non-PEFT (Local/HF base) models can now export merged; the old hard block must be gone.
+    m = _func_src("core/export/export.py", "export_merged_model")
+    assert "Use 'Export Base Model' instead." not in m
+
+
+def test_unsloth_save_has_torchao_registry_and_path():
+    # The core normalizer + registry + save path must exist for the backend to route to them.
+    import unsloth.save as us
+    assert hasattr(us, "_normalize_torchao_method")
+    assert hasattr(us, "TORCHAO_EXPORT_SCHEMES")
+    assert hasattr(us, "_unsloth_save_torchao")
+    assert us._normalize_torchao_method("torchao_fp8") == ("fp8", "torchao-fp8")
+    assert us._normalize_torchao_method("torchao_int8") == ("int8", "torchao-int8")
+    # A torchao alias must NOT be treated as a compressed-tensors near-miss (no raise, returns None).
+    assert us._normalize_compressed_method("torchao_fp8") is None
+
+
+# -- GGUF multi-quant list ----------------------------------------------------------------------
+
+
+def test_gguf_request_accepts_list_of_quants():
+    r = ExportGGUFRequest(save_directory = "/tmp/x", quantization_method = ["Q4_K_M", "Q8_0"])
+    assert r.quantization_method == ["Q4_K_M", "Q8_0"]
+    r2 = ExportGGUFRequest(save_directory = "/tmp/x", quantization_method = "Q4_K_M")
+    assert r2.quantization_method == "Q4_K_M"
+
+
+def test_export_gguf_normalizes_quant_list():
+    g = _func_src("core/export/export.py", "export_gguf")
+    assert "isinstance(quantization_method, (list, tuple))" in g
+    assert "quant_methods" in g
+
+
+# -- GGUF LoRA adapter export -------------------------------------------------------------------
+
+
+def test_lora_request_has_gguf_fields():
+    from models.export import ExportLoRAAdapterRequest
+    r = ExportLoRAAdapterRequest(save_directory = "/tmp/x")
+    assert r.gguf is False and r.gguf_outtype == "f16"
+    r2 = ExportLoRAAdapterRequest(save_directory = "/tmp/x", gguf = True, gguf_outtype = "q8_0")
+    assert r2.gguf is True and r2.gguf_outtype == "q8_0"
+
+
+def test_lora_request_rejects_bad_outtype():
+    from models.export import ExportLoRAAdapterRequest
+    with pytest.raises(ValidationError):
+        ExportLoRAAdapterRequest(save_directory = "/tmp/x", gguf_outtype = "q3_k")
+
+
+def test_export_lora_wires_gguf_save_method():
+    la = _func_src("core/export/export.py", "export_lora_adapter")
+    assert 'save_method = "lora"' in la
+    assert "quantization_method = outtype" in la
+
+
+def test_orchestrator_and_worker_pass_lora_gguf():
+    o = _func_src("core/export/orchestrator.py", "export_lora_adapter")
+    assert '"gguf": gguf' in o and '"gguf_outtype": gguf_outtype' in o
+    w = _src("core/export/worker.py")
+    assert 'gguf = cmd.get("gguf", False)' in w
+    assert 'gguf_outtype = cmd.get("gguf_outtype", "f16")' in w
+
+
+def test_route_passes_lora_gguf():
+    r = _src("routes/export.py")
+    assert "gguf = request.gguf" in r and "gguf_outtype = request.gguf_outtype" in r
 
 
 # -- compressed_method ("all formats" dropdown) -------------------------------------------------

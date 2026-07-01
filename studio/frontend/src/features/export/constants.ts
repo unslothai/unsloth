@@ -55,104 +55,177 @@ export const QUANT_OPTIONS: {
   { value: "f16", label: "F16" },
 ];
 
-/** Merged-export precision formats. The compressed-tensors ones run llm-compressor for vLLM. */
-export type MergedFormat =
-  | "16-bit (FP16)"
-  | "FP8 (compressed-tensors)"
-  | "NVFP4 (compressed-tensors)";
-
-export const MERGED_FORMATS: {
-  value: MergedFormat;
-  label: string;
-  hint: string;
-}[] = [
-  {
-    value: "16-bit (FP16)",
-    label: "16-bit",
-    hint: "Full precision, runs anywhere.",
-  },
-  {
-    value: "FP8 (compressed-tensors)",
-    label: "FP8 (vLLM)",
-    hint: "compressed-tensors FP8 for vLLM. Needs an NVIDIA GPU.",
-  },
-  {
-    value: "NVFP4 (compressed-tensors)",
-    label: "NVFP4 (vLLM)",
-    hint: "compressed-tensors NVFP4 for vLLM. Needs an NVIDIA GPU; calibrates.",
-  },
-];
-
-/** Families used to group the curated compressed-tensors dropdown. */
-export const COMPRESSED_GROUPS = ["FP8", "INT", "MXFP", "NVFP4"] as const;
-export type CompressedGroup = (typeof COMPRESSED_GROUPS)[number];
-
 /**
- * Curated vLLM compressed-tensors schemes for the "More formats" dropdown. `value` is the backend
- * scheme alias resolved via unsloth.save COMPRESSED_EXPORT_SCHEMES; `needsCalibration` flags the
- * schemes that calibrate on data (everything else is data-free). This is a curated subset of the
- * full registry, picked to cover FP8 / INT / MXFP / NVFP4 without overwhelming the UI.
+ * Unified merged-export precision formats. One list, sorted by bit width (16-bit first, then
+ * 8-bit, then 4-bit). Three backends:
+ *   - "plain":      a standard save (16-bit); `formatType` is the backend `format_type`.
+ *   - "compressed": llm-compressor compressed-tensors (for vLLM); NVIDIA GPU required. `value` is
+ *                   the backend `compressed_method` alias (unsloth.save COMPRESSED_EXPORT_SCHEMES).
+ *   - "torchao":    portable torchao FP8/INT8; NO NVIDIA GPU required to produce, loads in vLLM.
+ *                   `value` is the backend `compressed_method` alias (TORCHAO_EXPORT_SCHEMES).
+ * `common` formats render as quick multi-select pills; the rest live in a multi-select "More
+ * formats" dropdown. `needsNvidia` entries are hidden on non-NVIDIA hardware.
  */
-export type CompressedScheme = {
+export type MergedBackend = "plain" | "compressed" | "torchao";
+
+export type MergedFormatOption = {
   value: string;
   label: string;
-  group: CompressedGroup;
-  hint: string;
+  bits: number;
+  backend: MergedBackend;
+  group: string;
+  common: boolean;
+  needsNvidia: boolean;
   needsCalibration?: boolean;
+  hint: string;
+  /** Backend `format_type` for a "plain" save (unused for compressed/torchao). */
+  formatType?: string;
 };
 
-export const COMPRESSED_SCHEMES: CompressedScheme[] = [
+/** Kept as a string alias for back-compat with callers that typed the old union. */
+export type MergedFormat = string;
+
+export const MERGED_FORMATS: MergedFormatOption[] = [
+  // 16-bit
+  {
+    value: "16-bit",
+    label: "16-bit",
+    bits: 16,
+    backend: "plain",
+    group: "16-bit",
+    common: true,
+    needsNvidia: false,
+    hint: "Full precision, runs anywhere.",
+    formatType: "16-bit (FP16)",
+  },
+  // 8-bit
   {
     value: "fp8",
-    label: "FP8 Dynamic",
+    label: "FP8",
+    bits: 8,
+    backend: "compressed",
     group: "FP8",
-    hint: "Per-token dynamic FP8 (W8A8). Data-free.",
+    common: true,
+    needsNvidia: true,
+    hint: "Dynamic per-token FP8 (W8A8) for vLLM. Data-free.",
+  },
+  {
+    value: "torchao_fp8",
+    label: "FP8 (portable)",
+    bits: 8,
+    backend: "torchao",
+    group: "Portable",
+    common: true,
+    needsNvidia: false,
+    hint: "Device-agnostic FP8 (torchao). Produces on any hardware; loads in vLLM.",
+  },
+  {
+    value: "w8a8",
+    label: "INT8 (W8A8)",
+    bits: 8,
+    backend: "compressed",
+    group: "INT",
+    common: true,
+    needsNvidia: true,
+    hint: "8-bit weights and 8-bit activations for vLLM. Data-free.",
+  },
+  {
+    value: "torchao_int8",
+    label: "INT8 (portable)",
+    bits: 8,
+    backend: "torchao",
+    group: "Portable",
+    common: true,
+    needsNvidia: false,
+    hint: "Device-agnostic INT8 (torchao). Produces on any hardware; loads in vLLM.",
   },
   {
     value: "fp8_static",
     label: "FP8 Static",
+    bits: 8,
+    backend: "compressed",
     group: "FP8",
-    hint: "Static per-tensor FP8. Calibrates on data.",
+    common: false,
+    needsNvidia: true,
     needsCalibration: true,
-  },
-  {
-    value: "w8a8",
-    label: "INT8 W8A8",
-    group: "INT",
-    hint: "8-bit weights and 8-bit activations. Data-free.",
+    hint: "Static per-tensor FP8. Calibrates on data.",
   },
   {
     value: "w8a16",
-    label: "INT8 W8A16",
+    label: "INT8 (W8A16)",
+    bits: 8,
+    backend: "compressed",
     group: "INT",
+    common: false,
+    needsNvidia: true,
     hint: "8-bit weight-only. Data-free.",
-  },
-  {
-    value: "w4a16",
-    label: "INT4 W4A16",
-    group: "INT",
-    hint: "4-bit weight-only (GPTQ-style). Data-free.",
-  },
-  {
-    value: "mxfp4",
-    label: "MXFP4",
-    group: "MXFP",
-    hint: "Microscaling FP4 (W4A4). Data-free.",
   },
   {
     value: "mxfp8",
     label: "MXFP8",
+    bits: 8,
+    backend: "compressed",
     group: "MXFP",
-    hint: "Microscaling FP8. Data-free; needs a newer compressed-tensors stack.",
+    common: false,
+    needsNvidia: true,
+    hint: "Microscaling FP8. Needs a newer compressed-tensors stack.",
+  },
+  // 4-bit
+  {
+    value: "w4a16",
+    label: "INT4 (W4A16)",
+    bits: 4,
+    backend: "compressed",
+    group: "INT",
+    common: true,
+    needsNvidia: true,
+    hint: "4-bit weight-only (GPTQ-style) for vLLM. Data-free.",
+  },
+  {
+    value: "mxfp4",
+    label: "MXFP4",
+    bits: 4,
+    backend: "compressed",
+    group: "MXFP",
+    common: true,
+    needsNvidia: true,
+    hint: "Microscaling FP4 (W4A4) for vLLM. Data-free.",
   },
   {
     value: "nvfp4",
     label: "NVFP4",
-    group: "NVFP4",
-    hint: "NVIDIA FP4 (W4A4). Calibrates on data.",
+    bits: 4,
+    backend: "compressed",
+    group: "FP4",
+    common: true,
+    needsNvidia: true,
     needsCalibration: true,
+    hint: "NVIDIA FP4 (W4A4) for vLLM. Calibrates on data.",
   },
 ];
+
+/** Look up a merged format option by its stable value. */
+export function findMergedFormat(value: string): MergedFormatOption | undefined {
+  return MERGED_FORMATS.find((f) => f.value === value);
+}
+
+/**
+ * Backend payload discriminator for one selected merged format. plain -> {formatType,
+ * compressedMethod:null}; compressed/torchao -> the alias goes in compressedMethod.
+ */
+export function mergedFormatPayload(value: string): {
+  formatType: string;
+  compressedMethod: string | null;
+} {
+  const opt = findMergedFormat(value);
+  if (!opt || opt.backend === "plain") {
+    return {
+      formatType: opt?.formatType ?? "16-bit (FP16)",
+      compressedMethod: null,
+    };
+  }
+  return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
+}
 
 /**
  * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.

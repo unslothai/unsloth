@@ -391,6 +391,8 @@ async def export_lora_adapter(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            gguf = request.gguf,
+            gguf_outtype = request.gguf_outtype,
         )
 
         if not success:

@@ -424,6 +424,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
+                gguf = cmd.get("gguf", False),
+                gguf_outtype = cmd.get("gguf_outtype", "f16"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
