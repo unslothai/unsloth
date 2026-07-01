@@ -313,6 +313,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return Float8DynamicActivationFloat8WeightConfig()
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
         # Select the CUTLASS FP4 path, not the default Triton kernel: torchao defaults
         # use_triton_kernel=True, which needs MSLK installed. On a Blackwell box with the
         # CUTLASS FP4 extension but no MSLK, the default would make the smoke probe fail
