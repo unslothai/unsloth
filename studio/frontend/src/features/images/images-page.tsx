@@ -1425,13 +1425,13 @@ export function ImagesPage() {
           to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
-          label="Transformer quant"
-          hint="Load the dense transformer and quantise it onto low-precision tensor cores instead of the GGUF. fp8/int8 are faster than GGUF dequant at higher VRAM. GGUF models only; needs CUDA + room, falls back to GGUF otherwise."
+          label="GGUF speed mode"
+          hint="Optional speed-up for GGUF models. Off runs the GGUF as-is. FP8/INT8/FP4 instead load the FULL base model and quantise its transformer onto low-precision tensor cores: faster per step, but a larger download and more VRAM, and it falls back to the GGUF if it can't fit. Needs CUDA."
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
-            ["none", "GGUF default"],
-            ["auto", "Auto (best for GPU)"],
+            ["none", "Off (run the GGUF)"],
+            ["auto", "Auto (fastest for GPU)"],
             ["fp8", "FP8"],
             ["int8", "INT8"],
             ["nvfp4", "NVFP4 (Blackwell)"],
@@ -1440,7 +1440,7 @@ export function ImagesPage() {
         />
       ) : (
         <div className="flex items-center justify-between gap-2 text-xs">
-          <span className="text-muted-foreground">Transformer quant</span>
+          <span className="text-muted-foreground">GGUF speed mode</span>
           <span className="text-muted-foreground/70">GGUF models only</span>
         </div>
       )}
