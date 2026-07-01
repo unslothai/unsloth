@@ -1061,12 +1061,13 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.floor(gpu.memoryTotalGb)} GB`
+    ? `${Math.round(gpu.memoryTotalGb)} GB`
     : "Unavailable";
   const ramLabel =
-    gpu.systemRamAvailableGb > 0
-      ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
+    gpu.systemRamTotalGb > 0
+      ? `${Math.round(gpu.systemRamTotalGb)} GB`
       : "Unavailable";
+  const coreLabel = `${gpu.cpuCore}/${gpu.cpuThread}`;
 
   const openNewChat = useCallback(() => {
     void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
@@ -1429,6 +1430,7 @@ export function ModelsPage() {
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
           ramLabel={ramLabel}
+          coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}
           activeGgufVariant={activeGgufVariant}
           onTitleClick={handleResetToDiscover}

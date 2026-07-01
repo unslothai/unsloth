@@ -28,49 +28,57 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 
-// API call type; OS axis applies to curl only (Python is OS-identical).
 type ExampleType =
   | "curl"
   | "python"
+  | "javascript"
   | "curlTools"
   | "pythonTools"
+  | "javascriptTools"
   | "curlAdvanced"
-  | "pythonAdvanced";
+  | "pythonAdvanced"
+  | "javascriptAdvanced";
 type Os = "unix" | "windows";
-// plain = bare call; tools = server-side tools; advanced = sampling + thinking + tools.
 type Variant = "plain" | "tools" | "advanced";
 
 const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "curl", label: "curl" },
   { id: "python", label: "Python" },
+  { id: "javascript", label: "JavaScript" },
   { id: "curlTools", label: "curl + tools" },
   { id: "pythonTools", label: "Python + tools" },
+  { id: "javascriptTools", label: "JavaScript + tools" },
   { id: "curlAdvanced", label: "curl + advanced" },
   { id: "pythonAdvanced", label: "Python + advanced" },
+  { id: "javascriptAdvanced", label: "JavaScript + advanced" },
 ];
 
 const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlTools: "settings.apiKeys.exampleCurlTools",
   pythonTools: "settings.apiKeys.examplePythonTools",
+  javascriptTools: "settings.apiKeys.exampleJavaScriptTools",
   curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
   pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
+  javascriptAdvanced: "settings.apiKeys.exampleJavaScriptAdvanced",
 };
 
 const OS_AWARE: Record<ExampleType, boolean> = {
   curl: true,
   python: false,
+  javascript: false,
   curlTools: true,
   pythonTools: false,
+  javascriptTools: false,
   curlAdvanced: true,
   pythonAdvanced: false,
+  javascriptAdvanced: false,
 };
 
 const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
+const JAVASCRIPT_TYPES = new Set<ExampleType>(["javascript", "javascriptTools", "javascriptAdvanced"]);
 
 const PROMPT = "Can Unsloth Studio do API calling?";
-// web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
-// Sampling/thinking knobs for the "+ advanced" examples.
 const ADV = {
   temperature: 0.7,
   top_p: 0.8,
@@ -81,37 +89,18 @@ const ADV = {
 } as const;
 
 const DOC_LINKS = [
-  {
-    label: "Claude Code",
-    href: "https://unsloth.ai/docs/basics/claude-code",
-  },
-  {
-    label: "Codex",
-    href: "https://unsloth.ai/docs/basics/codex",
-  },
-  {
-    label: "OpenClaw",
-    href: "https://unsloth.ai/docs/integrations/openclaw",
-  },
-  {
-    label: "OpenCode",
-    href: "https://unsloth.ai/docs/integrations/opencode",
-  },
-  {
-    label: "Hermes Agent",
-    href: "https://unsloth.ai/docs/integrations/hermes-agent",
-  },
+  { label: "Claude Code", href: "https://unsloth.ai/docs/basics/claude-code" },
+  { label: "Codex", href: "https://unsloth.ai/docs/basics/codex" },
+  { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
+  { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
+  { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
 
-// JSON-encode; also a valid Python literal, so odd model names never break output.
 const j = (s: string): string => JSON.stringify(s);
-// Embed in a POSIX single-quoted string: close, escaped quote, reopen.
 const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-// Embed in a PowerShell single-quoted string: '' is a literal quote.
 const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
-// Shared body fields (after model/messages, before stream) per variant.
 function bodyExtraLines(variant: Variant, indent: string): string[] {
   const lines: string[] = [];
   if (variant === "advanced") {
@@ -140,7 +129,6 @@ function curlBodyPretty(model: string, variant: Variant): string {
   return `{\n${lines.join("\n")}\n  }`;
 }
 
-// One-line JSON for the Windows body file (PowerShell mangles inline quotes to curl.exe).
 function winBody(model: string, variant: Variant): string {
   const body: Record<string, unknown> = {
     model,
@@ -160,7 +148,7 @@ function winBody(model: string, variant: Variant): string {
     body.enabled_tools = TOOLS;
   }
   body.stream = true;
-  return JSON.stringify(body);
+  return JSON.stringify(body, null, 2);
 }
 
 function curlUnix(
@@ -175,7 +163,6 @@ function curlUnix(
   -d '${shSingle(curlBodyPretty(model, variant))}'`;
 }
 
-// Windows PowerShell: curl aliases to Invoke-WebRequest, so use curl.exe + body file.
 function curlWindows(
   base: string,
   key: string,
@@ -196,7 +183,6 @@ function pythonSnippet(
   model: string,
   variant: Variant,
 ): string {
-  // Standard OpenAI args are named; Unsloth extensions go through extra_body.
   const named =
     variant === "advanced"
       ? `
@@ -221,7 +207,6 @@ function pythonSnippet(
 ${extra.join("\n")}
     },`
     : "";
-  // With tools, some chunks are tool-lifecycle events with no choices; guard it.
   const loop =
     variant !== "plain"
       ? `for chunk in response:
@@ -244,6 +229,52 @@ response = client.chat.completions.create(
 ${loop}`;
 }
 
+function javascriptSnippet(
+  base: string,
+  key: string,
+  model: string,
+  variant: Variant,
+): string {
+  const options: string[] = [];
+  if (variant === "advanced") {
+    options.push(`    temperature: ${ADV.temperature},`);
+    options.push(`    top_p: ${ADV.top_p},`);
+    options.push(`    max_tokens: ${ADV.max_tokens},`);
+  }
+
+  // The JS SDK forwards unknown options into the request body, so these go at the
+  // top level (the Python SDK needs them under extra_body instead).
+  if (variant === "advanced") {
+    options.push(`    top_k: ${ADV.top_k},`);
+    options.push(`    min_p: ${ADV.min_p},`);
+    options.push(`    repetition_penalty: ${ADV.repetition_penalty},`);
+    options.push(`    enable_thinking: true,`);
+  }
+  if (variant !== "plain") {
+    options.push(`    enable_tools: true,`);
+    options.push(`    enabled_tools: [${toolsJson}],`);
+  }
+
+  const trailingOptions = options.length ? `\n${options.join("\n")}` : "";
+
+  return `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: ${j(`${base}/v1`)},
+  apiKey: ${j(key)},
+});
+
+const response = await client.chat.completions.create({
+  model: ${j(model)},
+  messages: [{ role: "user", content: ${j(PROMPT)} }],${trailingOptions}
+  stream: true,
+});
+
+for await (const chunk of response) {
+  process.stdout.write(chunk.choices?.[0]?.delta?.content || "");
+}`;
+}
+
 function buildSnippets(
   base: string,
   key: string,
@@ -254,17 +285,18 @@ function buildSnippets(
   return {
     curl: curl(base, key, model, "plain"),
     python: pythonSnippet(base, key, model, "plain"),
+    javascript: javascriptSnippet(base, key, model, "plain"),
     curlTools: curl(base, key, model, "tools"),
     pythonTools: pythonSnippet(base, key, model, "tools"),
+    javascriptTools: javascriptSnippet(base, key, model, "tools"),
     curlAdvanced: curl(base, key, model, "advanced"),
     pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
+    javascriptAdvanced: javascriptSnippet(base, key, model, "advanced"),
   };
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const MODEL_FALLBACK = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL";
-
-// Default ON: when a tunnel exists, examples should show the public base_url.
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 
 function readUseTunnelPref(): boolean {
@@ -281,11 +313,10 @@ function writeUseTunnelPref(value: boolean): void {
   try {
     window.localStorage.setItem(USE_TUNNEL_KEY, value ? "true" : "false");
   } catch {
-    // Non-fatal: the toggle still applies for this session.
+    // Non-fatal
   }
 }
 
-// Active local checkpoint as repo[:variant]; external/none falls back to a default.
 function useLoadedModelName(): string {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -300,7 +331,6 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
-// shiki highlighting via the app's shared code plugin + themes (same as chat).
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
@@ -314,7 +344,6 @@ function HighlightedCode({
   code: string;
   language: string;
 }) {
-  // Fence so Streamdown's shiki plugin highlights it (no markdown inside a fence).
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
     [code, language],
@@ -347,16 +376,12 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
 
-  // Tunnel may start after the first /api/health read; refresh so it surfaces here.
   useEffect(() => {
     void fetchDeviceType({ force: true });
   }, []);
 
   const model = useLoadedModelName();
-  // Real key while revealed (before "Done"); otherwise a placeholder.
   const key = apiKey || KEY_PLACEHOLDER;
-  // Toggle on + tunnel up: public tunnel URL. Off: backend direct host:port
-  // (origin is only a last-resort fallback).
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
@@ -371,7 +396,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     ? os === "windows"
       ? "powershell"
       : "bash"
-    : "python";
+    : JAVASCRIPT_TYPES.has(lang)
+      ? "javascript"
+      : "python";
 
   const handleCopy = async () => {
     if (await copyToClipboard(snippets[lang])) {
@@ -410,8 +437,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               <span className="text-[11px] font-medium text-foreground">
                 {t("settings.apiKeys.secureHttps")}
               </span>
-              {/* Only when not launched with --secure: the raw 0.0.0.0 port is
-                  still globally reachable, so point the user at --secure. */}
               {!secure ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -432,8 +457,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 </Tooltip>
               ) : null}
             </div>
-            {/* Always rendered (dimmed when off) so toggling never changes the
-                row height and shifts the code block below. */}
             <button
               type="button"
               onClick={handleCopyUrl}
@@ -522,9 +545,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             />
             {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
           </button>
-          {/* key on the snippet so Streamdown remounts and re-highlights when
-              only a substring (e.g. the base URL) changes; its block memo
-              otherwise keeps the stale render. */}
           <HighlightedCode
             key={snippets[lang]}
             code={snippets[lang]}

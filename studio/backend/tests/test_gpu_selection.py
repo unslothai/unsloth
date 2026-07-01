@@ -22,6 +22,7 @@ from utils.hardware import (
     estimate_required_model_memory_gb,
     get_backend_visible_gpu_info,
     get_device_map,
+    get_gpu_utilization,
     get_offloaded_device_map_entries,
     get_parent_visible_gpu_ids,
     get_visible_gpu_utilization,
@@ -122,6 +123,139 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
+    def test_gpu_utilization_preserves_primary_shape_with_devices(self):
+        devices = [
+            {
+                "index": 5,
+                "visible_ordinal": 0,
+                "gpu_utilization_pct": 11.0,
+                "temperature_c": 40.0,
+                "vram_used_gb": 4.0,
+                "vram_total_gb": 24.0,
+                "vram_utilization_pct": 16.7,
+                "power_draw_w": 80.0,
+                "power_limit_w": 300.0,
+                "power_utilization_pct": 26.7,
+            },
+            {
+                "index": 3,
+                "visible_ordinal": 1,
+                "gpu_utilization_pct": 22.0,
+                "temperature_c": 50.0,
+                "vram_used_gb": 8.0,
+                "vram_total_gb": 24.0,
+                "vram_utilization_pct": 33.3,
+                "power_draw_w": 120.0,
+                "power_limit_w": 300.0,
+                "power_utilization_pct": 40.0,
+            },
+        ]
+
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"raw": "5,3", "numeric_ids": [5, 3]},
+            ),
+            patch(
+                "utils.hardware.hardware._smi_query",
+                return_value = {
+                    "available": True,
+                    "devices": devices,
+                    "backend_cuda_visible_devices": "5,3",
+                    "parent_visible_gpu_ids": [5, 3],
+                    "index_kind": "physical",
+                },
+            ),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend"], "cuda")
+        self.assertEqual(result["index"], 5)
+        self.assertEqual(result["visible_ordinal"], 0)
+        self.assertEqual(result["vram_total_gb"], 24.0)
+        self.assertEqual(result["parent_visible_gpu_ids"], [5, 3])
+        self.assertEqual([device["index"] for device in result["devices"]], [5, 3])
+
+    def test_gpu_utilization_cpu_returns_legacy_unavailable_object(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+            result = get_gpu_utilization()
+
+        self.assertEqual(result, {"available": False, "backend": "cpu", "devices": []})
+
+    def test_gpu_utilization_mlx_stays_available_without_agx_stats(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch("utils.hardware.hardware._read_apple_gpu_stats", return_value = {}),
+            patch(
+                "psutil.virtual_memory",
+                return_value = SimpleNamespace(total = 64 * 1024**3),
+            ),
+            patch(
+                "core.training.get_training_backend",
+                return_value = SimpleNamespace(_progress = None),
+            ),
+            patch("utils.hardware.apple.read_gpu_temperature_c", return_value = None),
+            patch("utils.hardware.apple.read_gpu_power_w", return_value = None),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend"], "mlx")
+        self.assertIsNone(result["gpu_utilization_pct"])
+        self.assertEqual(result["vram_used_gb"], 0)
+        self.assertEqual(result["vram_total_gb"], 64.0)
+        self.assertEqual(len(result["devices"]), 1)
+
+    def test_gpu_utilization_xpu_uses_visible_devices(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.hardware.get_visible_gpu_utilization",
+                return_value = {
+                    "available": True,
+                    "backend": "xpu",
+                    "parent_visible_gpu_ids": [2, 0],
+                    "index_kind": "physical",
+                    "devices": [
+                        {
+                            "index": 2,
+                            "visible_ordinal": 1,
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": 3.0,
+                            "vram_total_gb": 16.0,
+                            "vram_utilization_pct": 18.8,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        },
+                        {
+                            "index": 0,
+                            "visible_ordinal": 0,
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": 1.0,
+                            "vram_total_gb": 16.0,
+                            "vram_utilization_pct": 6.3,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        },
+                    ],
+                },
+            ),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertEqual(result["backend"], "xpu")
+        self.assertEqual(result["index"], 0)
+        self.assertEqual(result["visible_ordinal"], 0)
+        self.assertEqual([device["index"] for device in result["devices"]], [0, 2])
+
     def test_visible_gpu_utilization_filters_to_parent_visible_ids(self):
         smi_output = "\n".join(
             [
