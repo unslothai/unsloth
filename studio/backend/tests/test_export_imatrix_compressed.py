@@ -156,15 +156,16 @@ def test_export_merged_relaxes_is_peft_guard():
 
 def test_unsloth_save_has_torchao_registry_and_path():
     # The core normalizer + registry + save path must exist for the backend to route to them.
-    import unsloth.save as us
-
-    assert hasattr(us, "_normalize_torchao_method")
-    assert hasattr(us, "TORCHAO_EXPORT_SCHEMES")
-    assert hasattr(us, "_unsloth_save_torchao")
-    assert us._normalize_torchao_method("torchao_fp8") == ("fp8", "torchao-fp8")
-    assert us._normalize_torchao_method("torchao_int8") == ("int8", "torchao-int8")
-    # A torchao alias must NOT be treated as a compressed-tensors near-miss (no raise, returns None).
-    assert us._normalize_compressed_method("torchao_fp8") is None
+    # Read unsloth/save.py as text (like the ast checks above) rather than importing unsloth, so
+    # this runs in the CPU backend suite where the unsloth package is not installed / importable.
+    save_py = (_BACKEND.parent.parent / "unsloth" / "save.py").read_text(encoding = "utf-8")
+    assert "def _normalize_torchao_method" in save_py
+    assert "def _unsloth_save_torchao" in save_py
+    assert "TORCHAO_EXPORT_SCHEMES = {" in save_py
+    # The torchao aliases must map to (scheme, suffix) in the registry so the backend routes them to
+    # the torchao path (and not to the compressed-tensors near-miss handler).
+    assert '"torchao_fp8": ("fp8", "torchao-fp8")' in save_py
+    assert '"torchao_int8": ("int8", "torchao-int8")' in save_py
 
 
 # -- GGUF multi-quant list ----------------------------------------------------------------------

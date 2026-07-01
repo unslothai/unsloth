@@ -658,6 +658,11 @@ export function ExportPage() {
     // A GGUF export with no quant selected runs zero exports yet would still
     // settle as success with no file; require at least one (mirrors canExport).
     if (exportMethod === "gguf" && quantLevels.length === 0) return;
+    // Likewise, a merged export with every precision pill deselected would fall
+    // back to a default 16-bit export the user did not ask for; require at least
+    // one selected format (mirrors canExport, in case the panel's Start button is
+    // clicked while the outer Export button is disabled).
+    if (exportMethod === "merged" && selectedFormats.length === 0) return;
 
     const selectedCp = sourceMode === "checkpoint"
       ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)

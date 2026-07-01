@@ -73,9 +73,12 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
       - name: Install CPU PyTorch
-        # Pin to the CPU wheel index so every OS gets a CPU build (Windows
+        # Pin torch to the CPU wheel index so every OS gets a CPU build (Windows
         # would otherwise pull a CUDA wheel from PyPI; macOS has no CUDA wheel).
-        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<2.13"
+        # Keep PyPI as an extra index so torch's own transitive deps (filelock,
+        # sympy, networkx, ...) still resolve -- the CPU wheel index does not
+        # serve all of them, matching the other workflows in this repo.
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.13"
       - name: Install backend import deps
         # Enough to import utils.hardware and core.export.export; deliberately
         # NOT unsloth (it needs a GPU to import and the import-safety test
