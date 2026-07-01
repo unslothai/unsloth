@@ -2618,9 +2618,6 @@ class UnslothTrainer:
                 train_columns = resolve_column_names(train_dataset)
                 if "text" not in train_columns:
                     raise ValueError(f"Raw-text dataset missing 'text' column: {train_columns}")
-                validate_non_empty_text_field(train_dataset, split_name = "train")
-                if eval_dataset is not None:
-                    validate_non_empty_text_field(eval_dataset, split_name = "eval")
                 return (dataset_info, eval_dataset)
 
             elif self.is_audio_vlm:
