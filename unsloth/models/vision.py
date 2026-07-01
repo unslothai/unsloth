@@ -238,6 +238,55 @@ def _attach_bnb_multidevice_hooks(
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
+
+def _unsloth_generate_accepts_kwarg(model, key):
+    # Mirror transformers _validate_model_kwargs: only inject a generate kwarg the top
+    # level accepts (gpt-oss exposes logits_to_keep on an inner forward only).
+    try:
+        model_args = set(inspect.signature(model.prepare_inputs_for_generation).parameters)
+    except (TypeError, ValueError, AttributeError):
+        model_args = set()
+    if "kwargs" in model_args or "model_kwargs" in model_args:
+        try:
+            model_args |= set(inspect.signature(model.forward).parameters)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return key in model_args
+
+
+def _install_offload_embedding_hooks(embed_tokens):
+    # Run the (offloaded) embedding lookup on the weight's CURRENT device, then move the
+    # output back. Read at call time so a bf16 embedding pulled back to GPU by a later
+    # model.to(...) still works; origin device is saved on the module (pre-hook copies).
+    if embed_tokens is None:
+        return False
+    if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
+        return True
+
+    def _unsloth_offload_pre_hook(module, args):
+        if not args:
+            return args
+        inp = args[0]
+        if not hasattr(inp, "device"):
+            return args
+        module._unsloth_saved_device = inp.device
+        weight = getattr(module, "weight", None)
+        target = weight.device if weight is not None else inp.device
+        if inp.device == target:
+            return args
+        return (inp.to(target),) + tuple(args[1:])
+
+    def _unsloth_offload_post_hook(module, args, output):
+        dev = getattr(module, "_unsloth_saved_device", None)
+        if dev is not None and hasattr(output, "device") and output.device != dev:
+            return output.to(dev)
+        return output
+
+    embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
+    embed_tokens.register_forward_hook(_unsloth_offload_post_hook, prepend = True)
+    embed_tokens._unsloth_offload_hooks_installed = True
+    return True
+
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
@@ -339,7 +388,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if arch not in NUM_LOGITS_TO_KEEP:
             NUM_LOGITS_TO_KEEP[arch] = None
     key = NUM_LOGITS_TO_KEEP[arch]
-    if key is not None and key not in kwargs:
+    if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
         kwargs[key] = 1
 
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -1075,16 +1124,8 @@ class FastBaseModel:
                         print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
                         embed_tokens.to("cpu")
 
-                        # Add hooks to move inputs to CPU and back to CUDA
-                        # [TODO] Doesn't seem to work!
-                        # def pre_hook(module, args):
-                        #     args[0]._old_device = args[0].device
-                        #     return (args[0].to("cpu", non_blocking = True))
-                        # def post_hook(module, args, output):
-                        #     old_device = getattr(args[0], "_old_device", "cuda")
-                        #     return output.to(old_device, non_blocking = True)
-                        # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
-                        # embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                        # Device-safe embedding offload (see helper for the bf16 caveat).
+                        _install_offload_embedding_hooks(embed_tokens)
                         # Must free GPU memory otherwise will not free!
                         torch.cuda.empty_cache()
                         gc.collect()
