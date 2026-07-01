@@ -4546,16 +4546,19 @@ def _unsloth_save_torchao(
     else:
         raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
 
-    # For a hub push, save_directory is a repo id, so work inside an isolated temp dir.
+    # Always merge into an isolated temp staging dir (never save_directory itself), so a co-selected
+    # 16-bit export written to save_directory is not overwritten or deleted; the torchao output is
+    # the sibling "<save_directory>-<suffix>" (or the repo id on a hub push).
     repo_id, work_tmp, model_dev = None, None, None
+    work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
     if push_to_hub:
         repo_id = os.fspath(save_directory)
-        work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
-        local_dir = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
+        staging = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
+        out_dir = staging + "-" + suffix
     else:
-        # Drop trailing separators so the sibling "<dir>-<suffix>" is not nested inside <dir>.
-        local_dir = os.fspath(save_directory)
-        local_dir = local_dir.rstrip("/\\") or local_dir
+        base = os.fspath(save_directory).rstrip("/\\") or os.fspath(save_directory)
+        staging = os.path.join(work_tmp, os.path.basename(base) or "model")
+        out_dir = base + "-" + suffix
 
     api = None
     try:
@@ -4578,7 +4581,7 @@ def _unsloth_save_torchao(
             dict(
                 model = model,
                 tokenizer = tokenizer,
-                save_directory = local_dir,
+                save_directory = staging,
                 save_method = "merged_16bit",
                 push_to_hub = False,
                 token = token,
@@ -4587,14 +4590,17 @@ def _unsloth_save_torchao(
         )
         unsloth_generic_save(**merge_args)
 
-        # 2) Detect VLM so the right auto class reloads the staged checkpoint.
+        # 2) Detect VLM + trust_remote_code so the right auto class reloads the staged checkpoint.
+        #    A bare *ForConditionalGeneration also matches text seq2seq (T5/BART/Whisper), so key off
+        #    vision_config / a vision-named architecture only, like the compressed path.
         is_vlm = False
-        if hasattr(model, "config") and hasattr(model.config, "architectures"):
+        trust_remote_code = False
+        if hasattr(model, "config"):
             archs = getattr(model.config, "architectures", None) or []
-            is_vlm = any(
-                x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in archs
+            is_vlm = hasattr(model.config, "vision_config") or any(
+                x.endswith("ForVisionText2Text") for x in archs
             )
-            is_vlm = is_vlm or hasattr(model.config, "vision_config")
+            trust_remote_code = bool(getattr(model.config, "auto_map", None))
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
@@ -4624,14 +4630,16 @@ def _unsloth_save_torchao(
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
         dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
         quantized_model = auto_model.from_pretrained(
-            local_dir,
+            staging,
             device_map = "auto",
             quantization_config = TorchAoConfig(quant_type = quant_type),
+            trust_remote_code = trust_remote_code,
             **dtype_kw,
         )
-        staged_tokenizer = auto_processor.from_pretrained(local_dir)
+        staged_tokenizer = auto_processor.from_pretrained(
+            staging, trust_remote_code = trust_remote_code
+        )
 
-        out_dir = local_dir + "-" + suffix
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
         staged_tokenizer.save_pretrained(out_dir)
         del quantized_model
@@ -4652,15 +4660,7 @@ def _unsloth_save_torchao(
                 f"{cfg_path}"
             )
 
-        # 6) Drop the intermediate 16bit staging dir on a local save; the "<dir>-<suffix>" sibling
-        #    is the output (a hub push cleans work_tmp in finally).
-        if not push_to_hub and os.path.isdir(local_dir):
-            try:
-                shutil.rmtree(local_dir)
-            except Exception:
-                pass
-
-        # 7) Optional hub upload of the quantized artifact.
+        # 6) Optional hub upload of the quantized artifact (the temp staging is cleaned in finally).
         if push_to_hub:
             print(f"Unsloth: Uploading torchao {kind} checkpoint to '{repo_id}' ...")
             api.upload_folder(

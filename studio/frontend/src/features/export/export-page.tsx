@@ -221,8 +221,13 @@ export function ExportPage() {
     hardware.exportUnsupportedMessage ??
     "Export requires a supported accelerator (NVIDIA, AMD, or Intel GPU, or Apple Silicon) with PyTorch or MLX installed.";
   const availableFormats = useMemo<MergedFormatOption[]>(
-    () => MERGED_FORMATS.filter((f) => hasNvidia || !f.needsNvidia),
-    [hasNvidia],
+    // Hide compressed-tensors on non-NVIDIA hosts, and portable torchao on macOS/MLX (the backend
+    // rejects quantized export there), so the UI never advertises a format the backend will refuse.
+    () =>
+      MERGED_FORMATS.filter(
+        (f) => (hasNvidia || !f.needsNvidia) && !(isMacHost && f.backend === "torchao"),
+      ),
+    [hasNvidia, isMacHost],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
@@ -567,10 +572,16 @@ export function ExportPage() {
     sourceMode,
   ]);
   const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
+  // Each merged format uploads a full model to the repo root, so several to one repo would collide.
+  // Restrict a Hub merged export to a single format; multi-format stays available for local export.
+  const hubMultiFormat =
+    destination === "hub" && exportMethod === "merged" && selectedFormats.length > 1;
+
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
     !exportUnsupported &&
+    !hubMultiFormat &&
     (exportMethod !== "gguf" || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0)
   );
@@ -643,6 +654,8 @@ export function ExportPage() {
     // at least one (mirrors canExport, in case the panel's Start button bypasses the outer one).
     if (exportMethod === "gguf" && quantLevels.length === 0) return;
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
+    // A Hub merged push writes each format to the repo root; several would collide (mirrors canExport).
+    if (hubMultiFormat) return;
 
     const selectedCp = sourceMode === "checkpoint"
       ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)
@@ -723,6 +736,7 @@ export function ExportPage() {
     quantLevels,
     effectiveImatrix,
     selectedFormats,
+    hubMultiFormat,
     loraAsGguf,
     isMacHost,
     loraGgufOuttype,
@@ -1358,6 +1372,14 @@ export function ExportPage() {
                             Reset to 16-bit
                           </button>
                         )}
+                      </div>
+                    )}
+
+                    {hubMultiFormat && (
+                      <div className="text-[11px] text-amber-600 dark:text-amber-500">
+                        Hub export supports one format at a time (each writes to
+                        the repository root). Select a single format, or export
+                        locally to produce several at once.
                       </div>
                     )}
 
