@@ -42,13 +42,40 @@ def test_mlx_output_has_resume_checkpoint_detects_trainer_state(tmp_path):
     assert worker._mlx_output_has_resume_checkpoint(out) is True
 
 
-def test_write_mlx_stop_checkpoint_returns_true_when_checkpoint_exists(tmp_path):
+def test_write_mlx_stop_checkpoint_returns_true_when_current_step_checkpoint_exists(tmp_path):
     out = tmp_path / "outputs" / "run_x"
     ckpt = out / "checkpoint-5"
     ckpt.mkdir(parents = True)
     (ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
 
     assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 5), object(), out) is True
+
+
+def test_write_mlx_stop_checkpoint_writes_current_step_when_only_older_checkpoint_exists(
+    tmp_path,
+    monkeypatch,
+):
+    out = tmp_path / "outputs" / "run_x"
+    old_ckpt = out / "checkpoint-5"
+    old_ckpt.mkdir(parents = True)
+    (old_ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
+
+    saved_steps: list[int] = []
+
+    def _save_trainer_state(state, ckpt_dir, **_kwargs):
+        Path(ckpt_dir, "trainer_state.json").write_text("{}", encoding = "utf-8")
+        saved_steps.append(int(state["global_step"]))
+
+    fake_utils = types.SimpleNamespace(
+        save_trainable_adapters = lambda *_a, **_k: None,
+        save_optimizer_state = lambda *_a, **_k: None,
+        save_trainer_state = _save_trainer_state,
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+
+    assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 10), object(), out) is True
+    assert saved_steps == [10]
+    assert (out / "checkpoint-10" / "trainer_state.json").is_file()
 
 
 def test_write_mlx_stop_checkpoint_returns_false_without_optimizer(tmp_path):

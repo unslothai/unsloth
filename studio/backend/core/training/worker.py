@@ -2052,8 +2052,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         mx.synchronize()
         trainer.save_model(output_dir)
         if trainer.stop_requested:
-            _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir)
-            if not _mlx_output_has_resume_checkpoint(output_dir):
+            if not _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
                 _send(
                     "error",
                     error = (
@@ -3192,16 +3191,22 @@ def _mlx_output_has_resume_checkpoint(output_dir) -> bool:
     )
 
 
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    return (Path(output_dir) / f"checkpoint-{step}" / "trainer_state.json").is_file()
+
+
 def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     """Write a full resume checkpoint for a stopped MLX run.
 
-    Returns True when the output directory has resumable checkpoint state.
+    Returns True when a checkpoint for the current training step exists.
     """
-    if _mlx_output_has_resume_checkpoint(output_dir):
-        return True
     step = int(getattr(trainer, "_global_step", 0) or 0)
     if step <= 0 or optimizer is None:
         return False
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
     ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
     try:
         ckpt_dir.mkdir(parents = True, exist_ok = True)
@@ -3223,7 +3228,7 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
         logger.info("Saved stop checkpoint to %s", ckpt_dir)
     except Exception:
         logger.exception("Failed to write stop checkpoint under %s", output_dir)
-    return _mlx_output_has_resume_checkpoint(output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:

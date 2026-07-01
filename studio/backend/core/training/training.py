@@ -1066,6 +1066,7 @@ class TrainingBackend:
                     "status": "stopped" if self._should_stop else "error",
                     "error_message": event.get("error", "Unknown error"),
                     "output_dir": self._output_dir,
+                    "clear_output_dir": self._cancel_requested,
                 }
 
         # --- DB I/O outside the lock ---

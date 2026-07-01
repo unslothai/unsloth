@@ -195,6 +195,37 @@ def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_pat
     assert studio_db.get_run("r")["output_dir"] is None
 
 
+def test_finish_run_clears_output_dir_on_cancel_error_finalize(monkeypatch, tmp_path):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    studio_db.create_run(
+        id = "r",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 10,
+    )
+    studio_db.update_run_output_dir("r", "/out/x")
+    studio_db.finish_run(
+        id = "r",
+        status = "stopped",
+        ended_at = "t",
+        final_step = 2,
+        final_loss = None,
+        duration_seconds = 1,
+        loss_sparkline = "[]",
+        output_dir = "/out/x",
+        error_message = "worker failed during cancel",
+        clear_output_dir = True,
+    )
+
+    assert studio_db.get_run("r")["output_dir"] is None
+
+
 def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypatch, tmp_path):
     from storage import studio_db
 
