@@ -2180,3 +2180,45 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
     calls_on, contents_on = _run(True)
     assert calls_on == [], calls_on
     assert "web_search" not in contents_on, contents_on
+
+
+def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
+    """The reserved re-prompt slots (``_MAX_REPROMPTS``) must not extend the real
+    tool-call budget. A model that makes a valid tool call every turn must stop after
+    ``max_tool_iterations`` executed rounds, then get the final-answer nudge -- not run
+    ``max_tool_iterations + _MAX_REPROMPTS`` tool rounds."""
+    # Far more valid tool-call streams than the budget. If the reserved re-prompt slots
+    # leaked into the tool budget (the bug), the loop would execute up to
+    # ``max_tool_iterations + _MAX_REPROMPTS`` (2 + 3 = 5) rounds; honouring the budget
+    # stops after 2. The third request is the tool-less final-answer pass (it consumes a
+    # tool-call stream, which it ignores since no tools are offered on the final pass).
+    streams = [
+        _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}")
+        for i in range(6)
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search repeatedly"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    # Exactly two executed tool rounds, then one final-answer pass.
+    assert len(calls) == 2, calls
+    assert len(payloads) == 3, len(payloads)
+    # The final pass is the budget-exhausted nudge and carries no tools.
+    assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
+    assert any(
+        m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
+        for m in payloads[2]["messages"]
+    ), payloads[2]["messages"]

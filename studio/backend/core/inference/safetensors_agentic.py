@@ -23,6 +23,8 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     _balanced_brace_end,
+    _strip_function_xml_calls,
+    _strip_mistral_closed_calls,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -95,6 +97,13 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
+    # Mirror the final strip: balanced Mistral blocks, then a guarded function-XML
+    # scan (parser-accurate) BEFORE the regex arms. A literal ``<function=...>`` inside
+    # a parameter value is data, not a call, so the open-ended regex tail must not eat
+    # the real trailing prose after the call's true ``</function>``. No final trim so
+    # incremental length comparisons in the streaming loop still hold.
+    text = _strip_mistral_closed_calls(text)
+    text = _strip_function_xml_calls(text, final = True)
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text
