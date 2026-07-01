@@ -917,6 +917,33 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
     assert trl.GRPOTrainer is stub
 
 
+def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
+    """Stubbing unsupported trl trainers must not resolve them: trl lazy-imports
+    pull torch, so on a torch-free MLX install a getattr probe would crash
+    `import unsloth`. The shim reads __all__/vars metadata and never triggers
+    trl's __getattr__ for a trainer it is about to replace."""
+    unsloth = _import_mlx_unsloth()
+    trl = types.ModuleType("trl")
+    trl.__path__ = ["real-trainer-package"]
+    trl.__all__ = ["SFTTrainer", "SFTConfig", "GRPOTrainer", "DPOTrainer"]
+    resolved = []
+
+    def _lazy_getattr(name):
+        resolved.append(name)
+        raise ImportError(f"lazy import of {name} would pull torch")
+
+    trl.__getattr__ = _lazy_getattr
+    monkeypatch.setitem(sys.modules, "trl", trl)
+
+    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
+
+    # trainers declared in __all__ are stubbed WITHOUT ever resolving the real one
+    assert resolved == []
+    for name in ("GRPOTrainer", "DPOTrainer"):
+        with pytest.raises(NotImplementedError):
+            getattr(trl, name)(model = None)
+
+
 def test_mlx_preserve_dataset_order_is_accepted():
     """preserve_dataset_order=True must be accepted (it is a real MLX config field),
     not rejected as an unknown/unsupported argument."""
@@ -1055,7 +1082,10 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert torch.cuda.get_device_name(0) == stats.name
     assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
-    assert torch.cuda.memory_reserved() == torch.cuda.max_memory_reserved()
+    # current (non-max) APIs report live active memory, not the peak high-water
+    # mark, and never exceed it.
+    assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
+    assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
     assert torch.cuda.device_count() == 1
     assert torch.cuda.current_device() == 0
     assert torch.cuda.get_device_capability() == (0, 0)

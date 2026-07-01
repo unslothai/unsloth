@@ -257,25 +257,32 @@ if _IS_MLX:
                 """Clear MLX cache through torch.cuda.empty_cache()."""
                 clear_gpu_memory()
 
+            def _mlx_active_memory_bytes():
+                """Current active MLX memory in bytes (not the peak high-water mark)."""
+                import mlx.core as mx
+                get_active = getattr(mx, "get_active_memory", None)
+                if get_active is None and hasattr(mx, "metal"):
+                    get_active = getattr(mx.metal, "get_active_memory", None)
+                return int(get_active()) if callable(get_active) else 0
+
+            def memory_current(device = None):
+                """Return CURRENT MLX memory in bytes. torch.cuda.memory_reserved /
+                memory_allocated report live usage, not the peak (that is max_*)."""
+                return _mlx_active_memory_bytes()
+
             def mem_get_info(device = None):
                 """Return (free, total) bytes for torch.cuda compatibility API.
                 Free uses CURRENT active memory, not the peak high-water mark, so
                 a capacity check stays accurate after a transient spike."""
-                import mlx.core as mx
-
                 total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
-                get_active = getattr(mx, "get_active_memory", None)
-                if get_active is None and hasattr(mx, "metal"):
-                    get_active = getattr(mx.metal, "get_active_memory", None)
-                active = int(get_active()) if callable(get_active) else 0
-                return (max(total - active, 0), total)
+                return (max(total - _mlx_active_memory_bytes(), 0), total)
 
             cuda.get_device_properties = get_device_properties
             cuda.get_device_name = get_device_name
             cuda.max_memory_reserved = max_memory_reserved
             cuda.max_memory_allocated = max_memory_reserved
-            cuda.memory_reserved = max_memory_reserved
-            cuda.memory_allocated = max_memory_reserved
+            cuda.memory_reserved = memory_current
+            cuda.memory_allocated = memory_current
             cuda.empty_cache = empty_cache
             cuda.mem_get_info = mem_get_info
             cuda.reset_peak_memory_stats = lambda device = None: None
@@ -1109,9 +1116,16 @@ if _IS_MLX:
         _trl.SFTConfig = UnslothTrainingArguments
         # Only retarget trainers the installed trl actually exposes (don't invent
         # attributes); idempotent so re-importing unsloth is a no-op.
+        # Decide what to stub from trl's declared exports (__all__) and already
+        # materialized attrs only. A getattr probe here would trigger trl's lazy
+        # trainer import, pulling torch and breaking `import unsloth` on torch-free
+        # MLX just to check existence.
+        _trl_exports = set(getattr(_trl, "__all__", ()) or ())
         for _name in _MLX_UNSUPPORTED_TRL_TRAINERS:
-            _existing = getattr(_trl, _name, None)
-            if _existing is not None and not getattr(_existing, "_unsloth_mlx_unsupported", False):
+            _current = vars(_trl).get(_name)
+            if getattr(_current, "_unsloth_mlx_unsupported", False):
+                continue
+            if _name in _trl_exports or _current is not None:
                 setattr(_trl, _name, _make_mlx_unsupported_trl_trainer(_name))
         _trl.__all__ = _safe_mlx_trl_star_exports(_trl)
         _trl.__UNSLOTH_MLX_COMPAT__ = True
