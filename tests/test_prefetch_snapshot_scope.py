@@ -476,6 +476,66 @@ def test_st_fallback_module_loads_forward_revision():
     ), "expected the fallback _module_path and _load_modules calls to forward revision"
 
 
+def test_st_fallback_model_load_resolves_env_cache():
+    """The fallback FastModel weight load resolves its cache from the HF cache_dir, not ST's cache_folder /
+    SENTENCE_TRANSFORMERS_HOME. from_pretrained must therefore resolve the SAME cache the prefetch warmed
+    into kwargs['cache_dir'] BEFORE the FastModel.from_pretrained call -- else the weights miss the warm
+    and start an unprotected in-process Xet download (Codex #6638). Static guard: importing ST pulls heavy
+    optional deps."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+
+    def _resolves_st_cache(value_node):
+        # The resolution may be inline in the assigned value, or in the assignment to the intermediate
+        # variable the value references (kwargs['cache_dir'] = _st_cache_dir; _st_cache_dir = ...).
+        dumped = ast.dump(value_node)
+        if "cache_folder" in dumped and "SENTENCE_TRANSFORMERS_HOME" in dumped:
+            return True
+        if isinstance(value_node, ast.Name):
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == value_node.id for t in n.targets
+                ):
+                    d = ast.dump(n.value)
+                    if "cache_folder" in d and "SENTENCE_TRANSFORMERS_HOME" in d:
+                        return True
+        return False
+
+    resolved_lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for tgt in node.targets:
+            if (
+                isinstance(tgt, ast.Subscript)
+                and isinstance(tgt.value, ast.Name)
+                and tgt.value.id == "kwargs"
+                and isinstance(tgt.slice, ast.Constant)
+                and tgt.slice.value == "cache_dir"
+                and _resolves_st_cache(node.value)
+            ):
+                resolved_lines.append(node.lineno)
+    assert resolved_lines, "from_pretrained must resolve the ST cache into kwargs['cache_dir']"
+
+    fastmodel_calls = [
+        n.lineno
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "from_pretrained"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "FastModel"
+    ]
+    assert fastmodel_calls, "expected a FastModel.from_pretrained call"
+    assert min(resolved_lines) < min(
+        fastmodel_calls
+    ), "kwargs['cache_dir'] must be resolved before the fallback FastModel weight load"
+
+
 def test_filename_has_variant_matches_single_and_sharded():
     """The variant detector matches both the single-file (.fp16.) and SHARDED (.fp16-) infixes and
     rejects the default (non-variant) names (gemini #6638)."""

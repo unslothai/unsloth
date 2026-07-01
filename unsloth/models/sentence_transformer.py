@@ -1723,6 +1723,14 @@ class FastSentenceTransformer(FastModel):
             load_in_4bit = False
             load_in_16bit = True
 
+        # The fallback FastModel weight load resolves its cache from the HF cache_dir, not ST's
+        # cache_folder / SENTENCE_TRANSFORMERS_HOME. Point it at the SAME cache the prefetch warmed above,
+        # else the weights miss the warm and start an unprotected in-process Xet download. Only set it when
+        # a custom ST cache is in play and the caller passed no explicit HF cache_dir (which wins).
+        _st_cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+        if _st_cache_dir is not None and "cache_dir" not in kwargs:
+            kwargs["cache_dir"] = _st_cache_dir
+
         try:
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
