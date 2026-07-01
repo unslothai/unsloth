@@ -48,8 +48,10 @@ import { toast } from "@/lib/toast";
 import {
   type DiffusionGenerateProgress,
   type DiffusionLoadProgress,
+  type DiffusionLoraInfo,
   type DiffusionStatus,
   type GalleryImage,
+  type LoraSpecInput,
   deleteGalleryImage,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
@@ -57,6 +59,7 @@ import {
   getDiffusionStatus,
   getGallery,
   getGenerateProgress,
+  listDiffusionLoras,
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
@@ -881,6 +884,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one, combined
   // by the model (subject + style, character + scene).
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  // LoRA adapters selected for the next generation (id + weight), plus the list the picker
+  // offers. Applied at generate time; available adapters are refreshed per loaded family.
+  const [loras, setLoras] = useState<LoraSpecInput[]>([]);
+  const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
   // Advanced options live in a right-docked panel (like Chat's settings panel). Closed by
   // default; a single fixed toggle in the top bar opens/closes it (the icon never moves).
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -949,6 +956,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     galleryCache.selectedId = selectedId;
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
+
+  // Refresh the LoRA picker's options when the loaded model (family) changes, and drop any
+  // selected adapters the new model can't use so a stale/incompatible LoRA is never sent.
+  const loraCapable = Boolean(status?.loaded && status?.supports_lora);
+  useEffect(() => {
+    if (!loraCapable) {
+      setAvailableLoras([]);
+      setLoras([]);
+      return;
+    }
+    let cancelled = false;
+    listDiffusionLoras(status?.family ?? undefined)
+      .then((list) => {
+        if (cancelled) return;
+        setAvailableLoras(list);
+        const ids = new Set(list.map((l) => l.id));
+        setLoras((prev) => prev.filter((s) => ids.has(s.id)));
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableLoras([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loraCapable, status?.family]);
 
   const selected = useMemo(
     () => images.find((i) => i.id === selectedId) ?? images[0] ?? null,
@@ -1467,6 +1499,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           strength: condStrength,
           upscale: condUpscale,
           reference_images: condRefImages,
+          // Drop zero-weight rows so the recipe records only adapters that actually applied.
+          loras: loras.length ? loras.filter((l) => l.weight > 0) : undefined,
         });
         if (!isMounted.current) break;
         // Prepend this run's records (newest first) and load their blobs.
@@ -1484,7 +1518,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, ensureSrc]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, ensureSrc]);
 
   // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
   // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first
@@ -1922,6 +1956,89 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
+          {/* LoRA adapters: shown only when the loaded model + quant can apply them and at
+              least one adapter is discoverable. Stack multiple, each with a 0-2 weight. The
+              backend owns how they apply (native prompt tags / diffusers set_adapters); the
+              UI only sends {id, weight}. */}
+          {loraCapable && availableLoras.length > 0 && (
+            <Field
+              label="LoRAs"
+              hint="Style or character adapters applied on top of the model. Stack several; each has its own strength (1.0 = full effect, 0 disables)."
+            >
+              <div className="space-y-2">
+                {loras.map((sel, i) => (
+                  <div
+                    key={i}
+                    className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={sel.id}
+                        onValueChange={(v) =>
+                          setLoras((prev) => prev.map((p, j) => (j === i ? { ...p, id: v } : p)))
+                        }
+                      >
+                        <SelectTrigger className="h-8 flex-1 text-xs">
+                          <SelectValue placeholder="Select a LoRA" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableLoras.map((a) => (
+                            <SelectItem
+                              key={a.id}
+                              value={a.id}
+                              disabled={a.id !== sel.id && loras.some((l) => l.id === a.id)}
+                            >
+                              {a.display_name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0"
+                        aria-label={`Remove LoRA ${i + 1}`}
+                        onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                      </Button>
+                    </div>
+                    <SliderField
+                      label="Weight"
+                      value={sel.weight}
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      onChange={(v) =>
+                        setLoras((prev) => prev.map((p, j) => (j === i ? { ...p, weight: v } : p)))
+                      }
+                    />
+                  </div>
+                ))}
+                {loras.length < Math.min(availableLoras.length, 8) && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      const taken = new Set(loras.map((l) => l.id));
+                      const next = availableLoras.find((a) => !taken.has(a.id));
+                      if (next)
+                        setLoras((prev) => [
+                          ...prev,
+                          { id: next.id, weight: next.weight_default || 1 },
+                        ]);
+                    }}
+                  >
+                    <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                    Add LoRA
+                  </Button>
+                )}
+              </div>
+            </Field>
+          )}
           {/* A negative prompt only does anything with guidance on, so hide it at
               guidance 0 (Z-Image-Turbo's default) instead of showing a dead field. */}
           {guidance > 0 && (

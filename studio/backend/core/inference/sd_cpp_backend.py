@@ -119,6 +119,8 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
+    hf_token: Optional[str] = None
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -338,6 +340,7 @@ class SdCppDiffusionBackend:
                 threads = None,
                 sampling_method = fam.sd_cpp_sampling_method,
                 flow_shift = fam.sd_cpp_flow_shift,
+                hf_token = hf_token,
             )
             # Probe the binary: version() returns None when the present binary cannot
             # run (bad permissions / missing shared libs), so fail the load now rather
@@ -473,10 +476,15 @@ class SdCppDiffusionBackend:
         upscale: Optional[float] = None,
         # Reference workflow is GPU/diffusers-only (FLUX.2); accepted for interface parity.
         reference_images: Optional[list[str]] = None,
+        # LoRA adapters as (id, weight) pairs; resolved + materialized into a managed dir
+        # and injected as <lora:ALIAS:w> prompt tags per sd-cli run. None/empty = no LoRA.
+        loras: Optional[list[tuple[str, float]]] = None,
     ) -> dict[str, Any]:
         import tempfile
 
         from PIL import Image
+
+        from core.inference import diffusion_lora
 
         if init_image is not None or mask_image is not None or reference_images:
             raise ValueError(
@@ -498,6 +506,23 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
+                # Resolve any selected LoRA adapters up front (downloads land in the HF
+                # cache; a bad id fails here as a clear 400 before we spawn sd-cli).
+                lora_resolved: list = []
+                if loras:
+                    if not diffusion_lora.supports_lora(
+                        engine = "sd_cpp",
+                        family = state.family.name,
+                        model_kind = "gguf",
+                        transformer_quant = None,
+                    ):
+                        raise ValueError(
+                            f"LoRA is not supported for {state.family.name} on the native "
+                            "sd.cpp engine."
+                        )
+                    lora_resolved = diffusion_lora.resolve_specs(
+                        loras, hf_token = state.hf_token, cancel_event = cancel
+                    )
                 extra_args: list[str] = []
                 if state.vae_format:
                     extra_args += ["--vae-format", state.vae_format]
@@ -508,6 +533,17 @@ class SdCppDiffusionBackend:
                 images = []
                 seeds: list[int] = []
                 with tempfile.TemporaryDirectory(prefix = "sdcpp_gen_") as tmpdir:
+                    # Materialize selected LoRAs into a managed dir sd-cli can scan, and
+                    # inject matching <lora:ALIAS:w> tags into the prompt (deduped against
+                    # any the user typed). Empty -> prompt/dir unchanged.
+                    eff_prompt = prompt
+                    lora_dir: Optional[str] = None
+                    if lora_resolved:
+                        materialized = diffusion_lora.materialize_native_dir(
+                            lora_resolved, Path(tmpdir) / "loras"
+                        )
+                        eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
+                        lora_dir = str(Path(tmpdir) / "loras")
                     for index in range(max(1, int(batch_size))):
                         if cancel.is_set():
                             raise RuntimeError("Diffusion generation was cancelled.")
@@ -521,7 +557,7 @@ class SdCppDiffusionBackend:
                         seed_i = (seed + index) & ((1 << 63) - 1)
                         out_path = str(Path(tmpdir) / f"img_{index}.png")
                         params = SdCppGenParams(
-                            prompt = prompt,
+                            prompt = eff_prompt,
                             negative_prompt = negative_prompt or None,
                             width = int(width),
                             height = int(height),
@@ -531,6 +567,8 @@ class SdCppDiffusionBackend:
                             seed = seed_i,
                             sampling_method = state.sampling_method,
                             batch_count = 1,
+                            lora_dir = lora_dir,
+                            lora_apply_mode = "auto" if lora_dir else None,
                         )
                         engine.generate(
                             state.files,
@@ -627,7 +665,10 @@ class SdCppDiffusionBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "engine": "sd_cpp",
+                "supports_lora": False,
             }
+        from core.inference import diffusion_lora
+
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -650,6 +691,12 @@ class SdCppDiffusionBackend:
             "attention_backend": None,
             "transformer_cache": None,
             "engine": "sd_cpp",
+            "supports_lora": diffusion_lora.supports_lora(
+                engine = "sd_cpp",
+                family = state.family.name,
+                model_kind = "gguf",
+                transformer_quant = None,
+            ),
         }
 
 
