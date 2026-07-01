@@ -1,5 +1,6 @@
 """AST test locking in the RAG loopback trust_env fix: every httpx client/call in the RAG
 package (all target the local 127.0.0.1 llama-server) must set trust_env=False."""
+
 import ast
 import os
 
@@ -9,7 +10,7 @@ HTTPX_CALLEES = {"get", "post", "stream", "request", "Client", "AsyncClient"}
 
 def _httpx_calls(path):
     with open(path) as f:
-        tree = ast.parse(f.read(), filename=path)
+        tree = ast.parse(f.read(), filename = path)
     calls = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
