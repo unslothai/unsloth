@@ -678,18 +678,19 @@ def _qwen3_5_existing_mtp_layers(config):
 
 def _qwen3_5_tensor_names_from_save_directory(save_directory):
     save_path = Path(save_directory)
-    index_path = save_path / "model.safetensors.index.json"
-    if index_path.is_file():
-        try:
-            with index_path.open("r", encoding = "utf-8") as file:
-                index = json.load(file)
-            weight_map = index.get("weight_map", {})
-            if isinstance(weight_map, dict):
-                return list(weight_map.keys())
-        except (json.JSONDecodeError, OSError) as error:
-            logger.warning_once(
-                f"Unsloth: Could not inspect model.safetensors.index.json for Qwen3.5 MTP metadata: {error}"
-            )
+    for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        index_path = save_path / index_name
+        if index_path.is_file():
+            try:
+                with index_path.open("r", encoding = "utf-8") as file:
+                    index = json.load(file)
+                weight_map = index.get("weight_map", {})
+                if isinstance(weight_map, dict):
+                    return list(weight_map.keys())
+            except (json.JSONDecodeError, OSError) as error:
+                logger.warning_once(
+                    f"Unsloth: Could not inspect {index_name} for Qwen3.5 MTP metadata: {error}"
+                )
 
     tensor_names = []
     for safetensor_path in sorted(save_path.glob("*.safetensors")):
