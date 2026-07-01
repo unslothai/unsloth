@@ -330,21 +330,33 @@ def test_install_sh_writes_venv_marker_after_uv_venv():
 def test_install_ps1_writes_venv_marker_after_uv_venv():
     """install.ps1 must write .unsloth-studio-owned into $VenvDir after `uv venv` succeeds."""
     src = INSTALL_PS1.read_text()
+    assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
     venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 1500]
+    tail = src[venv_create : venv_create + 2600]
     assert (
-        ".unsloth-studio-owned" in tail
+        'WriteAllText($VenvOwnershipMarker, "")' in tail
     ), "install.ps1 must write .unsloth-studio-owned after uv venv create"
+
+
+def test_install_ps1_fallback_rebuild_preserves_env_mode_ownership_guard():
+    """install.ps1 must not rebuild over a pre-existing env-mode workspace unless it was already marked as Studio-owned."""
+    src = INSTALL_PS1.read_text()
+    venv_create = src.index("uv venv $VenvDir --python")
+    tail = src[venv_create : venv_create + 2600]
+    assert "$VenvDirExistedBeforeCreate" in tail
+    assert "$VenvDirOwnedBeforeCreate" in tail
+    assert "Refusing to rebuild non-Studio venv" in tail
 
 
 def test_install_ps1_guard_accepts_venv_marker():
     """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     src = INSTALL_PS1.read_text()
+    assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
     block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
     block = src[block_start : block_start + 2000]
     assert (
-        '$VenvDir ".unsloth-studio-owned") -PathType Leaf' in block
-    ), "install.ps1 guard must check the in-VENV marker with -PathType Leaf"
+        "Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf" in block
+    ), "install.ps1 guard must check the in-VENV marker through $VenvOwnershipMarker"
 
 
 def test_setup_helpers_gate_on_canonical_custom_root():

@@ -1410,6 +1410,14 @@ exit 0
         $script:StudioVenvRollbackDir = $null
     }
 
+    $VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"
+    $VenvDirExistedBeforeCreate = Test-Path -LiteralPath $VenvDir -PathType Container
+    $VenvDirOwnedBeforeCreate = $VenvDirExistedBeforeCreate -and (
+        (Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+    )
+
     if (Test-Path -LiteralPath $VenvPython) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
@@ -1418,7 +1426,7 @@ exit 0
         # in-VENV ownership marker so partial-install retries are not blocked.
         if (
             $StudioRedirectMode -eq 'env' -and
-            -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
         ) {
@@ -1487,16 +1495,51 @@ exit 0
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
         }
+        # Trust neither uv's exit code nor a half-baked Scripts\python.exe.
+        function Test-VenvPythonReady {
+            param(
+                [Parameter(Mandatory = $true)][string]$PythonExe
+            )
+            if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $global:LASTEXITCODE = 0
+                & $PythonExe -c "import sys; print(sys.executable)" 2>$null | Out-Null
+                return $LASTEXITCODE -eq 0
+            } catch {
+                return $false
+            } finally {
+                $ErrorActionPreference = $prevEap
+            }
+        }
+        if (-not (Test-VenvPythonReady $VenvPython)) {
+            substep "uv venv returned success but left an unusable venv; rebuilding with python -m venv..." "Yellow"
+            if (
+                $StudioRedirectMode -eq 'env' -and
+                $VenvDirExistedBeforeCreate -and
+                -not $VenvDirOwnedBeforeCreate
+            ) {
+                Write-Host "[ERROR] $VenvDir was not previously marked as an Unsloth Studio environment." -ForegroundColor Red
+                Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
+                return (Exit-InstallFailure "Refusing to rebuild non-Studio venv at $VenvDir")
+            }
+            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
+            $venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvDir }
+            if ($venvExit -ne 0) {
+                Write-Host "[ERROR] Failed to rebuild virtual environment (exit code $venvExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to rebuild virtual environment (exit code $venvExit)" $venvExit)
+            }
+            if (-not (Test-VenvPythonReady $VenvPython)) {
+                Write-Host "[ERROR] Rebuilt virtual environment is still unusable" -ForegroundColor Red
+                return (Exit-InstallFailure "Rebuilt virtual environment is still unusable" $venvExit)
+            }
+        }
+        try { [System.IO.File]::WriteAllText($VenvOwnershipMarker, "") } catch {}
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
-    }
-
-    # Mark the freshly-created venv as Studio-owned so a partial install can be
-    # repaired by re-running install.ps1; the env-mode deletion guard above
-    # accepts this marker as the primary sentinel.
-    if (Test-Path -LiteralPath $VenvDir -PathType Container) {
-        try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+        try { [System.IO.File]::WriteAllText($VenvOwnershipMarker, "") } catch {}
     }
 
     # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
