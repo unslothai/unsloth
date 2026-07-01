@@ -289,3 +289,31 @@ def test_route_status_and_stop(client):
     # After stopping, a stop with nothing running reports idle.
     st2 = client.post("/api/train/diffusion/stop")
     assert st2.json()["status"] == "idle"
+
+
+def test_service_restart_after_completion():
+    # A finished job's pump is joined OUTSIDE the lock (it needs the lock for its
+    # final state writes), so a second start neither stalls nor deadlocks.
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "completed")
+    t0 = time.time()
+    job2 = svc.start(dict(_CFG))
+    assert job2
+    assert time.time() - t0 < 4.0  # no 5s join-under-lock stall
+    st = _wait_status(svc, "completed")
+    assert st["status"] == "completed"
+
+
+def test_stale_pump_events_cannot_corrupt_new_job():
+    # An event carrying a superseded job's proc identity must be dropped, so a
+    # straggler pump can never overwrite the state of a newly started job.
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "completed")
+    current = svc._proc
+    svc._apply_event({"type": "error", "message": "stale boom"}, proc = object())
+    assert svc.status()["message"] != "stale boom"
+    # The current job's events still apply.
+    svc._apply_event({"type": "progress", "step": 9}, proc = current)
+    assert svc.status()["step"] == 9
