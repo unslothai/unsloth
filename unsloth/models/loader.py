@@ -35,7 +35,9 @@ from peft import PeftConfig, PeftModel
 from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _model_has_real_fp8_modules,
     _offline_quantize_to_fp8,
+    _restore_missing_fp8_weight_scale_inv,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
@@ -437,6 +439,7 @@ class FastLanguageModel(FastLlamaModel):
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
+        restore_fp8_scales = load_in_fp8 != False
         if not use_exact_model_name:
             new_model_name = get_model_name(
                 model_name,
@@ -474,6 +477,7 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
+            restore_fp8_scales = False
             load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -859,7 +863,14 @@ class FastLanguageModel(FastLlamaModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if load_in_fp8 != False:
+        if restore_fp8_scales or _model_has_real_fp8_modules(model):
+            _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
+                model,
+                model_name,
+                token = token,
+                revision = revision if not is_peft else None,
+                local_files_only = local_files_only,
+            )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
@@ -1088,6 +1099,7 @@ class FastModel(FastBaseModel):
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
+        restore_fp8_scales = load_in_fp8 != False
         if not use_exact_model_name:
             new_model_name = get_model_name(
                 model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
@@ -1121,6 +1133,7 @@ class FastModel(FastBaseModel):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
+            restore_fp8_scales = False
             load_in_16bit = True
 
         # Check modelscope
@@ -1732,7 +1745,14 @@ class FastModel(FastBaseModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if load_in_fp8 != False:
+        if restore_fp8_scales or _model_has_real_fp8_modules(model):
+            _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
+                model,
+                model_name,
+                token = token,
+                revision = revision if not is_peft else None,
+                local_files_only = local_files_only,
+            )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
