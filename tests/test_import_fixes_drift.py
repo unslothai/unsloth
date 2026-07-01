@@ -23,6 +23,7 @@ import inspect
 import os
 import re
 import sys
+from pathlib import Path
 from importlib.metadata import version as importlib_version
 
 import pytest
@@ -593,6 +594,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
     orig_debug = state.debug
     orig_dist_type = state.distributed_type
     orig_num_processes = state.num_processes
+    orig_device = state.device
 
     state.debug = True
     state.distributed_type = DistributedType.MULTI_GPU
@@ -624,6 +626,8 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
                 side_effect = mock_gpu_broadcast,
             ),
         ):
+            state.device = torch.device("cpu")
+
             # Top-level EmptyLogits gathers to itself
             res = acc_ops.gather(e)
             assert res is e
@@ -656,6 +660,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         state.debug = orig_debug
         state.distributed_type = orig_dist_type
         state.num_processes = orig_num_processes
+        state.device = orig_device
 
 
 def test_accelerate_patch_is_idempotent():
@@ -698,10 +703,8 @@ def test_accelerate_find_device_skips_empty_logits():
 
 def test_accelerate_patch_wired_into_gpu_init():
     """The patch must be installed at startup, not only importable."""
-    import pathlib
-    import unsloth.import_fixes as import_fixes
-
-    source = pathlib.Path(import_fixes.__file__).with_name("_gpu_init.py").read_text()
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    source = source.read_text()
     assert "patch_accelerate_recursively_apply()" in source, (
         "DRIFT DETECTED: patch_accelerate_recursively_apply is defined but "
         "never called in _gpu_init.py, so real imports never install it."
