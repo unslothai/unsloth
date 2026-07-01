@@ -29,6 +29,7 @@ from collections import defaultdict
 from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
+    create_completion_attention_mask,
     chunked_selective_log_softmax,
     _unsloth_get_mm_token_id,
     _unsloth_fix_mm_token_type_ids,
@@ -1395,8 +1396,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
                     _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
-                    # need >= 2 completion rows for verification to expose cross-sample leakage
-                    _pk_active = int(((input_ids[:, -_pk_W:] != _pk_pad).sum(dim = 1) > 0).sum())
+                    # exact per-row completion mask (same one the loss uses); a row is active only if
+                    # it has real completion tokens, so prompt-only rows can't satisfy the >= 2 guard
+                    _pk_cmask = create_completion_attention_mask(
+                        input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                    )
+                    _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     if (
                         _pk_T >= 2
                         and len(_pk_nz_cpu) > 0
@@ -1510,15 +1515,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             _pk_rkeep
                                         ].to(torch.float32)
                             device_synchronize()
-                            # compare over the exact loss-mask region (per-row completion, non-pad)
-                            _pk_wc = torch.arange(_pk_W, device = input_ids.device)
-                            _pk_cm = (
-                                (
-                                    _pk_wc.unsqueeze(0)
-                                    >= (max_left_pad - left_pad_tokens_per_prompt).unsqueeze(1)
-                                )
-                                & (input_ids[:, -_pk_W:] != _pk_pad)
-                            ).float()
+                            # compare over the exact loss-mask region (same mask the loss uses)
+                            _pk_cm = _pk_cmask.float()
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
                                 print(
