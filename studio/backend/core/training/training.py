@@ -1072,6 +1072,9 @@ class TrainingBackend:
                     "error_message": event.get("error", "Unknown error"),
                     "output_dir": self._output_dir,
                     "clear_output_dir": self._cancel_requested,
+                    # resume_blocked: only stale checkpoints remain, so a resume
+                    # would silently roll the run back past its final step.
+                    "resume_blocked": bool(event.get("resume_blocked")),
                 }
 
         # --- DB I/O outside the lock ---
@@ -1150,6 +1153,7 @@ class TrainingBackend:
         error_message: Optional[str] = None,
         output_dir: Optional[str] = None,
         clear_output_dir: bool = False,
+        resume_blocked: bool = False,
     ) -> None:
         """Flush remaining metrics and mark a run as finished in the DB."""
         if not self.current_job_id or not self._db_run_created or self._run_finalized:
@@ -1173,6 +1177,7 @@ class TrainingBackend:
                 output_dir = output_dir,
                 error_message = error_message,
                 clear_output_dir = clear_output_dir,
+                resume_blocked = resume_blocked,
             )
             self._run_finalized = True
         except Exception:

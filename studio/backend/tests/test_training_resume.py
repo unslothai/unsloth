@@ -396,6 +396,58 @@ def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
     assert "resumable checkpoint" in run["error_message"]
 
 
+def test_can_resume_run_rejects_resume_blocked_run(monkeypatch):
+    monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
+
+    assert resume.can_resume_run(_stopped_run(status = "error", resume_blocked = 1)) is False
+
+
+def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(
+    monkeypatch, tmp_path
+):
+    # An MLX stop-and-save that failed to write the current-step checkpoint
+    # must not offer Resume just because an older periodic checkpoint exists;
+    # resuming would silently roll back past the recorded final step.
+    from core.training.training import TrainingBackend
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    out = tmp_path / "outputs" / "run_x"
+    (out / "checkpoint-10").mkdir(parents = True)
+    (out / "checkpoint-10" / "trainer_state.json").write_text("{}", encoding = "utf-8")
+
+    studio_db.create_run(
+        id = "run-stale-ckpt",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 20,
+    )
+    studio_db.update_run_output_dir("run-stale-ckpt", str(out))
+    backend = TrainingBackend()
+    backend.current_job_id = "run-stale-ckpt"
+    backend._db_run_created = True
+    backend._should_stop = True
+    backend._output_dir = str(out)
+    backend._handle_event(
+        {
+            "type": "error",
+            "error": "Failed to save a resumable checkpoint after stop.",
+            "keep_error_status": True,
+            "resume_blocked": True,
+        }
+    )
+
+    run = studio_db.get_run("run-stale-ckpt")
+    assert run["status"] == "error"
+    assert run["resume_blocked"] == 1
+    assert run["output_dir"] == str(out)
+    assert resume.can_resume_run(run) is False
+
+
 def test_user_stop_error_without_flag_still_finalizes_stopped(monkeypatch, tmp_path):
     # Errors surfaced while honouring a plain user stop keep the stopped status.
     from core.training.training import TrainingBackend

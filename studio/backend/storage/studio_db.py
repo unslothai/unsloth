@@ -155,13 +155,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             error_message TEXT,
             duration_seconds REAL,
             loss_sparkline TEXT,
-            display_name TEXT
+            display_name TEXT,
+            resume_blocked INTEGER NOT NULL DEFAULT 0
         )
         """
     )
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()}
     if "display_name" not in existing_cols:
         conn.execute("ALTER TABLE training_runs ADD COLUMN display_name TEXT")
+    if "resume_blocked" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE training_runs ADD COLUMN resume_blocked INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_metrics (
@@ -581,6 +586,7 @@ def finish_run(
     output_dir: Optional[str] = None,
     error_message: Optional[str] = None,
     clear_output_dir: bool = False,
+    resume_blocked: bool = False,
 ) -> None:
     conn = get_connection()
     try:
@@ -595,7 +601,8 @@ def finish_run(
                     WHEN ? IN ('error', 'stopped') THEN output_dir
                     ELSE NULL
                 END,
-                error_message = ?
+                error_message = ?,
+                resume_blocked = ?
             WHERE id = ?
             """,
             (
@@ -610,6 +617,7 @@ def finish_run(
                 output_dir,
                 status,
                 error_message,
+                int(resume_blocked),
                 id,
             ),
         )
@@ -690,7 +698,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
             SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
                    r.ended_at, r.total_steps, r.final_step, r.final_loss,
                    r.output_dir, r.duration_seconds, r.error_message,
-                   r.loss_sparkline, r.display_name, r.config_json,
+                   r.loss_sparkline, r.display_name, r.config_json, r.resume_blocked,
                    CASE
                        WHEN r.status IN ('stopped', 'error')
                             AND r.output_dir IS NOT NULL

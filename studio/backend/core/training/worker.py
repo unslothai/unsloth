@@ -2062,6 +2062,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     # A user stop normally finalizes as 'stopped'; this failure
                     # must keep its error status so history explains it.
                     keep_error_status = True,
+                    # Older periodic checkpoints may exist under output_dir, but
+                    # resuming from one would silently roll back past this stop.
+                    resume_blocked = True,
                 )
                 return
         _send("complete", output_dir = output_dir, status_message = "Training completed")
