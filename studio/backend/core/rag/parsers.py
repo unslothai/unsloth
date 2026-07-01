@@ -357,12 +357,14 @@ def _docx_table_rows(table) -> list[str]:
     Merged cells repeat across spanned columns, so dedup by the underlying <w:tc>."""
     rows: list[str] = []
     for row in table.rows:
-        seen: set[int] = set()
+        seen: set = set()
         cells: list[str] = []
         for cell in row.cells:
-            if id(cell._tc) in seen:
+            # ._tc is the underlying <w:tc> lxml element (hashable); merged cells repeat
+            # across spanned columns and share one _tc, so dedup on it.
+            if cell._tc in seen:
                 continue
-            seen.add(id(cell._tc))
+            seen.add(cell._tc)
             # Collapse internal newlines/whitespace so a multi-paragraph cell stays on one
             # row; keep empty cells so columns still line up across rows.
             cells.append(" ".join(cell.text.split()))

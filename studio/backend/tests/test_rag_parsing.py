@@ -178,3 +178,24 @@ def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert "A |  | C" in text  # empty cell preserved -> columns line up
     assert "line1 line2 | mid | end" in text  # internal newline collapsed to a space
+
+
+def test_docx_table_dedups_merged_cells(tmp_path):
+    # A horizontally merged cell repeats across the spanned columns; dedup on the shared
+    # <w:tc> so it appears once, not once per column it spans.
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    table = document.add_table(rows = 1, cols = 3)
+    table.cell(0, 0).text = "WIDE"
+    table.cell(0, 2).text = "END"
+    table.cell(0, 0).merge(table.cell(0, 1))  # span the first two columns
+    path = tmp_path / "merged.docx"
+    document.save(str(path))
+
+    text = "\n".join(p.text for p in parsers.parse(str(path)))
+    assert text.count("WIDE") == 1  # merged cell not duplicated across spanned columns
+    assert "WIDE | END" in text
