@@ -1322,6 +1322,7 @@ def _sf_reasoning_prefill_mode(
     features: dict,
     enable_thinking: Optional[bool],
     template: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> bool:
     """Whether a safetensors/MLX generation begins INSIDE an unclosed ``<think>``
     for THIS request.
@@ -1347,6 +1348,11 @@ def _sf_reasoning_prefill_mode(
     if features.get("reasoning_always_on"):
         return True
     if not features.get("supports_reasoning"):
+        return False
+    # enable_thinking_effort models express "thinking off" via reasoning_effort
+    # "none" (not enable_thinking=False); honor it so we don't start in prefilled
+    # mode and capture the whole answer as reasoning_content.
+    if reasoning_effort == "none":
         return False
     return enable_thinking is not False
 
@@ -6077,7 +6083,8 @@ async def openai_chat_completions(
     # THIS request. gpt-oss (reasoning_style "reasoning_effort", explicit tags via
     # HarmonyTextStreamer) is excluded and uses the normal extractor mode.
     _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features, payload.enable_thinking, _sf_tpl
+        _sf_features, payload.enable_thinking, _sf_tpl,
+        reasoning_effort = payload.reasoning_effort,
     )
 
     def _new_sf_reasoning_extractor():

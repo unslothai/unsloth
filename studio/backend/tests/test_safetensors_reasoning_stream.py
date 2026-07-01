@@ -25,8 +25,37 @@ if _BACKEND_DIR not in sys.path:
 
 from routes.inference import (
     _ResponsesReasoningExtractor,
+    _sf_reasoning_prefill_mode,
     _strip_tool_xml_for_display,
 )
+
+
+_THINK_TPL = "...<think>...</think>..."
+_ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
+_ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
+
+
+def test_prefill_mode_on_for_enable_thinking_default():
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _THINK_TPL) is True
+
+
+def test_prefill_mode_off_when_thinking_disabled():
+    assert _sf_reasoning_prefill_mode(_ETHINK, False, _THINK_TPL) is False
+
+
+def test_prefill_mode_off_for_reasoning_effort_none():
+    # enable_thinking_effort models turn thinking off via reasoning_effort="none";
+    # prefilled mode would otherwise capture the whole answer as reasoning_content.
+    assert _sf_reasoning_prefill_mode(
+        _ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "none"
+    ) is False
+    assert _sf_reasoning_prefill_mode(
+        _ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "high"
+    ) is True
+
+
+def test_prefill_mode_off_without_think_markers():
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, "no markers here") is False
 
 
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
