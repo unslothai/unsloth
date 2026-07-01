@@ -34,6 +34,7 @@ from core.tool_healing import (
     _TOOL_CLOSED_PATS,
     _strip_bracket_tag_calls,
     _think_spans_outside_tool_markup,
+    apply_tool_strip_patterns,
     strip_outside_think,
 )
 from core.inference.tool_loop_controller import (
@@ -221,8 +222,12 @@ def strip_tool_markup_streaming(
     *,
     auto_heal_tool_calls: bool = True,
     tool_protocol_active: bool = False,
+    enabled_tool_names=None,
 ) -> str:
-    """Strip open-ended tool XML from display text without trimming whitespace."""
+    """Strip open-ended tool XML from display text without trimming whitespace.
+
+    ``enabled_tool_names`` keeps an inactive-name ``foo[ARGS]{..}`` example visible (it
+    is prose, not a call), matching the parse / detection active-tool gate."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
 
@@ -232,12 +237,13 @@ def strip_tool_markup_streaming(
         # the regex patterns cover the XML forms. The open-ended tail arms in
         # _TOOL_ALL_PATS are anchored to end-of-text, so run them only on the last
         # segment: a bare ``foo[ARGS]`` before a <think> block is prose, not a
-        # truncated call (mirrors strip_tool_call_markup and the route strip).
-        segment = _strip_bracket_tag_calls(segment)
+        # truncated call (mirrors strip_tool_call_markup and the route strip). The
+        # rehearsal strip is name-gated so an inactive-name example is kept.
+        segment = _strip_bracket_tag_calls(segment, enabled_tool_names = enabled_tool_names)
         patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
-        for pat in patterns:
-            segment = pat.sub("", segment)
-        return segment
+        return apply_tool_strip_patterns(
+            segment, patterns, enabled_tool_names = enabled_tool_names
+        )
 
     # Preserve <think>/[THINK] reasoning verbatim: a call rehearsed inside a
     # reasoning block is skipped by the parser and kept by the final strip, so
@@ -252,10 +258,11 @@ def _strip_tool_markup_final(
     *,
     auto_heal_tool_calls: bool,
     tool_protocol_active: bool = False,
+    enabled_tool_names=None,
 ) -> str:
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    return strip_tool_markup(text, final = True)
+    return strip_tool_markup(text, final = True, enabled_tool_names = enabled_tool_names)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -426,6 +433,13 @@ def run_safetensors_tool_loop(
         conversation.extend(_auto["messages"])
 
     unrestricted_tools = not tools
+    # Names of the tools the caller enabled -- the gate that tells a genuine rehearsal
+    # ``NAME[ARGS]{..}`` call from a literal inactive-name example in prose, so parse
+    # and display strip stay symmetric with the streaming detection guard. ``None`` in
+    # unrestricted mode (no declared tools) keeps the prior behaviour (any name may be a
+    # call). Built from the ORIGINAL tools list (not the shrinking active set) so a
+    # one-shot tool already used still reads as a tool name, not prose.
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
     tool_controller = ToolLoopController(
         tools = None if unrestricted_tools else tools,
         auto_heal_tool_calls = auto_heal_tool_calls,
@@ -553,6 +567,7 @@ def run_safetensors_tool_loop(
                         before_tool,
                         auto_heal_tool_calls = auto_heal_tool_calls,
                         tool_protocol_active = tool_protocol_active,
+                        enabled_tool_names = _enabled_names_gate,
                     )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
@@ -583,6 +598,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_names_gate,
                 )
                 # Hold a trailing bare active-tool-name (a split rehearsal NAME
                 # whose [ARGS] has not arrived yet) so it is not streamed before the
@@ -659,6 +675,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_names_gate,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -695,6 +712,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_names_gate,
                 )
                 # Same trailing-name hold as the STREAMING branch: this first flush
                 # out of BUFFERING must not emit a bare active-tool-name whose
@@ -740,6 +758,7 @@ def run_safetensors_tool_loop(
                             cumulative_display,
                             auto_heal_tool_calls = auto_heal_tool_calls,
                             tool_protocol_active = False,
+                            enabled_tool_names = _enabled_names_gate,
                         ),
                     }
                 yield {"type": "status", "text": ""}
@@ -761,6 +780,7 @@ def run_safetensors_tool_loop(
                     content_accum,
                     id_offset = next_call_id,
                     allow_incomplete = auto_heal_tool_calls,
+                    enabled_tool_names = _enabled_names_gate,
                 )
             if not safety_tc:
                 # Final answer: if a literal tool marker in prose was stripped
@@ -778,6 +798,7 @@ def run_safetensors_tool_loop(
                         cumulative_display,
                         auto_heal_tool_calls = auto_heal_tool_calls,
                         tool_protocol_active = tool_protocol_active,
+                        enabled_tool_names = _enabled_names_gate,
                     )
                     if len(final_clean) > len(last_emitted):
                         yield {"type": "content", "text": final_clean}
@@ -788,6 +809,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 tool_protocol_active = True,
+                enabled_tool_names = _enabled_names_gate,
             )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
@@ -799,6 +821,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 id_offset = next_call_id,
                 allow_incomplete = auto_heal_tool_calls,
+                enabled_tool_names = _enabled_names_gate,
             )
             if not tool_calls:
                 # Parser found nothing. Auto-Heal-enabled display cleanup
@@ -811,6 +834,7 @@ def run_safetensors_tool_loop(
                             content_accum,
                             auto_heal_tool_calls = auto_heal_tool_calls,
                             tool_protocol_active = False,
+                            enabled_tool_names = _enabled_names_gate,
                         ),
                     }
                 if provisional_render_html_started and not provisional_resolved:
@@ -828,6 +852,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 tool_protocol_active = True,
+                enabled_tool_names = _enabled_names_gate,
             )
 
         if tool_calls:

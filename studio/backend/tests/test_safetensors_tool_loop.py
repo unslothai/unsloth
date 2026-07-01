@@ -2145,3 +2145,41 @@ def test_inactive_name_args_with_body_is_not_parsed_into_disabled_noop():
     assert len(turn_calls) == 1, turn_calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert any("is just syntax." in t for t in contents), contents
+
+
+class TestEnabledToolNameGate:
+    """The safetensors loop passes the active tool names into parse/strip so the
+    ambiguous bare-rehearsal ``NAME[ARGS]{json}`` is treated as a call only when NAME
+    is an active tool (#5704). Without the gate an inactive ``foo[ARGS]{...}`` in prose
+    was parsed into a disabled no-op call and stripped from the visible text."""
+
+    def _names(self, calls):
+        return [c["function"]["name"] for c in calls]
+
+    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
+        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert self._names(calls) == ["web_search"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_parse_inactive_rehearsal_alone_is_prose(self):
+        assert parse_tool_calls_from_text('foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}) == []
+
+    def test_streaming_strip_keeps_inactive_rehearsal(self):
+        raw = 'answer foo[ARGS]{"x":1} tail'
+        assert strip_tool_markup_streaming(raw, enabled_tool_names = {"web_search"}) == raw
+
+    def test_streaming_strip_removes_active_rehearsal(self):
+        raw = 'answer web_search[ARGS]{"q":1} tail'
+        out = strip_tool_markup_streaming(raw, enabled_tool_names = {"web_search"})
+        assert "web_search[ARGS]" not in out
+        assert out == "answer  tail"
+
+    def test_final_strip_keeps_inactive_rehearsal(self):
+        text = 'foo[ARGS]{"x":1} is just syntax.'
+        assert strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"}) == text
+
+    def test_gate_none_preserves_legacy_strip_and_parse(self):
+        text = 'foo[ARGS]{"x":1} tail'
+        assert self._names(parse_tool_calls_from_text(text)) == ["foo"]
+        assert strip_tool_markup_streaming(text) == " tail"

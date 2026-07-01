@@ -34,14 +34,18 @@ _mc = _re.search(r"_TOOL_XML_CLOSED_RE = _re\.compile\((.*?)\n\)", _src, _re.DOT
 assert _mc, "could not extract _TOOL_XML_CLOSED_RE source"
 exec(f"_TOOL_XML_CLOSED_RE = _re.compile({_mc.group(1)})", _ns)
 _TOOL_XML_CLOSED_RE = _ns["_TOOL_XML_CLOSED_RE"]
+# Extract both the gate helper and the display strip (multi-line signature, so
+# capture the whole span up to the next top-level ``logger =`` statement rather
+# than pinning the exact argument list).
 _helper = _re.search(
-    r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
-    r"(?:(?: {4}.*)?\n)+",
+    r"def _display_tool_name_gate\(.*?(?=\nlogger = get_logger)",
     _src,
+    _re.DOTALL,
 )
-assert _helper, "could not extract _strip_tool_xml_for_display source"
+assert _helper, "could not extract display strip helper source"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
+_display_tool_name_gate = _ns["_display_tool_name_gate"]
 
 
 # ── Well-formed pairs ─────────────────────────────────────────────
@@ -493,3 +497,94 @@ def test_incomplete_xml_call_with_literal_think_in_arg_is_stripped():
     # A complete call followed by a real reasoning block: call stripped, block kept.
     mixed = '<tool_call>{"name":"a","arguments":{}}</tool_call> mid <think>r</think> end'
     assert _strip(mixed, final = True) == "mid <think>r</think> end"
+
+
+# ── enabled-tool gate for the ambiguous bare-rehearsal strip (#5704) ──
+
+
+def test_display_tool_name_gate_returns_active_names_or_none():
+    # Empty / no tools -> None (unrestricted; keep the legacy strip-all behavior).
+    assert _display_tool_name_gate([]) is None
+    assert _display_tool_name_gate(None) is None
+    # OpenAI-shaped tool dicts -> set of function names, malformed entries dropped.
+    tools = [
+        {"type": "function", "function": {"name": "web_search"}},
+        {"type": "function", "function": {"name": "run_python"}},
+        {"type": "function"},  # no name
+        {"nope": 1},  # no function
+    ]
+    assert _display_tool_name_gate(tools) == {"web_search", "run_python"}
+
+
+def test_route_display_strip_keeps_inactive_rehearsal_when_gated():
+    # P1 #5704: ``foo[ARGS]{...}`` where ``foo`` is NOT an active tool is prose, not a
+    # call. With the active-tool gate the display strip must leave it (and its trailing
+    # sentence) intact -- matching the loop-level parse/strip gate so the route does
+    # not re-corrupt already-correct loop output.
+    gate = {"web_search"}
+    text = 'foo[ARGS]{"x":1} is just syntax.'
+    assert (
+        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = gate)
+        == text
+    )
+    # A bare marker with no JSON body is likewise prose when inactive.
+    assert (
+        _strip_tool_xml_for_display(
+            "use foo[ARGS] here", auto_heal_tool_calls = True, enabled_tool_names = gate
+        )
+        == "use foo[ARGS] here"
+    )
+
+
+def test_route_display_strip_removes_active_rehearsal_when_gated():
+    # The mirror case: an ACTIVE tool name IS a real rehearsal call and must still be
+    # stripped from the visible text even with the gate in play.
+    gate = {"web_search"}
+    out = _strip_tool_xml_for_display(
+        'web_search[ARGS]{"query":"x"} done', auto_heal_tool_calls = True, enabled_tool_names = gate
+    )
+    assert "web_search[ARGS]" not in out
+    assert out.strip() == "done"
+
+
+def test_route_display_strip_ungated_strips_all_rehearsal_unchanged():
+    # Backwards-compat: with no gate (enabled_tool_names=None, the default and the
+    # history-sanitize / non-loop call sites) the bare rehearsal is stripped as before.
+    text = 'foo[ARGS]{"x":1} is just syntax.'
+    assert (
+        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "is just syntax."
+    )
+    assert (
+        _strip_tool_xml_for_display(
+            text, auto_heal_tool_calls = True, enabled_tool_names = None
+        ).strip()
+        == "is just syntax."
+    )
+
+
+def test_route_display_strip_control_token_stripped_regardless_of_gate():
+    # ``[TOOL_CALLS]`` is a control token, not an ambiguous bare identifier: it is
+    # stripped even when its NAME is not in the active-tool gate.
+    gate = {"web_search"}
+    out = _strip_tool_xml_for_display(
+        '[TOOL_CALLS]foo[ARGS]{"x":1} keep', auto_heal_tool_calls = True, enabled_tool_names = gate
+    )
+    assert "[TOOL_CALLS]" not in out and "foo[ARGS]" not in out
+    assert out.strip() == "keep"
+
+
+def test_core_strip_gates_bare_rehearsal_on_enabled_tools():
+    # P1 (#5704): the shared strip_tool_call_markup gate mirrors the parse gate --
+    # an inactive ``foo[ARGS]{...}`` is prose and preserved with its trailing
+    # sentence; an active tool name is a real call and stripped. ``None`` keeps the
+    # legacy strip-all behavior so existing callers are unchanged.
+    from core.tool_healing import strip_tool_call_markup as _strip
+
+    text = 'foo[ARGS]{"x":1} is just syntax.'
+    assert _strip(text, final = True, enabled_tool_names = {"web_search"}) == text
+    assert (
+        _strip('web_search[ARGS]{"q":1} done', final = True, enabled_tool_names = {"web_search"})
+        == "done"
+    )
+    assert _strip(text, final = True).strip() == "is just syntax."
+    assert _strip(text, final = True, enabled_tool_names = None).strip() == "is just syntax."

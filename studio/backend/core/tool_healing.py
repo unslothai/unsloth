@@ -30,6 +30,18 @@ import re
 # nesting may leak partial markup, but the call is still parsed correctly.
 _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 
+# Bare ``name[ARGS]{..}`` rehearsal strip patterns; group 1 captures the name so the
+# strip can be gated on the enabled tool list (see ``apply_tool_strip_patterns``). The
+# closed form matches a complete one-level body; the tail form matches a trailing /
+# truncated rehearsal to end-of-text. The ``(?<!\[CALL_ID\])`` guard keeps the v11
+# ``[CALL_ID]<id>[ARGS]`` id token from being taken as a rehearsal name.
+_REHEARSAL_CLOSED_STRIP_RE = re.compile(
+    r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL
+)
+_REHEARSAL_TAIL_STRIP_RE = re.compile(
+    r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:\{.*)?$", re.DOTALL
+)
+
 # Pre-compiled tool-XML strip patterns. The hyphen in the name char-class lets
 # dashed MCP names (mcp__srv__list-issues, issue-number) parse alongside the
 # built-ins, including the Mistral [TOOL_CALLS] and rehearsal [ARGS] forms.
@@ -47,7 +59,7 @@ _TOOL_CLOSED_PATS = [
         + _BRACKETED_JSON_ONE_LEVEL,
         re.DOTALL,
     ),
-    re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
+    _REHEARSAL_CLOSED_STRIP_RE,
     # Orphan closing marker. The Mistral v11 wrapper closes a call with
     # ``[TOOL_CALLS]...[/TOOL_CALLS]``; the balanced scan strips the call body but
     # leaves the bare ``[/TOOL_CALLS]`` behind, so remove it here too (it is never
@@ -75,9 +87,29 @@ _TOOL_ALL_PATS = (
     + _TOOL_OPEN_XML_TAIL_PATS
     + [
         re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
-        re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{.*)?$", re.DOTALL),
+        _REHEARSAL_TAIL_STRIP_RE,
     ]
 )
+
+# The two bare ``name[ARGS]{..}`` rehearsal strip patterns (name in group 1). When a
+# caller passes ``enabled_tool_names`` these are applied name-gated -- an inactive-name
+# example in prose is kept -- so display cleanup matches the parse / detection gate.
+# Applied ungated (``enabled_tool_names is None``) they strip every rehearsal span.
+_REHEARSAL_STRIP_PATS = frozenset({_REHEARSAL_CLOSED_STRIP_RE, _REHEARSAL_TAIL_STRIP_RE})
+
+
+def apply_tool_strip_patterns(text: str, patterns, enabled_tool_names=None) -> str:
+    """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
+    strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
+    ``None``); every other pattern is removed unconditionally."""
+    for pat in patterns:
+        if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
+            text = pat.sub(
+                lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text
+            )
+        else:
+            text = pat.sub("", text)
+    return text
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
@@ -227,12 +259,20 @@ def _balanced_bracket_end(src: str, start: int) -> int:
     return -1
 
 
-def _iter_bracket_spans(text: str, start: int = 0):
+def _iter_bracket_spans(text: str, start: int = 0, enabled_tool_names=None):
     """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag
     tool call from ``start`` on, in document order. ``kind`` is ``"array"``
     (``[TOOL_CALLS] [..]``), ``"name"`` (``[TOOL_CALLS]name{..}`` incl. the v11
     ``[CALL_ID]`` / ``[ARGS]`` shapes) or ``"rehearsal"`` (``name[ARGS]{..}``).
     ``span_end`` is exclusive.
+
+    ``enabled_tool_names`` (a set, or ``None`` for unrestricted / unknown) gates the
+    ambiguous bare ``"rehearsal"`` form only: ``name[ARGS]{..}`` is a genuine call
+    ONLY when ``name`` is an enabled tool, so a literal ``foo[ARGS]{"x":1}`` example in
+    prose (``foo`` not enabled) is neither parsed nor stripped -- it is not tool markup.
+    The explicit ``[TOOL_CALLS]`` markers stay unconditional (they are unambiguous, so
+    an inactive name there is still a disabled call, not prose). This keeps the parse,
+    strip and streaming-detection paths symmetric on the active-tool gate.
 
     Balance-based only (does not validate JSON) so the strip path (drop the span)
     and the parse path (``json.loads`` the body) share one scan. Forward scan: the
@@ -267,6 +307,16 @@ def _iter_bracket_spans(text: str, start: int = 0):
             # (a later call may still be complete); the caller's catch-all strips
             # the truncated tail.
             cursor = m.end()
+            continue
+        if (
+            kind == "rehearsal"
+            and enabled_tool_names is not None
+            and m.group(1) not in enabled_tool_names
+        ):
+            # Inactive-name ``foo[ARGS]{..}`` is literal prose, not a call. Advance past
+            # its balanced body (so a marker inside it is never re-matched) without
+            # yielding, so neither parse nor strip treats it as tool markup.
+            cursor = end + 1
             continue
         yield (m.start(), end + 1, kind, m)
         cursor = end + 1
@@ -477,6 +527,7 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
+    enabled_tool_names=None,
 ) -> list[dict]:
     """Parse OpenAI-format tool calls from model text.
 
@@ -649,7 +700,9 @@ def parse_tool_calls_from_text(
     # canonical and win), but unified so a Mistral call AND a rehearsal call in one
     # message both parse instead of the second being dropped yet still stripped.
     if not tool_calls:
-        for start, end, kind, m in _iter_bracket_spans(content):
+        for start, end, kind, m in _iter_bracket_spans(
+            content, enabled_tool_names = enabled_tool_names
+        ):
             if _in_think(start):
                 continue
             try:
@@ -696,17 +749,23 @@ def parse_tool_calls_from_text(
     return tool_calls
 
 
-def _strip_bracket_tag_calls(text: str) -> str:
+def _strip_bracket_tag_calls(text: str, enabled_tool_names=None) -> str:
     """Remove complete ``[TOOL_CALLS] [..]`` arrays and ``[TOOL_CALLS]name{json}`` /
     ``name[ARGS]{json}`` calls with one balanced forward scan, so arbitrarily nested
     JSON args are stripped whole (a fixed-depth regex left two-level args un-stripped
     or ate the trailing prose after them). A truncated tail (bare marker / unbalanced
-    JSON) is left for the caller's catch-all patterns. Linear in ``len(text)``."""
+    JSON) is left for the caller's catch-all patterns. Linear in ``len(text)``.
+
+    ``enabled_tool_names`` gates the bare ``name[ARGS]{..}`` rehearsal form: an
+    inactive-name example in prose is kept verbatim (matches the parse / detection
+    gate), while ``None`` strips every rehearsal span (unrestricted / unknown)."""
     if len(text) > _MAX_BRACKET_SCAN_CHARS:
         return text
     out: list[str] = []
     cursor = 0
-    for start, end, _kind, _m in _iter_bracket_spans(text):
+    for start, end, _kind, _m in _iter_bracket_spans(
+        text, enabled_tool_names = enabled_tool_names
+    ):
         out.append(text[cursor:start])
         cursor = end
     out.append(text[cursor:])
@@ -783,17 +842,16 @@ def strip_outside_think(text: str, strip_segment) -> str:
     return "".join(pieces)
 
 
-def _strip_markup_segment(text: str, *, final: bool) -> str:
+def _strip_markup_segment(text: str, *, final: bool, enabled_tool_names=None) -> str:
     # Balanced-brace strip for bracket-tag calls first (handles any JSON nesting
-    # depth); the regex patterns then cover the XML forms and truncated tails.
-    text = _strip_bracket_tag_calls(text)
+    # depth); the regex patterns then cover the XML forms and truncated tails. The
+    # rehearsal patterns are name-gated so an inactive-name example stays visible.
+    text = _strip_bracket_tag_calls(text, enabled_tool_names = enabled_tool_names)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    for pat in patterns:
-        text = pat.sub("", text)
-    return text
+    return apply_tool_strip_patterns(text, patterns, enabled_tool_names = enabled_tool_names)
 
 
-def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
+def strip_tool_call_markup(text: str, *, final: bool = False, enabled_tool_names=None) -> str:
     """Strip tool-call XML markup from text.
 
     When ``final`` is False, only fully closed tool-call blocks are removed.
@@ -802,9 +860,13 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
 
     ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (see
     ``strip_outside_think``); the trailing-tail patterns apply only after the
-    last block.
+    last block. ``enabled_tool_names`` keeps an inactive-name ``foo[ARGS]{..}``
+    example visible (it is prose, not a call) so display cleanup matches detection.
     """
     result = strip_outside_think(
-        text, lambda seg, is_last: _strip_markup_segment(seg, final = final and is_last)
+        text,
+        lambda seg, is_last: _strip_markup_segment(
+            seg, final = final and is_last, enabled_tool_names = enabled_tool_names
+        ),
     )
     return result.strip() if final else result

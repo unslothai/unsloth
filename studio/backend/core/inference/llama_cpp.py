@@ -42,6 +42,7 @@ from core.tool_healing import (
     _TOOL_ALL_PATS,
     _TOOL_CLOSED_PATS,
     _strip_bracket_tag_calls,
+    apply_tool_strip_patterns,
     strip_outside_think,
     strip_tool_call_markup,
 )
@@ -7408,12 +7409,15 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    def _parse_tool_calls_from_text(content: str, *, allow_incomplete: bool = True) -> list[dict]:
+    def _parse_tool_calls_from_text(
+        content: str, *, allow_incomplete: bool = True, enabled_tool_names=None
+    ) -> list[dict]:
         """Thin wrapper around the shared parser in tool_call_parser
         so safetensors and llama_cpp pick up the same fixes."""
         return _shared_parse_tool_calls_from_text(
             content,
             allow_incomplete = allow_incomplete,
+            enabled_tool_names = enabled_tool_names,
         )
 
     @staticmethod
@@ -7917,6 +7921,13 @@ class LlamaCppBackend:
         _reasoning_started_at: Optional[float] = None
         _reasoning_summary_emitted = False
 
+        # Names of the enabled tools -- the gate that tells a genuine rehearsal
+        # ``NAME[ARGS]{..}`` call from a literal inactive-name example in prose, so parse
+        # and display strip stay symmetric with the streaming detection guard. Built
+        # from the ORIGINAL tools list (not the shrinking active set) so a one-shot tool
+        # already used still reads as a tool name, not prose. ``None`` = no gate.
+        _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+
         def _reasoning_summary_event(started_at: float) -> dict:
             return {
                 "type": "reasoning_summary",
@@ -7931,7 +7942,9 @@ class LlamaCppBackend:
         ) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return strip_tool_call_markup(text, final = final)
+            return strip_tool_call_markup(
+                text, final = final, enabled_tool_names = _enabled_names_gate
+            )
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
@@ -7943,12 +7956,15 @@ class LlamaCppBackend:
                 # then the regex patterns cover the XML forms. The open-ended tail
                 # arms in _TOOL_ALL_PATS are anchored to end-of-text, so run them
                 # only on the last segment: a bare ``foo[ARGS]`` before a <think>
-                # block is prose, not a truncated call.
-                segment = _strip_bracket_tag_calls(segment)
+                # block is prose, not a truncated call. The rehearsal strip is
+                # name-gated so an inactive-name example is kept.
+                segment = _strip_bracket_tag_calls(
+                    segment, enabled_tool_names = _enabled_names_gate
+                )
                 patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
-                for pat in patterns:
-                    segment = pat.sub("", segment)
-                return segment
+                return apply_tool_strip_patterns(
+                    segment, patterns, enabled_tool_names = _enabled_names_gate
+                )
 
             # Preserve <think>/[THINK] reasoning verbatim (a rehearsed call inside a
             # reasoning block must not be deleted from the streamed text).
@@ -8472,6 +8488,7 @@ class LlamaCppBackend:
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
+                            enabled_tool_names = _enabled_names_gate,
                         )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
@@ -8603,6 +8620,7 @@ class LlamaCppBackend:
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
+                            enabled_tool_names = _enabled_names_gate,
                         )
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(

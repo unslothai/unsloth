@@ -2059,4 +2059,42 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
     assert calls == [], calls
     assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
-    assert any("is just syntax." in t for t in content_texts), content_texts
+    # The inactive ``foo[ARGS]{...}`` is prose, not a call: the strip is gated on the
+    # active tool list too, so the WHOLE sentence (rehearsal markup and all) survives
+    # in the visible content rather than being partially stripped to " is just syntax."
+    assert any('foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts), content_texts
+
+
+def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(monkeypatch):
+    """BUG X (#5704): an inactive-name ``foo[ARGS]{...}`` immediately preceding a real
+    ``web_search[ARGS]{...}`` in the same delta must NOT swallow the real call. The gate
+    is threaded through parse and strip, so web_search still executes while the inactive
+    ``foo[ARGS]{...}`` stays visible as prose (it is not a call, so it is not stripped)."""
+    first_stream = [
+        _sse({"content": 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    # The real call runs (not consumed by the inactive one, and ``foo`` itself is not
+    # executed as a phantom disabled call).
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    # The inactive rehearsal is preserved as prose; the active one is stripped.
+    assert any('foo[ARGS]{"a":1}' in t for t in content_texts), content_texts
+    assert all("web_search[ARGS]" not in t for t in content_texts), content_texts

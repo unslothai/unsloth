@@ -1597,8 +1597,10 @@ _TOOL_XML_RE = _re.compile(
     r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
     # Rehearsal: only a balanced JSON body, a truncated ``{...`` to EOS, or the bare
     # marker at EOS -- NOT arbitrary trailing prose, so ``foo[ARGS] in a sentence`` is
-    # left intact instead of being truncated as a phantom call.
-    r"|(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)",
+    # left intact instead of being truncated as a phantom call. The NAME is captured
+    # (``reh``) so the display strip can keep ``foo[ARGS]{...}`` when ``foo`` is not an
+    # active tool -- prose, not a call -- mirroring the loop-level enabled-tool gate.
+    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)",
     _re.DOTALL,
 )
 
@@ -1619,8 +1621,30 @@ _TOOL_XML_CLOSED_RE = _re.compile(
 )
 
 
-def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
-    """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
+def _display_tool_name_gate(active_tools):
+    """Active tool NAMES for gating the rehearsal strip in display cleanup, or None
+    when no tools are enabled. ``None`` keeps the legacy strip-all behavior, mirroring
+    the GGUF/safetensors loop gate (``_gguf_active_tool_names`` / ``_active_tool_names``
+    with ``... if tools else None``): a bare ``NAME[ARGS]`` is a call only when NAME is
+    an active tool; without a tool list every identifier stays ambiguous, so strip."""
+    names = {
+        (t.get("function") or {}).get("name")
+        for t in (active_tools or [])
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    }
+    names.discard(None)
+    return names or None
+
+
+def _strip_tool_xml_for_display(
+    text: str, *, auto_heal_tool_calls: bool, enabled_tool_names=None
+) -> str:
+    """Apply route-level XML leak cleanup only when Auto-Heal is enabled.
+
+    ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
+    ``NAME[ARGS]{...}`` strip on the active tool list, mirroring the loop-level gate:
+    an inactive NAME is prose, not a call, so it is preserved. The ``[TOOL_CALLS]``
+    control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
     # Strip bracket-tag calls with the parser's balanced-brace scan first so a
@@ -1632,10 +1656,20 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
     # regex so a bare ``foo[ARGS]`` before a reasoning block is not stripped.
     from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
+    def _keep_inactive_rehearsal(m) -> str:
+        # Only the bare-rehearsal arm captures ``reh``; every other arm leaves it
+        # None. When a tool list is in play and the NAME is not active, the
+        # ``NAME[ARGS]{...}`` is prose -- keep it instead of stripping.
+        if enabled_tool_names is not None:
+            name = m.groupdict().get("reh")
+            if name is not None and name not in enabled_tool_names:
+                return m.group(0)
+        return ""
+
     def _strip_segment(seg: str, is_last: bool) -> str:
-        seg = _strip_bracket_tag_calls(seg)
+        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
-            return _TOOL_XML_RE.sub("", seg)
+            return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     return strip_outside_think(text, _strip_segment)
@@ -5262,6 +5296,10 @@ async def openai_chat_completions(
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
+            # Active tool names for gating the ambiguous bare-rehearsal strip on the
+            # current turn's output, matching the loop's gate so a preserved inactive
+            # ``foo[ARGS]{...}`` is not re-stripped by the display cleanup.
+            _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
@@ -5402,6 +5440,7 @@ async def openai_chat_completions(
                         clean_cumulative = _strip_tool_xml_for_display(
                             raw_cumulative,
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            enabled_tool_names = _gguf_display_tool_names,
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -5507,6 +5546,7 @@ async def openai_chat_completions(
                             full_text = _strip_tool_xml_for_display(
                                 event.get("text", ""),
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                                enabled_tool_names = _gguf_display_tool_names,
                             )
                     return full_text, usage, finish
                 finally:
@@ -5953,6 +5993,10 @@ async def openai_chat_completions(
         _sf_auto_heal_tool_calls = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
+        # Active tool names for gating the ambiguous bare-rehearsal strip on the
+        # current turn's output, matching the loop's gate so a preserved inactive
+        # ``foo[ARGS]{...}`` is not re-stripped by the display cleanup.
+        _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
 
         # Strip stale tool-call XML from prior assistant turns.
         _sf_chat_messages = []
@@ -6056,6 +6100,7 @@ async def openai_chat_completions(
                     clean_cumulative = _strip_tool_xml_for_display(
                         raw_cumulative,
                         auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        enabled_tool_names = _sf_display_tool_names,
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
@@ -6137,6 +6182,7 @@ async def openai_chat_completions(
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                            enabled_tool_names = _sf_display_tool_names,
                         )
                 return full_text
 

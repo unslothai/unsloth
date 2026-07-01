@@ -32,16 +32,20 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
+    enabled_tool_names=None,
 ) -> list[dict]:
     return _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
     )
 
 
-def strip_tool_markup(text: str, *, final: bool = False) -> str:
-    return _tool_healing.strip_tool_call_markup(text, final = final)
+def strip_tool_markup(text: str, *, final: bool = False, enabled_tool_names=None) -> str:
+    return _tool_healing.strip_tool_call_markup(
+        text, final = final, enabled_tool_names = enabled_tool_names
+    )
 
 
 # Prefixes the streaming buffer watches to gate in-progress text. Bracket-tag forms
