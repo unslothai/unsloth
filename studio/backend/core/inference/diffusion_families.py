@@ -153,7 +153,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
-            ("Comfy-Org/flux2-dev", "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", "llm"),
+            (
+                "Comfy-Org/flux2-dev",
+                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+                "llm",
+            ),
         ),
     ),
     DiffusionFamily(
