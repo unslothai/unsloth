@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,7 @@ def test_child_popen_kwargs_linux_vs_other(monkeypatch):
 def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
     calls = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
-    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda: calls.append("death"))
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda _ppid: calls.append("death"))
     pl.compose_preexec(lambda: calls.append("existing"))()
     assert calls == ["death", "existing"]  # ordering matters for sandbox hooks
 
@@ -108,6 +109,69 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
     sentinel = lambda: None  # noqa: E731
     assert pl.compose_preexec(sentinel) is sentinel
     assert pl.compose_preexec(None) is None
+
+
+def test_compose_preexec_passes_real_parent_pid(monkeypatch):
+    # The pid handed to the child must be the spawner's own pid (captured before
+    # the fork), not the literal 1 -- otherwise a PID-1 parent is indistinguishable
+    # from a dead one.
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl.os, "getpid", lambda: 4321)
+    seen = []
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda ppid: seen.append(ppid))
+    pl.compose_preexec(None)()
+    assert seen == [4321]
+
+
+def test_spawn_parent_pid_prefers_multiprocessing(monkeypatch):
+    # multiprocessing captures the spawning parent's pid at spawn; it stays put
+    # even after that parent dies, so an orphaned worker (getppid() now 1) still
+    # compares against the real original parent rather than looking like a
+    # healthy PID-1 child.
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242))
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)  # pretend we were reparented
+    assert pl._spawn_parent_pid() == 4242
+
+
+def test_spawn_parent_pid_falls_back_to_getppid(monkeypatch):
+    # Not started via multiprocessing (main process / plain fork): no recorded
+    # parent, so use the live getppid().
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 777)
+    assert pl._spawn_parent_pid() == 777
+
+
+# ── reparent guard: fire on a real orphan, never on a healthy PID-1 child ──
+
+
+class _Exited(BaseException):  # not an Exception, so it escapes the guard's try
+    pass
+
+
+def test_pdeathsig_bails_when_reparented(monkeypatch):
+    # Parent died between fork and here: our parent is no longer the one that
+    # forked us, so the guard must fire.
+    monkeypatch.setattr(pl, "_arm_parent_death_signal", lambda: None)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 999)
+    monkeypatch.setattr(pl.os, "_exit", lambda _code: (_ for _ in ()).throw(_Exited()))
+    with pytest.raises(_Exited):
+        pl._pdeathsig_preexec(42)  # expected parent 42, but reparented to 999
+
+
+def test_pdeathsig_survives_healthy_child_of_pid1(monkeypatch):
+    # Studio running as PID 1 (container with no init): a healthy child has
+    # getppid() == 1 from birth, which must NOT be read as a dead parent
+    # (regression for the guard killing every child when Studio is PID 1).
+    monkeypatch.setattr(pl, "_arm_parent_death_signal", lambda: None)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    exits = []
+    monkeypatch.setattr(pl.os, "_exit", lambda code: exits.append(code))
+    pl._pdeathsig_preexec(1)  # expected parent == getppid() == 1
+    assert exits == []  # left alone
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
