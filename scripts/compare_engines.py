@@ -40,18 +40,31 @@ def bench_pytorch(repo, gguf, resolutions, steps, seed, iters):
     backend = DiffusionBackend()
     for speed in ("off", "default"):
         backend.begin_load(repo, gguf_filename = gguf, speed_mode = speed)
+        deadline = time.time() + 1800  # 30 min: a stuck download/load must not hang forever
         while backend.load_progress().get("phase") != "ready":
-            if backend.load_progress().get("phase") == "error":
-                raise RuntimeError(backend.load_progress())
+            prog = backend.load_progress()
+            if prog.get("phase") == "error":
+                raise RuntimeError(prog)
+            if time.time() > deadline:
+                raise TimeoutError(f"load timed out (last progress: {prog})")
             time.sleep(0.5)
         for res in resolutions:
+
             def gen():
                 torch.cuda.synchronize()
                 t0 = time.time()
-                backend.generate(prompt = PROMPT, width = res, height = res,
-                                 steps = steps, guidance = 0.0, seed = seed, batch_size = 1)
+                backend.generate(
+                    prompt = PROMPT,
+                    width = res,
+                    height = res,
+                    steps = steps,
+                    guidance = 0.0,
+                    seed = seed,
+                    batch_size = 1,
+                )
                 torch.cuda.synchronize()
                 return time.time() - t0
+
             gen()  # warmup (compiles for `default`)
             med = _median([gen() for _ in range(iters)])
             rows.append(("pytorch", speed, res, med, None))
@@ -74,18 +87,27 @@ def bench_sdcpp(binary, gguf, vae, llm, resolutions, steps, seed, iters):
     out_dir.mkdir(parents = True, exist_ok = True)
     for native in (None, "default"):  # resident-no-fa vs resident+--diffusion-fa
         for res in resolutions:
-            params = SdCppGenParams(prompt = PROMPT, width = res, height = res,
-                                    steps = steps, cfg_scale = 1.0, seed = seed)
+            params = SdCppGenParams(
+                prompt = PROMPT, width = res, height = res, steps = steps, cfg_scale = 1.0, seed = seed
+            )
             computes, walls = [], []
             for _ in range(iters):
                 captured = {"c": None}
+
                 def _log(ln):
                     m = _DONE_RE.search(ln)
                     if m:
                         captured["c"] = float(m.group(1))
+
                 t0 = time.time()
-                engine.generate(files, params, output_path = str(out_dir / f"sd_{native}_{res}.png"),
-                                offload = [], native_speed = native, on_log = _log)
+                engine.generate(
+                    files,
+                    params,
+                    output_path = str(out_dir / f"sd_{native}_{res}.png"),
+                    offload = [],
+                    native_speed = native,
+                    on_log = _log,
+                )
                 walls.append(time.time() - t0)
                 if captured["c"] is not None:
                     computes.append(captured["c"])
@@ -93,7 +115,10 @@ def bench_sdcpp(binary, gguf, vae, llm, resolutions, steps, seed, iters):
             med_w = _median(walls)
             tag = "default(+fa)" if native == "default" else "off"
             rows.append(("sdcpp", tag, res, med_c, med_w))
-            print(f"  sdcpp    speed={tag:12s} {res}px  compute={med_c}s  wall={med_w:.3f}s", flush = True)
+            print(
+                f"  sdcpp    speed={tag:12s} {res}px  compute={med_c}s  wall={med_w:.3f}s",
+                flush = True,
+            )
     return rows
 
 
@@ -102,9 +127,19 @@ def main(argv = None) -> int:
     p.add_argument("--repo", default = "unsloth/Z-Image-Turbo-GGUF")
     p.add_argument("--gguf-name", default = "z-image-turbo-Q4_K_M.gguf")
     p.add_argument("--sd-binary", default = None)
-    p.add_argument("--sd-gguf", default = None, help = "local gguf for sd.cpp (default: same as pytorch via cache)")
-    p.add_argument("--vae", default = "/mnt/disks/unslothai/ubuntu/workspace_81/sdcpp_assets/flux_vae/ae.safetensors")
-    p.add_argument("--llm", default = "/mnt/disks/unslothai/ubuntu/workspace_81/sdcpp_assets/qwen3_te/Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
+    p.add_argument(
+        "--sd-gguf", default = None, help = "local gguf for sd.cpp (default: same as pytorch via cache)"
+    )
+    p.add_argument(
+        "--vae",
+        default = None,
+        help = "VAE safetensors for sd.cpp (required when benchmarking the sd.cpp engine)",
+    )
+    p.add_argument(
+        "--llm",
+        default = None,
+        help = "text-encoder GGUF for sd.cpp (required when benchmarking the sd.cpp engine)",
+    )
     p.add_argument("--resolutions", default = "512,1024")
     p.add_argument("--steps", type = int, default = 8)
     p.add_argument("--seed", type = int, default = 42)
@@ -121,7 +156,9 @@ def main(argv = None) -> int:
     print("== PyTorch (diffusers GGUF) ==", flush = True)
     pt = bench_pytorch(args.repo, args.gguf_name, resolutions, args.steps, args.seed, args.iters)
     print("== stable-diffusion.cpp (native) ==", flush = True)
-    sd = bench_sdcpp(binary, sd_gguf, args.vae, args.llm, resolutions, args.steps, args.seed, args.iters)
+    sd = bench_sdcpp(
+        binary, sd_gguf, args.vae, args.llm, resolutions, args.steps, args.seed, args.iters
+    )
 
     print("\n==== COMPARISON (Z-Image-Turbo Q4, fixed seed, resident) ====", flush = True)
     print(f"{'engine':9s} {'config':13s} {'res':>5s} {'compute_s':>10s} {'wall_s':>8s}", flush = True)

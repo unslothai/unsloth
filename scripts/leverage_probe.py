@@ -39,7 +39,9 @@ def _load():
     t = diffusers.ZImageTransformer2DModel.from_single_file(
         hf_hub_download(REPO, GGUF),
         quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = torch.bfloat16),
-        torch_dtype = torch.bfloat16, config = BASE, subfolder = "transformer",
+        torch_dtype = torch.bfloat16,
+        config = BASE,
+        subfolder = "transformer",
     )
     pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype = torch.bfloat16, transformer = t)
     pipe.to("cuda")
@@ -52,8 +54,14 @@ def _gen(pipe, steps, seed, res):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     torch.cuda.synchronize()
     t0 = time.time()
-    img = pipe(prompt = PROMPT, width = res, height = res, num_inference_steps = steps,
-               guidance_scale = 0.0, generator = g).images[0]
+    img = pipe(
+        prompt = PROMPT,
+        width = res,
+        height = res,
+        num_inference_steps = steps,
+        guidance_scale = 0.0,
+        generator = g,
+    ).images[0]
     torch.cuda.synchronize()
     return img, time.time() - t0
 
@@ -74,9 +82,16 @@ def main(argv = None) -> int:
             ic.coordinate_descent_tuning = True
         pipe.transformer.compile_repeated_blocks(fullgraph = True, dynamic = True)
 
-    def run(tag, *, compile = False, cdt = False, fbc = None):
+    def run(
+        tag,
+        *,
+        compile = False,
+        cdt = False,
+        fbc = None,
+    ):
         # reset inductor config between runs
         import torch._inductor.config as ic
+
         ic.coordinate_descent_tuning = False
         torch.compiler.reset()
         pipe = _load()
@@ -110,7 +125,10 @@ def main(argv = None) -> int:
             t, img, dt = run(tag, **kw)
             ps = _psnr(eager, img)
             results.append((tag, dt, ps))
-            print(f"  {tag:22s} {dt:.3f}s  ({(eager_t-dt)/eager_t*100:+.0f}% vs eager)  PSNR={ps:.1f} dB", flush = True)
+            print(
+                f"  {tag:22s} {dt:.3f}s  ({(eager_t-dt)/eager_t*100:+.0f}% vs eager)  PSNR={ps:.1f} dB",
+                flush = True,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"  {tag:22s} FAILED: {type(exc).__name__}: {str(exc)[:140]}", flush = True)
 

@@ -23,18 +23,19 @@ import {
   listScanFolders,
   removeScanFolder,
 } from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import {
   type HubOption,
   HubOptionMenu,
 } from "@/features/hub/catalog/hub-option-menu";
+import { TransportConflictDialog } from "@/features/hub/catalog/transport-conflict-dialog";
 import { TrainIcon } from "@/features/hub/components/train-icon";
 import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
@@ -47,6 +48,11 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  downloadManager,
+  jobKeyOf,
+  useDownloadManagerStore,
+} from "@/features/hub/download-manager";
 import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -86,6 +92,7 @@ import {
   hasAnyCapability,
 } from "./model-capabilities";
 import { ModelDeleteAction } from "./model-delete-action";
+import { ModelUpdateAction } from "./model-update-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import {
   type ModelLoadTimes,
@@ -617,20 +624,26 @@ function normalizeGgufVariantsResponse(res: {
   };
 }
 
+function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
+  const downloadBytes = variant.download_size_bytes;
+  return typeof downloadBytes === "number" &&
+    Number.isFinite(downloadBytes) &&
+    downloadBytes > 0
+    ? downloadBytes
+    : variant.size_bytes;
+}
+
 function GgufVariantExpander({
   repoId,
   onSelect,
   gpuGb,
   systemRamGb,
+  hfToken,
   parentOptionKey,
   onNavigatePastStart,
   onNavigatePastEnd,
-  onDeleteVariant,
   sourceOverride,
-  deleteVariantTitle = "Delete cached model?",
-  renderDeleteVariantDescription,
-  getDeleteVariantSuccessMessage,
-  deleteDisabled = false,
+  variantActions,
   onDevice = false,
   onHasVision,
 }: {
@@ -638,21 +651,42 @@ function GgufVariantExpander({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  /** HF token threaded into the variant fetch so private/gated repos resolve
+   *  their GGUF variants (and update badges). */
+  hfToken?: string;
   parentOptionKey?: string;
   onNavigatePastStart?: () => void;
   onNavigatePastEnd?: () => void;
-  onDeleteVariant?: (quant: string) => Promise<void> | void;
   sourceOverride?: ModelSelectorChangeMeta["source"];
-  deleteVariantTitle?: string;
-  renderDeleteVariantDescription?: (quant: string) => ReactNode;
-  getDeleteVariantSuccessMessage?: (quant: string) => string;
-  deleteDisabled?: boolean;
+  /** Update/delete actions for cached variant rows. Omitted by browse-only
+   *  expanders (Recommended, etc.) that don't manage on-disk variants. */
+  variantActions?: {
+    onUpdate?: (quant: string, expectedBytes: number) => Promise<void> | void;
+    updateTitle?: string;
+    renderUpdateDescription?: (quant: string) => ReactNode;
+    getUpdateSuccessMessage?: (quant: string) => string;
+    updateDisabled?: boolean;
+    onDelete?: (quant: string) => Promise<void> | void;
+    deleteTitle?: string;
+    renderDeleteDescription?: (quant: string) => ReactNode;
+    getDeleteSuccessMessage?: (quant: string) => string;
+    deleteDisabled?: boolean;
+  };
   /** On Device rows honor the Show all quantizations setting; Recommended and
    *  other browse lists always show every quant. */
   onDevice?: boolean;
   /** Report GGUF vision support up so the parent row can badge it. */
   onHasVision?: (hasVision: boolean) => void;
 }) {
+  const onUpdateVariant = variantActions?.onUpdate;
+  const updateVariantTitle = variantActions?.updateTitle ?? "Update cached model?";
+  const renderUpdateVariantDescription = variantActions?.renderUpdateDescription;
+  const updateDisabled = variantActions?.updateDisabled ?? false;
+  const onDeleteVariant = variantActions?.onDelete;
+  const deleteVariantTitle = variantActions?.deleteTitle ?? "Delete cached model?";
+  const renderDeleteVariantDescription = variantActions?.renderDeleteDescription;
+  const getDeleteVariantSuccessMessage = variantActions?.getDeleteSuccessMessage;
+  const deleteDisabled = variantActions?.deleteDisabled ?? false;
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState(false);
@@ -660,13 +694,14 @@ function GgufVariantExpander({
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let canceled = false;
     setLoading(true);
     setError(null);
 
-    listGgufVariants(repoId)
+    listGgufVariants(repoId, hfToken)
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
@@ -689,7 +724,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId]);
+  }, [repoId, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
@@ -872,6 +907,7 @@ function GgufVariantExpander({
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
+        const expectedBytes = ggufVariantExpectedBytes(v);
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
@@ -880,7 +916,7 @@ function GgufVariantExpander({
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
               onClick={() =>
-                handleVariantClick(v.quant, v.filename, v.downloaded, v.size_bytes)
+                handleVariantClick(v.quant, v.filename, v.downloaded, expectedBytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
@@ -893,9 +929,16 @@ function GgufVariantExpander({
                   {v.quant}
                 </span>
                 {v.downloaded ? (
-                  <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
-                    downloaded
-                  </span>
+                  <>
+                    <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                      downloaded
+                    </span>
+                    {v.update_available ? (
+                      <span className="ml-1.5 text-[9px] font-sans font-medium text-amber-700 dark:text-amber-300">
+                        update available
+                      </span>
+                    ): null}
+                  </>
                 ) : v.quant === effectiveRecommended ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-primary/70">
                     recommended
@@ -918,6 +961,29 @@ function GgufVariantExpander({
                 </span>
               </span>
             </button>
+            {v.downloaded && v.update_available && onUpdateVariant && (
+              <ModelUpdateAction
+                ariaLabel={`Update ${repoId} ${v.quant}`}
+                title={updateVariantTitle}
+                description={
+                  renderUpdateVariantDescription?.(v.quant) ?? (
+                    <>
+                      This will update{" "}
+                      <span className="font-medium text-foreground">
+                        {repoId} ({v.quant})
+                      </span>{"."}
+                    </>
+                  )
+                }
+                repoId={repoId}
+                variant={v.quant}
+                buttonClassName="p-1"
+                iconClassName="size-3"
+                disabled={updateDisabled}
+                onConfirm={() => onUpdateVariant(v.quant, expectedBytes)}
+                onUpdated={() => setRefreshKey((key) => key + 1)}
+              />
+            )}
             {v.downloaded && (
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
@@ -985,16 +1051,29 @@ export const IMAGE_GEN_TASKS = [
   "image-text-to-image",
 ] as const;
 
+// Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/
+// ...). The backend tags them with this task so the chat picker hides them -- they
+// die with "unknown model architecture" in llama.cpp -- while the Images picker,
+// which filters on IMAGE_GEN_TASKS, also leaves them out (they'd 400 on load).
+const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
+
+// Tasks that must never appear as a loadable chat model: the Images-handled
+// generation tasks plus the non-loadable diffusion tag above.
+const NON_CHAT_TASKS: readonly string[] = [...IMAGE_GEN_TASKS, UNSUPPORTED_DIFFUSION_TASK];
+
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image,
 // which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
 // id so they don't show in the Images picker only to 400 on load. Keeping the
 // image-to-image task itself is required: some supported models (FLUX.2-klein)
 // carry that tag too.
-const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint"] as const;
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "inpainting"] as const;
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
-  const id = repoId.toLowerCase();
-  return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
+  // Whole-segment match (not substring) so a normal model like "...-edition"
+  // isn't hidden; mirrors the backend detect_family segment check. Split on
+  // both path separators so a Windows local path is segmented too.
+  const segments = new Set(repoId.toLowerCase().split(/[-_./\\]+/));
+  return IMAGE_EDIT_KEYWORDS.some((kw) => segments.has(kw));
 }
 
 // Gate an on-device model by the picker's task scope. With a filter (the Images
@@ -1007,7 +1086,7 @@ function passesTaskGate(
   filter: HfTaskFilter,
 ): boolean {
   if (filter) return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
-  return !(repoTask != null && (IMAGE_GEN_TASKS as readonly string[]).includes(repoTask));
+  return !(repoTask != null && NON_CHAT_TASKS.includes(repoTask));
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
@@ -1158,6 +1237,17 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
+function localPathTooltip(name: string, path: string): ReactNode {
+  return (
+    <>
+      <span className="block break-words">{name}</span>
+      <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+        {path}
+      </span>
+    </>
+  );
+}
+
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
@@ -1216,18 +1306,25 @@ export function HubModelPicker({
   task?: HfTaskFilter;
 }) {
   const gpu = useGpuInfo();
+  // The currently-loaded/running model id. We read params.checkpoint from the
+  // runtime store (backend-mirrored from /api/inference/status.active_model, see
+  // chat-runtime-store) rather than the dropdown `isSelected` highlight (which is
+  // just `value === repo_id` and can reflect a staged, not-yet-loaded pick). Used
+  // to disable the cached-row update action for the model that's live in memory.
+  const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
   // Fade the list's top edge once scrolled, and its bottom edge while more
   // rows sit below the fold.
   const [listScrolled, setListScrolled] = useState(false);
   const [listMoreBelow, setListMoreBelow] = useState(false);
+  const hfToken = useHfTokenStore((s) => s.token);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   // Shared Hub search stack (the same hooks the Hub page uses) so the picker
   // and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
-  const accessToken = useHfTokenStore((s) => s.token) || undefined;
+  const accessToken = hfToken || undefined;
   // Recommended section: a live unsloth listing sorted by the dropdown. The
   // same sort drives the search results so the dropdown works while searching.
   const [recommendedSort, setRecommendedSort] =
@@ -1397,6 +1494,28 @@ export function HubModelPicker({
   const alreadyCached =
     _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
+  const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
+    null,
+  );
+  const updateTransportConflict = useDownloadManagerStore((state) =>
+    updateConflictKey
+      ? (state.conflicts[updateConflictKey]?.info ?? null)
+      : null,
+  );
+  const cancelUpdateConflict = useCallback(() => {
+    if (updateConflictKey) downloadManager.cancelConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const resumeUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.resumeConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const restartUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.restartConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
 
   // LM Studio local models -- module-level cache, same pattern as above.
   const [lmStudioModels, setLmStudioModels] =
@@ -1519,14 +1638,42 @@ export function HubModelPicker({
         setCachedGguf(v);
       })
       .catch(() => {});
-    listCachedModels()
+    listCachedModels(hfToken || undefined)
       .then((v) => {
         _cachedModelsCache = v;
         setCachedModels(v);
       })
       .catch(() => {});
     refreshLocalModelsList();
-  }, [refreshLocalModelsList]);
+  }, [hfToken, refreshLocalModelsList]);
+
+  // Updates run as MANAGED downloads (they show in the global Downloads panel
+  // with manifest-based progress + a working Cancel), instead of a blocking
+  // call. The worker re-resolves `main` and pulls only changed blobs, so the
+  // cached copy stays usable until the new revision lands. The row's
+  // ModelUpdateAction refreshes the list when this repo+variant completes.
+  const startManagedUpdate = useCallback((repoId: string, variant: string, expectedBytes: number) => {
+    return downloadManager
+      .requestStart({
+        kind: "model",
+        repoId,
+        variant,
+        expectedBytes,
+      })
+      .then((outcome) => {
+        if (outcome === "conflict") {
+          setUpdateConflictKey(jobKeyOf("model", repoId, variant));
+        } else if (outcome === "error") {
+          throw new Error("Failed to start update");
+        }
+      });
+  }, []);
+
+  const updateGgufVariant = useCallback(
+    (repoId: string, quant: string, expectedBytes: number) =>
+      startManagedUpdate(repoId, quant, expectedBytes),
+    [startManagedUpdate],
+  );
 
   useEffect(() => {
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
@@ -1551,14 +1698,14 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-    listCachedModels()
+    listCachedModels(hfToken || undefined)
       .then((v) => {
         _cachedModelsCache = v;
         setCachedModels(v);
       })
       .catch(() => {})
       .finally(check);
-  }, [refreshLocalModelsList, refreshScanFolders]);
+  }, [hfToken, refreshLocalModelsList, refreshScanFolders]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.
@@ -1580,9 +1727,10 @@ export function HubModelPicker({
   // the chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
-      // Image tab: keep task-matching results, but drop editing checkpoints the
-      // backend rejects (so they don't appear in Hub search only to 400 on load).
-      if (task && taskMatchesFilter(r.pipelineTag, task)) return !isImageEditModel(r.id);
+      // Image tab (task set): only task-matching, non-editing results. Anything
+      // else (e.g. a chat GGUF surfaced by a typed query) is dropped rather than
+      // falling through to the chat classifier and appearing as loadable.
+      if (task) return taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id);
       return (
         classifyUnslothSupport({
           modelId: r.id,
@@ -1635,6 +1783,10 @@ export function HubModelPicker({
       .filter((r) => !isMobileVariant(r.id));
     // Drop models Studio can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
+    // Images (task set) loads single-file GGUF only, so never surface non-GGUF
+    // rows regardless of the format dropdown (mirrors hfIds and the empty
+    // Recommended view); selecting a non-GGUF row is a silent no-op.
+    if (task) rows = rows.filter((r) => r.isGguf);
     // With no explicit format, show the device-recommended formats (GGUF, plus
     // MLX on Mac). When the user picks a format, honor it instead so Safetensors
     // is not dropped by the recommendation default.
@@ -1674,6 +1826,7 @@ export function HubModelPicker({
     isMac,
     gpu,
     isChatSupported,
+    task,
   ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
@@ -1970,10 +2123,14 @@ export function HubModelPicker({
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
-      // on Mac (matches the empty Recommended view so search stays consistent).
-      .filter(
-        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+      // Images (task set) loads single-file GGUF only, so don't surface non-GGUF
+      // text-to-image rows the page can't load (mirrors the Recommended view).
+      // Otherwise chat-only keeps runnable formats: GGUF anywhere, plus MLX/
+      // safetensors on Mac.
+      .filter((id) =>
+        task
+          ? isKnownGgufRepo(id)
+          : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
       .filter((id) =>
@@ -1989,6 +2146,7 @@ export function HubModelPicker({
     isChatSupported,
     formatFilter,
     isMac,
+    task,
   ]);
 
   const hubOptionKeys = useMemo(() => {
@@ -2393,14 +2551,21 @@ export function HubModelPicker({
             onDevice={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
             onSelect={onSelect}
+            hfToken={hfToken || undefined}
             parentOptionKey={optionKey}
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
             systemRamGb={gpu.systemRamAvailableGb || undefined}
-            onDeleteVariant={async (quant) => {
-              await deleteCachedModel(c.repo_id, quant);
-              refreshCachedLists();
+            variantActions={{
+              onUpdate: (quant, expectedBytes) =>
+                updateGgufVariant(c.repo_id, quant, expectedBytes),
+              // Can't update the model that's live in memory under itself.
+              updateDisabled: loadedModelId === c.repo_id,
+              onDelete: async (quant) => {
+                await deleteCachedModel(c.repo_id, quant);
+                refreshCachedLists();
+              },
             }}
           />
         )}
@@ -2459,7 +2624,8 @@ export function HubModelPicker({
   };
 
   return (
-    <div className="relative space-y-2">
+    <>
+      <div className="relative space-y-2">
       {/* A small right inset shortens the search bar so Search Hub lands on the
           last dropdown's right edge (none on the wider Connected box). */}
       <div
@@ -2476,7 +2642,11 @@ export function HubModelPicker({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search Unsloth models"
+            placeholder={
+              section === "downloaded"
+                ? "Search local models"
+                : "Search Unsloth models"
+            }
             data-model-picker-search-input={true}
             className="field-soft h-9 border-0 pl-8 pr-8"
           />
@@ -3018,6 +3188,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3107,6 +3281,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3188,6 +3366,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3302,6 +3484,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3313,9 +3496,11 @@ export function HubModelPicker({
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
                               systemRamGb={gpu.systemRamAvailableGb || undefined}
-                              onDeleteVariant={async (quant) => {
-                                await deleteCachedModel(id, quant);
-                                refreshCachedLists();
+                              variantActions={{
+                                onDelete: async (quant) => {
+                                  await deleteCachedModel(id, quant);
+                                  refreshCachedLists();
+                                },
                               }}
                             />
                           )}
@@ -3387,6 +3572,7 @@ export function HubModelPicker({
                           <GgufVariantExpander
                             repoId={id}
                             onSelect={onSelect}
+                            hfToken={hfToken || undefined}
                             parentOptionKey={optionKey}
                             onNavigatePastStart={() =>
                               hubModelList.focusOption(optionKey)
@@ -3398,9 +3584,11 @@ export function HubModelPicker({
                               gpu.available ? gpu.memoryTotalGb : undefined
                             }
                             systemRamGb={gpu.systemRamAvailableGb || undefined}
-                            onDeleteVariant={async (quant) => {
-                              await deleteCachedModel(id, quant);
-                              refreshCachedLists();
+                            variantActions={{
+                              onDelete: async (quant) => {
+                                await deleteCachedModel(id, quant);
+                                refreshCachedLists();
+                              },
                             }}
                           />
                         )}
@@ -3474,6 +3662,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3485,9 +3674,11 @@ export function HubModelPicker({
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
                               systemRamGb={gpu.systemRamAvailableGb || undefined}
-                              onDeleteVariant={async (quant) => {
-                                await deleteCachedModel(id, quant);
-                                refreshCachedLists();
+                              variantActions={{
+                                onDelete: async (quant) => {
+                                  await deleteCachedModel(id, quant);
+                                  refreshCachedLists();
+                                },
                               }}
                             />
                           )}
@@ -3514,7 +3705,7 @@ export function HubModelPicker({
           <button
             type="button"
             onClick={onEject}
-            className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
+            className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
             title="Eject model"
           >
             <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
@@ -3522,7 +3713,14 @@ export function HubModelPicker({
           </button>
         </div>
       ) : null}
-    </div>
+      </div>
+      <TransportConflictDialog
+        conflict={updateTransportConflict}
+        onCancel={cancelUpdateConflict}
+        onKeepTransport={resumeUpdateConflict}
+        onSwitchTransport={restartUpdateConflict}
+      />
+    </>
   );
 }
 
@@ -3674,22 +3872,21 @@ function FineTunedRows({
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
-                deleteVariantTitle="Delete exported GGUF variant?"
-                renderDeleteVariantDescription={(quant) => (
-                  <>
-                    This will remove{" "}
-                    <span className="font-medium text-foreground">
-                      {adapter.name} ({quant})
-                    </span>{" "}
-                    from disk. This cannot be undone.
-                  </>
-                )}
-                getDeleteVariantSuccessMessage={(quant) =>
-                  `Deleted ${adapter.name} ${quant}`
-                }
-                deleteDisabled={deleteDisabled}
-                onDeleteVariant={
-                  isExportedGguf
+                variantActions={{
+                  deleteTitle: "Delete exported GGUF variant?",
+                  renderDeleteDescription: (quant) => (
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">
+                        {adapter.name} ({quant})
+                      </span>{" "}
+                      from disk. This cannot be undone.
+                    </>
+                  ),
+                  getDeleteSuccessMessage: (quant) =>
+                    `Deleted ${adapter.name} ${quant}`,
+                  deleteDisabled: deleteDisabled,
+                  onDelete: isExportedGguf
                     ? async (quant) => {
                         await deleteFineTunedModel({
                           modelPath: adapter.id,
@@ -3702,8 +3899,8 @@ function FineTunedRows({
                           ggufVariant: quant,
                         });
                       }
-                    : undefined
-                }
+                    : undefined,
+                }}
               />
             )}
           </div>

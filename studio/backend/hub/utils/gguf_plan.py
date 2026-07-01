@@ -36,7 +36,10 @@ def sibling_sha256(sibling) -> Optional[str]:
         value = lfs.get("sha256")
     else:
         value = getattr(lfs, "sha256", None)
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value:
+        return value
+    blob_id = getattr(sibling, "blob_id", None)
+    return blob_id if isinstance(blob_id, str) and blob_id else None
 
 
 def sibling_size(sibling) -> int:

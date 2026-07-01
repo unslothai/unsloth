@@ -42,30 +42,50 @@ SPEED_MODES = (SPEED_OFF, SPEED_DEFAULT, SPEED_MAX)
 
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, so the
-    caller can restore them on unload. None if torch is unavailable."""
+    caller can restore them on unload. None if torch is unavailable. Each flag is read
+    defensively so a build/platform missing one (e.g. no cuda.matmul on CPU/MPS) still
+    captures the rest -- otherwise a single missing attribute would skip the whole
+    snapshot and a real mutated flag would leak."""
     try:
         import torch
-        return {
-            "matmul_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
-            "cudnn_tf32": bool(torch.backends.cudnn.allow_tf32),
-            "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
-        }
-    except Exception:  # noqa: BLE001 — best-effort; no snapshot -> no restore
+    except Exception:  # noqa: BLE001 — no torch -> nothing to snapshot/restore
         return None
+    state: dict[str, bool] = {}
+    matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+    if matmul is not None and hasattr(matmul, "allow_tf32"):
+        state["matmul_tf32"] = bool(matmul.allow_tf32)
+    cudnn = getattr(torch.backends, "cudnn", None)
+    if cudnn is not None:
+        if hasattr(cudnn, "allow_tf32"):
+            state["cudnn_tf32"] = bool(cudnn.allow_tf32)
+        if hasattr(cudnn, "benchmark"):
+            state["cudnn_benchmark"] = bool(cudnn.benchmark)
+    return state
 
 
 def restore_backend_flags(state: Optional[dict]) -> None:
-    """Restore the flags captured by ``snapshot_backend_flags``. No-op on None."""
+    """Restore the flags captured by ``snapshot_backend_flags``. No-op on None. Each
+    flag is restored independently so one failure can't leave the others leaked."""
     if not state:
         return
     try:
         import torch
-
-        torch.backends.cuda.matmul.allow_tf32 = state["matmul_tf32"]
-        torch.backends.cudnn.allow_tf32 = state["cudnn_tf32"]
-        torch.backends.cudnn.benchmark = state["cudnn_benchmark"]
-    except Exception:  # noqa: BLE001 — best-effort restore
+    except Exception:  # noqa: BLE001 — no torch -> nothing to restore
         return
+
+    def _set(obj: Any, attr: str, key: str) -> None:
+        if obj is not None and key in state and hasattr(obj, attr):
+            try:
+                setattr(obj, attr, state[key])
+            except Exception:  # noqa: BLE001 — best-effort per-flag restore
+                pass
+
+    _set(
+        getattr(getattr(torch.backends, "cuda", None), "matmul", None), "allow_tf32", "matmul_tf32"
+    )
+    cudnn = getattr(torch.backends, "cudnn", None)
+    _set(cudnn, "allow_tf32", "cudnn_tf32")
+    _set(cudnn, "benchmark", "cudnn_benchmark")
 
 
 def normalize_speed_mode(value: Optional[str]) -> str:
@@ -140,6 +160,12 @@ def apply_speed_optims(
         "compiled": False,
     }
     mode = normalize_speed_mode(speed_mode)
+    # TF32 is the one PROCESS-GLOBAL flag we flip (on max). Restore it whenever this
+    # load isn't max, so a later default/off diffusion load -- or chat inference in the
+    # same long-lived process -- doesn't silently inherit a prior max load's TF32 and
+    # lose the bit-identical default the regression harness checks.
+    if mode != SPEED_MAX:
+        _restore_tf32(logger)
     if mode == SPEED_OFF:
         return applied
 
@@ -155,9 +181,7 @@ def apply_speed_optims(
     # block, where eligible (now incl. the GGUF transformer). `max` opts into
     # max-autotune (longer compile, autotuned kernels).
     if compile_eligible(target, is_gguf = is_gguf, family = family):
-        applied["compiled"] = _compile_repeated_blocks(
-            pipe, logger, max_autotune = mode == SPEED_MAX
-        )
+        applied["compiled"] = _compile_repeated_blocks(pipe, logger, max_autotune = mode == SPEED_MAX)
 
     if mode == SPEED_MAX:
         # Near-lossless: TF32 matmul (CUDA only) trades a few mantissa bits for speed.
@@ -181,7 +205,12 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
 
 
-def _compile_repeated_blocks(pipe: Any, logger: Any, *, max_autotune: bool = False) -> bool:
+def _compile_repeated_blocks(
+    pipe: Any,
+    logger: Any,
+    *,
+    max_autotune: bool = False,
+) -> bool:
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):
@@ -211,18 +240,48 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "cudnn_benchmark", exc)
         return False
+# The TF32 flag values from before the first max load flipped them, so a later
+# non-max load / unload can put the process back exactly as it found it (rather than
+# forcing a hardcoded default that might clobber another component's choice).
+_tf32_prev: Optional[tuple[bool, bool]] = None
 
 
 def _enable_tf32(logger: Any) -> bool:
+    global _tf32_prev
     try:
         import torch
 
+        if _tf32_prev is None:
+            _tf32_prev = (
+                torch.backends.cuda.matmul.allow_tf32,
+                torch.backends.cudnn.allow_tf32,
+            )
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "tf32", exc)
         return False
+
+
+def restore_tf32(logger: Any = None) -> None:
+    """Put the process-global TF32 flags back to their pre-max-load values. No-op if
+    a max load never set them. Called on a non-max load and on unload."""
+    _restore_tf32(logger)
+
+
+def _restore_tf32(logger: Any) -> None:
+    global _tf32_prev
+    if _tf32_prev is None:
+        return
+    try:
+        import torch
+        torch.backends.cuda.matmul.allow_tf32 = _tf32_prev[0]
+        torch.backends.cudnn.allow_tf32 = _tf32_prev[1]
+    except Exception as exc:  # noqa: BLE001 — best-effort restore
+        _warn(logger, "tf32_restore", exc)
+    finally:
+        _tf32_prev = None
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:

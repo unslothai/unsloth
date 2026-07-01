@@ -1121,6 +1121,61 @@ def _autoinject_top_k() -> int:
     return _AUTOINJECT_DEFAULT_TOP_K
 
 
+def _thread_whole_doc_enabled(scope: dict) -> bool:
+    """Whether a thread-attached file should be injected in full rather than
+    retrieved top-K. ``rag_scope.whole_doc=False`` disables it for this request."""
+    override = scope.get("whole_doc")
+    if override is False:
+        return False
+    try:
+        from core.rag import config as _rag_config
+    except Exception:  # noqa: BLE001
+        return True
+    return _rag_config.THREAD_WHOLE_DOC
+
+
+_IMAGE_PART_TOKEN_ESTIMATE = 1024
+
+
+def _message_token_estimate(conversation: list[dict]) -> int:
+    """Cheap prompt-size estimate for budget guards; exact tokenization happens later."""
+    total = 0
+    for msg in conversation:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total += max(1, len(content) // 4)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") in ("image_url", "input_image"):
+                        total += _IMAGE_PART_TOKEN_ESTIMATE
+                    else:
+                        total += max(1, len(str(part.get("text") or "")) // 4)
+        total += 4  # chat-template role / separator overhead estimate
+    return total
+
+
+def _whole_doc_budget(scope: dict | None = None, conversation: list[dict] | None = None) -> int:
+    try:
+        from core.rag import config as _rag_config
+    except Exception:  # noqa: BLE001
+        budget = 6000
+    else:
+        budget = _rag_config.WHOLE_DOC_MAX_TOKENS
+    if not scope:
+        return budget
+    context = _opt_int(scope.get("context_length") or scope.get("max_context_tokens"))
+    if context is None or context <= 0:
+        return budget
+    headroom = _opt_int(scope.get("response_headroom"))
+    if headroom is None:
+        headroom = max(1024, context // 4)
+    used = _message_token_estimate(conversation or [])
+    # Leave room for tool XML wrappers, citation metadata, and chat-template overhead.
+    available = context - headroom - used - 512
+    return min(budget, max(0, available))
+
+
 def _last_user_text(conversation: list[dict]) -> str:
     """Plain text of the most recent user turn (text parts only)."""
     for msg in reversed(conversation):
@@ -1154,7 +1209,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     enabled = rag_scope.get("autoinject")
     if enabled is None:
         enabled = _autoinject_enabled()
-    if not enabled:
+    thread_id = rag_scope.get("thread_id")
+    whole_doc_requested = (
+        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
+    )
+    if not enabled and not whole_doc_requested:
         return None
     query = _last_user_text(conversation)
     if not query:
@@ -1163,10 +1222,13 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         from storage import rag_db
         if not rag_db.RAG_AVAILABLE:
             return None
-        from core.rag.tool import search_for_autoinject
+        from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
+
+    text: str | None = None
+    sources: list[dict] = []
 
     floor_override = rag_scope.get("autoinject_min_score")
     floor = float(floor_override) if floor_override is not None else _autoinject_floor()
@@ -1174,24 +1236,67 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
-    try:
-        found = search_for_autoinject(
-            query = query,
-            scope_kb_id = rag_scope.get("kb_id"),
-            scope_thread_id = rag_scope.get("thread_id"),
-            scope_project_id = rag_scope.get("project_id"),
-            top_k = top_k,
-            min_dense_score = floor,
-            **_scope_retrieval_kwargs(rag_scope),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("RAG auto-inject retrieval failed: %s", exc)
-        return None
-    if not found:
-        logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+
+    # Whole-document mode: a thread-attached file under budget is injected in full so
+    # the model reads everything. A KB selection is exclusive, so whole-doc never
+    # preempts it; in a project chat the project sources are still retrieved top-K and
+    # appended under one citation numbering. Oversized files (or no thread doc) fall
+    # through to the combined top-K retrieval below.
+    if whole_doc_requested:
+        try:
+            budget = _whole_doc_budget(rag_scope, conversation)
+
+            whole = whole_document_context(
+                scope_thread_id = thread_id,
+                max_tokens = budget,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG whole-document context failed: %s", exc)
+            whole = None
+        if whole is not None:
+            text, sources = whole
+            project_id = rag_scope.get("project_id")
+            if project_id:
+                try:
+                    proj = search_for_autoinject(
+                        query = query,
+                        scope_project_id = project_id,
+                        top_k = top_k,
+                        min_dense_score = floor,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
+                    proj = None
+                if proj is not None:
+                    merged = sources + proj[1]
+                    merged_text = render_sources(merged)
+                    if max(1, len(merged_text) // 4) <= budget:
+                        sources = merged
+                        text = merged_text
+            logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
+
+    if text is None and enabled:
+        try:
+            found = search_for_autoinject(
+                query = query,
+                scope_kb_id = rag_scope.get("kb_id"),
+                scope_thread_id = rag_scope.get("thread_id"),
+                scope_project_id = rag_scope.get("project_id"),
+                top_k = top_k,
+                min_dense_score = floor,
+                **_scope_retrieval_kwargs(rag_scope),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG auto-inject retrieval failed: %s", exc)
+            return None
+        if not found:
+            logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+            return None
+        text, sources = found
+    if text is None:
         return None
 
-    text, sources = found
     import json as _json
     import uuid as _uuid
 
@@ -1236,7 +1341,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             "content": text,
         },
     ]
-    logger.info("RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80])
+    logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
     return {"events": events, "messages": messages}
 
 
