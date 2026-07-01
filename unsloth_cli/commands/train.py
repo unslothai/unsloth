@@ -30,6 +30,18 @@ def train(
         "--dry-run",
         help = "Show resolved config and exit without training.",
     ),
+    export: Optional[str] = typer.Option(
+        None,
+        "--export",
+        "-e",
+        help = "After training, export the saved checkpoint to this format "
+        "(merged-16bit, merged-4bit, gguf, lora).",
+    ),
+    export_dir: Optional[Path] = typer.Option(
+        None,
+        "--export-dir",
+        help = "Where to write the export. Defaults to <checkpoint>/<format>.",
+    ),
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
@@ -41,8 +53,6 @@ def train(
 
     cfg.apply_overrides(**config_overrides)
 
-    # CLI/env tokens take precedence; guard against unresolved typer.Option
-    # (decorator interaction)
     from typer.models import OptionInfo
 
     if isinstance(hf_token, OptionInfo):
@@ -68,7 +78,16 @@ def train(
         typer.echo("Error: provide --dataset or --local-dataset (or via --config)", err = True)
         raise typer.Exit(code = 2)
 
-    # A LoRA adapter dir has adapter_config.json
+    if export is not None:
+        from unsloth_cli.commands.export import EXPORT_FORMATS
+        if export not in EXPORT_FORMATS:
+            typer.echo(
+                f"Error: Invalid --export format '{export}'. "
+                f"Choose from: {', '.join(EXPORT_FORMATS)}",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+
     model_path = Path(cfg.model) if cfg.model else None
     model_is_lora = (
         model_path and model_path.is_dir() and (model_path / "adapter_config.json").exists()
@@ -83,11 +102,18 @@ def train(
         )
         raise typer.Exit(code = 2)
 
+    if export == "lora" and not use_lora:
+        typer.echo(
+            "Error: --export lora requires --training-type lora "
+            "(full finetuning produces no adapter).",
+            err = True,
+        )
+        raise typer.Exit(code = 2)
+
     from studio.backend.core.training.trainer import UnslothTrainer
 
     trainer = UnslothTrainer()
 
-    # Load model (trainer.is_vlm is set after this)
     if not trainer.load_model(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
@@ -115,7 +141,7 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
-    training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
+    training_kwargs["wandb_token"] = wandb_token
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
@@ -136,3 +162,19 @@ def train(
     if getattr(final, "error", None):
         typer.echo(f"Training error: {final.error}", err = True)
         raise typer.Exit(code = 1)
+
+    if export is not None:
+        from studio.backend.utils.paths.storage_roots import resolve_output_dir
+        from unsloth_cli.commands.export import export_checkpoint
+
+        trainer.cleanup()
+        checkpoint_dir = resolve_output_dir(str(cfg.training.output_dir))
+        out = export_dir.resolve() if export_dir is not None else checkpoint_dir / export
+        export_checkpoint(
+            checkpoint = checkpoint_dir,
+            output_dir = out,
+            format = export,
+            hf_token = hf_token,
+            max_seq_length = cfg.training.max_seq_length,
+            load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        )
