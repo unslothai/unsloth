@@ -34,6 +34,10 @@ nest-asyncio
 wheel>=0.42.0
 packaging
 numpy
+scipy
+rapidfuzz
+python-dateutil
+json_repair
 tqdm
 psutil
 tyro

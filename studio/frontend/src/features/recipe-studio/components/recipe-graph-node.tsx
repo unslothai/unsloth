@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
+  ChartLineData01Icon,
   Clock01Icon,
   CodeIcon,
   CodeSimpleIcon,
@@ -117,6 +118,9 @@ const NODE_META = {
   tool_config: {
     tone: RECIPE_STUDIO_NODE_TONES.tool_config,
   },
+  evaluation: {
+    tone: RECIPE_STUDIO_NODE_TONES.evaluation,
+  },
 } as const;
 const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   category: Tag01Icon,
@@ -150,6 +154,9 @@ function resolveNodeIcon(
   }
   if (kind === "validator") {
     return Shield02Icon;
+  }
+  if (kind === "evaluation") {
+    return ChartLineData01Icon;
   }
   if (kind === "expression") {
     return FunctionIcon;
@@ -427,7 +434,8 @@ function RecipeGraphNodeBase({
     data.kind === "validator" ||
     data.kind === "expression" ||
     data.kind === "sampler" ||
-    data.kind === "seed";
+    data.kind === "seed" ||
+    data.kind === "evaluation";
   const showSemanticIn =
     data.kind === "model_config" || data.kind === "validator";
   const showSemanticOut =

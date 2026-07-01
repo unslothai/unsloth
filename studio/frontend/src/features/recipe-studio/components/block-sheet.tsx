@@ -52,6 +52,7 @@ type SheetView =
   | "llm"
   | "validator"
   | "expression"
+  | "evaluation"
   | "note"
   | "processor";
 type SheetKind =
@@ -60,6 +61,7 @@ type SheetKind =
   | "llm"
   | "validator"
   | "expression"
+  | "evaluation"
   | "note";
 type RootSheetView = Exclude<SheetView, "root">;
 type RootGroup = {
@@ -85,6 +87,7 @@ type BlockSheetProps = {
   onAddValidator: (
     type: "validator_python" | "validator_sql" | "validator_oxc",
   ) => void;
+  onAddEvaluation: (type: "evaluation_document_score") => void;
   onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
@@ -114,6 +117,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "validator") {
     return "Checks";
   }
+  if (sheetView === "evaluation") {
+    return "Evaluation";
+  }
   if (sheetView === "note") {
     return "Notes";
   }
@@ -130,6 +136,7 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   llm: "llm",
   validator: "validator",
   expression: "expression",
+  evaluation: "evaluation",
   note: "note",
   processor: null,
 };
@@ -145,6 +152,7 @@ const SEARCHABLE_KINDS: SheetKind[] = [
   "llm",
   "validator",
   "expression",
+  "evaluation",
   "note",
 ];
 const PROCESSOR_TITLE = "Final dataset shape";
@@ -244,6 +252,7 @@ export function BlockSheet({
   onAddToolProfile,
   onAddExpression,
   onAddValidator,
+  onAddEvaluation,
   onAddMarkdownNote,
   onOpenProcessors,
   copied,
@@ -380,6 +389,10 @@ export function BlockSheet({
       onAddValidator(
         type as "validator_python" | "validator_sql" | "validator_oxc",
       );
+      return;
+    }
+    if (kind === "evaluation") {
+      onAddEvaluation(type as "evaluation_document_score");
       return;
     }
     if (kind === "expression") {

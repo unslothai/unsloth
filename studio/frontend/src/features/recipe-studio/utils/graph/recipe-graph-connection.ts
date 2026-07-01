@@ -467,7 +467,8 @@ export function applyRecipeConnection(
     source.kind !== "seed" &&
     source.kind !== "model_provider" &&
     source.kind !== "model_config" &&
-    source.kind !== "validator"
+    source.kind !== "validator" &&
+    source.kind !== "evaluation"
   ) {
     const ref = `{{ ${source.name} }}`;
     const next = {

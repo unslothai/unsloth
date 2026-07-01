@@ -113,6 +113,16 @@ export function nodeDataFromConfig(
       layoutDirection,
     };
   }
+  if (config.kind === "evaluation") {
+    return {
+      title: "Evaluation",
+      kind: "evaluation",
+      subtype: "Document score",
+      blockType: "evaluation_document_score",
+      name: config.name,
+      layoutDirection,
+    };
+  }
   return {
     title: "AI step",
     kind: "llm",
