@@ -11,35 +11,30 @@ import json
 import re
 
 # Tool XML stripping patterns. Hyphen in the name class matches dashed MCP names
-# (mcp__srv__list-issues). The non-final list uses a closed-only Gemma pattern so
-# an incomplete block is preserved (matching JSON/function); the final list keeps
-# the same pattern order but lets the Gemma span run to its close marker OR EOF,
-# then sweeps any unclosed JSON/function remainder to EOF.
+# (mcp__srv__list-issues). Both lists strip every closed pair first (JSON, Gemma,
+# function), so a closed call is removed as a unit before any to-EOF sweep can
+# reach markup nested inside it; the final list then adds greedy .*$ sweeps that
+# drop an unclosed opener's remainder to EOF. The non-final list keeps incomplete
+# blocks (no EOF sweeps), matching the parser's allow_incomplete = False path.
 _TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
-# Final-only variant: an unclosed Gemma run also strips to EOF. The \Z alternative
-# makes the lazy match short-circuit on the first opener, so it stays linear.
-_TC_GEMMA_CLOSED_OR_EOF_PAT = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|\Z)", re.DOTALL)
 _TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
 _TC_GEMMA_END_PAT = re.compile(r"<tool_call\|>")
 _TOOL_CLOSED_PATS = [
     _TC_JSON_CLOSED_PAT,
     _TC_GEMMA_CLOSED_PAT,
-    _TC_GEMMA_END_PAT,
     _TC_FUNC_CLOSED_PAT,
+    _TC_GEMMA_END_PAT,
 ]
-_TOOL_ALL_PATS = [
-    _TC_JSON_CLOSED_PAT,
-    _TC_GEMMA_CLOSED_OR_EOF_PAT,
-    _TC_GEMMA_END_PAT,
-    _TC_FUNC_CLOSED_PAT,
+_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
+    re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
 # A lazy closed-pair pattern rescans to EOF from every opener when its close
 # token is absent (O(n^2); O(n^3) re-run per streamed token). Skip the doomed
 # sweep when the token is missing -- identical output, no backtracking. The
-# close-or-EOF variant needs no guard: its \Z short-circuits the first opener.
+# to-EOF sweeps are greedy, so they short-circuit on the first opener.
 _PAT_REQUIRED_TOKEN = {
     _TC_JSON_CLOSED_PAT: "</tool_call>",
     _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
@@ -316,6 +311,45 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
     return last_param_start > max(last_param_close, last_func_close)
 
 
+def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
+    """Coverage region ``[start, end]`` for each marker, used to skip markers that
+    are another call's data. Each marker's own close is paired to it with a
+    per-format stack (a close after the braces pops the nearest still-open marker
+    of that format), so an inner call's close is not mistaken for the outer's:
+
+    - braces never balance -> covers ``[start, EOF)`` (the whole ambiguous tail);
+    - braces balance and a matching close is found -> covers ``[start, close_end]``
+      so a marker smuggled between the braces and that close is treated as data;
+    - braces balance but no close is paired -> covers only the brace region, so a
+      later sibling after an omitted close marker is still recovered as its own call.
+    """
+    n = len(content)
+    events = []  # (position, order) with order 0 = braces-done, 1 = close marker
+    for idx, (_start, brace_end, _kind, _m) in enumerate(markers):
+        if brace_end >= 0:
+            events.append((brace_end, 0, _kind, idx))
+    for kind, close_re in (("json", _TC_END_TAG_RE), ("gemma", _TC_GEMMA_END_TAG_RE)):
+        for cm in close_re.finditer(content):
+            events.append((cm.start(), 1, kind, cm.end()))
+    events.sort(key = lambda e: (e[0], e[1]))
+    waiting = {"json": [], "gemma": []}
+    close_end_for: dict[int, int] = {}
+    for _pos, order, kind, payload in events:
+        if order == 0:
+            waiting[kind].append(payload)  # marker index, now awaiting its close
+        elif waiting[kind]:
+            close_end_for[waiting[kind].pop()] = payload  # innermost open marker closes here
+    coverage = []
+    for idx, (start, brace_end, _kind, _m) in enumerate(markers):
+        if brace_end < 0:
+            coverage.append((start, n))
+        elif idx in close_end_for:
+            coverage.append((start, close_end_for[idx]))
+        else:
+            coverage.append((start, brace_end))
+    return coverage
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -330,13 +364,12 @@ def parse_tool_calls_from_text(
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
     """
     tool_calls: list[dict] = []
-    # Collect JSON/Gemma markers. Nesting is decided by the brace region only --
-    # [start, brace_end], or [start, EOF) when the braces never close -- so a
-    # marker starting inside another's braces is that call's argument data, while
-    # a later balanced call after one with a missing close is still recovered (not
-    # swallowed to EOF). The XML fallback instead excludes each marker's envelope
-    # (start to its close marker, searched after the braces, or EOF) so trailing
-    # markup before the close cannot escape. A marker inside an open
+    # Collect JSON/Gemma markers, then decide nesting by each marker's coverage
+    # region (see _marker_coverage): a closed outer covers up to its own close
+    # marker, so a JSON/Gemma marker smuggled between the outer braces and that
+    # close is treated as data, not executed; an outer that balances but has no
+    # close of its own covers only its brace region, so a later sibling after an
+    # omitted close is still recovered. A marker inside an open
     # <function=...><parameter=> value is that parameter's data, so skip it.
     markers = []  # (start, brace_end, kind, match); brace_end < 0 = unclosed
     for start_re, gemma, kind in (
@@ -350,11 +383,13 @@ def parse_tool_calls_from_text(
             markers.append((m.start(), brace_end, kind, m))
     markers.sort(key = lambda c: c[0])
 
-    brace_regions = [(s, be if be >= 0 else len(content)) for s, be, _k, _m in markers]
+    coverage = _marker_coverage(content, markers)
     for idx, (start, brace_end, kind, m) in enumerate(markers):
-        # Skip a marker whose start falls in another marker's brace region: it is
-        # that outer call's argument data, not its own call.
-        if any(s <= start <= e for j, (s, e) in enumerate(brace_regions) if j != idx):
+        # Skip a marker whose start falls in another marker's coverage: it is that
+        # outer call's data (its braces, or the gap up to its close), not a call.
+        # The end is exclusive: a marker starting exactly where another's close
+        # ends is the next sibling (adjacent calls), not nested.
+        if any(s <= start < e for j, (s, e) in enumerate(coverage) if j != idx):
             continue
         if brace_end < 0:
             continue  # unclosed: not parseable; the fallback still excludes its XML
