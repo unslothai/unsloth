@@ -1363,15 +1363,18 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
-# Version-pin the automatic first-use install of llm-compressor. Without a bound,
-# `pip install llmcompressor` resolves to whatever the configured index offers, so a compromised,
-# dependency-confused, or inflated-version ("999.0.0") release could be pulled and executed under
-# the Unsloth process at install/import time. The oneshot / QuantizationModifier API this uses is
-# stable across the 0.8-0.12 line; bump the ceiling deliberately after testing a newer series
-# rather than tracking latest automatically. An already-installed newer llm-compressor is used
-# as-is (the import below short-circuits), so this bound only constrains what gets auto-installed,
-# never what the user installed themselves.
-_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.8.0,<0.13"
+# Bound the automatic first-use install of llm-compressor to its current 0.x series. Without any
+# bound, `pip install llmcompressor` resolves to whatever the configured index offers, so a
+# compromised, dependency-confused, or inflated-version ("999.0.0") release could be pulled and
+# executed under the Unsloth process at install/import time; the "<1.0" ceiling blocks that jump.
+# The floor keeps the oneshot / QuantizationModifier API this uses. Crucially the range still lets
+# pip pick up new 0.x releases, which is where support for brand-new architectures lands (the gate
+# below can require a newer llm-compressor for newer schemes/models) -- an exact pin would break
+# exporting new models. Bump the ceiling deliberately when llm-compressor reaches 1.0 so a new
+# major is vetted before it is auto-installed. An already-installed newer llm-compressor is used
+# as-is (the import below short-circuits), so this only constrains the auto-install, never what
+# the user installed themselves.
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.8.0,<1.0"
 
 
 def install_llm_compressor():
