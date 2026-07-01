@@ -25,6 +25,16 @@ export interface HardwareInfo {
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
+    // Whether model export can run here. Export goes through Unsloth, which needs a compute
+    // accelerator (NVIDIA/AMD/Intel GPU or Apple MLX) and has no CPU path, so this is true only on
+    // a supported accelerator. The reason string is torch-aware: `pytorch_not_installed` when torch
+    // is the missing piece, `no_accelerator` on a bare-CPU (torch-present) host, `mlx_unavailable`
+    // on Apple without MLX. `null` until the authoritative response arrives, so callers don't
+    // briefly enable export before load. `loaded` flips true once a real (non-error) response lands.
+    exportSupported: boolean | null;
+    exportUnsupportedReason: string | null;
+    exportUnsupportedMessage: string | null;
+    loaded: boolean;
 }
 
 const DEFAULT: HardwareInfo = {
@@ -38,6 +48,10 @@ const DEFAULT: HardwareInfo = {
     transformers: null,
     unsloth: null,
     llamaCpp: null,
+    exportSupported: null,
+    exportUnsupportedReason: null,
+    exportUnsupportedMessage: null,
+    loaded: false,
 };
 
 // Module-level cache so multiple components share one fetch.
@@ -87,6 +101,10 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
+                exportSupported: data?.export_supported ?? null,
+                exportUnsupportedReason: data?.export_unsupported_reason ?? null,
+                exportUnsupportedMessage: data?.export_unsupported_message ?? null,
+                loaded: true,
             };
             if (generation === cacheGeneration) {
                 cached = info;

@@ -70,6 +70,11 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/login",
   "/signup",
   "/change-password",
+  // Export stays reachable on chat-only hosts so the page can render its own grayed-out state with
+  // a precise reason ("PyTorch is not installed" for a --no-torch install, or "needs a GPU / Apple
+  // Silicon" on a bare-CPU host) instead of a silent redirect to /chat. The page self-gates via its
+  // export capability, so nothing runs when the runtime is missing.
+  "/export",
 ]);
 
 function isChatOnlyAllowed(pathname: string): boolean {

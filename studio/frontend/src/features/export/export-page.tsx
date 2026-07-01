@@ -32,6 +32,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -119,7 +124,18 @@ function buildRelativeSaveDirectory(
         : sourceBaseModelName;
     return `${safePathSegment(rawName)}-GGUF`;
   }
-  return `${selectedModelIdx ?? "model"}/${checkpoint}`;
+  // Merged / LoRA exports. A fine-tuned checkpoint keeps the "<run>/<checkpoint>" layout under
+  // the outputs tree.
+  if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
+    return `${selectedModelIdx}/${checkpoint}`;
+  }
+  // Local Model / Hugging Face source (no run/checkpoint) - name from the model id so we never
+  // produce "model/null".
+  const rawName =
+    sourceMode === "checkpoint"
+      ? checkpoint ?? selectedModelIdx ?? sourceBaseModelName
+      : sourceBaseModelName;
+  return `${safePathSegment(rawName)}-${exportMethod === "lora" ? "adapter" : "merged"}`;
 }
 
 function siblingGgufDirectory(sourcePath: string): string | null {
@@ -198,6 +214,16 @@ export function ExportPage() {
   // 16-bit always remain. cuda!=null && rocm==null marks a real CUDA (not ROCm) box.
   const hardware = useHardwareInfo();
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
+  // Export needs a supported accelerator (NVIDIA/AMD/Intel GPU or Apple MLX); Unsloth has no CPU
+  // path. Only gray out once we have an authoritative response that says unsupported; if the
+  // hardware probe hasn't loaded or failed, don't block here (the backend route guard stays
+  // authoritative). The backend supplies the precise reason ("PyTorch is not installed" vs "no
+  // accelerator" vs "MLX unavailable"); the fallback below only shows if that message is missing.
+  const exportUnsupported =
+    hardware.loaded && hardware.exportSupported === false;
+  const exportUnsupportedMessage =
+    hardware.exportUnsupportedMessage ??
+    "Export requires a supported accelerator (NVIDIA, AMD, or Intel GPU, or Apple Silicon) with PyTorch or MLX installed.";
   const availableFormats = useMemo<MergedFormatOption[]>(
     () => MERGED_FORMATS.filter((f) => hasNvidia || !f.needsNvidia),
     [hasNvidia],
@@ -548,6 +574,7 @@ export function ExportPage() {
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
+    !exportUnsupported &&
     (exportMethod !== "gguf" || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0)
   );
@@ -614,6 +641,8 @@ export function ExportPage() {
   const handleStart = useCallback(async () => {
     const source = sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
+    // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
+    if (exportUnsupported) return;
     // A GGUF export with no quant selected runs zero exports yet would still
     // settle as success with no file; require at least one (mirrors canExport).
     if (exportMethod === "gguf" && quantLevels.length === 0) return;
@@ -699,6 +728,7 @@ export function ExportPage() {
     selectedFormats,
     loraAsGguf,
     loraGgufOuttype,
+    exportUnsupported,
     destination,
     saveDirectory,
     hfUsername,
@@ -1205,26 +1235,38 @@ export function ExportPage() {
                 </div>
               </div>
 
+              {exportUnsupported && (
+                <Alert variant="destructive">
+                  <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
+                  <AlertTitle>Export unavailable</AlertTitle>
+                  <AlertDescription>{exportUnsupportedMessage}</AlertDescription>
+                </Alert>
+              )}
+
               <MethodPicker
                 value={exportMethod}
                 onChange={handleMethodChange}
                 disabledMethods={
-                  !isAdapter && isQuantized
+                  exportUnsupported
                     ? ["merged", "lora", "gguf"]
-                    : !isAdapter
-                      ? ["lora"]
-                      : []
+                    : !isAdapter && isQuantized
+                      ? ["merged", "lora", "gguf"]
+                      : !isAdapter
+                        ? ["lora"]
+                        : []
                 }
                 disabledReason={
-                  !isAdapter && isQuantized
-                    ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                    : !isAdapter
-                      ? "LoRA-only export needs a LoRA adapter checkpoint"
-                      : undefined
+                  exportUnsupported
+                    ? exportUnsupportedMessage
+                    : !isAdapter && isQuantized
+                      ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                      : !isAdapter
+                        ? "LoRA-only export needs a LoRA adapter checkpoint"
+                        : undefined
                 }
               />
 
-              {exportMethod === "merged" && (
+              {exportMethod === "merged" && !exportUnsupported && (
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -1342,7 +1384,7 @@ export function ExportPage() {
                 </div>
               )}
 
-              {exportMethod === "lora" && isAdapter && (
+              {exportMethod === "lora" && isAdapter && !exportUnsupported && (
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <div className="text-sm font-medium">Adapter format</div>
@@ -1396,7 +1438,7 @@ export function ExportPage() {
                 </div>
               )}
 
-              {exportMethod === "gguf" && (
+              {exportMethod === "gguf" && !exportUnsupported && (
                 <>
                   <QuantPicker
                     value={quantLevels}

@@ -13,7 +13,20 @@ import shutil
 import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
-from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
+
+# unsloth imports torch at import time on non-MLX hosts, so a --no-torch install raises here. Keep
+# this module importable: null the model classes and treat MLX as unavailable, so export attempts
+# return a clean "PyTorch is not installed" error instead of crashing at import. (On a working MLX
+# host unsloth imports fine without torch, so _IS_MLX is set correctly there.)
+try:
+    from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
+    _UNSLOTH_IMPORT_ERROR = None
+except Exception as _unsloth_exc:  # ImportError (e.g. missing torch) or a broken native load
+    FastLanguageModel = None
+    FastVisionModel = None
+    _IS_MLX = False
+    _UNSLOTH_IMPORT_ERROR = _unsloth_exc
+
 from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
@@ -27,13 +40,53 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 
-# GPU-only imports — guarded for Apple Silicon where these aren't needed
+# GPU/PyTorch-only imports. Guarded for Apple Silicon (MLX exports without torch) AND for a
+# --no-torch install: keep this module importable when PyTorch is absent so the backend degrades to
+# a clear "PyTorch is not installed" error at export time instead of crashing on import. `torch`
+# stays None and the peft/transformers imports are skipped when torch cannot be imported.
+torch = None
+_TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
-    from peft import PeftModel, PeftModelForCausalLM
-    from transformers.modeling_utils import PushToHubMixin
-    import torch
+    try:
+        from peft import PeftModel, PeftModelForCausalLM
+        from transformers.modeling_utils import PushToHubMixin
+        import torch
+    except Exception as _torch_exc:  # ImportError, or a broken native torch load
+        _TORCH_IMPORT_ERROR = _torch_exc
 
 logger = get_logger(__name__)
+
+
+def _export_runtime_available() -> bool:
+    """True if a runtime capable of exporting is present.
+
+    Export runs through Unsloth, which needs a compute accelerator (NVIDIA/AMD/Intel GPU or Apple
+    MLX) and has no CPU code path. So the check is: MLX active, OR ``FastLanguageModel`` actually
+    imported (which only succeeds on a supported accelerator). A --no-torch host and a bare-CPU host
+    (where the Unsloth import fails at ``torch.cuda`` init) both correctly report unavailable.
+    """
+    return bool(_IS_MLX) or (FastLanguageModel is not None)
+
+
+def _export_runtime_message() -> str:
+    """Precise reason the export runtime is unavailable, mirroring hardware.export_capability()."""
+    if torch is None:
+        return (
+            "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+            "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+        )
+    return (
+        "Export requires an NVIDIA, AMD, or Intel GPU, or Apple Silicon (MLX). No supported "
+        "accelerator was found on this host. (PyTorch is installed, but Unsloth cannot export on "
+        "CPU only.)"
+    )
+
+
+# Kept for backwards compatibility with call sites / tests that reference the PyTorch-missing text.
+_PYTORCH_MISSING_MESSAGE = (
+    "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+    "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+)
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
@@ -440,6 +493,8 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -648,6 +703,8 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -787,6 +844,8 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -971,6 +1030,8 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 

@@ -263,6 +263,57 @@ def get_device() -> DeviceType:
     return DEVICE
 
 
+def export_capability() -> dict:
+    """Whether model export can run on this host, with a torch-aware reason when it cannot.
+
+    Export loads and merges/quantizes weights through Unsloth (``FastLanguageModel``), which
+    hard-requires a compute accelerator: it calls ``torch.cuda`` APIs unconditionally at import and
+    has no CPU code path, so a bare-CPU host cannot export even with PyTorch installed. Export is
+    therefore supported on exactly the accelerators Unsloth supports -- NVIDIA/AMD (CUDA/ROCm),
+    Intel (XPU), or Apple Silicon (MLX) -- i.e. ``get_device() in {CUDA, XPU, MLX}``.
+
+    The enabled *set* matches the training gate, but the *reason* is more precise: when PyTorch is
+    the missing piece (a ``--no-torch`` install, where even a physical GPU can't be used) the
+    message says so explicitly, rather than a generic "no GPU". Reads only the lightweight probes
+    above, so it is safe to call without importing torch.
+
+    Returns {export_supported, export_unsupported_reason, export_unsupported_message}.
+    """
+    if get_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+        return {
+            "export_supported": True,
+            "export_unsupported_reason": None,
+            "export_unsupported_message": None,
+        }
+    # No usable accelerator. Name the specific blocker so the UI can guide the user. Apple Silicon
+    # is checked first: its export path is MLX, so "install PyTorch" would be the wrong advice on a
+    # Mac even when torch is also absent -- the fix there is to restore the MLX stack.
+    if is_apple_silicon():
+        reason = "mlx_unavailable"
+        message = (
+            "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
+            "`unsloth studio update` to restore MLX and enable export."
+        )
+    elif not _has_torch():
+        reason = "pytorch_not_installed"
+        message = (
+            "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+            "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+        )
+    else:
+        reason = "no_accelerator"
+        message = (
+            "Export requires an NVIDIA, AMD, or Intel GPU, or Apple Silicon (MLX). No supported "
+            "accelerator was found on this host. (PyTorch is installed, but Unsloth cannot export "
+            "on CPU only.)"
+        )
+    return {
+        "export_supported": False,
+        "export_unsupported_reason": reason,
+        "export_unsupported_message": message,
+    }
+
+
 def clear_gpu_cache():
     """
     Clear GPU memory cache for the current device.
