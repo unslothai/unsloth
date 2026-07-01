@@ -207,19 +207,33 @@ def _log_tail(path: Path, lines: int = 20) -> str:
 
 def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
     # Idempotent teardown of a server WE started, plus its own children (llama-server,
-    # cloudflared) via the process group. A no-op once the process is already gone.
+    # cloudflared). A no-op once the process is already gone.
     if server is None or server.poll() is not None:
+        return
+    if os.name == "nt":
+        # terminate()/kill() reach only the parent `unsloth run`; taskkill /T walks the
+        # whole tree so the llama-server child doesn't keep the port and GPU (matches the
+        # taskkill /T /F pattern already used in unsloth/dataprep/synthetic.py).
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(server.pid), "/T", "/F"],
+                capture_output = True, timeout = 15, check = False,
+            )
+            server.wait(timeout = 5)
+        except Exception:
+            with contextlib.suppress(Exception):
+                server.kill()
         return
     try:
         os.killpg(os.getpgid(server.pid), signal.SIGTERM)
-    except (OSError, AttributeError):
+    except OSError:
         server.terminate()
     try:
         server.wait(timeout = 15)
     except Exception:
         try:
             os.killpg(os.getpgid(server.pid), signal.SIGKILL)
-        except (OSError, AttributeError):
+        except OSError:
             server.kill()
 
 

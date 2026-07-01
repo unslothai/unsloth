@@ -71,6 +71,18 @@ class TestFriendlyUpstreamError:
     def test_unrelated_error_passes_through(self):
         assert _friendly_upstream_error("out of memory") == "llama-server error: out of memory"
 
+    def test_openai_passthrough_error_rewrites_grammar_failure(self):
+        # OpenAI-compatible agents (opencode/openclaw/hermes/pi via /v1/chat/completions)
+        # get the same actionable message as the Anthropic passthrough, not the raw body.
+        from routes.inference import _openai_passthrough_error
+
+        exc = _openai_passthrough_error(
+            400, '{"error":{"message":"Failed to initialize samplers: failed to parse grammar"}}'
+        )
+        assert "tool-calling grammar" in exc.detail
+        # An unrelated upstream error still passes through verbatim.
+        assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
+
 
 # =====================================================================
 # ChatMessage — tool role, tool_calls, optional content

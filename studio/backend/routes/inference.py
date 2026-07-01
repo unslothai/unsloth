@@ -297,8 +297,8 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
     """HTTPException for a non-200 upstream response on the OpenAI passthrough
     (tools / response_format). An over-context upstream error is mapped to a 400
     with code="context_length_exceeded" so these paths deliver the same signal as
-    the non-passthrough path; any other upstream error keeps llama-server's
-    message verbatim."""
+    the non-passthrough path; a tool-grammar compile failure gets the same actionable
+    guidance as the Anthropic passthrough; any other upstream error stays verbatim."""
     if _classify_llama_generation_error(Exception(text)):
         return HTTPException(
             status_code = 400,
@@ -311,7 +311,7 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
         )
     return HTTPException(
         status_code = status_code,
-        detail = f"llama-server error: {text[:500]}",
+        detail = _friendly_upstream_error(text[:500]),
     )
 
 
@@ -7881,7 +7881,7 @@ async def _responses_stream(
                             "output": [],
                             "error": {
                                 "code": resp.status_code,
-                                "message": f"llama-server error: {err_text[:500]}",
+                                "message": _friendly_upstream_error(err_text[:500]),
                             },
                         },
                     },
