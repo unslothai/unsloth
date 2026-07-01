@@ -1140,7 +1140,11 @@ class FastBaseModel:
                         pass
                     else:
                         embed_tokens = model.get_input_embeddings()
-                        out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+                        out_embed = (
+                            model.get_output_embeddings()
+                            if hasattr(model, "get_output_embeddings")
+                            else None
+                        )
                         if _embeddings_are_tied(embed_tokens, out_embed):
                             raise NotImplementedError(
                                 "offload_embedding = True is not supported for models with tied word "
