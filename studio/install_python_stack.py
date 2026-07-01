@@ -933,11 +933,20 @@ def _detect_cuda_torch_index_url() -> str:
 
     Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update`
     repairs to the same wheel family a fresh `curl | sh` install would pick.
-    Probes nvidia-smi (PATH, then /usr/bin/nvidia-smi) and parses both the
-    legacy "CUDA Version:" and the newer "CUDA UMD Version:" spellings.
-    Defaults to cu126 when nvidia-smi is missing or the version is unreadable
-    (e.g. NVIDIA detected only via the /proc/driver/nvidia/gpus fallback).
+    Honours the same explicit overrides first (UNSLOTH_TORCH_INDEX_URL /
+    UNSLOTH_TORCH_INDEX_FAMILY) so a headless / container / CI install never lets
+    the host GPU decide the wheel family. Otherwise probes nvidia-smi (PATH, then
+    /usr/bin/nvidia-smi) and parses both the legacy "CUDA Version:" and the newer
+    "CUDA UMD Version:" spellings. Defaults to cu126 when nvidia-smi is missing or
+    the version is unreadable (e.g. NVIDIA detected only via the
+    /proc/driver/nvidia/gpus fallback).
     """
+    _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+    if _override_url:
+        return _override_url.rstrip("/")
+    _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    if _override_family:
+        return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
     exe = shutil.which("nvidia-smi")
     if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
         exe = "/usr/bin/nvidia-smi"
@@ -972,6 +981,58 @@ def _detect_cuda_torch_index_url() -> str:
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
+def _explicit_torch_index_url() -> "str | None":
+    """The wheel index URL pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY, else None.
+
+    Lets the CUDA/ROCm repair helpers honour the exact pinned family/URL instead
+    of re-probing the GPU. Mirrors install.sh::get_torch_index_url's override.
+    """
+    url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+    if url:
+        return url.rstrip("/")
+    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    if family:
+        return f"{_PYTORCH_WHL_BASE}/{family.strip('/')}"
+    return None
+
+
+def _explicit_rocm_torch_index_url() -> "str | None":
+    """The pinned wheel index URL when it names a ROCm family (rocm*/gfx*), else None."""
+    url = _explicit_torch_index_url()
+    if url is None:
+        return None
+    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    return url if leaf.startswith(("rocm", "gfx")) else None
+
+
+def _explicit_cpu_torch_index_url() -> "str | None":
+    """The pinned wheel index URL when it names the CPU family (leaf == cpu), else None.
+
+    An explicit CPU pin (UNSLOTH_TORCH_INDEX_FAMILY=cpu or a URL ending in /cpu)
+    is authoritative -- see _ensure_cpu_torch.
+    """
+    url = _explicit_torch_index_url()
+    if url is None:
+        return None
+    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    return url if leaf == "cpu" else None
+
+
+def _explicit_cuda_torch_index_url() -> "str | None":
+    """The pinned wheel index URL when it names a CUDA family (leaf cu*), else None.
+
+    Mirrors _explicit_rocm/cpu_torch_index_url so _ensure_cuda_torch only treats a
+    *CUDA* pin as authority to override the NVIDIA-presence gate. An arbitrary
+    mirror URL (or a ROCm/CPU pin) must not force a CUDA reinstall over a working
+    ROCm/CPU venv on a non-NVIDIA host.
+    """
+    url = _explicit_torch_index_url()
+    if url is None:
+        return None
+    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    return url if leaf.startswith("cu") else None
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -1004,7 +1065,10 @@ def _ensure_cuda_torch() -> None:
         return
     # Only NVIDIA hosts should carry CUDA torch. _has_usable_nvidia_gpu()
     # covers the /proc/driver/nvidia/gpus fallback when nvidia-smi is absent.
-    if not _has_usable_nvidia_gpu():
+    # An explicit CUDA wheel-index pin (headless / container / CI cross-install)
+    # commits to CUDA wheels regardless of whether a GPU is visible here, so it
+    # overrides the GPU-presence gate.
+    if not _has_usable_nvidia_gpu() and _explicit_cuda_torch_index_url() is None:
         return
 
     # Classify the installed torch: "hip" (ROCm build -- the poisoning
@@ -1017,11 +1081,13 @@ def _ensure_cuda_torch() -> None:
                 sys.executable,
                 "-c",
                 (
-                    "import torch; "
+                    "import torch, re; "
                     "hip = getattr(torch.version, 'hip', '') or ''; "
                     "cuda = getattr(torch.version, 'cuda', '') or ''; "
                     "ver = getattr(torch, '__version__', '').lower(); "
-                    "print('hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'))"
+                    "m = re.search(r'\\+(cu\\d+)', ver); "
+                    "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
+                    "print(marker + '|' + (m.group(1) if m else ''))"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1037,16 +1103,35 @@ def _ensure_cuda_torch() -> None:
     _marker_lines = [
         line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
     ]
-    if not _marker_lines or _marker_lines[-1] != "hip":
-        return  # healthy CUDA torch, or a deliberate CPU wheel -- leave as-is
+    if not _marker_lines:
+        return
+    _marker, _, _installed_cu = _marker_lines[-1].partition("|")
+    # Reinstall CUDA torch when the venv carries a ROCm build on an NVIDIA host
+    # (the poisoning signature), or when an explicit CUDA index is pinned but the
+    # venv has the wrong family -- a CPU wheel, or a different cuXXX than pinned.
+    # This covers the headless cross-install (`studio update` with
+    # UNSLOTH_TORCH_INDEX_FAMILY=cu128): the update path preserves torch rather
+    # than preinstalling it from install.sh, so without this an explicit CUDA pin
+    # stays ineffective. A healthy CUDA torch matching the pin, or a CPU wheel
+    # with no CUDA pin, is deliberate and left alone.
+    _pin = _explicit_torch_index_url()
+    _pin_leaf = _pin.rstrip("/").rsplit("/", 1)[-1].lower() if _pin else ""
+    _pinned_cuda = _pin_leaf.startswith("cu")
+    if _marker == "hip":
+        _why = "torch is a ROCm build on an NVIDIA host"
+    elif _marker == "cpu" and _pinned_cuda:
+        _why = "torch is a CPU build but an explicit CUDA index is pinned"
+    elif _marker == "cuda" and _pinned_cuda and _installed_cu and _installed_cu != _pin_leaf:
+        _why = f"torch is {_installed_cu} but the pinned CUDA index is {_pin_leaf}"
+    else:
+        return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
     index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
     print(
-        f"   torch is a ROCm build on an NVIDIA host -- reinstalling "
-        f"CUDA torch from {index_url}\n"
-        f"   (set UNSLOTH_TORCH_BACKEND=rocm to keep a deliberate ROCm torch "
-        f"on a mixed AMD+NVIDIA host)"
+        f"   {_why} -- reinstalling CUDA torch from {index_url}\n"
+        f"   (set UNSLOTH_TORCH_BACKEND=rocm or cpu to keep a deliberate "
+        f"non-CUDA torch)"
     )
     pip_install(
         "CUDA torch repair",
@@ -1057,6 +1142,72 @@ def _ensure_cuda_torch() -> None:
         _audio_pkg,
         "--index-url",
         index_url,
+        constrain = False,
+    )
+
+
+def _ensure_cpu_torch() -> None:
+    """Reinstall CPU torch when an explicit CPU pin is set but the venv has a GPU build.
+
+    Counterpart to _ensure_cuda_torch / _ensure_rocm_torch for the explicit-CPU
+    case (UNSLOTH_TORCH_INDEX_FAMILY=cpu or a URL ending in /cpu). Those helpers
+    both treat a CPU backend as a skip signal, so on a standalone `unsloth studio
+    update` -- which does not run install.sh's post-install flavor enforcement --
+    an existing CUDA/ROCm torch satisfies the version constraint and is never
+    replaced, ignoring the authoritative CPU pin. Only fires for an EXPLICIT pin:
+    a CPU backend that came from auto-detection (genuine CPU host via install.sh)
+    already installed CPU wheels, so there is nothing to repair.
+    """
+    if NO_TORCH:
+        return
+    pin = _explicit_cpu_torch_index_url()
+    if pin is None:
+        return
+
+    # Classify the installed torch family. A non-zero exit means torch is missing
+    # or un-importable; the base install step handles that, so leave it alone.
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import torch, re; "
+                    "hip = getattr(torch.version, 'hip', '') or ''; "
+                    "cuda = getattr(torch.version, 'cuda', '') or ''; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "gpu = bool(hip) or 'rocm' in ver or bool(cuda) or bool(re.search(r'\\+cu\\d+', ver)); "
+                    "print('gpu' if gpu else 'cpu')"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if probe.returncode != 0:
+        return
+    _lines = [
+        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+    ]
+    if not _lines or _lines[-1] != "gpu":
+        return  # already CPU (or unreadable) -- nothing to repair
+
+    print(
+        f"   torch is a GPU build but an explicit CPU index is pinned -- "
+        f"reinstalling CPU torch from {pin}"
+    )
+    # The pytorch.org /cpu index is curated, so a bare trio resolves consistently.
+    pip_install(
+        "CPU torch repair",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "--index-url",
+        pin,
         constrain = False,
     )
 
@@ -1191,22 +1342,37 @@ def _ensure_rocm_torch() -> None:
     # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
-    # NVIDIA takes precedence on mixed hosts -- but only if a GPU is usable
-    if _has_usable_nvidia_gpu():
-        return
-    # Use _has_rocm_gpu() (rocminfo / amd-smi GPU data rows) as the
-    # authoritative "is this an AMD ROCm host?" signal. The old gate required
-    # /opt/rocm or hipcc to exist, which breaks runtime-only ROCm installs
-    # (minimal package-managed installs, Radeon software) that ship
-    # amd-smi/rocminfo without /opt/rocm or hipcc, leaving `unsloth studio
-    # update` unable to repair a CPU-only venv on those systems.
-    if not _has_rocm_gpu():
-        return  # no AMD GPU visible
+    # An explicit ROCm wheel-index pin (UNSLOTH_TORCH_INDEX_URL/_FAMILY naming a
+    # rocm*/gfx* leaf) commits to ROCm wheels regardless of which GPU is visible
+    # here -- the headless / container / CI cross-install case. Mirror
+    # _ensure_cuda_torch's explicit-pin bypass: skip the NVIDIA-present / no-AMD /
+    # unreadable-ROCm gates so the pinned index is honoured. Without this, a
+    # standalone `studio update` with an explicit ROCm pin on an NVIDIA-only or
+    # GPU-less box returned here and left the CPU/CUDA torch in place.
+    _rocm_pin = _explicit_rocm_torch_index_url()
+    if _rocm_pin is None:
+        # NVIDIA takes precedence on mixed hosts -- but only if a GPU is usable.
+        if _has_usable_nvidia_gpu():
+            return
+        # Use _has_rocm_gpu() (rocminfo / amd-smi GPU data rows) as the
+        # authoritative "is this an AMD ROCm host?" signal. The old gate required
+        # /opt/rocm or hipcc to exist, which breaks runtime-only ROCm installs
+        # (minimal package-managed installs, Radeon software) that ship
+        # amd-smi/rocminfo without /opt/rocm or hipcc, leaving `unsloth studio
+        # update` unable to repair a CPU-only venv on those systems.
+        if not _has_rocm_gpu():
+            return  # no AMD GPU visible
 
     ver = _detect_rocm_version()
     if ver is None:
-        print("   ROCm detected but version unreadable -- skipping torch reinstall")
-        return
+        if _rocm_pin is None:
+            print("   ROCm detected but version unreadable -- skipping torch reinstall")
+            return
+        # Explicit pin: the pinned index leaf (not the host ROCm version) drives
+        # the install below, so a missing/unreadable host ROCm version is fine.
+        # Use a sentinel so the version-gated Strix reroute (skipped for explicit
+        # pins anyway) and any ver comparisons stay well-defined.
+        ver = (0, 0)
 
     # Probe whether torch already links against HIP (ROCm already working).
     # Do NOT skip for CUDA-only builds: they are unusable on AMD-only hosts
@@ -1247,7 +1413,9 @@ def _ensure_rocm_torch() -> None:
     # an incompatible wheel. Use HIP_VISIBLE_DEVICES for the runtime target.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
-    if ver < (7, 2):
+    # An explicit ROCm wheel-index pin is authoritative: never auto-reroute it to
+    # the AMD per-gfx index (the caller already chose the family/URL).
+    if ver < (7, 2) and _explicit_rocm_torch_index_url() is None:
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -1310,23 +1478,35 @@ def _ensure_rocm_torch() -> None:
         )
         rocm_torch_ready = True
     elif not has_hip_torch:
-        # Select best matching wheel tag (newest ROCm version <= installed)
-        tag = next(
-            (
-                t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                if ver >= (maj, mn)
-            ),
-            None,
-        )
+        # Honour an explicit ROCm wheel-index pin verbatim instead of re-detecting
+        # the host ROCm version; otherwise select the best wheel tag (newest ROCm
+        # version <= installed). gfx*/rocm7.2 indexes serve torch 2.11+, so match
+        # the constraints to the index leaf when overridden.
+        _override_idx = _explicit_rocm_torch_index_url()
+        if _override_idx is not None:
+            index_url = _override_idx
+            tag = index_url.rstrip("/").rsplit("/", 1)[-1].lower()
+        else:
+            tag = next(
+                (
+                    t
+                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                    if ver >= (maj, mn)
+                ),
+                None,
+            )
         if tag is None:
             print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- " f"skipping torch reinstall")
         else:
-            index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
-            _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
-                tag, _ROCM_TORCH_PKG_SPECS["_default"]
-            )
+            if _override_idx is None:
+                index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+            print(f"   ROCm torch -- installing from {index_url}")
+            if tag.startswith("gfx"):
+                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+            else:
+                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
+                    tag, _ROCM_TORCH_PKG_SPECS["_default"]
+                )
             pip_install(
                 f"ROCm torch ({tag})",
                 "--force-reinstall",
@@ -1420,6 +1600,23 @@ NO_TORCH = _infer_no_torch()
 # GPU detection. Values: "cuda", "rocm", or "cpu". Empty means unknown
 # (standalone `unsloth studio update` runs, where we re-detect normally).
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
+# When install.sh did not run (standalone `unsloth studio update`) but the caller
+# pinned the wheel index explicitly, derive the backend from that override so the
+# CUDA/ROCm repair helpers honour it instead of re-probing the GPU and possibly
+# reinstalling a different family. Classify on the final URL/family segment,
+# mirroring install.sh's UNSLOTH_TORCH_BACKEND case.
+if not _TORCH_BACKEND:
+    _idx_override = (
+        os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+        or os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    )
+    _idx_leaf = _idx_override.rstrip("/").rsplit("/", 1)[-1].lower()
+    if _idx_leaf.startswith(("rocm", "gfx")):
+        _TORCH_BACKEND = "rocm"
+    elif _idx_leaf == "cpu":
+        _TORCH_BACKEND = "cpu"
+    elif _idx_leaf.startswith("cu"):
+        _TORCH_BACKEND = "cuda"
 
 
 def _torch_step_label(suffix: str) -> str:
@@ -2149,6 +2346,7 @@ def install_python_stack() -> int:
         _progress(_torch_step_label("check"))
         _ensure_cuda_torch()
         _ensure_rocm_torch()
+        _ensure_cpu_torch()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
     # version or unknown ROCm version).
@@ -2339,6 +2537,7 @@ def install_python_stack() -> int:
         _progress(_torch_step_label("final"))
         _ensure_cuda_torch()
         _ensure_rocm_torch()
+        _ensure_cpu_torch()
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(

@@ -1877,6 +1877,14 @@ if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; t
         TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
     fi
 fi
+# Companion (torchvision/torchaudio) constraints. Bare by default: the pytorch.org
+# cu*/cpu/rocmX.Y indexes are curated so uv resolves an ABI-consistent trio from a
+# bare name. They are pinned alongside TORCH_CONSTRAINT only for the torch-2.11
+# AMD paths (rocm7.2 / per-gfx index / Strix), where AMD publishes each wheel
+# independently and can ship a newer torchvision/torchaudio (built against torch
+# 2.12) before removing the 2.11-matched one -- see the rocm7.2/gfx case below.
+TORCHVISION_CONSTRAINT="torchvision"
+TORCHAUDIO_CONSTRAINT="torchaudio"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -2000,6 +2008,33 @@ _has_usable_nvidia_gpu() {
 get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
+    # Explicit override -- skip ALL GPU probing when the caller pins the wheel
+    # index. Headless / container / CI builds (and anyone cross-installing for a
+    # different target) must not let the build host's GPU -- or the lack of one --
+    # decide the wheel family. This is the same "tell the build, don't ask the
+    # hardware" approach the Docker base image and vLLM/SGLang's Dockerfiles take.
+    # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); UNSLOTH_TORCH_INDEX_FAMILY
+    # is the convenience form (cpu, cu124, cu126, cu128, cu130, rocm6.4, ...)
+    # appended to the mirror base so UNSLOTH_PYTORCH_MIRROR is still honoured.
+    # Trim leading/trailing whitespace so a whitespace-only value is treated as
+    # unset (parity with the Python .strip() and PowerShell IsNullOrWhiteSpace
+    # paths); otherwise "   " would pass -n and yield an invalid index URL.
+    _url="${UNSLOTH_TORCH_INDEX_URL:-}"
+    _url="${_url#"${_url%%[![:space:]]*}"}"; _url="${_url%"${_url##*[![:space:]]}"}"
+    if [ -n "$_url" ]; then
+        # Strip ALL trailing slashes (match the Python side's .rstrip("/") and the
+        # Strix mirror handling below) -- a double/triple-slash URL 404s on strict
+        # pip proxies (artifactory, sonatype).
+        while [ "${_url%/}" != "$_url" ]; do _url="${_url%/}"; done
+        echo "$_url"; return
+    fi
+    _family="${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+    _family="${_family#"${_family%%[![:space:]]*}"}"; _family="${_family%"${_family##*[![:space:]]}"}"
+    if [ -n "$_family" ]; then
+        while [ "${_family#/}" != "$_family" ]; do _family="${_family#/}"; done
+        while [ "${_family%/}" != "$_family" ]; do _family="${_family%/}"; done
+        echo "$_base/$_family"; return
+    fi
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.
@@ -2396,7 +2431,16 @@ _maybe_bootstrap_rocm_wsl() {
     [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
     return 0
 }
-_maybe_bootstrap_rocm_wsl || true
+# When the caller pins the wheel index (UNSLOTH_TORCH_INDEX_URL / _FAMILY),
+# honour it everywhere downstream: skip the WSL ROCm bootstrap (which can run
+# sudo + large downloads after probing /dev/dxg) and the Radeon/Strix rerouting
+# below (which would re-probe the GPU and overwrite the pinned URL). A headless /
+# container / CI build must get exactly the index it asked for.
+_torch_index_pinned=false
+if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] || [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+    _torch_index_pinned=true
+fi
+[ "$_torch_index_pinned" = true ] || _maybe_bootstrap_rocm_wsl || true
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
@@ -2415,16 +2459,30 @@ case "$_torch_index_leaf" in
     *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
-# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
+# rocm7.2 and the AMD per-gfx indexes (repo.amd.com/.../gfxNNNN) ship torch
+# 2.11.0 -- adjust the constraint to allow it. This also covers a pinned full-URL
+# or family override (e.g. UNSLOTH_TORCH_INDEX_URL=.../gfx1151) that returns early
+# above and so never hits the Strix reroute that otherwise raises this constraint.
+# Pin the companions to the matching 2.11 range too: the per-gfx index publishes
+# torchvision/torchaudio independently and a bare name can resolve a 2.12-built
+# wheel (ABI mismatch). Matches setup.ps1's *FloorMap and _ROCM_TORCH_PKG_SPECS.
 # All other ROCm tags and CUDA stay within <2.11.0.
 case "$TORCH_INDEX_URL" in
-    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    */rocm7.2|*/gfx*)
+        TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+        ;;
 esac
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
 # (gfx in rocminfo or amd-smi list). Then require rocminfo "Marketing Name:.*Radeon".
+# Skipped entirely when the index is pinned: an explicit override (even a ROCm
+# one like UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4) must not be rerouted to the
+# Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
+if [ "$_torch_index_pinned" = false ]; then
 case "$TORCH_INDEX_URL" in
     */rocm*)
         if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
@@ -2501,10 +2559,15 @@ case "$TORCH_INDEX_URL" in
             done
             TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            # Pin companions to the 2.11 range (per-gfx index publishes them
+            # independently); mirrors the rocm7.2/gfx case above.
+            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
         fi
         ;;
 esac
+fi  # _torch_index_pinned guard (Radeon + Strix reroute)
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
 if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
     _TAURI_TORCH_INDEX_FAMILY="radeon"
@@ -2688,7 +2751,7 @@ if [ "$_MIGRATED" = true ]; then
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
                     run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
+                        "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
                 fi
@@ -2814,7 +2877,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                    [ "$_radeon_versions_match" != true ]; then
                     substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                     run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
+                        "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                         --index-url "$TORCH_INDEX_URL"
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
@@ -2837,18 +2900,18 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             else
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                 run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                    "$TORCH_CONSTRAINT" torchvision torchaudio \
+                    "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                     --index-url "$TORCH_INDEX_URL"
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
             run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                "$TORCH_CONSTRAINT" torchvision torchaudio \
+                "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                 --index-url "$TORCH_INDEX_URL"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
             --index-url "$TORCH_INDEX_URL"
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
@@ -2908,7 +2971,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
                     run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
+                        "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
                 fi
@@ -2950,7 +3013,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
            && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
             run_install_cmd "reinstall PyTorch ($_expected_torch_tag)" uv pip install --python "$_VENV_PY" \
-                "$TORCH_CONSTRAINT" torchvision torchaudio \
+                "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                 --index-url "$TORCH_INDEX_URL" \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
             _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
@@ -2962,7 +3025,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
             substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
-            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" torchvision torchaudio --index-url $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --index-url $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
 fi

@@ -10,6 +10,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
+STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
 
 class TestNoTorchBackendAutoInInstallSh:
@@ -180,3 +182,31 @@ class TestUvBytecodeCompileTimeout:
         assert (
             '$env:UV_COMPILE_BYTECODE_TIMEOUT = "180"' in text
         ), "install.ps1 should default UV_COMPILE_BYTECODE_TIMEOUT"
+
+
+class TestTorchIndexOverrideParity:
+    """Every installer must honor UNSLOTH_TORCH_INDEX_URL / _FAMILY so a pinned wheel
+    index wins over GPU probing on all platforms (no asymmetric, per-OS coverage)."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY],
+        ids = ["install.sh", "install.ps1", "setup.ps1", "install_python_stack.py"],
+    )
+    def test_installer_reads_override_env(self, path):
+        text = path.read_text(encoding = "utf-8")
+        for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            assert var in text, f"{path.name} does not honor {var}"
+
+    @pytest.mark.parametrize(
+        "path",
+        [INSTALL_PS1, SETUP_PS1],
+        ids = ["install.ps1", "setup.ps1"],
+    )
+    def test_amd_reroute_guarded_when_pinned(self, path):
+        # The AMD ROCm reroute must be skipped when the index is explicitly pinned,
+        # so an explicit cpu / cu* / rocm pin on an AMD host is not overwritten.
+        text = path.read_text(encoding = "utf-8")
+        assert (
+            "TorchIndexPinned" in text
+        ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"

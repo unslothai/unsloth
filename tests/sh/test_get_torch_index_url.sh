@@ -379,6 +379,50 @@ _result=$(run_func "$_dir" " -1 ")
 assert_eq "CVD=' -1 ' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
+# --- explicit overrides (headless / container / CI; no GPU probing) ----------
+# 39) UNSLOTH_TORCH_INDEX_FAMILY pins the family with no GPU present -> that
+#     family (not the cpu fallback detection would pick).
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
+assert_eq "family override (no GPU) -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+
+# 40) Family override wins over a real detection: a host whose nvidia-smi reports
+#     12.6 still gets cu128. This is the exact Docker-build case (the builder sees
+#     the host driver but must publish a cu128 image).
+_dir=$(make_mock_smi "12.6")
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "$_dir")
+assert_eq "family override beats detected 12.6 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
+# 41) UNSLOTH_TORCH_INDEX_URL is used verbatim and wins over detection.
+_dir=$(make_mock_smi "12.6")
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu999" run_func "$_dir")
+assert_eq "url override beats detection -> verbatim" "https://mirror.example.com/whl/cu999" "$_result"
+rm -rf "$_dir"
+
+# 42) Family override is appended to UNSLOTH_PYTORCH_MIRROR (mirror still honoured).
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
+assert_eq "mirror + family override -> mirror/cu128" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 43) Trailing slash in UNSLOTH_TORCH_INDEX_URL is stripped.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128/" run_func "none")
+assert_eq "url override trailing slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 44) URL override takes precedence over family override.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu130" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
+assert_eq "url override beats family override -> url" "https://mirror.example.com/whl/cu130" "$_result"
+
+# 45) An empty override is ignored (falls through to normal detection).
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="" UNSLOTH_TORCH_INDEX_URL="" run_func "none")
+assert_eq "empty overrides ignored -> detected cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
+# 46) ALL trailing slashes are stripped from a URL override (not just one).
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128///" run_func "none")
+assert_eq "url override double slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 47) Leading and trailing slashes stripped from a family override.
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="//cu128//" run_func "none")
+assert_eq "family override slashes stripped" "https://download.pytorch.org/whl/cu128" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_TOOLS_DIR"

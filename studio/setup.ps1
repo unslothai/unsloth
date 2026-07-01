@@ -402,6 +402,29 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
+# Explicit torch-index pin (UNSLOTH_TORCH_INDEX_URL / _FAMILY), shared by the
+# stale-venv check and the install selection below so a pinned wheel index wins
+# over GPU probing -- matching install.sh, install.ps1 and install_python_stack.py.
+# UNSLOTH_TORCH_INDEX_URL is verbatim (full URL); _FAMILY is the leaf (cpu, cu128,
+# rocm6.4, ...) joined to the mirror base so UNSLOTH_PYTORCH_MIRROR is honoured.
+function Get-PinnedTorchIndexUrl {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+        return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
+        $base = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        return "$base/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+    }
+    return $null
+}
+
+# The last path segment of a wheel index URL (cu128 / cpu / rocm6.4 / gfx1151).
+function Get-TorchIndexLeaf {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+    return ($Url.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+}
+
 # VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
 # (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
@@ -2517,6 +2540,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
                 if ($torchVer -match '\+(cu\d+)') {
                     $installedTorchTag = $Matches[1]
+                } elseif ($torchVer -match '\+rocm') {
+                    # Any +rocm / gfx wheel -> generic "rocm" flavor. The exact ROCm
+                    # version is repaired later by install_python_stack.py; here we
+                    # only need the flavor so a correct ROCm venv is not marked stale.
+                    $installedTorchTag = "rocm"
                 } elseif ($torchVer -match '\+cpu') {
                     $installedTorchTag = "cpu"
                 } else {
@@ -2536,8 +2564,65 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     }
 
     if (-not $shouldRebuild) {
-        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
-        if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+        $_pinnedIdx = Get-PinnedTorchIndexUrl
+        $_expectedKnown = $true
+        if ($_pinnedIdx) {
+            $_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx
+            # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds.
+            if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
+                # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
+                # would match any installed +rocm wheel and mask a pin change from
+                # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
+                # -> rocm6.3), leaving the requested index unapplied. Compare what
+                # the wheel tag exposes -- the ROCm version (+rocmX.Y) and whether
+                # the index serves the torch 2.11 line (gfx* / rocm>=7.2 do; older
+                # rocm does not). gfx pins carry no rocm version in the leaf, so
+                # they compare on the 2.11 line only.
+                $_pinNeeds211 = $false
+                $_pinRocmVer = $null
+                if ($_pinLeaf -like 'gfx*') {
+                    $_pinNeeds211 = $true
+                } elseif ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
+                    $_pinRocmVer = "$($Matches[1]).$($Matches[2])"
+                    $_pinNeeds211 = ([int]$Matches[1] -gt 7) -or ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -ge 2)
+                }
+                $_instRocmVer = $null
+                if ($torchVer -match '\+rocm(\d+)\.(\d+)') { $_instRocmVer = "$($Matches[1]).$($Matches[2])" }
+                $_instIs211 = $false
+                if ($torchVer -match '^(\d+)\.(\d+)') {
+                    $_instIs211 = ([int]$Matches[1] -gt 2) -or ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -ge 11)
+                }
+                if ($_pinRocmVer -and $_instRocmVer) {
+                    # Both ROCm versions readable: compare them exactly.
+                    $expectedTorchTag = "rocm$_pinRocmVer"
+                    $installedTorchTag = "rocm$_instRocmVer"
+                } else {
+                    # gfx pin or unreadable version: compare on the torch 2.11 line.
+                    $expectedTorchTag  = if ($_pinNeeds211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+                    $installedTorchTag = if ($_instIs211)   { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+                }
+            } elseif ($_pinLeaf -like 'cu*' -or $_pinLeaf -eq 'cpu') {
+                $expectedTorchTag = $_pinLeaf
+            } else {
+                # Custom index whose final segment is not a torch flavor (e.g. a
+                # PEP 503 mirror ending in /simple). We cannot infer the flavor, so
+                # trust the pinned URL and do not rebuild on a bogus tag comparison.
+                $_expectedKnown = $false
+                $expectedTorchTag = $installedTorchTag
+            }
+        } elseif ($HasNvidiaSmi) {
+            $expectedTorchTag = Get-PytorchCudaTag
+        } elseif ($HasROCm -or $script:ROCmGfxArch) {
+            # AMD/ROCm host with no explicit pin: an existing +rocm wheel is the
+            # correct build, not stale. (gfx arch counts even when $HasROCm is
+            # false -- name-inferred Adrenalin hosts still get ROCm torch below.)
+            # Without this an unpinned ROCm venv compares "rocm" != "cpu" and is
+            # needlessly rebuilt, and an installer-managed setup exits as stale.
+            $expectedTorchTag = "rocm"
+        } else {
+            $expectedTorchTag = "cpu"
+        }
+        if ($_expectedKnown -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
             $shouldRebuild = $true
         }
     }
@@ -2712,7 +2797,13 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
-if ($HasNvidiaSmi) {
+# Explicit pin (URL or family) wins over GPU probing and suppresses the AMD
+# reroute below; matches install.sh / install.ps1 / install_python_stack.py.
+$PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
+$TorchIndexPinned = [bool]$PinnedTorchIndexUrl
+if ($PinnedTorchIndexUrl) {
+    $CuTag = Get-TorchIndexLeaf $PinnedTorchIndexUrl
+} elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
 } else {
     $CuTag = "cpu"
@@ -2733,7 +2824,7 @@ $ROCmIndexUrl = $null
 # SDK -- which flips Studio out of chat-only (CHAT_ONLY) and enables Train/Export.
 # Gating on $HasROCm alone left Strix Halo / Radeon 8060S on CPU torch; a failed
 # ROCm install still falls back to CPU below, so this is safe.
-if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
+if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -2783,7 +2874,39 @@ if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     }
 }
 
+# A pinned gfx*/rocm index skips the auto-reroute above; route it through the
+# ROCm install path with the same floor/companions the unpinned AMD path uses
+# (mirrors install.ps1). Otherwise the CUDA branch below installs bare torch /
+# torchvision / torchaudio from the ROCm index and resolves a known-bad <2.11
+# wheel or ABI-mismatched companions for gfx115x / gfx120x / rocm>=7.2.
+if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
+    $_pinLeaf = Get-TorchIndexLeaf $PinnedTorchIndexUrl
+    $_pinRocm211 = $false
+    if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
+        $_pinRocm211 = ([int]$Matches[1] -gt 7) -or ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -ge 2)
+    }
+    if ($_pinLeaf -like 'gfx*' -or $_pinRocm211) {
+        $ROCmIndexUrl   = $PinnedTorchIndexUrl
+        $ROCmTorchSpec  = "torch>=2.11.0,<2.12.0"
+        $ROCmVisionSpec = "torchvision>=0.26.0,<0.27.0"
+        $ROCmAudioSpec  = "torchaudio>=2.11.0,<2.12.0"
+        substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
+    } elseif ($_pinLeaf -like 'rocm*') {
+        $ROCmIndexUrl   = $PinnedTorchIndexUrl
+        $ROCmTorchSpec  = "torch"
+        $ROCmVisionSpec = "torchvision"
+        $ROCmAudioSpec  = "torchaudio"
+    }
+}
+
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+
+# A full UNSLOTH_TORCH_INDEX_URL pin is used verbatim; a family pin already set
+# $CuTag, so $PyTorchWhlBase/$CuTag is the requested family index. The CPU/CUDA
+# install branches below pull from this instead of re-joining mirror + tag.
+# A pinned ROCm install goes through $ROCmIndexUrl; if that fails, the fallback
+# must use the CPU wheel index, not retry the ROCm mirror left in the pin.
+$TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
@@ -2811,21 +2934,25 @@ if ($ROCmIndexUrl) {
     }
 }
 
-if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
+if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     substep "installing PyTorch (CPU-only)..."
     # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
     # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
     # the forced reinstall on a genuine CPU-only host so the common path stays fast.
+    # The $ROCmCpuFallback term matters when a PINNED ROCm index failed: $CuTag is
+    # still the rocm/gfx leaf (not "cpu"), so without it execution would fall through
+    # to the CUDA branch and install from the CPU index WITHOUT --force-reinstall,
+    # leaving the partial ROCm torch in place.
     # Build the array directly: an if-expression collapses @("x") to a scalar string,
     # which @splat would then enumerate char-by-char into broken single-letter args.
     $cpuForce = @()
     if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu"
+        Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -2837,11 +2964,11 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag"
+        Fast-Install torch torchvision torchaudio --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {

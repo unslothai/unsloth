@@ -685,6 +685,36 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
+    def test_explicit_gfx_index_honored_and_skips_strix_reroute(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """An explicit gfx wheel-index pin is authoritative: install from it verbatim
+        with torch 2.11, and never re-probe gfx codes to second-guess it (host ROCm 6.4
+        would otherwise pick the rocm6.4 wheel / trigger the Strix re-route)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    # Would raise if the Strix block ran (it is skipped on an explicit pin).
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
+                        _ensure_rocm_torch()
+        assert mock_pip.call_count == 1
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_probe_timeout_triggers_reinstall(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
