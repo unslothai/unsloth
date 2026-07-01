@@ -127,6 +127,8 @@ export async function loadCheckpoint(params: {
 export async function exportMerged(params: {
   save_directory: string;
   format_type?: string;
+  /** Compressed-tensors scheme alias (e.g. "fp8", "w4a16", "mxfp4"); overrides format_type. */
+  compressed_method?: string | null;
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;

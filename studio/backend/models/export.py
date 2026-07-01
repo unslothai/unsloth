@@ -168,6 +168,13 @@ class ExportMergedModelRequest(ExportCommonOptions):
         description = "Export precision / format for the merged model. The compressed-tensors "
         "options run llm-compressor for vLLM (FP8 is data-free; NVFP4 calibrates).",
     )
+    compressed_method: Optional[str] = Field(
+        None,
+        description = "Optional compressed-tensors scheme alias (e.g. 'fp8', 'fp8_static', "
+        "'w8a8', 'w4a16', 'mxfp4', 'mxfp8', 'nvfp4'). When set, it overrides format_type and "
+        "selects any scheme from the unsloth.save COMPRESSED_EXPORT_SCHEMES registry. Lets the "
+        "export UI expose the full set of vLLM compressed formats beyond the quick buttons.",
+    )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):

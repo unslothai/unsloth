@@ -114,3 +114,33 @@ def test_compressed_hub_push_uploads_local_dir_without_recompressing():
     m = _func_src("core/export/export.py", "export_merged_model")
     assert "elif is_compressed and output_path and Path(output_path).is_dir():" in m
     assert "hf_api.upload_folder(" in m and "folder_path = output_path" in m
+
+
+# -- compressed_method ("all formats" dropdown) -------------------------------------------------
+
+
+def test_merged_request_accepts_compressed_method():
+    # Defaults to None; any scheme alias is accepted (validation happens in the backend registry).
+    assert ExportMergedModelRequest(save_directory = "/tmp/x").compressed_method is None
+    for alias in ("fp8", "fp8_static", "w8a8", "w8a16", "w4a16", "mxfp4", "mxfp8", "nvfp4"):
+        r = ExportMergedModelRequest(save_directory = "/tmp/x", compressed_method = alias)
+        assert r.compressed_method == alias
+
+
+def test_export_merged_resolves_alias_via_registry():
+    # The scheme + suffix must come from unsloth.save's registry normalizer, not a hardcoded dict.
+    m = _func_src("core/export/export.py", "export_merged_model")
+    assert "compressed_method" in m
+    assert "_normalize_compressed_method(compressed_alias)" in m
+    assert "compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)" in m
+    assert "compressed_suffix" in m and "f\"{save_directory}-{compressed_suffix}\"" in m
+
+
+def test_orchestrator_and_worker_pass_compressed_method():
+    o = _func_src("core/export/orchestrator.py", "export_merged_model")
+    assert "compressed_method" in o and '"compressed_method": compressed_method' in o
+    assert 'compressed_method = cmd.get("compressed_method")' in _src("core/export/worker.py")
+
+
+def test_route_passes_compressed_method():
+    assert "compressed_method = request.compressed_method" in _src("routes/export.py")

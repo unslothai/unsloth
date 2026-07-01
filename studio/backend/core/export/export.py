@@ -394,13 +394,17 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export merged model (for PEFT models).
 
         Args:
             save_directory: Local directory to save model
-            format_type: "16-bit (FP16)" or "4-bit (FP4)"
+            format_type: "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label
+            compressed_method: Optional compressed-tensors scheme alias (e.g. "fp8",
+                "fp8_static", "w8a8", "w4a16", "mxfp4", "mxfp8", "nvfp4"). Overrides
+                format_type and is resolved against unsloth.save COMPRESSED_EXPORT_SCHEMES.
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID (username/model-name)
             hf_token: Hugging Face token
@@ -421,26 +425,47 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         # compressed-tensors formats run save_pretrained_merged with an FP8/FP4 save_method and
-        # write to a sibling "<dir>-<suffix>" directory (for vLLM).
-        _COMPRESSED = {
-            "FP8 (compressed-tensors)": ("fp8", "fp8"),
-            "NVFP4 (compressed-tensors)": ("nvfp4", "nvfp4"),
+        # write to a sibling "<dir>-<suffix>" directory (for vLLM). The scheme comes from the
+        # explicit `compressed_method` alias (the "all formats" dropdown) or is implied by the
+        # quick-button `format_type` label; either way the save_method and suffix derive from the
+        # unsloth.save COMPRESSED_EXPORT_SCHEMES registry, the single source of truth.
+        _LABEL_TO_ALIAS = {
+            "FP8 (compressed-tensors)": "fp8",
+            "NVFP4 (compressed-tensors)": "nvfp4",
         }
-        is_compressed = format_type in _COMPRESSED
+        compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
+        compressed_suffix: Optional[str] = None
+        is_compressed = compressed_alias is not None
         try:
-            if _IS_MLX:
-                if is_compressed:
-                    return False, "Compressed-tensors export is not supported on macOS/MLX.", None
-                mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
-            elif is_compressed:
+            if _IS_MLX and is_compressed:
+                return False, "Compressed-tensors export is not supported on macOS/MLX.", None
+
+            if is_compressed:
                 if not _compressed_export_supported():
                     return (
                         False,
-                        "Compressed-tensors (FP8/NVFP4) export requires an Unsloth build with "
+                        "Compressed-tensors (FP8/FP4) export requires an Unsloth build with "
                         "compressed-tensors support. Upgrade unsloth, or choose 16-bit.",
                         None,
                     )
-                save_method = _COMPRESSED[format_type][0]
+                import unsloth.save as _us
+
+                try:
+                    info = _us._normalize_compressed_method(compressed_alias)
+                except Exception as e:
+                    return False, f"Unsupported compressed export '{compressed_alias}': {e}", None
+                if info is None:
+                    return (
+                        False,
+                        f"'{compressed_alias}' is not a recognized compressed-tensors export.",
+                        None,
+                    )
+                compressed_suffix = info[2]
+
+            if _IS_MLX:
+                mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+            elif is_compressed:
+                save_method = compressed_alias
             elif format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
             elif self._audio_type == "whisper":
@@ -466,7 +491,7 @@ class ExportBackend:
 
                 # Compressed export writes to the "<dir>-<suffix>" sibling; report that as output.
                 final_dir = (
-                    f"{save_directory}-{_COMPRESSED[format_type][1]}"
+                    f"{save_directory}-{compressed_suffix}"
                     if is_compressed
                     else save_directory
                 )
@@ -522,7 +547,7 @@ class ExportBackend:
                         username = repo_id.split("/")[0],
                         base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
                         model_type = getattr(self.current_model.config, "model_type", "llm"),
-                        method = format_type,
+                        method = compressed_alias or format_type,
                         extra = "unsloth",
                     )
                     ModelCard(content).push_to_hub(

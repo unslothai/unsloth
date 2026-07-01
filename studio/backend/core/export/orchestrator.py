@@ -456,6 +456,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
@@ -467,6 +468,7 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
+                "compressed_method": compressed_method,
             },
         )
 

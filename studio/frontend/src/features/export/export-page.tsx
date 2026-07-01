@@ -20,7 +20,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -59,6 +61,8 @@ import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
 import {
+  COMPRESSED_GROUPS,
+  COMPRESSED_SCHEMES,
   EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
@@ -178,6 +182,8 @@ export function ExportPage() {
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
   const [mergedFormat, setMergedFormat] = useState<MergedFormat>("16-bit (FP16)");
+  // "More formats" dropdown: a compressed-tensors scheme alias that overrides mergedFormat when set.
+  const [compressedMethod, setCompressedMethod] = useState<string | null>(null);
   // IQ quants are imatrix-only, so force it on when one is selected; otherwise we would submit
   // an IQ quant with no imatrix and llama.cpp would reject it.
   const requiresImatrix = quantLevels.some(
@@ -629,6 +635,7 @@ export function ExportPage() {
       quantLevels,
       useImatrix: effectiveImatrix,
       mergedFormat,
+      compressedMethod,
       saveDirectory,
       destination,
       repoId,
@@ -657,6 +664,7 @@ export function ExportPage() {
     quantLevels,
     effectiveImatrix,
     mergedFormat,
+    compressedMethod,
     destination,
     saveDirectory,
     hfUsername,
@@ -1185,24 +1193,77 @@ export function ExportPage() {
               />
 
               {exportMethod === "merged" && isAdapter && (
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Precision</div>
-                  <div className="flex flex-wrap gap-2">
-                    {MERGED_FORMATS.map((f) => (
-                      <Button
-                        key={f.value}
-                        type="button"
-                        variant={mergedFormat === f.value ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setMergedFormat(f.value)}
-                        title={f.hint}
-                      >
-                        {f.label}
-                      </Button>
-                    ))}
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Precision</div>
+                    <div className="flex flex-wrap gap-2">
+                      {MERGED_FORMATS.map((f) => (
+                        <Button
+                          key={f.value}
+                          type="button"
+                          variant={
+                            !compressedMethod && mergedFormat === f.value
+                              ? "default"
+                              : "outline"
+                          }
+                          size="sm"
+                          onClick={() => {
+                            setMergedFormat(f.value);
+                            setCompressedMethod(null);
+                          }}
+                          title={f.hint}
+                        >
+                          {f.label}
+                        </Button>
+                      ))}
+                    </div>
+                    {!compressedMethod && (
+                      <div className="text-xs text-muted-foreground">
+                        {
+                          MERGED_FORMATS.find((f) => f.value === mergedFormat)
+                            ?.hint
+                        }
+                      </div>
+                    )}
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {MERGED_FORMATS.find((f) => f.value === mergedFormat)?.hint}
+
+                  <div className="space-y-1.5">
+                    <div className="text-sm font-medium">
+                      More formats (vLLM compressed-tensors)
+                    </div>
+                    <Select
+                      value={compressedMethod ?? ""}
+                      onValueChange={(v) => setCompressedMethod(v || null)}
+                    >
+                      <SelectTrigger className="w-full sm:w-72">
+                        <SelectValue placeholder="Choose a compressed-tensors scheme…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {COMPRESSED_GROUPS.map((group) => (
+                          <SelectGroup key={group}>
+                            <SelectLabel>{group}</SelectLabel>
+                            {COMPRESSED_SCHEMES.filter(
+                              (s) => s.group === group,
+                            ).map((s) => (
+                              <SelectItem key={s.value} value={s.value}>
+                                {s.label}
+                                {s.needsCalibration ? " (calibrates)" : ""}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {compressedMethod && (
+                      <div className="text-xs text-muted-foreground">
+                        {
+                          COMPRESSED_SCHEMES.find(
+                            (s) => s.value === compressedMethod,
+                          )?.hint
+                        }{" "}
+                        Pick a precision button above to clear.
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

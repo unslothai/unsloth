@@ -142,6 +142,8 @@ export interface RunExportParams {
   useImatrix?: boolean;
   /** Merged: precision/format ("16-bit (FP16)" or a compressed-tensors option). */
   mergedFormat?: string;
+  /** Merged: compressed-tensors scheme alias from the "More formats" dropdown; overrides mergedFormat. */
+  compressedMethod?: string | null;
   saveDirectory: string;
   destination: ExportDestination;
   repoId?: string;
@@ -442,6 +444,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             exportMerged({
               save_directory: params.saveDirectory,
               format_type: params.mergedFormat,
+              compressed_method: params.compressedMethod ?? null,
               push_to_hub: pushToHub,
               repo_id: params.repoId,
               hf_token: params.token,

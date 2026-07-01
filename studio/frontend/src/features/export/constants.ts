@@ -83,6 +83,77 @@ export const MERGED_FORMATS: {
   },
 ];
 
+/** Families used to group the curated compressed-tensors dropdown. */
+export const COMPRESSED_GROUPS = ["FP8", "INT", "MXFP", "NVFP4"] as const;
+export type CompressedGroup = (typeof COMPRESSED_GROUPS)[number];
+
+/**
+ * Curated vLLM compressed-tensors schemes for the "More formats" dropdown. `value` is the backend
+ * scheme alias resolved via unsloth.save COMPRESSED_EXPORT_SCHEMES; `needsCalibration` flags the
+ * schemes that calibrate on data (everything else is data-free). This is a curated subset of the
+ * full registry, picked to cover FP8 / INT / MXFP / NVFP4 without overwhelming the UI.
+ */
+export type CompressedScheme = {
+  value: string;
+  label: string;
+  group: CompressedGroup;
+  hint: string;
+  needsCalibration?: boolean;
+};
+
+export const COMPRESSED_SCHEMES: CompressedScheme[] = [
+  {
+    value: "fp8",
+    label: "FP8 Dynamic",
+    group: "FP8",
+    hint: "Per-token dynamic FP8 (W8A8). Data-free.",
+  },
+  {
+    value: "fp8_static",
+    label: "FP8 Static",
+    group: "FP8",
+    hint: "Static per-tensor FP8. Calibrates on data.",
+    needsCalibration: true,
+  },
+  {
+    value: "w8a8",
+    label: "INT8 W8A8",
+    group: "INT",
+    hint: "8-bit weights and 8-bit activations. Data-free.",
+  },
+  {
+    value: "w8a16",
+    label: "INT8 W8A16",
+    group: "INT",
+    hint: "8-bit weight-only. Data-free.",
+  },
+  {
+    value: "w4a16",
+    label: "INT4 W4A16",
+    group: "INT",
+    hint: "4-bit weight-only (GPTQ-style). Data-free.",
+  },
+  {
+    value: "mxfp4",
+    label: "MXFP4",
+    group: "MXFP",
+    hint: "Microscaling FP4 (W4A4). Data-free.",
+  },
+  {
+    value: "mxfp8",
+    label: "MXFP8",
+    group: "MXFP",
+    hint: "Microscaling FP8. Data-free; needs a newer compressed-tensors stack.",
+  },
+  {
+    value: "nvfp4",
+    label: "NVFP4",
+    group: "NVFP4",
+    hint: "NVIDIA FP4 (W4A4). Calibrates on data.",
+    needsCalibration: true,
+  },
+];
+
 /**
  * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
  * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
