@@ -426,7 +426,12 @@ def _claude_version() -> Optional[tuple]:
         result = subprocess.run(
             [executable, "--version"], capture_output = True, text = True, timeout = 10
         )
-        return tuple(int(part) for part in result.stdout.split()[0].split("."))
+        # Pull the X.Y.Z out of the output rather than assuming it is the first token.
+        # claude prints it first today ("2.1.98 (Claude Code)"), but a format change
+        # (e.g. "claude version 2.1.98") shouldn't silently drop the optimization flags;
+        # no match falls through to "too old", same as an unparseable version.
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", result.stdout)
+        return tuple(int(part) for part in match.groups()) if match else (0,)
     except Exception:
         return (0,)
 

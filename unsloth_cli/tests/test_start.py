@@ -66,6 +66,17 @@ def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
     assert start._claude_flags() == []
 
 
+def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
+    # The X.Y.Z is pulled from anywhere in the output, so a format change (version not
+    # the first token) doesn't silently drop the optimization flags.
+    _fake_claude(monkeypatch, "claude version 2.1.98\n")
+    assert start._claude_flags() == [
+        "--exclude-dynamic-system-prompt-sections",
+        "--settings",
+        start._CLAUDE_SETTINGS_OVERLAY,
+    ]
+
+
 def _parse_toml(text: str) -> dict:
     tomllib = pytest.importorskip("tomllib")
     return tomllib.loads(text)
