@@ -102,6 +102,14 @@ def train(
         )
         raise typer.Exit(code = 2)
 
+    if export == "lora" and not use_lora:
+        typer.echo(
+            "Error: --export lora requires --training-type lora "
+            "(full finetuning produces no adapter).",
+            err = True,
+        )
+        raise typer.Exit(code = 2)
+
     from studio.backend.core.training.trainer import UnslothTrainer
 
     trainer = UnslothTrainer()
@@ -159,8 +167,9 @@ def train(
         from studio.backend.utils.paths.storage_roots import resolve_output_dir
         from unsloth_cli.commands.export import export_checkpoint
 
+        trainer.cleanup()
         checkpoint_dir = resolve_output_dir(str(cfg.training.output_dir))
-        out = export_dir if export_dir is not None else checkpoint_dir / export
+        out = export_dir.resolve() if export_dir is not None else checkpoint_dir / export
         export_checkpoint(
             checkpoint = checkpoint_dir,
             output_dir = out,

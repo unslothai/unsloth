@@ -100,6 +100,7 @@ def export_checkpoint(
         checkpoint_path = str(checkpoint),
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
+        hf_token = hf_token,
     )
     if not success:
         typer.echo(f"Error: {message}", err = True)

@@ -39,6 +39,9 @@ class _FakeTrainer:
     def get_training_progress(self):
         return _FakeProgress()
 
+    def cleanup(self):
+        pass
+
 
 def _install_fake_backend(monkeypatch: pytest.MonkeyPatch, outputs_root: Path) -> None:
     """Stub the trainer + storage-root modules the CLI lazily imports."""
@@ -117,7 +120,7 @@ def test_train_export_dir_override(cli_app, runner: CliRunner, tmp_path: Path) -
     )
 
     assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
-    assert calls[0]["output_dir"] == dest
+    assert calls[0]["output_dir"] == dest.resolve()
 
 
 def test_train_without_export_skips_export(cli_app, runner: CliRunner) -> None:
@@ -127,6 +130,20 @@ def test_train_without_export_skips_export(cli_app, runner: CliRunner) -> None:
     result = runner.invoke(app, ["--model", "hf/tiny", "--dataset", "d"])
 
     assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
+    assert calls == []
+
+
+def test_train_full_rejects_lora_export(cli_app, runner: CliRunner) -> None:
+    """--export lora needs a LoRA run; full finetuning produces no adapter."""
+    app, calls, _ = cli_app
+
+    result = runner.invoke(
+        app,
+        ["--model", "hf/tiny", "--dataset", "d", "--training-type", "full", "--export", "lora"],
+    )
+
+    assert result.exit_code == 2
+    assert "requires --training-type lora" in result.output
     assert calls == []
 
 
