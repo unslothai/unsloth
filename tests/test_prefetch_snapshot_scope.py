@@ -268,7 +268,9 @@ def test_is_canonical_model_weight_safetensors():
     assert U._is_canonical_model_weight_safetensors("model-00001-of-00002.safetensors") is True
     assert U._is_canonical_model_weight_safetensors("model.safetensors.index.json") is True
     assert U._is_canonical_model_weight_safetensors("model.fp16.safetensors") is False
-    assert U._is_canonical_model_weight_safetensors("model.fp16-00001-of-00002.safetensors") is False
+    assert (
+        U._is_canonical_model_weight_safetensors("model.fp16-00001-of-00002.safetensors") is False
+    )
     assert U._is_canonical_model_weight_safetensors("adapter_model.safetensors") is False
 
 
@@ -285,8 +287,10 @@ def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
         src = f.read()
     tree = ast.parse(src)
     prefetch_calls = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
         and n.func.id == "maybe_prefetch_hf_snapshot"
     ]
     assert len(prefetch_calls) == 1, "expected exactly one ST prefetch call"
@@ -294,9 +298,9 @@ def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
     # F3: the cache_dir kwarg resolves SENTENCE_TRANSFORMERS_HOME.
     cache_dir_kw = next((kw for kw in call.keywords if kw.arg == "cache_dir"), None)
     assert cache_dir_kw is not None, "ST prefetch must pass cache_dir"
-    assert "SENTENCE_TRANSFORMERS_HOME" in ast.dump(cache_dir_kw.value), (
-        "ST prefetch cache_dir must resolve SENTENCE_TRANSFORMERS_HOME"
-    )
+    assert "SENTENCE_TRANSFORMERS_HOME" in ast.dump(
+        cache_dir_kw.value
+    ), "ST prefetch cache_dir must resolve SENTENCE_TRANSFORMERS_HOME"
     # F2: the load-mode validation runs before the prefetch (fewer source lines = earlier).
     val_lineno = src[: src.index("Can only load in 4bit or 8bit or 16bit")].count("\n")
     assert val_lineno < call.lineno, "load-mode validation must precede the ST prefetch"
