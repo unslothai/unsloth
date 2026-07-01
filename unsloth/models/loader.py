@@ -882,7 +882,9 @@ class FastLanguageModel(FastLlamaModel):
             # the grouped path on their frozen experts, and recompute is re-derived from the final
             # gradient-checkpointing state. Guarded so it never blocks adapter loading.
             try:
-                from unsloth_zoo.temporary_patches.moe_grouped_modulelist import auto_enable_grouped_moe
+                from unsloth_zoo.temporary_patches.moe_grouped_modulelist import (
+                    auto_enable_grouped_moe,
+                )
                 auto_enable_grouped_moe(model)
             except Exception:
                 pass  # optional speedup; never block model loading
