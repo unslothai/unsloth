@@ -968,7 +968,9 @@ export const Thread: FC<{
             scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
-              hideComposer ? "pt-4" : "pt-[48px]",
+              hideComposer
+                ? "pt-4"
+                : "pt-[calc(var(--studio-content-top-inset,0px)+48px)]",
             )}
           >
             {!hideWelcome && (
@@ -3553,9 +3555,9 @@ const DiffusionCanvas: FC = () => {
 
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
- * 
- * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users 
- * to edit structured reasoning and tool outputs within a plain-text textarea 
+ *
+ * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
+ * to edit structured reasoning and tool outputs within a plain-text textarea
  * while preserving the underlying data schema and tool-call metadata.
  */
 const AssistantMessage: FC = () => {
@@ -3563,7 +3565,7 @@ const AssistantMessage: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  
+
   // Use global store for editing state to ensure a single source of truth
   const editingId = useChatRuntimeStore((s) => s.editingMessageId);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
@@ -3586,9 +3588,9 @@ const AssistantMessage: FC = () => {
 
   const handleSave = async () => {
     const finalText = textareaRef.current?.value || "";
-    
+
     // Prioritize the specific thread item ID, then fallback to the global active thread ID
-    const remoteId = aui.threadListItem().getState().remoteId 
+    const remoteId = aui.threadListItem().getState().remoteId
                   || useChatRuntimeStore.getState().activeThreadId;
 
     if (!remoteId || remoteId === "" || remoteId === "/") {
@@ -3599,9 +3601,9 @@ const AssistantMessage: FC = () => {
 
     try {
       await updateThreadMessage({
-        thread: { 
-          export: () => aui.thread().export(), 
-          import: (data) => aui.thread().import(data) 
+        thread: {
+          export: () => aui.thread().export(),
+          import: (data) => aui.thread().import(data)
         },
         messageId,
         remoteId,
@@ -3624,14 +3626,14 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <textarea 
+            <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]" 
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
               autoFocus
-              onInput={adjustHeight} 
+              onInput={adjustHeight}
               onKeyDown={(e) => {
-                e.stopPropagation(); 
+                e.stopPropagation();
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                   handleSave();
                 }
@@ -3650,10 +3652,10 @@ const AssistantMessage: FC = () => {
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
-            
-            {/* 
-                We use the standard MessagePrimitive.Parts. This ensures that 
-                edited messages maintain the same professional styling, 
+
+            {/*
+                We use the standard MessagePrimitive.Parts. This ensures that
+                edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
             <MessagePrimitive.Parts

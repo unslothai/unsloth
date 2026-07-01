@@ -40,9 +40,13 @@ def bench_pytorch(repo, gguf, resolutions, steps, seed, iters):
     backend = DiffusionBackend()
     for speed in ("off", "default"):
         backend.begin_load(repo, gguf_filename = gguf, speed_mode = speed)
+        deadline = time.time() + 1800  # 30 min: a stuck download/load must not hang forever
         while backend.load_progress().get("phase") != "ready":
-            if backend.load_progress().get("phase") == "error":
-                raise RuntimeError(backend.load_progress())
+            prog = backend.load_progress()
+            if prog.get("phase") == "error":
+                raise RuntimeError(prog)
+            if time.time() > deadline:
+                raise TimeoutError(f"load timed out (last progress: {prog})")
             time.sleep(0.5)
         for res in resolutions:
 
@@ -128,11 +132,13 @@ def main(argv = None) -> int:
     )
     p.add_argument(
         "--vae",
-        default = "/mnt/disks/unslothai/ubuntu/workspace_81/sdcpp_assets/flux_vae/ae.safetensors",
+        default = None,
+        help = "VAE safetensors for sd.cpp (required when benchmarking the sd.cpp engine)",
     )
     p.add_argument(
         "--llm",
-        default = "/mnt/disks/unslothai/ubuntu/workspace_81/sdcpp_assets/qwen3_te/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        default = None,
+        help = "text-encoder GGUF for sd.cpp (required when benchmarking the sd.cpp engine)",
     )
     p.add_argument("--resolutions", default = "512,1024")
     p.add_argument("--steps", type = int, default = 8)

@@ -132,6 +132,42 @@ def test_restore_backend_flags_tolerates_none():
     restore_backend_flags(None)  # no torch needed, no-op
 
 
+def test_snapshot_partial_when_some_backends_missing(monkeypatch):
+    # A build/platform without cuda.matmul (e.g. CPU/MPS) must still snapshot + restore the
+    # flags it does have, rather than skipping the whole snapshot on one missing attribute.
+    torch = types.ModuleType("torch")
+    torch.backends = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(),  # no .matmul
+        cudnn = types.SimpleNamespace(benchmark = True),  # no .allow_tf32
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    snap = snapshot_backend_flags()
+    assert snap == {"cudnn_benchmark": True}
+    torch.backends.cudnn.benchmark = False
+    restore_backend_flags(snap)
+    assert torch.backends.cudnn.benchmark is True
+
+
+def test_restore_is_independent_per_flag(monkeypatch):
+    # A read-only / failing attribute must not abort restoring the remaining flags.
+    torch = _stub_torch(monkeypatch)
+
+    class _NoMatmulSet:
+        @property
+        def allow_tf32(self):
+            return False
+
+        @allow_tf32.setter
+        def allow_tf32(self, value):
+            raise RuntimeError("read-only on this build")
+
+    torch.backends.cuda.matmul = _NoMatmulSet()
+    snap = {"matmul_tf32": False, "cudnn_tf32": False, "cudnn_benchmark": False}
+    torch.backends.cudnn.benchmark = True
+    restore_backend_flags(snap)  # matmul setter raises, cudnn still restored
+    assert torch.backends.cudnn.benchmark is False
+
+
 # ── applier ───────────────────────────────────────────────────────────────────
 
 

@@ -26,6 +26,7 @@ from core.inference.diffusion_families import (
     detect_family,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 
 
@@ -45,8 +46,13 @@ def test_detect_family_from_repo_id():
     assert klein.cfg_kwarg == "guidance_scale"
     # Both klein sizes share the one family (base repo resolved per-variant).
     assert detect_family("unsloth/FLUX.2-klein-9B-GGUF").name == "flux.2-klein"
-    # Only klein is wired up; the Mistral-based FLUX.2-dev base repo is gated.
-    assert detect_family("unsloth/FLUX.2-dev-GGUF") is None
+    # FLUX.2-dev is the Mistral-based Flux2Pipeline, a distinct family from klein; its
+    # gated base repo is reachable with an HF token. It must not collide with klein.
+    dev = detect_family("unsloth/FLUX.2-dev-GGUF")
+    assert dev.name == "flux.2-dev"
+    assert dev.pipeline_class == "Flux2Pipeline"
+    assert dev.base_repo == "black-forest-labs/FLUX.2-dev"
+    assert detect_family("black-forest-labs/FLUX.2-dev").name == "flux.2-dev"
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
     assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"
@@ -75,6 +81,16 @@ def test_detect_family_override():
     assert detect_family("local/path", override = "z-image").name == "z-image"
     assert detect_family("local/path", override = "zimage").name == "z-image"
     assert detect_family("local/path", override = "not-a-family") is None
+
+
+def test_supported_family_names():
+    names = supported_family_names()
+    # The unknown-model error lists these, so the key families must be present.
+    for expected in ("flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "z-image"):
+        assert expected in names
+    # Every listed name is a valid family_override (round-trips through detect_family).
+    for name in names:
+        assert detect_family("some/unknown-repo", override = name) is not None
 
 
 def test_resolve_base_repo():
@@ -886,6 +902,20 @@ def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
     assert status["cpu_offload"] is False
 
 
+def test_low_vram_ignored_off_cuda(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        base_repo = "base/repo",
+        memory_mode = "low_vram",
+    )
+    # No CUDA in the stub, so offload is not engaged regardless of the request.
+    assert status["cpu_offload"] is False
+
+
 def test_generate_without_load_raises(fake_runtime):
     backend = DiffusionBackend()
     with pytest.raises(RuntimeError):
@@ -1566,6 +1596,9 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
         transformer_quant = "fp8",
     )
     assert status["transformer_quant"] == "fp8"
+    # No speed_mode was given, but a quantized transformer is ~30x slower eager, so the
+    # backend promotes it to `default` (regional compile) instead of the dense `off`.
+    assert status["speed_mode"] == "default"
     assert calls["from_pretrained"] == 1 and calls["quantize"] == 1
     assert calls["quant_mode"] == "fp8"
     assert calls["fp_kwargs"]["subfolder"] == "transformer"  # dense transformer subfolder

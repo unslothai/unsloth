@@ -33,6 +33,7 @@ from .diffusion_families import (
     detect_family,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -81,6 +82,7 @@ from .diffusion_prequant import (
     resolve_prequant_source,
 )
 from .diffusion_transformer_quant import (
+    DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     normalize_transformer_quant,
     quantize_transformer,
@@ -381,6 +383,22 @@ class DiffusionBackend:
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
 
+    @staticmethod
+    def _detect_family_for_pick(
+        repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
+    ) -> Optional[DiffusionFamily]:
+        """Detect the family from the repo id, falling back to the combined
+        path/filename for a direct local .gguf pick. The frontend splits such a
+        pick into (parent dir, basename), so the family keyword can live only in
+        the filename (e.g. /models/z-image-turbo-Q4_K_M.gguf) while the parent
+        directory carries none; scan it too when the directory alone is
+        undetectable. Only used as a fallback, so remote 'org/name' picks and
+        explicit overrides behave exactly as before."""
+        fam = detect_family(repo_id, family_override)
+        if fam is None and gguf_filename and not family_override:
+            fam = detect_family(f"{repo_id}/{gguf_filename}", family_override)
+        return fam
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -396,10 +414,13 @@ class DiffusionBackend:
         undetectable family, and ValueError/FileNotFoundError for a bad local path.
         Touches no GPU, network, or state."""
         kind = resolve_model_kind(gguf_filename, model_kind)
-        fam = detect_family(repo_id, family_override)
+        fam = self._detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
+                f"'{repo_id}' is not a supported diffusion image model. Supported families: "
+                f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
+                f"pass family_override with that family name. (Video models and image models "
+                f"whose diffusers transformer has no single-file loader are not supported.)"
             )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
@@ -415,7 +436,12 @@ class DiffusionBackend:
         # missing one is an error here; a bare "org/name" id is a remote HF repo and
         # is left for the background load to resolve.
         local_root = Path(repo_id).expanduser()
-        path_shaped = repo_id.startswith(("/", "~", "./", "../")) or local_root.is_absolute()
+        # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and their Windows .\ ..\
+        # forms), a Windows separator anywhere (never present in a bare "org/name" HF
+        # id), or an absolute path on this OS.
+        path_shaped = (
+            repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or local_root.is_absolute()
+        )
         if kind in ("gguf", "single_file"):
             if not gguf_filename:
                 raise ValueError(f"a single-file checkpoint name is required for a '{kind}' load.")
@@ -511,7 +537,9 @@ class DiffusionBackend:
             # Resolve the base repo and estimate sizes on this thread (both network
             # calls) so begin_load returns instantly; the bar shows raw bytes until
             # the total lands. This is the only writer of _loading's fields here.
-            fam = detect_family(kwargs["repo_id"], kwargs.get("family_override"))
+            fam = self._detect_family_for_pick(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+            )
             kind = resolve_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
             if kind == "pipeline":
                 # The full pipeline IS the repo: from_pretrained pulls every component
@@ -529,10 +557,12 @@ class DiffusionBackend:
                 kwargs.get("hf_token"),
                 kind = kind,
             )
-            loading = self._loading
-            if loading is not None:
-                loading.base_repo = base
-                loading.expected_bytes = expected
+            with self._lock:
+                # Stamp progress only if this load is still current; a superseding
+                # load (or unload) has its own token and its own _LoadingState.
+                if self._load_token == token and self._loading is not None:
+                    self._loading.base_repo = base
+                    self._loading.expected_bytes = expected
             # Download outside the lock so unload()/an eviction can preempt the
             # multi-GB pull; load_pipeline below then assembles from the cache.
             self._prefetch_files(
@@ -554,9 +584,13 @@ class DiffusionBackend:
             if self._load_token != token:
                 return
             logger.error("diffusion.load_failed: %s", exc)
+            # Redact native paths: this error is surfaced verbatim via the
+            # load-progress poll, and Studio can run as a shared server.
+            from utils.native_path_leases import redact_native_paths
+
             with self._lock:
                 if self._load_token == token and self._loading is not None:
-                    self._loading.error = str(exc)
+                    self._loading.error = redact_native_paths(str(exc))
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -609,7 +643,11 @@ class DiffusionBackend:
                         base_files.append(s.rfilename)
                         total += s.size or 0
                 return total, base_files
-            if gguf_filename:
+            # Skip the Hub size lookup for a LOCAL gguf path: model_info(repo_id) would
+            # raise on a filesystem path and (caught below) skip the base-repo lookup too,
+            # so the companion VAE/text-encoder files would never be prefetched and would
+            # instead download synchronously under the load lock.
+            if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
@@ -804,6 +842,18 @@ class DiffusionBackend:
                 # the quant noise floor), dense models stay bit-identical `off`. An
                 # explicit speed_mode (incl. "off") is honored verbatim.
                 effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
+                # A torchao-quantized dense transformer runs its matmuls through the
+                # regional torch.compile; UNcompiled (eager) it is ~30x slower and would
+                # lose to the GGUF fallback. A dense model otherwise resolves to `off`, so
+                # force at least `default` (regional compile) whenever the quant engaged,
+                # or the opt-in "fast" path silently commits an eager, pathologically slow
+                # pipeline.
+                if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+                    logger.info(
+                        "diffusion.transformer_quant: forcing speed_mode=default "
+                        "(quantized transformer must be compiled; eager is ~30x slower)"
+                    )
+                    effective_speed = SPEED_DEFAULT
                 # Opt-in speed optims run BEFORE placement (channels_last / compile
                 # must precede CPU offload). Snapshot the process-wide backend flags
                 # first so unload can restore them: TF32 / cudnn.benchmark are global,
@@ -829,7 +879,10 @@ class DiffusionBackend:
                     pipe,
                     mode = transformer_cache,
                     threshold = transformer_cache_threshold,
-                    quant_active = transformer_quant_engaged is not None,
+                    # GGUF transformers are quantized too (the default Studio path), so the
+                    # cache needs the higher quantized threshold to still trigger -- not just
+                    # the dense-quant fast path.
+                    quant_active = transformer_quant_engaged is not None or bool(gguf_filename),
                     logger = logger,
                 )
                 # Install the shared compile-safe eager patches (fused RMSNorm /
@@ -1010,6 +1063,9 @@ class DiffusionBackend:
                     dtype = dtype,
                     hf_token = hf_token,
                     scheme = scheme,
+                    # Reject a checkpoint built with a different Linear filter than the
+                    # dense path uses, so the prequant and runtime-quant models match.
+                    min_features = DEFAULT_MIN_LINEAR_FEATURES,
                     logger = logger,
                 )
                 if transformer is not None:

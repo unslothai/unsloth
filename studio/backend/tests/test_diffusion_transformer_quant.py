@@ -111,7 +111,7 @@ def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
 def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
     # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is
     # full-rate, so auto prefers int8 even though fp8 is available (the data-center default).
-    _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
     # int8 unavailable -> falls back to the rest of the tier (fp8 next).
@@ -128,9 +128,21 @@ def test_auto_consumer_ada_prefers_int8(monkeypatch):
 
 def test_auto_workstation_unknown_prefers_int8(monkeypatch):
     # Unknown / workstation name -> treated as consumer (the safe default) -> int8 first.
-    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA RTX 6000 Ada Generation")
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA RTX A5000")
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+
+
+def test_auto_professional_rtx_prefers_fp8(monkeypatch):
+    # Professional parts (RTX PRO 6000 Blackwell, RTX 6000 Ada) are classified datacenter
+    # by the rest of the backend, so auto keeps fp8 first (not int8) -- matching llama_cpp.
+    for device_name, cc in (
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
+        ("NVIDIA RTX 6000 Ada Generation", (8, 9)),
+    ):
+        _stub_torch(monkeypatch, cc = cc, device_name = device_name)
+        _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+        assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
 
 
 def test_auto_ada_hopper_prefers_fp8(monkeypatch):
@@ -254,7 +266,7 @@ def _stub_device_name(monkeypatch, name):
         "NVIDIA GeForce RTX 5090",
         "NVIDIA GeForce RTX 4090",
         "NVIDIA RTX A4000",  # workstation: A4000 token, NOT the data-center A40
-        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA RTX A5000",  # workstation: A5000 token, not professional/datacenter
         "NVIDIA Some Future Card 9000",  # unknown -> default consumer (fast accum is free on DC)
     ],
 )
@@ -267,12 +279,16 @@ def test_is_consumer_gpu_true(monkeypatch, name):
     "name",
     [
         "NVIDIA B200",
+        "NVIDIA B300",  # Blackwell Ultra (matches llama_cpp datacenter regex)
+        "NVIDIA GH200 480GB",  # Grace-Hopper superchip (was misread as consumer)
         "NVIDIA H100 80GB HBM3",
         "NVIDIA A100-SXM4-80GB",
         "NVIDIA A40",  # data-center Ampere (distinct token from RTX A4000)
         "NVIDIA L40S",
         "NVIDIA L4",
         "Tesla V100-SXM2-16GB",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",  # professional -> datacenter-class
+        "NVIDIA RTX 6000 Ada Generation",  # professional -> datacenter-class
     ],
 )
 def test_is_consumer_gpu_false_for_datacenter(monkeypatch, name):
@@ -351,6 +367,23 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
         assert keep(big(), fqn) is True, fqn
     # Without the exclusion (fp8 path), the modulation layer is kept.
     assert make_filter_fn(512)(big(), "transformer_blocks.0.norm1.linear") is True
+    # A None / empty fqn must not crash the exclusion check (defensive against the callback
+    # passing no name); with no name nothing matches the exclusion tokens -> kept.
+    assert keep(big(), None) is True
+    assert keep(big(), "") is True
+
+
+def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
+    # The runtime quantiser and the offline prequant builder must apply the SAME int8
+    # exclusion, or an int8 prequant artifact quantises the M=1 modulation/embedder linears
+    # and reintroduces the torch._int_mm crash. int8 gets the exclusion; others get none.
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_EXCLUDE_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+    )
+    assert exclude_tokens_for_scheme(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
+    for scheme in (TQ_FP8, TQ_NVFP4, TQ_MXFP8):
+        assert exclude_tokens_for_scheme(scheme) == ()
 
 
 def test_exclude_tokens_for_scheme():

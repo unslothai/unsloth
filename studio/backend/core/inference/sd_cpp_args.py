@@ -40,6 +40,7 @@ from core.inference.diffusion_memory import (
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "z-image": ("--llm",),
     "flux.2-klein": ("--llm",),
+    "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
     "flux.1": ("--clip_l", "--t5xxl"),
 }
@@ -87,8 +88,11 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    width: int = 1024
-    height: int = 1024
+    # None = "unset": an image-conditioned run (img2img/inpaint/edit) then lets
+    # sd.cpp derive the size from the input image instead of forcing a resize; a
+    # plain txt2img run with unset dims falls back to 1024x1024 (see the builder).
+    width: Optional[int] = None
+    height: Optional[int] = None
     steps: Optional[int] = None
     cfg_scale: Optional[float] = None
     guidance: Optional[float] = None
@@ -235,7 +239,17 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    cmd += ["--width", str(int(params.width)), "--height", str(int(params.height))]
+    # Emit explicit dims when given. For an image-conditioned run (img2img /
+    # inpaint / edit) that leaves them unset, omit the flags so sd.cpp derives the
+    # size from the input image (set_width_and_height_if_unset) rather than forcing
+    # a 1024x1024 resize/crop of the source. A plain txt2img run with unset dims
+    # keeps the prior 1024 default.
+    if params.width is not None or params.height is not None:
+        w = int(params.width) if params.width is not None else 1024
+        h = int(params.height) if params.height is not None else 1024
+        cmd += ["--width", str(w), "--height", str(h)]
+    elif not (params.init_img or params.ref_images):
+        cmd += ["--width", "1024", "--height", "1024"]
     if params.steps is not None:
         cmd += ["--steps", str(int(params.steps))]
     if params.cfg_scale is not None:
@@ -279,6 +293,11 @@ def build_sd_cpp_upscale_command(
         raise ValueError("input_image is required for upscale")
     if not params.upscale_model:
         raise ValueError("upscale_model is required for upscale")
+    # A truthiness guard below would silently swallow repeats=0 and fall back to
+    # sd-cli's default of one pass, turning an explicit no-op into a real upscale.
+    # Reject it (and negatives) so the caller's intent isn't quietly changed.
+    if params.repeats < 1:
+        raise ValueError("repeats must be >= 1 for upscale")
     cmd: list[str] = [
         binary,
         "--mode",
@@ -288,7 +307,7 @@ def build_sd_cpp_upscale_command(
         "--upscale-model",
         params.upscale_model,
     ]
-    if params.repeats and params.repeats != 1:
+    if params.repeats != 1:
         cmd += ["--upscale-repeats", str(int(params.repeats))]
     if params.tile_size is not None:
         cmd += ["--upscale-tile-size", str(int(params.tile_size))]
