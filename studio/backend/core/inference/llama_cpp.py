@@ -7410,7 +7410,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _parse_tool_calls_from_text(
-        content: str, *, allow_incomplete: bool = True, enabled_tool_names=None
+        content: str,
+        *,
+        allow_incomplete: bool = True,
+        enabled_tool_names = None,
     ) -> list[dict]:
         """Thin wrapper around the shared parser in tool_call_parser
         so safetensors and llama_cpp pick up the same fixes."""
@@ -7942,9 +7945,7 @@ class LlamaCppBackend:
         ) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return strip_tool_call_markup(
-                text, final = final, enabled_tool_names = _enabled_names_gate
-            )
+            return strip_tool_call_markup(text, final = final, enabled_tool_names = _enabled_names_gate)
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
@@ -7958,9 +7959,7 @@ class LlamaCppBackend:
                 # only on the last segment: a bare ``foo[ARGS]`` before a <think>
                 # block is prose, not a truncated call. The rehearsal strip is
                 # name-gated so an inactive-name example is kept.
-                segment = _strip_bracket_tag_calls(
-                    segment, enabled_tool_names = _enabled_names_gate
-                )
+                segment = _strip_bracket_tag_calls(segment, enabled_tool_names = _enabled_names_gate)
                 patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
                 return apply_tool_strip_patterns(
                     segment, patterns, enabled_tool_names = _enabled_names_gate

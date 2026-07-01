@@ -2163,7 +2163,9 @@ class TestEnabledToolNameGate:
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_parse_inactive_rehearsal_alone_is_prose(self):
-        assert parse_tool_calls_from_text('foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}) == []
+        assert (
+            parse_tool_calls_from_text('foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}) == []
+        )
 
     def test_streaming_strip_keeps_inactive_rehearsal(self):
         raw = 'answer foo[ARGS]{"x":1} tail'

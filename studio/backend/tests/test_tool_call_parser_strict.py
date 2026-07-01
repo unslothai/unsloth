@@ -192,6 +192,7 @@ class TestEnabledToolNameGate:
         # Without a gate every ``NAME[ARGS]{...}`` is parsed, as before the gate landed.
         text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
         assert self._names(parse_tool_calls_from_text(text)) == ["foo", "web_search"]
-        assert self._names(
-            parse_tool_calls_from_text(text, enabled_tool_names = None)
-        ) == ["foo", "web_search"]
+        assert self._names(parse_tool_calls_from_text(text, enabled_tool_names = None)) == [
+            "foo",
+            "web_search",
+        ]

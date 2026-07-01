@@ -551,9 +551,7 @@ def test_route_display_strip_ungated_strips_all_rehearsal_unchanged():
     # Backwards-compat: with no gate (enabled_tool_names=None, the default and the
     # history-sanitize / non-loop call sites) the bare rehearsal is stripped as before.
     text = 'foo[ARGS]{"x":1} is just syntax.'
-    assert (
-        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "is just syntax."
-    )
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "is just syntax."
     assert (
         _strip_tool_xml_for_display(
             text, auto_heal_tool_calls = True, enabled_tool_names = None

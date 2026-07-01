@@ -32,7 +32,7 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
-    enabled_tool_names=None,
+    enabled_tool_names = None,
 ) -> list[dict]:
     return _tool_healing.parse_tool_calls_from_text(
         content,
@@ -42,7 +42,12 @@ def parse_tool_calls_from_text(
     )
 
 
-def strip_tool_markup(text: str, *, final: bool = False, enabled_tool_names=None) -> str:
+def strip_tool_markup(
+    text: str,
+    *,
+    final: bool = False,
+    enabled_tool_names = None,
+) -> str:
     return _tool_healing.strip_tool_call_markup(
         text, final = final, enabled_tool_names = enabled_tool_names
     )

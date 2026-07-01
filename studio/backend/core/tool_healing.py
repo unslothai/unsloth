@@ -38,9 +38,7 @@ _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 _REHEARSAL_CLOSED_STRIP_RE = re.compile(
     r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL
 )
-_REHEARSAL_TAIL_STRIP_RE = re.compile(
-    r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:\{.*)?$", re.DOTALL
-)
+_REHEARSAL_TAIL_STRIP_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?:\{.*)?$", re.DOTALL)
 
 # Pre-compiled tool-XML strip patterns. The hyphen in the name char-class lets
 # dashed MCP names (mcp__srv__list-issues, issue-number) parse alongside the
@@ -98,18 +96,21 @@ _TOOL_ALL_PATS = (
 _REHEARSAL_STRIP_PATS = frozenset({_REHEARSAL_CLOSED_STRIP_RE, _REHEARSAL_TAIL_STRIP_RE})
 
 
-def apply_tool_strip_patterns(text: str, patterns, enabled_tool_names=None) -> str:
+def apply_tool_strip_patterns(
+    text: str,
+    patterns,
+    enabled_tool_names = None,
+) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
     strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
     ``None``); every other pattern is removed unconditionally."""
     for pat in patterns:
         if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
-            text = pat.sub(
-                lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text
-            )
+            text = pat.sub(lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text)
         else:
             text = pat.sub("", text)
     return text
+
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
@@ -259,7 +260,11 @@ def _balanced_bracket_end(src: str, start: int) -> int:
     return -1
 
 
-def _iter_bracket_spans(text: str, start: int = 0, enabled_tool_names=None):
+def _iter_bracket_spans(
+    text: str,
+    start: int = 0,
+    enabled_tool_names = None,
+):
     """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag
     tool call from ``start`` on, in document order. ``kind`` is ``"array"``
     (``[TOOL_CALLS] [..]``), ``"name"`` (``[TOOL_CALLS]name{..}`` incl. the v11
@@ -527,7 +532,7 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
-    enabled_tool_names=None,
+    enabled_tool_names = None,
 ) -> list[dict]:
     """Parse OpenAI-format tool calls from model text.
 
@@ -749,7 +754,7 @@ def parse_tool_calls_from_text(
     return tool_calls
 
 
-def _strip_bracket_tag_calls(text: str, enabled_tool_names=None) -> str:
+def _strip_bracket_tag_calls(text: str, enabled_tool_names = None) -> str:
     """Remove complete ``[TOOL_CALLS] [..]`` arrays and ``[TOOL_CALLS]name{json}`` /
     ``name[ARGS]{json}`` calls with one balanced forward scan, so arbitrarily nested
     JSON args are stripped whole (a fixed-depth regex left two-level args un-stripped
@@ -763,9 +768,7 @@ def _strip_bracket_tag_calls(text: str, enabled_tool_names=None) -> str:
         return text
     out: list[str] = []
     cursor = 0
-    for start, end, _kind, _m in _iter_bracket_spans(
-        text, enabled_tool_names = enabled_tool_names
-    ):
+    for start, end, _kind, _m in _iter_bracket_spans(text, enabled_tool_names = enabled_tool_names):
         out.append(text[cursor:start])
         cursor = end
     out.append(text[cursor:])
@@ -842,7 +845,12 @@ def strip_outside_think(text: str, strip_segment) -> str:
     return "".join(pieces)
 
 
-def _strip_markup_segment(text: str, *, final: bool, enabled_tool_names=None) -> str:
+def _strip_markup_segment(
+    text: str,
+    *,
+    final: bool,
+    enabled_tool_names = None,
+) -> str:
     # Balanced-brace strip for bracket-tag calls first (handles any JSON nesting
     # depth); the regex patterns then cover the XML forms and truncated tails. The
     # rehearsal patterns are name-gated so an inactive-name example stays visible.
@@ -851,7 +859,12 @@ def _strip_markup_segment(text: str, *, final: bool, enabled_tool_names=None) ->
     return apply_tool_strip_patterns(text, patterns, enabled_tool_names = enabled_tool_names)
 
 
-def strip_tool_call_markup(text: str, *, final: bool = False, enabled_tool_names=None) -> str:
+def strip_tool_call_markup(
+    text: str,
+    *,
+    final: bool = False,
+    enabled_tool_names = None,
+) -> str:
     """Strip tool-call XML markup from text.
 
     When ``final`` is False, only fully closed tool-call blocks are removed.

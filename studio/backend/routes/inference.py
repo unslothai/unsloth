@@ -1637,7 +1637,10 @@ def _display_tool_name_gate(active_tools):
 
 
 def _strip_tool_xml_for_display(
-    text: str, *, auto_heal_tool_calls: bool, enabled_tool_names=None
+    text: str,
+    *,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
 ) -> str:
     """Apply route-level XML leak cleanup only when Auto-Heal is enabled.
 

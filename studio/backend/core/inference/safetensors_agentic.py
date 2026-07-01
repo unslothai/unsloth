@@ -222,7 +222,7 @@ def strip_tool_markup_streaming(
     *,
     auto_heal_tool_calls: bool = True,
     tool_protocol_active: bool = False,
-    enabled_tool_names=None,
+    enabled_tool_names = None,
 ) -> str:
     """Strip open-ended tool XML from display text without trimming whitespace.
 
@@ -241,9 +241,7 @@ def strip_tool_markup_streaming(
         # rehearsal strip is name-gated so an inactive-name example is kept.
         segment = _strip_bracket_tag_calls(segment, enabled_tool_names = enabled_tool_names)
         patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
-        return apply_tool_strip_patterns(
-            segment, patterns, enabled_tool_names = enabled_tool_names
-        )
+        return apply_tool_strip_patterns(segment, patterns, enabled_tool_names = enabled_tool_names)
 
     # Preserve <think>/[THINK] reasoning verbatim: a call rehearsed inside a
     # reasoning block is skipped by the parser and kept by the final strip, so
@@ -258,7 +256,7 @@ def _strip_tool_markup_final(
     *,
     auto_heal_tool_calls: bool,
     tool_protocol_active: bool = False,
-    enabled_tool_names=None,
+    enabled_tool_names = None,
 ) -> str:
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
