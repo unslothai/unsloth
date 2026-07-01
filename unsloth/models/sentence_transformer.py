@@ -1445,14 +1445,10 @@ class FastSentenceTransformer(FastModel):
                     "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
                 )
 
-        # Pre-download in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
-        # SentenceTransformer load below is a cache hit and cannot hang on a stalled Xet transfer.
-        # Covers every path (for_inference, fast-encoder, fallback), which all resolve the repo
-        # in-process. weights_at_root is left False: an ST repo's component weights can live in
-        # subfolders (the pooling / dense modules), so the whole snapshot is warmed. Resolve the same
-        # cache the ST load will use: an explicit cache_folder, else SENTENCE_TRANSFORMERS_HOME (which
-        # SentenceTransformer honors when cache_folder is unset), else the default HF cache -- otherwise
-        # a warm into the wrong cache is missed and the load starts an unprotected in-process download.
+        # Pre-download in a killable subprocess (Xet -> HTTP on a stall) so the ST load below is a cache
+        # hit. weights_at_root stays False since ST component weights live in per-module subfolders.
+        # Resolve the cache the load uses: cache_folder, else SENTENCE_TRANSFORMERS_HOME (which ST honors
+        # when cache_folder is unset), else the default HF cache -- a wrong-cache warm would be missed.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -1591,10 +1587,8 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # Load via native SentenceTransformer (bypasses Unsloth patching). Forward cache_folder so
-            # this load reads the cache the prefetch warmed (as the for_inference branch does); a custom
-            # cache_folder would otherwise miss the warm and start an unprotected in-process Hub/Xet
-            # download. None keeps the default cache, matching the prefetch's cache_dir.
+            # Forward cache_folder so this load reads the cache the prefetch warmed (None lets ST honor
+            # SENTENCE_TRANSFORMERS_HOME, matching the prefetch); a custom one would otherwise miss it.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1708,10 +1702,8 @@ class FastSentenceTransformer(FastModel):
 
         # No modules.json -> force 16-bit: saving is custom for these models and
         # 4-bit would need dequant in save_pretrained_merged, not worth it.
-        # Resolve the same cache the prefetch warmed: hf_hub_download (used by _module_path /
-        # _read_pooling_mode) does NOT honor SENTENCE_TRANSFORMERS_HOME, so passing only cache_folder
-        # (None when the caller relies on the env var) would miss the warm and fetch these files
-        # in-process over Xet.
+        # Resolve the same cache the prefetch warmed: hf_hub_download (used here and by
+        # _load_modules) ignores SENTENCE_TRANSFORMERS_HOME, so passing bare cache_folder would miss it.
         has_modules_json = (
             FastSentenceTransformer._module_path(
                 model_name,
@@ -1772,8 +1764,7 @@ class FastSentenceTransformer(FastModel):
             max_seq_length,
             pooling_mode,
             trust_remote_code = trust_remote_code,
-            # Reuse the prefetch's resolved cache (see _module_path note above) so the fallback
-            # modules.json / module-file loads hit the warm instead of an in-process Xet download.
+            # Same resolved cache as above so the fallback module loads hit the warm, not Xet.
             cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             # Read the modules from the SAME revision the model weights load from (FastModel forwards
             # revision to the weight load), so a revision-pinned repo hits the prefetch's warm instead

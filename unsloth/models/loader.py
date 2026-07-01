@@ -877,10 +877,8 @@ class FastLanguageModel(FastLlamaModel):
                 # fast_inference (vLLM owns only the base model's download path).
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                # Do NOT inherit the base use_safetensors (it selects the BASE format): the adapter has
-                # its own (usually adapter_model.safetensors), and use_safetensors=False would skip a
-                # safetensors-only adapter. Leave it auto. adapter_only restricts the warm to the
-                # adapter's own files + root aux, so a repo also publishing merged weights does not pull them.
+                # Leave use_safetensors auto: inheriting the base format could skip a safetensors-only
+                # adapter. adapter_only restricts the warm to the adapter's own files + root aux.
                 adapter_only = True,
             )
             # Child already did the forced download; clear the flag so the load reuses the warm cache.
@@ -1828,10 +1826,8 @@ class FastModel(FastBaseModel):
                 # fast_inference (vLLM owns only the base model's download path).
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                # Do NOT inherit the base use_safetensors (it selects the BASE format): the adapter has
-                # its own (usually adapter_model.safetensors), and use_safetensors=False would skip a
-                # safetensors-only adapter. Leave it auto. adapter_only restricts the warm to the
-                # adapter's own files + root aux, so a repo also publishing merged weights does not pull them.
+                # Leave use_safetensors auto: inheriting the base format could skip a safetensors-only
+                # adapter. adapter_only restricts the warm to the adapter's own files + root aux.
                 adapter_only = True,
             )
             # Child already did the forced download; clear the flag so the load reuses the warm cache.

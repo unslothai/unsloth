@@ -805,9 +805,8 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
-        # vLLM owns the weight download only when actually available; if fast_inference was requested
-        # but vLLM is missing, the load falls through to the in-process HF path (fast_inference_setup
-        # flips the flag below), so the weights must still be warmed here. Resolve availability now.
+        # vLLM owns the weight download only when available; if requested but missing, the load falls
+        # through to the in-process HF path, so weights must still be warmed here.
         _vllm_owns_weights = fast_inference and is_vLLM_available()
 
         # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
@@ -836,11 +835,9 @@ class FastBaseModel:
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # The tokenizer / processor loads in-process below, so warm a SEPARATE tokenizer repo (explicit
-        # tokenizer_name) through the killable subprocess. When the tokenizer is model_name itself it is
-        # already covered (base prefetch, or vLLM's own download on the vLLM path). Do NOT warm model_name
-        # here on the vLLM path: this runs before fast_inference_setup may remap "*-unsloth-bnb-4bit" ->
-        # "*-bnb-4bit", so it would warm the wrong repo.
+        # Warm a SEPARATE tokenizer repo (explicit tokenizer_name); when it is model_name it is already
+        # covered. Do NOT warm model_name here on the vLLM path: this runs before fast_inference_setup may
+        # remap "*-unsloth-bnb-4bit" -> "*-bnb-4bit", so it would warm the wrong repo.
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )

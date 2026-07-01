@@ -2420,11 +2420,10 @@ class FastLlamaModel:
 
         preferred_attn_impl = resolve_attention_implementation(model_function, model_config)
 
-        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
-        # in-process weight load below is a cache hit and cannot hang. Runs AFTER the AutoConfig +
-        # model-class check, so an unsupported repo fails on its small config fetch without pulling
-        # weights. revision is NOT forwarded: the load resolves model_name (possibly a remapped
-        # prequantized repo, where the caller's revision does not exist) on its default branch.
+        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a stall) so the weight load is
+        # a cache hit. After the AutoConfig/model-class check, so an unsupported repo fails on its small
+        # config fetch. revision is NOT forwarded: the load resolves model_name (possibly a remapped
+        # prequantized repo where the caller's revision does not exist) on its default branch.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -2448,9 +2447,8 @@ class FastLlamaModel:
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # The tokenizer loads in-process below regardless of the vLLM weight path, so warm its files
-        # through the same killable subprocess. The base prefetch already covered model_name, so only
-        # warm here when the tokenizer is a different repo, or fast_inference skipped the base warm.
+        # The tokenizer loads in-process regardless of the vLLM path; the base prefetch already covered
+        # model_name, so only warm here for a different tokenizer repo, or when fast_inference skipped it.
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )

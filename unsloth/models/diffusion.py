@@ -181,11 +181,9 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
-        # Repo confirmed a diffusion model: pre-download it in a killable subprocess (Xet -> HTTP on a
-        # stall) so the weight load is a cache hit. After validation, so a non-diffusion repo fails on
-        # config metadata alone. subfolder is NOT forwarded: the pipeline loads the repo ROOT (the whole
-        # DiffusionPipeline -- model_index.json + every component subfolder), so narrowing to one
-        # subfolder would leave the other components (unet/, vae/, text_encoder/) to in-process Xet.
+        # Pre-download the confirmed diffusion repo (Xet -> HTTP on a stall) so the weight load is a cache
+        # hit. subfolder is NOT forwarded: the pipeline loads the whole repo root (every component
+        # subfolder), so narrowing to one would leave unet/, vae/, text_encoder/ to in-process Xet.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
