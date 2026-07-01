@@ -1,5 +1,6 @@
 """GPU-free test for the logits_to_keep gate in vision.py
 (_unsloth_generate_accepts_kwarg), AST-extracted so no unsloth/CUDA import is needed."""
+
 import ast, inspect, os
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,34 +25,71 @@ class PrepHasKwargs_ForwardHasKey:
     # prepare_inputs_for_generation takes **kwargs -> transformers unions forward params,
     # and forward names logits_to_keep -> ACCEPTED.
     def prepare_inputs_for_generation(self, input_ids, **kwargs): ...
-    def forward(self, input_ids, logits_to_keep=0, **kwargs): ...
+    def forward(
+        self,
+        input_ids,
+        logits_to_keep = 0,
+        **kwargs,
+    ): ...
 
 
 class PrepNoKwargs_ForwardHasKey:
     # prepare has NO **kwargs -> forward is NOT unioned; key only in forward -> REJECTED.
     # (This is the fused/PEFT gpt-oss failure shape.)
-    def prepare_inputs_for_generation(self, input_ids, attention_mask=None): ...
-    def forward(self, input_ids, logits_to_keep=0): ...
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        attention_mask = None,
+    ): ...
+    def forward(
+        self,
+        input_ids,
+        logits_to_keep = 0,
+    ): ...
 
 
 class PrepHasKeyDirectly:
     # key present directly on prepare_inputs_for_generation -> ACCEPTED.
-    def prepare_inputs_for_generation(self, input_ids, logits_to_keep=0): ...
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        logits_to_keep = 0,
+    ): ...
     def forward(self, input_ids): ...
 
 
 class NoPrepare:
     # no prepare_inputs_for_generation at all -> model_args empty, no union -> REJECTED.
-    def forward(self, input_ids, logits_to_keep=0, **kwargs): ...
+    def forward(
+        self,
+        input_ids,
+        logits_to_keep = 0,
+        **kwargs,
+    ): ...
 
 
 def run():
     cases = [
-        ("prep(**kwargs)+forward(key)  -> accept", PrepHasKwargs_ForwardHasKey(), "logits_to_keep", True),
-        ("prep(no kwargs)+forward(key) -> reject", PrepNoKwargs_ForwardHasKey(), "logits_to_keep", False),
+        (
+            "prep(**kwargs)+forward(key)  -> accept",
+            PrepHasKwargs_ForwardHasKey(),
+            "logits_to_keep",
+            True,
+        ),
+        (
+            "prep(no kwargs)+forward(key) -> reject",
+            PrepNoKwargs_ForwardHasKey(),
+            "logits_to_keep",
+            False,
+        ),
         ("prep(key) direct            -> accept", PrepHasKeyDirectly(), "logits_to_keep", True),
         ("no prepare_inputs_for_gen   -> reject", NoPrepare(), "logits_to_keep", False),
-        ("num_logits_to_keep variant  -> reject", PrepNoKwargs_ForwardHasKey(), "num_logits_to_keep", False),
+        (
+            "num_logits_to_keep variant  -> reject",
+            PrepNoKwargs_ForwardHasKey(),
+            "num_logits_to_keep",
+            False,
+        ),
     ]
     passed = 0
     for name, model, key, expected in cases:

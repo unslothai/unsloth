@@ -1,5 +1,6 @@
 """Tests _install_offload_embedding_hooks in vision.py: the offloaded lookup must work
 whether the weight is on CPU or (bf16) pulled back on GPU. CUDA cases skip without a GPU."""
+
 import ast, os
 import torch
 import torch.nn as nn
@@ -49,11 +50,12 @@ def test_cpu_noop_forward():
 
 def test_cuda_offloaded_weight_roundtrip():
     if not torch.cuda.is_available():
-        print("[SKIP] CUDA not available"); return
+        print("[SKIP] CUDA not available")
+        return
     # BUG 1: weight offloaded to CPU, input on CUDA -> must not raise; output back on CUDA.
     emb = _fresh_emb().to("cpu")
     install(emb)
-    x = torch.randint(0, 32, (2, 5), device="cuda")
+    x = torch.randint(0, 32, (2, 5), device = "cuda")
     out = emb(x)
     assert out.device.type == "cuda", out.device
     assert emb._unsloth_saved_device.type == "cuda"
@@ -61,19 +63,24 @@ def test_cuda_offloaded_weight_roundtrip():
 
 def test_cuda_weight_pulled_back_to_gpu():
     if not torch.cuda.is_available():
-        print("[SKIP] CUDA not available"); return
+        print("[SKIP] CUDA not available")
+        return
     # BUG 2: weight on CUDA (bf16 pulled back), input on CUDA -> must be a no-op, not send
     # the index to CPU. Hard-coded ".to('cpu')" would crash here.
     emb = _fresh_emb().to("cuda")
     install(emb)
-    x = torch.randint(0, 32, (2, 5), device="cuda")
+    x = torch.randint(0, 32, (2, 5), device = "cuda")
     out = emb(x)
     assert out.device.type == "cuda", out.device
 
 
 if __name__ == "__main__":
-    test_install_and_idempotent(); print("[PASS] install + idempotent")
-    test_cpu_noop_forward(); print("[PASS] cpu no-op forward")
-    test_cuda_offloaded_weight_roundtrip(); print("[PASS] cuda offloaded-weight roundtrip (bug 1)")
-    test_cuda_weight_pulled_back_to_gpu(); print("[PASS] cuda weight-on-gpu no-op (bug 2)")
+    test_install_and_idempotent()
+    print("[PASS] install + idempotent")
+    test_cpu_noop_forward()
+    print("[PASS] cpu no-op forward")
+    test_cuda_offloaded_weight_roundtrip()
+    print("[PASS] cuda offloaded-weight roundtrip (bug 1)")
+    test_cuda_weight_pulled_back_to_gpu()
+    print("[PASS] cuda weight-on-gpu no-op (bug 2)")
     print("OK: offload embedding hooks are device-safe both directions")

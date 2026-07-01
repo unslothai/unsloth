@@ -287,6 +287,7 @@ def _install_offload_embedding_hooks(embed_tokens):
     embed_tokens._unsloth_offload_hooks_installed = True
     return True
 
+
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
