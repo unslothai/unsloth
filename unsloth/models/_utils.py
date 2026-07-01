@@ -1287,6 +1287,7 @@ def maybe_prefetch_hf_snapshot(
             allow_patterns = allow_patterns,
             ignore_patterns = ignore_patterns,
             force_download = force_download,
+            variant = variant,
         )
         return True
     except DownloadStallError:

@@ -48,6 +48,7 @@ def capture(monkeypatch):
         state["repo_id"] = repo_id
         state["allow_patterns"] = kw.get("allow_patterns")
         state["ignore_patterns"] = kw.get("ignore_patterns")
+        state["variant"] = kw.get("variant")
         return "/tmp/fake-snapshot"
 
     fake_module = types.ModuleType("unsloth_zoo.hf_xet_fallback")
@@ -255,6 +256,17 @@ def test_filename_has_variant_matches_single_and_sharded():
     assert U._filename_has_variant("diffusion_pytorch_model.fp16.safetensors", "fp16") is True
     assert U._filename_has_variant("model.safetensors", "fp16") is False
     assert U._filename_has_variant("model-00001-of-00002.safetensors", "fp16") is False
+
+
+def test_variant_is_forwarded_to_downloader(capture):
+    """maybe_prefetch_hf_snapshot must forward `variant` to snapshot_download_with_xet_fallback so the
+    PRE cache-skip gate can defer on a variant load: a cache holding only the default canonical weight
+    must not fast-path a variant='fp16' request, else the in-process load fetches the missing variant
+    weight over un-killable Xet. Absent a variant, nothing is forwarded (the fast path stays live)."""
+    _, st = capture(weights_at_root = True, use_safetensors = True, variant = "fp16")
+    assert st["variant"] == "fp16"
+    _, st = capture(weights_at_root = True, use_safetensors = True)
+    assert st["variant"] is None
 
 
 def test_variant_drops_bin_for_sharded_variant_safetensors(monkeypatch):
