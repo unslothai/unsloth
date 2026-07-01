@@ -585,6 +585,9 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
             capture_output = True,
             text = True,
             timeout = 300,
+            # Hand llama-cli an immediate EOF; without it -no-cnv can still leave the
+            # process blocked reading stdin, which times out instead of generating.
+            stdin = subprocess.DEVNULL,
         )
 
     metrics["llama_cli_returncode"] = proc.returncode
