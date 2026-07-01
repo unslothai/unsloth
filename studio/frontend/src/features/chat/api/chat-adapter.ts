@@ -52,6 +52,7 @@ import { isMultimodalResponse } from "../types/api";
 import type {
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
+  ValidateModelResponse,
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
@@ -1319,9 +1320,17 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
+function isAutoLoadChatCapable(validation: ValidateModelResponse): boolean {
+  if (validation.audio_type === "whisper") {
+    return false;
+  }
+  return validation.is_audio !== true;
+}
+
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
+  blockedByCapability?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
     return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1339,6 +1348,7 @@ async function autoLoadSmallestModel(): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  let skippedForCapability = false;
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -1359,6 +1369,10 @@ async function autoLoadSmallestModel(): Promise<{
       validation.requires_security_review
     ) {
       blockedByTrustRemoteCode = true;
+      return false;
+    }
+    if (!isAutoLoadChatCapable(validation)) {
+      skippedForCapability = true;
       return false;
     }
     return true;
@@ -1524,6 +1538,9 @@ async function autoLoadSmallestModel(): Promise<{
             isVision: sfLoadResp.is_vision ?? false,
             isLora: sfLoadResp.is_lora ?? false,
             isGguf: sfLoadResp.is_gguf ?? false,
+            isAudio: sfLoadResp.is_audio ?? false,
+            audioType: sfLoadResp.audio_type ?? null,
+            hasAudioInput: sfLoadResp.has_audio_input ?? false,
           };
           if (!store.models.some((m) => m.id === repo.repo_id)) {
             store.setModels([...store.models, sfModel]);
@@ -1551,7 +1568,7 @@ async function autoLoadSmallestModel(): Promise<{
       };
     }
 
-    // No cached models — try downloading a small default GGUF.
+    // No cached chat-capable model loaded; try downloading a small default GGUF.
     toast("Downloading a small model…", {
       id: toastId,
       description:
@@ -1701,22 +1718,28 @@ export function createOpenAIStreamAdapter(
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
+        let blockedByCapability = false;
         try {
-          ({ loaded, blockedByTrustRemoteCode } =
+          ({ loaded, blockedByTrustRemoteCode, blockedByCapability = false } =
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
         }
         if (!loaded) {
-          toast.error(
+          const notify = blockedByCapability ? toast.warning : toast.error;
+          notify(
             blockedByTrustRemoteCode
               ? "This model needs custom code approval"
-              : "No model loaded",
+              : blockedByCapability
+                ? "No chat-capable downloaded model"
+                : "No model loaded",
             {
               description: blockedByTrustRemoteCode
                 ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                : "Pick a model in the top bar, then retry.",
+                : blockedByCapability
+                  ? "Download or select a text-generation-capable model, then retry."
+                  : "Pick a model in the top bar, then retry.",
             },
           );
           clearSelectedImageEditReference();

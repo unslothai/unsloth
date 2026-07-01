@@ -132,6 +132,39 @@ def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
     assert resp.requires_security_review is True
 
 
+def test_validate_model_reports_audio_capability(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        inf,
+        "_resolve_model_identifier_for_request",
+        lambda request, operation: ("openai/whisper-base", "openai/whisper-base", False),
+    )
+    config = SimpleNamespace(
+        identifier = "openai/whisper-base",
+        display_name = "whisper-base",
+        is_gguf = False,
+        is_lora = False,
+        is_vision = False,
+        is_audio = True,
+        audio_type = "whisper",
+        has_audio_input = True,
+        gguf_file = None,
+    )
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
+
+    resp = asyncio.run(
+        inf.validate_model(
+            ValidateModelRequest(model_path = "openai/whisper-base"),
+            current_subject = "tester",
+        )
+    )
+
+    assert resp.is_audio is True
+    assert resp.audio_type == "whisper"
+    assert resp.has_audio_input is True
+
+
 def test_resolve_loaded_trc_prefers_stored_value():
     # A value stored at load time wins, so a status refresh does not re-derive it.
     assert (
