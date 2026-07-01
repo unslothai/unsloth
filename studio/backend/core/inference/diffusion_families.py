@@ -20,6 +20,14 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 
+# Runtime->route contract: the RuntimeError messages a backend raises for
+# client-recoverable generate states. The /images/generate route matches these
+# EXACTLY to return 409 (vs a sanitized 500 for real failures), so both engines
+# must raise them verbatim -- keep them named here, not as scattered literals.
+DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
+DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
+
+
 @dataclass(frozen = True)
 class DiffusionFamily:
     name: str
@@ -300,6 +308,24 @@ def supported_family_names() -> tuple[str, ...]:
     """Family names accepted as ``family_override`` and shown in the unknown-model
     error. Kept in registry order so the message lists what the backend can load."""
     return tuple(fam.name for fam in _FAMILIES)
+
+
+def detect_family_for_pick(
+    repo_id: str,
+    gguf_filename: Optional[str] = None,
+    override: Optional[str] = None,
+) -> Optional[DiffusionFamily]:
+    """``detect_family``, falling back to the combined path/filename for a direct
+    local ``.gguf`` pick. The frontend splits such a pick into (parent dir, basename),
+    so the family keyword can live only in the filename (e.g.
+    ``/models/z-image-turbo-Q4_K_M.gguf``) while the parent directory carries none;
+    scan the combined string too when the directory alone is undetectable. Only a
+    fallback, so remote ``org/name`` picks and explicit overrides behave exactly as
+    ``detect_family``. Shared by both engines so validation and load can't diverge."""
+    fam = detect_family(repo_id, override)
+    if fam is None and gguf_filename and not override:
+        fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    return fam
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:

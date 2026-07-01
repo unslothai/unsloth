@@ -218,51 +218,22 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
-def infer_gguf_quant_label(filename: Optional[str]) -> Optional[str]:
-    """Pull a quant tag (Q4_K_M, Q8_0, BF16, ...) out of a GGUF filename."""
-    if not filename:
-        return None
-    from pathlib import Path
+def estimate_gguf_resident_mib(storage_mib: Optional[int]) -> Optional[int]:
+    """Approximate the RESIDENT device size of a GGUF transformer loaded through
+    diffusers' ``GGUFQuantizationConfig``.
 
-    stem = Path(filename).name
-    if stem.lower().endswith(".gguf"):
-        stem = stem[:-5]
-    parts = [p.upper() for p in stem.replace("-", "_").split("_") if p]
-    for index, part in enumerate(parts):
-        if part in ("BF16", "F16", "FP16", "FP8", "Q8", "Q6", "Q5", "Q4", "Q3", "Q2"):
-            suffix = parts[index + 1 :]
-            # Quant names carry either a K-family suffix (Q4_K_M) or a legacy
-            # numeric one (Q8_0, Q5_1); keep up to two suffix tokens.
-            if suffix and suffix[0] in ("K", "M", "S", "L", "XS", "XXS", "0", "1"):
-                return "_".join([part] + suffix[:2])
-            return part
-        if part.startswith("IQ") or part.startswith("UD"):
-            return "_".join(parts[index : index + 3])
-    return None
+    The weights stay PACKED on the device as quantised bytes (``GGUFParameter`` /
+    uint8); ``GGUFLinear.forward`` dequantises each weight to the bf16 compute dtype
+    transiently for its matmul and frees it immediately, so the persistent footprint
+    is ~= the on-disk tensor size, NOT the unpacked bf16 size. Measured on
+    Z-Image-Turbo: Q2_K 3.64 GiB -> 3.68 GiB, Q8_0 7.22 GiB -> 7.25 GiB resident.
+    The transient per-op dequant is covered by the separate runtime headroom.
 
-
-def estimate_gguf_dense_mib(storage_mib: Optional[int], quant: Optional[str]) -> Optional[int]:
-    """Approximate the dequantised (device) size of a GGUF from its on-disk size
-    and quant label. The compute dtype is bf16/fp16, so a 4-bit file roughly
-    quadruples once unpacked; higher-bit quants expand less."""
+    (The prior per-quant expansion assumed a full unpack that never happens on this
+    path; it over-estimated e.g. Q2 ~7.6x, forcing needless offload.)"""
     if storage_mib is None:
         return None
-    q = (quant or "").upper()
-    if any(t in q for t in ("BF16", "F16", "FP16")):
-        return storage_mib
-    if "FP8" in q or "Q8" in q:
-        return int(storage_mib * 2.0)
-    if "Q6" in q:
-        return int(storage_mib * 2.8)
-    if "Q5" in q:
-        return int(storage_mib * 3.3)
-    if "Q4" in q or "IQ4" in q or "UD" in q:
-        return int(storage_mib * 4.0)
-    if "Q3" in q or "IQ3" in q:
-        return int(storage_mib * 5.3)
-    if "Q2" in q or "Q1" in q or "IQ2" in q or "IQ1" in q:
-        return int(storage_mib * 8.0)
-    return int(storage_mib * 4.0)  # unknown: assume 4-bit-ish
+    return int(storage_mib * 1.05)  # small margin for allocator + bf16 norms/biases
 
 
 def estimate_safetensors_dense_mib(storage_mib: Optional[int]) -> Optional[int]:
