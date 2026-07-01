@@ -354,20 +354,20 @@ def render_pdf_pages(
 
 def _docx_table_rows(table) -> list[str]:
     """Each row as pipe-joined cell text (the locator splits anchors on pipes).
-    Columns stay aligned to the layout grid (a merged cell fills its spanned slots,
+    Columns stay aligned to the layout grid (merged cells fill their spanned slots,
     skipped leading/trailing grid columns become empty fields). Cells are walked in
     document order so a nested table, and any text after it, flattens in place."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
     rows: list[str] = []
+    seen: set = set()  # <w:tc> already emitted; dedups merges spanning columns or rows
     for row in table.rows:
         cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
         trailing: list[str] = []  # nested rows + any post-nested text, kept in order
-        seen: set = set()
         for cell in row.cells:
-            # row.cells repeats a merged cell (shared <w:tc>) once per spanned column:
-            # emit its text once then placeholders so field counts match sibling rows.
+            # A merged cell shares one <w:tc> across the columns and rows it spans:
+            # emit its text once, then placeholders, so columns and rows stay aligned.
             if cell._tc in seen:
                 cells.append("")
                 continue

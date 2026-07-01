@@ -273,3 +273,25 @@ def test_docx_nested_table_keeps_in_cell_order(tmp_path):
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert text.index("before") < text.index("NESTED-A") < text.index("after")
+
+
+def test_docx_table_vertical_merge_emitted_once(tmp_path):
+    # A vertically merged cell maps every continuation row back to the origin <w:tc>;
+    # emit it once and leave placeholders below so a row-spanning label isn't repeated.
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    table = document.add_table(rows = 3, cols = 2)
+    table.cell(0, 0).merge(table.cell(1, 0)).merge(table.cell(2, 0)).text = "SECTION"
+    table.cell(0, 1).text = "r0"
+    table.cell(1, 1).text = "r1"
+    table.cell(2, 1).text = "r2"
+    path = tmp_path / "vmerge.docx"
+    document.save(str(path))
+
+    text = "\n".join(p.text for p in parsers.parse(str(path)))
+    assert text.count("SECTION") == 1  # not repeated on each spanned row
+    assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
