@@ -38,14 +38,18 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Default upstream source. Overridable with UNSLOTH_SD_CPP_REPO so a pinned unslothai
-# mirror (built the same way as unslothai/llama.cpp's prebuilts) can be used without a
-# code change once it exists; otherwise this falls back to leejet upstream.
-DEFAULT_REPO = "leejet/stable-diffusion.cpp"
+# Default source: the Unsloth-built mirror, whose CPU/Apple prebuilts are compiled and
+# published by unslothai/stable-diffusion.cpp (the same way unslothai/llama.cpp ships its
+# prebuilts). Override with UNSLOTH_SD_CPP_REPO to point elsewhere (e.g. back to leejet).
+# GPU hosts never reach here -- they run diffusers -- so only CPU/Apple assets are needed.
+DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
+# Upstream we fall back to if the mirror can't serve this host (mirror release missing, or
+# a host we don't yet build): resolve against leejet so native install still works.
+UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary
-# under users on every upstream push. Override with UNSLOTH_SD_CPP_TAG; set it empty to
-# track latest. If the pinned tag is gone upstream, install falls back to latest.
-DEFAULT_TAG = "master-737-3b6c9ca"
+# under users on every push. Override with UNSLOTH_SD_CPP_TAG; set it empty to track
+# latest. If the pinned tag is gone, install falls back to that repo's latest.
+DEFAULT_TAG = "master-741-484baa4"
 
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
@@ -268,6 +272,27 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
         dest.unlink(missing_ok = True)
 
 
+def _resolve_repo_asset(
+    repo: str, tag: Optional[str], accelerator: str, token: Optional[str]
+) -> tuple[Optional[dict], Optional[str]]:
+    """Fetch ``repo``'s release and pick the asset for this host. Returns
+    ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable
+    release (fetch failed) or no asset for this host, so the caller can fall back."""
+    try:
+        release = _fetch_release(tag, repo = repo, token = token)
+    except Exception as exc:  # noqa: BLE001 - network / 404-no-latest / rate limit -> fall back
+        print(f"sd-cli: {repo} release fetch failed ({exc}); ", end = "", flush = True)
+        return None, None
+    names = [a["name"] for a in release.get("assets", [])]
+    chosen = resolve_release_asset(
+        names,
+        system = platform.system(),
+        machine = platform.machine(),
+        accelerator = accelerator,
+    )
+    return release, chosen
+
+
 def install(
     *,
     install_dir: Optional[Path] = None,
@@ -276,25 +301,41 @@ def install(
 ) -> Path:
     """Download + extract the prebuilt for this host. Returns the sd-cli path.
 
-    Raises ``RuntimeError`` if no asset matches the host (the caller should then
-    build from source) or the archive has no ``sd-cli``.
+    Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror can't
+    serve this host (release missing, or a host we don't build) AND the default repo is
+    in use, falls back to leejet upstream so native install still works. Raises
+    ``RuntimeError`` only when neither source has an asset for the host, or the archive
+    has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
-    release = _fetch_release(_pinned_tag(), token = token)
-    print(f"sd-cli: source {_repo()} release {release.get('tag_name', '?')}", flush = True)
-    names = [a["name"] for a in release.get("assets", [])]
-    chosen = resolve_release_asset(
-        names,
-        system = platform.system(),
-        machine = platform.machine(),
-        accelerator = accelerator,
-    )
-    if not chosen:
+    tag = _pinned_tag()
+    primary = _repo()
+    release, chosen = _resolve_repo_asset(primary, tag, accelerator, token)
+    used_repo = primary
+
+    # Fall back to upstream ONLY when the built-in default repo is in use (a user who set
+    # UNSLOTH_SD_CPP_REPO gets exactly that repo, no surprise substitution). Covers a
+    # missing mirror release or a host the mirror doesn't build.
+    if (
+        (release is None or not chosen)
+        and primary == DEFAULT_REPO
+        and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
+    ):
+        print(
+            f"falling back to {UPSTREAM_FALLBACK_REPO} for "
+            f"{platform.system()}/{platform.machine()}",
+            flush = True,
+        )
+        release, chosen = _resolve_repo_asset(UPSTREAM_FALLBACK_REPO, tag, accelerator, token)
+        used_repo = UPSTREAM_FALLBACK_REPO
+
+    if release is None or not chosen:
         raise RuntimeError(
             f"No prebuilt sd-cli for {platform.system()}/{platform.machine()} "
-            f"(accelerator={accelerator}). Build from source: "
-            f"https://github.com/{_repo()}"
+            f"(accelerator={accelerator}) from {used_repo}. Build from source: "
+            f"https://github.com/{used_repo}"
         )
+    print(f"sd-cli: source {used_repo} release {release.get('tag_name', '?')}", flush = True)
     asset = next(a for a in release["assets"] if a["name"] == chosen)
     url = asset["browser_download_url"]
     target.mkdir(parents = True, exist_ok = True)

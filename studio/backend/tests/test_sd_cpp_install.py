@@ -148,11 +148,12 @@ def test_pinned_tag_default_and_override(monkeypatch):
     assert _pinned_tag() is None
 
 
-def test_repo_default_and_mirror_override(monkeypatch):
+def test_repo_default_and_override(monkeypatch):
     monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
-    assert _repo() == DEFAULT_REPO == "leejet/stable-diffusion.cpp"
-    monkeypatch.setenv("UNSLOTH_SD_CPP_REPO", "unslothai/stable-diffusion.cpp")
-    assert _repo() == "unslothai/stable-diffusion.cpp"
+    # Default is the Unsloth mirror; the env override can point back to leejet upstream.
+    assert _repo() == DEFAULT_REPO == "unslothai/stable-diffusion.cpp"
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPO", "leejet/stable-diffusion.cpp")
+    assert _repo() == "leejet/stable-diffusion.cpp"
 
 
 # ── sha256 integrity check ──────────────────────────────────────────────────
@@ -306,3 +307,126 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
     binary.parent.mkdir(parents = True)
     binary.write_bytes(b"x")
     assert eng.find_sd_cpp_binary() == str(binary)
+
+
+# ── Unsloth mirror: default source + the CPU/Apple asset set it publishes ─────
+
+_TAG = "master-741-484baa4"
+# Exactly what unslothai/stable-diffusion.cpp's CI publishes (CPU + Apple only; GPU
+# hosts run diffusers and never reach the native installer).
+_MIRROR_ASSETS = [
+    f"sd-{_TAG}-bin-Darwin-macOS-arm64.zip",
+    f"sd-{_TAG}-bin-Darwin-macOS-x86_64.zip",
+    f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    f"sd-{_TAG}-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    f"sd-{_TAG}-bin-win-cpu-x64.zip",
+]
+
+
+def _mresolve(
+    system,
+    machine,
+    accelerator = "auto",
+):
+    return resolve_release_asset(
+        _MIRROR_ASSETS, system = system, machine = machine, accelerator = accelerator
+    )
+
+
+def test_default_repo_is_the_unsloth_mirror():
+    assert sdmod.DEFAULT_REPO == "unslothai/stable-diffusion.cpp"
+    assert sdmod.UPSTREAM_FALLBACK_REPO == "leejet/stable-diffusion.cpp"
+
+
+def test_mirror_matrix_resolves_every_cpu_apple_host():
+    assert _mresolve("Darwin", "arm64") == f"sd-{_TAG}-bin-Darwin-macOS-arm64.zip"
+    assert _mresolve("Darwin", "x86_64") == f"sd-{_TAG}-bin-Darwin-macOS-x86_64.zip"
+    # WSL reports as Linux x86_64, so this also covers WSL.
+    assert _mresolve("Linux", "x86_64") == f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip"
+    assert _mresolve("Linux", "aarch64") == f"sd-{_TAG}-bin-Linux-Ubuntu-24.04-aarch64.zip"
+    assert _mresolve("Windows", "AMD64") == f"sd-{_TAG}-bin-win-cpu-x64.zip"
+    assert _mresolve("Windows", "AMD64", "cpu") == f"sd-{_TAG}-bin-win-cpu-x64.zip"
+
+
+# ── mirror -> upstream fallback in install() ─────────────────────────────────
+
+
+def _stub_two_repos(monkeypatch, *, mirror_serves, upstream_serves, zip_bytes, digest):
+    """Stub _fetch_release to serve (or 404) per repo, so install()'s mirror->upstream
+    fallback can be exercised without network. Host pinned to Linux x86_64."""
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    mirror_name = f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip"
+    upstream_name = "sd-master-741-484baa4-bin-Linux-Ubuntu-24.04-x86_64.zip"
+
+    def _rel(name):
+        return {
+            "tag_name": _TAG,
+            "assets": [
+                {
+                    "name": name,
+                    "browser_download_url": f"https://example.invalid/{name}",
+                    "digest": digest,
+                }
+            ],
+        }
+
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+    ):
+        r = repo or sdmod.DEFAULT_REPO
+        if r == sdmod.DEFAULT_REPO:
+            if mirror_serves:
+                return _rel(mirror_name)
+            raise urllib.error.HTTPError(f"https://api/{r}", 404, "not found", None, None)
+        if upstream_serves:
+            return _rel(upstream_name)
+        raise urllib.error.HTTPError(f"https://api/{r}", 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    monkeypatch.setattr(sdmod, "_download", lambda url, dest, **k: dest.write_bytes(zip_bytes))
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "x86_64")
+    return mirror_name, upstream_name
+
+
+def test_install_uses_mirror_when_available(tmp_path, monkeypatch, capsys):
+    zb = _zip_with_sd_cli()
+    _stub_two_repos(
+        monkeypatch,
+        mirror_serves = True,
+        upstream_serves = True,
+        zip_bytes = zb,
+        digest = "sha256:" + hashlib.sha256(zb).hexdigest(),
+    )
+    sd_cli = install(install_dir = tmp_path)
+    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert "unslothai/stable-diffusion.cpp" in capsys.readouterr().out
+
+
+def test_install_falls_back_to_upstream_when_mirror_missing(tmp_path, monkeypatch, capsys):
+    zb = _zip_with_sd_cli()
+    _stub_two_repos(
+        monkeypatch,
+        mirror_serves = False,
+        upstream_serves = True,
+        zip_bytes = zb,
+        digest = "sha256:" + hashlib.sha256(zb).hexdigest(),
+    )
+    sd_cli = install(install_dir = tmp_path)
+    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    out = capsys.readouterr().out
+    assert "falling back to leejet/stable-diffusion.cpp" in out
+    assert "source leejet/stable-diffusion.cpp" in out
+
+
+def test_install_errors_when_neither_source_serves(tmp_path, monkeypatch):
+    _stub_two_repos(
+        monkeypatch, mirror_serves = False, upstream_serves = False, zip_bytes = b"", digest = ""
+    )
+    with pytest.raises(RuntimeError, match = "No prebuilt sd-cli"):
+        install(install_dir = tmp_path)
