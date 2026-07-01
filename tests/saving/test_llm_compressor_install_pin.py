@@ -34,7 +34,9 @@ def _get_function(name: str) -> ast.FunctionDef:
 def _spec_value():
     for node in ast.walk(_module()):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
-            if any(isinstance(t, ast.Name) and t.id == "_LLM_COMPRESSOR_SPEC" for t in node.targets):
+            if any(
+                isinstance(t, ast.Name) and t.id == "_LLM_COMPRESSOR_SPEC" for t in node.targets
+            ):
                 return node.value.value
     return None
 
@@ -83,6 +85,6 @@ def test_optout_env_gate_precedes_subprocess_install() -> None:
 
     install_line = _first_lineno(fn, _is_check_call)
     assert install_line is not None, "expected a subprocess.check_call install in the function"
-    assert env_line < install_line, (
-        "the auto-install opt-out must be evaluated before any package install runs"
-    )
+    assert (
+        env_line < install_line
+    ), "the auto-install opt-out must be evaluated before any package install runs"

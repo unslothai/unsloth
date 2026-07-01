@@ -1392,7 +1392,10 @@ def install_llm_compressor():
     # Opt-out for locked-down / air-gapped setups: never reach out to a package index
     # automatically; require the user to install the pinned spec themselves.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
-        "0", "", "false", "no",
+        "0",
+        "",
+        "false",
+        "no",
     ):
         raise RuntimeError(
             "Unsloth: llm-compressor is required for FP8/FP4 compressed export but is not "
