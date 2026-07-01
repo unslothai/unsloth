@@ -1363,11 +1363,24 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
+# Version-pin the automatic first-use install of llm-compressor. Without a bound,
+# `pip install llmcompressor` resolves to whatever the configured index offers, so a compromised,
+# dependency-confused, or inflated-version ("999.0.0") release could be pulled and executed under
+# the Unsloth process at install/import time. The oneshot / QuantizationModifier API this uses is
+# stable across the 0.8-0.12 line; bump the ceiling deliberately after testing a newer series
+# rather than tracking latest automatically. An already-installed newer llm-compressor is used
+# as-is (the import below short-circuits), so this bound only constrains what gets auto-installed,
+# never what the user installed themselves.
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.8.0,<0.13"
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing it on first use for FP8/FP4 export.
 
-    Pins the current torch + transformers so pip does not upgrade them (a plain install pulls
-    transformers>=5 and breaks Unsloth). Returns (oneshot, QuantizationModifier).
+    Installs a version-pinned llm-compressor (``_LLM_COMPRESSOR_SPEC``) and pins the current torch
+    + transformers so pip does not upgrade them (a plain install pulls transformers>=5 and breaks
+    Unsloth). Set ``UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1`` to forbid the automatic install
+    and require a manual, vetted install instead. Returns (oneshot, QuantizationModifier).
     """
     try:
         from llmcompressor import oneshot
@@ -1376,9 +1389,22 @@ def install_llm_compressor():
     except Exception:
         pass
 
+    # Opt-out for locked-down / air-gapped setups: never reach out to a package index
+    # automatically; require the user to install the pinned spec themselves.
+    if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
+        "0", "", "false", "no",
+    ):
+        raise RuntimeError(
+            "Unsloth: llm-compressor is required for FP8/FP4 compressed export but is not "
+            "installed, and automatic installation is disabled via "
+            "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL. Install it manually with:\n"
+            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
+            "(pin torch and transformers to your current versions to avoid upgrading them)."
+        )
+
     print(
         "Unsloth: Installing llm-compressor for FP8/FP4 export "
-        "(pinning your torch + transformers so they are not upgraded). "
+        f"({_LLM_COMPRESSOR_SPEC}; pinning your torch + transformers so they are not upgraded). "
         "This can take a few minutes..."
     )
     import importlib
@@ -1401,13 +1427,13 @@ def install_llm_compressor():
     import importlib.util
 
     if importlib.util.find_spec("pip") is not None:
-        cmd = [sys.executable, "-m", "pip", "install", "llmcompressor"]
+        cmd = [sys.executable, "-m", "pip", "install", _LLM_COMPRESSOR_SPEC]
     elif shutil.which("uv") is not None:
-        cmd = ["uv", "pip", "install", "--python", sys.executable, "llmcompressor"]
+        cmd = ["uv", "pip", "install", "--python", sys.executable, _LLM_COMPRESSOR_SPEC]
     else:
         raise RuntimeError(
             "Unsloth: cannot install llm-compressor because this environment has neither pip nor "
-            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} llmcompressor\n"
+            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
             "(pin torch and transformers to your current versions to avoid upgrading them)."
         )
     cpath = None
@@ -1421,8 +1447,8 @@ def install_llm_compressor():
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             "Unsloth: Failed to install llm-compressor. Install it manually with:\n"
-            f"    uv pip install --python {sys.executable} llmcompressor\n"
-            f"or, if pip is available:\n    {sys.executable} -m pip install llmcompressor\n"
+            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
+            f"or, if pip is available:\n    {sys.executable} -m pip install '{_LLM_COMPRESSOR_SPEC}'\n"
             "(pin torch and transformers to your current versions to avoid upgrading them).\n"
             f"Underlying error: {e}"
         )
