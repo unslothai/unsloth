@@ -133,6 +133,13 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Extra llama-server arguments intended for the follow-up GGUF load, "
+            "used only for validation preflight sizing."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

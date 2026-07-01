@@ -273,6 +273,31 @@ def test_metadata_url_mismatch_dropped(tmp_path: Path):
     assert detect_mmproj_file(str(weight)) is None
 
 
+def test_metadata_url_derivative_repack_accepts_base_mmproj(tmp_path: Path):
+    """#6305: LM Studio repack/derivative GGUF + base-projector is valid."""
+    weight = _gguf_with_general(
+        tmp_path / "gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-Q4_0.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.type": "model",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+            ),
+        },
+    )
+    mmproj = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "gemma-4-26B-A4B-it",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+        },
+    )
+    assert detect_mmproj_file(str(weight)) == str(mmproj.resolve())
+
+
 def test_metadata_identifies_mmproj_without_filename_hint(tmp_path: Path):
     """Projector named ``vision-projector.gguf`` discovered via header."""
     weight = _gguf_with_general(

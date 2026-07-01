@@ -370,21 +370,72 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     return t.lower() == "mmproj"
 
 
+def _normalize_url(url: str) -> Optional[str]:
+    value = (url or "").strip().rstrip("/")
+    if not value:
+        return None
+    if value.endswith(".git"):
+        value = value[:-4]
+    lower = value.lower()
+    for scheme in ("https://", "http://"):
+        if lower.startswith(scheme):
+            value = value[len(scheme) :]
+            break
+    return value.lower()
+
+
+def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+    value = _normalize_url(url)
+    if not value:
+        return None
+    parts = [p for p in value.split("/") if p]
+    if parts and "." in parts[0]:
+        parts = parts[1:]
+    if len(parts) < 2:
+        return None
+    return parts[1]
+
+
+def _slug_extends_base(derived: str, base: str) -> bool:
+    if derived == base or not derived.startswith(base):
+        return False
+    if len(derived) == len(base):
+        return False
+    return not derived[len(base)].isalnum()
+
+
+def _urls_look_like_base_and_derivative(left_url: str, right_url: str) -> bool:
+    left = _hf_repo_slug_from_url(left_url)
+    right = _hf_repo_slug_from_url(right_url)
+    if not left or not right:
+        return False
+    return _slug_extends_base(left, right) or _slug_extends_base(right, left)
+
+
 def pairing_score(
     weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
-    """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
-    60 = basename, -1 = definitive mismatch, 0 = decide from filename."""
+    """Pairing confidence: 100 = base_model URL match, 90 = derivative URL,
+    80 = basename + org, 60 = basename, -1 = definitive mismatch,
+    0 = decide from filename."""
     if not weight_meta or not mmproj_meta:
         return 0
 
     w_url = weight_meta.get("general.base_model.0.repo_url")
     p_url = mmproj_meta.get("general.base_model.0.repo_url")
-    if w_url and p_url:
-        return 100 if w_url.strip().rstrip("/") == p_url.strip().rstrip("/") else -1
-
     w_base = weight_meta.get("general.basename")
     p_base = mmproj_meta.get("general.basename")
+    if w_url and p_url:
+        if _normalize_url(w_url) == _normalize_url(p_url):
+            return 100
+        if _urls_look_like_base_and_derivative(w_url, p_url):
+            if not (w_base and p_base):
+                return -1
+            if w_base.lower() != p_base.lower():
+                return -1
+            return 90
+        return -1
+
     w_org = weight_meta.get("general.base_model.0.organization") or weight_meta.get(
         "general.organization"
     )

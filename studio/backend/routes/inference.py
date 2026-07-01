@@ -685,6 +685,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -722,6 +723,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -2233,6 +2235,84 @@ def _request_matches_loaded_settings(
     return True
 
 
+def _resolve_effective_llama_extra_args_for_load(
+    request: LoadRequest | ValidateModelRequest,
+    llama_backend: LlamaCppBackend,
+    model_identifier: str,
+    config: ModelConfig,
+    effective_chat_template_override: Optional[str],
+    extra_llama_args: Optional[list[str]],
+) -> Optional[list[str]]:
+    """Return the llama-server extra args the GGUF load will actually use.
+
+    The training guard runs before unload/load, so it must see inherited extras
+    here rather than after the backend kwargs are assembled.
+    """
+    if (
+        not getattr(config, "is_gguf", False)
+        or request.llama_extra_args is not None
+        or not llama_backend.extra_args
+    ):
+        return extra_llama_args
+
+    source = llama_backend.extra_args_source
+    # Compare against the resolved variant, not the request field: callers
+    # commonly omit gguf_variant for local .gguf paths and HF auto-pick flows.
+    resolved_variant = (config.gguf_variant or "").lower()
+    request_variant = (request.gguf_variant or "").lower()
+    stored_variant = (source[1] or "").lower() if source else ""
+    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+    if request.gguf_variant:
+        variant_mismatch = request_variant != stored_variant
+    else:
+        variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
+    same_source = same_model and not variant_mismatch
+    if not same_source:
+        logger.info(
+            "Not inheriting llama_extra_args: stored args came from %s, loading %s",
+            source,
+            (model_identifier, resolved_variant),
+        )
+        # Cross-model: clear explicitly so the backend doesn't inherit via "no
+        # opinion" semantics.
+        return []
+
+    # Strip only groups whose first-class field was set by the caller, so an
+    # inherited override cannot last-wins-shadow a fresh LoadRequest field.
+    fields_set = getattr(request, "model_fields_set", set())
+    strip_split_mode = (
+        _should_strip_split_mode(request, llama_backend.extra_args)
+        if hasattr(request, "tensor_parallel")
+        else False
+    )
+    stripped = strip_shadowing_flags(
+        llama_backend.extra_args,
+        strip_context = "max_seq_length" in fields_set,
+        strip_cache = "cache_type_kv" in fields_set,
+        strip_spec = "speculative_type" in fields_set or "spec_draft_n_max" in fields_set,
+        strip_template = (
+            "chat_template_override" in fields_set or effective_chat_template_override is not None
+        ),
+        strip_split_mode = strip_split_mode,
+    )
+    try:
+        inherited = validate_extra_args(stripped)
+    except ValueError:
+        # Shouldn't happen on already-validated args; degrade to no-extras rather
+        # than 400 if managed flags changed.
+        logger.warning(
+            "Stored llama_extra_args failed revalidation; loading without them: %s",
+            stripped,
+        )
+        return []
+    if inherited:
+        logger.info(
+            "Inheriting llama_extra_args from previous load (same model, shadow-stripped): %s",
+            inherited,
+        )
+    return inherited
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
 ) -> tuple[str, str, bool]:
@@ -2351,6 +2431,7 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    include_mmproj: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -2360,7 +2441,10 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+        companion_attrs = ["gguf_mtp_file"]
+        if include_mmproj:
+            companion_attrs.append("gguf_mmproj_file")
+        for attr in companion_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -2381,7 +2465,7 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo, hf_token = hf_token, include_mmproj = include_mmproj and bool(has_vision)
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -2423,6 +2507,7 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            include_mmproj = not extra_args_disable_mmproj(llama_extra_args),
         )
         if is_gguf
         else None
@@ -2691,6 +2776,14 @@ async def load_model(
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
+        extra_llama_args = _resolve_effective_llama_extra_args_for_load(
+            request,
+            llama_backend,
+            model_identifier,
+            config,
+            effective_chat_template_override,
+            extra_llama_args,
+        )
 
         # Refuse a load that would OOM active training, before the unload step below
         # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
@@ -2717,84 +2810,6 @@ async def load_model(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
                 unsloth_backend.unload_model(unsloth_backend.active_model_name)
-
-            # Inherit llama_extra_args from the previous load when the request
-            # omits the field (the chat-settings Apply path doesn't round-trip
-            # them; explicit [] still clears). Gated on (model_identifier,
-            # hf_variant) to refuse cross-model pickup, and shadowing flags are
-            # stripped so an inherited override can't win the last-wins CLI
-            # parse against a freshly-supplied first-class field.
-            if request.llama_extra_args is None and llama_backend.extra_args:
-                source = llama_backend.extra_args_source
-                # Compare against the resolved variant, not the request
-                # field: callers commonly omit gguf_variant for local
-                # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
-                # variant`` is the variant load_model was actually
-                # invoked with (see the HF / local branches below), so
-                # both sides of the comparison key off the same string.
-                resolved_variant = (config.gguf_variant or "").lower()
-                request_variant = (request.gguf_variant or "").lower()
-                stored_variant = (source[1] or "").lower() if source else ""
-                same_model = bool(
-                    source and source[0] and source[0].lower() == model_identifier.lower()
-                )
-                if request.gguf_variant:
-                    variant_mismatch = request_variant != stored_variant
-                else:
-                    variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
-                same_source = same_model and not variant_mismatch
-                if not same_source:
-                    logger.info(
-                        "Not inheriting llama_extra_args: stored args came from %s, loading %s",
-                        source,
-                        (model_identifier, resolved_variant),
-                    )
-                    # Cross-model: clear explicitly so the backend doesn't
-                    # inherit via "no opinion" semantics.
-                    extra_llama_args = []
-                else:
-                    # Strip only the groups whose first-class field was set by
-                    # the caller, so an inherited --chat-template-file survives
-                    # an Apply that omits chat_template_override. A bundled family
-                    # template (e.g. the gemma-4 override) is an effective
-                    # first-class template setting even when the raw request
-                    # omits chat_template_override, so strip the inherited
-                    # --chat-template-file in that case too -- otherwise the stale
-                    # extra arg (appended last) shadows the bundled template while
-                    # Studio reports the bundled template's capabilities.
-                    fields_set = getattr(request, "model_fields_set", set())
-                    stripped = strip_shadowing_flags(
-                        llama_backend.extra_args,
-                        strip_context = "max_seq_length" in fields_set,
-                        strip_cache = "cache_type_kv" in fields_set,
-                        strip_spec = (
-                            "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
-                        ),
-                        strip_template = (
-                            "chat_template_override" in fields_set
-                            or effective_chat_template_override is not None
-                        ),
-                        strip_split_mode = _should_strip_split_mode(
-                            request, llama_backend.extra_args
-                        ),
-                    )
-                    try:
-                        extra_llama_args = validate_extra_args(stripped)
-                    except ValueError:
-                        # Shouldn't happen on already-validated args; degrade to
-                        # no-extras rather than 400 if managed flags changed.
-                        logger.warning(
-                            "Stored llama_extra_args failed revalidation; loading without them: %s",
-                            stripped,
-                        )
-                        extra_llama_args = []
-                    else:
-                        if extra_llama_args:
-                            logger.info(
-                                "Inheriting llama_extra_args from previous "
-                                "load (same model, shadow-stripped): %s",
-                                extra_llama_args,
-                            )
 
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
@@ -3235,6 +3250,19 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        try:
+            extra_llama_args = validate_extra_args(request.llama_extra_args)
+        except ValueError as exc:
+            logger.warning("inference.validate_extra_args_failed: %s", exc)
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        extra_llama_args = _resolve_effective_llama_extra_args_for_load(
+            request,
+            get_llama_cpp_backend(),
+            model_identifier,
+            config,
+            None,
+            None if request.llama_extra_args is None else extra_llama_args,
+        )
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,
@@ -3244,6 +3272,7 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
+            llama_extra_args = extra_llama_args,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

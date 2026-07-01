@@ -63,6 +63,11 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /**
+   * Extra llama-server arguments for GGUF loads. These are also sent to
+   * /validate when present so load-time VRAM preflight matches /load.
+   */
+  llama_extra_args?: string[] | null;
 }
 
 export interface ValidateModelResponse {

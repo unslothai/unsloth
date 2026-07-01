@@ -309,6 +309,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         captured = None,
         training_active,
         decision,
+        llama_extra_args = None,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -321,6 +322,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 load_in_4bit = True,
                 max_seq_length = 0,
                 requested_gpu_ids = None,
+                llama_extra_args = llama_extra_args,
             )
 
     def test_noop_when_training_inactive(self):
@@ -360,6 +362,58 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["is_gguf"], True)
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
+
+    def test_gguf_no_mmproj_extra_arg_excludes_projector_from_override(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {}),
+                llama_extra_args = ["--no-mmproj"],
+            )
+        self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertFalse(estimate.call_args.kwargs["include_mmproj"])
+
+    def test_effective_llama_extra_args_inherits_before_guard(self):
+        from models.inference import LoadRequest
+
+        request = LoadRequest(model_path = "org/repo", gguf_variant = "Q4_K_M")
+        llama_backend = SimpleNamespace(
+            extra_args = ["--no-mmproj"],
+            extra_args_source = ("org/repo", "Q4_K_M"),
+        )
+        cfg = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
+        got = self.route._resolve_effective_llama_extra_args_for_load(
+            request,
+            llama_backend,
+            "org/repo",
+            cfg,
+            None,
+            None,
+        )
+        self.assertEqual(got, ["--no-mmproj"])
+
+    def test_effective_llama_extra_args_clears_cross_model_inherit(self):
+        from models.inference import LoadRequest
+
+        request = LoadRequest(model_path = "org/new", gguf_variant = "Q4_K_M")
+        llama_backend = SimpleNamespace(
+            extra_args = ["--no-mmproj"],
+            extra_args_source = ("org/old", "Q4_K_M"),
+        )
+        cfg = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
+        got = self.route._resolve_effective_llama_extra_args_for_load(
+            request,
+            llama_backend,
+            "org/new",
+            cfg,
+            None,
+            None,
+        )
+        self.assertEqual(got, [])
 
 
 class TestEffectiveLoadIn4bit(unittest.TestCase):
@@ -420,21 +474,32 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         decision,
         captured = None,
         load_in_4bit = True,
+        llama_extra_args = None,
+        is_gguf = False,
+        gguf_variant = None,
+        llama_backend = None,
     ):
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
-            model_path = "unsloth/Qwen3-1.7B", load_in_4bit = load_in_4bit, max_seq_length = 4096
+            model_path = "unsloth/Qwen3-1.7B",
+            load_in_4bit = load_in_4bit,
+            max_seq_length = 4096,
+            llama_extra_args = llama_extra_args,
+            gguf_variant = gguf_variant,
         )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
             display_name = "Qwen3-1.7B",
-            is_gguf = False,
+            is_gguf = is_gguf,
+            gguf_variant = gguf_variant,
             is_lora = False,
             is_vision = False,
             path = None,
             base_model = None,
         )
+        if llama_backend is None:
+            llama_backend = SimpleNamespace(extra_args = None, extra_args_source = None)
         with (
             patch.object(
                 self.route,
@@ -443,6 +508,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = llama_backend),
             _stub_guard_deps(training_active = training_active, decision = decision, captured = captured),
         ):
             return asyncio.run(self.route.validate_model(request, current_subject = "test-user"))
@@ -466,6 +532,37 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         )
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
+
+    def test_no_mmproj_extra_arg_excludes_projector_from_validate_guard(self):
+        captured = []
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
+            self._validate(
+                training_active = True,
+                decision = (True, {}),
+                captured = captured,
+                llama_extra_args = ["--no-mmproj"],
+                is_gguf = True,
+            )
+        self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertFalse(estimate.call_args.kwargs["include_mmproj"])
+
+    def test_validate_inherits_same_model_llama_extra_args_for_guard(self):
+        captured = []
+        llama_backend = SimpleNamespace(
+            extra_args = ["--no-mmproj"],
+            extra_args_source = ("unsloth/Qwen3-1.7B", "Q4_K_M"),
+        )
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
+            self._validate(
+                training_active = True,
+                decision = (True, {}),
+                captured = captured,
+                is_gguf = True,
+                gguf_variant = "Q4_K_M",
+                llama_backend = llama_backend,
+            )
+        self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertFalse(estimate.call_args.kwargs["include_mmproj"])
 
     def test_rejects_gguf_with_gpu_ids_before_guard(self):
         # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.
@@ -523,6 +620,26 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gb = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
 
+    def test_local_can_exclude_mmproj_when_text_only(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            main = p / "model.gguf"
+            mmproj = p / "mmproj.gguf"
+            mtp = p / "mtp.gguf"
+            main.write_bytes(b"x" * 1000)
+            mmproj.write_bytes(b"m" * 2000)
+            mtp.write_bytes(b"d" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(main),
+                gguf_mmproj_file = str(mmproj),
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            gb = self.route._estimate_gguf_required_gb(cfg, include_mmproj = False)
+        self.assertAlmostEqual(gb, 4000 / (1024**3), places = 9)  # main + MTP only
+
     def test_remote_threads_token_and_adds_companions(self):
         import utils.models.model_config as mc
 
@@ -550,6 +667,27 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+
+    def test_remote_can_exclude_mmproj_companion(self):
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
+            patch.object(
+                self.route, "_remote_gguf_companion_bytes", return_value = 1 * 1024**3
+            ) as comp,
+        ):
+            gb = self.route._estimate_gguf_required_gb(cfg, include_mmproj = False)
+        self.assertAlmostEqual(gb, 11.0, places = 6)  # 10 GB variant + non-mmproj companions
+        self.assertFalse(comp.call_args.kwargs["include_mmproj"])
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
