@@ -228,8 +228,12 @@ if _IS_MLX:
     def clear_gpu_memory():
         """Clear MLX's cached GPU memory for compatibility cleanup helpers."""
         import mlx.core as mx
-        if hasattr(mx, "clear_cache"):
-            mx.clear_cache()
+
+        clear_cache = getattr(mx, "clear_cache", None)
+        if clear_cache is None and hasattr(mx, "metal"):
+            clear_cache = getattr(mx.metal, "clear_cache", None)
+        if callable(clear_cache):
+            clear_cache()
 
     def _patch_mlx_torch_cuda_compat_api():
         """Expose CUDA-shaped torch helpers for compatibility callers on MLX."""
@@ -289,6 +293,14 @@ if _IS_MLX:
                 if callable(reset):
                     reset()
 
+            def synchronize(device = None):
+                """Wait for queued MLX work when torch.cuda.synchronize() is called."""
+                import mlx.core as mx
+
+                sync = getattr(mx, "synchronize", None)
+                if callable(sync):
+                    sync()
+
             cuda.get_device_properties = get_device_properties
             cuda.get_device_name = get_device_name
             cuda.max_memory_reserved = max_memory_reserved
@@ -298,7 +310,7 @@ if _IS_MLX:
             cuda.empty_cache = empty_cache
             cuda.mem_get_info = mem_get_info
             cuda.reset_peak_memory_stats = reset_peak_memory_stats
-            cuda.synchronize = lambda device = None: None
+            cuda.synchronize = synchronize
             cuda.current_device = lambda: 0
             cuda.device_count = lambda: 1
             cuda.set_device = lambda device = None: None
@@ -308,6 +320,40 @@ if _IS_MLX:
 
         tensor_to = getattr(torch.Tensor, "to", None)
         if tensor_to is not None and not getattr(tensor_to, "_unsloth_mlx_cuda_noop", False):
+
+            def _coerce_mlx_dtype_to_torch(value):
+                """Map MLX dtype objects to their torch dtype equivalents."""
+                try:
+                    import mlx.core as mx
+                except Exception:
+                    return value
+                dtype_map = {
+                    mx.bool_: torch.bool,
+                    mx.int8: torch.int8,
+                    mx.int16: torch.int16,
+                    mx.int32: torch.int32,
+                    mx.int64: torch.int64,
+                    mx.uint8: torch.uint8,
+                    mx.float16: torch.float16,
+                    mx.float32: torch.float32,
+                    mx.bfloat16: torch.bfloat16,
+                }
+                mapped = dtype_map.get(value, None)
+                if mapped is not None:
+                    return mapped
+                dtype_name = str(value).rsplit(".", 1)[-1]
+                name_map = {
+                    "bool_": torch.bool,
+                    "int8": torch.int8,
+                    "int16": torch.int16,
+                    "int32": torch.int32,
+                    "int64": torch.int64,
+                    "uint8": torch.uint8,
+                    "float16": torch.float16,
+                    "float32": torch.float32,
+                    "bfloat16": torch.bfloat16,
+                }
+                return name_map.get(dtype_name, value)
 
             def mlx_tensor_to(self, *args, **kwargs):
                 """Ignore CUDA device targets while preserving dtype conversions."""
@@ -320,8 +366,16 @@ if _IS_MLX:
                 if _is_mlx_cuda_device_target(kwargs.get("device", None)):
                     kwargs.pop("device", None)
                     removed_cuda_device = True
+                if removed_cuda_device and not args:
+                    cuda_only_kwargs = ("non_blocking", "copy", "memory_format")
+                    if all(key in cuda_only_kwargs for key in kwargs):
+                        return self
                 if removed_cuda_device and not args and not kwargs:
                     return self
+                if args:
+                    args[0] = _coerce_mlx_dtype_to_torch(args[0])
+                if "dtype" in kwargs:
+                    kwargs["dtype"] = _coerce_mlx_dtype_to_torch(kwargs["dtype"])
                 return tensor_to(self, *args, **kwargs)
 
             mlx_tensor_to._unsloth_mlx_cuda_noop = True
@@ -351,13 +405,16 @@ if _IS_MLX:
             "dataloader_num_workers",
             "dataloader_pin_memory",
             "dataset_kwargs",
+            "ddp_find_unused_parameters",
             "disable_tqdm",
             "eval_strategy",
+            "evaluation_strategy",
             "fp16",
             "full_determinism",
             "gradient_checkpointing_kwargs",
             "hub_model_id",
             "hub_token",
+            "log_level",
             "logging_strategy",
             "neftune_noise_alpha",
             "optim_args",
@@ -371,7 +428,11 @@ if _IS_MLX:
         )
     )
     _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(
-        ("image_size", "preserve_dataset_order", "warmup_ratio")
+        (
+            "image_size",
+            "preserve_dataset_order",
+            "warmup_ratio",
+        )
     )
     _MLX_ALLOWED_EXTRA_ARGUMENTS = _MLX_COMPAT_EXTRA_ARGUMENTS | _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
     _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset(
@@ -440,7 +501,9 @@ if _IS_MLX:
                 )
         for alias, target in _MLX_TRAINING_ARGUMENT_ALIASES.items():
             if target not in values and hasattr(args, alias):
-                values[alias] = getattr(args, alias)
+                values[target if target in _MLX_ALLOWED_EXTRA_ARGUMENTS else alias] = getattr(
+                    args, alias
+                )
         for name in _MLX_ALLOWED_EXTRA_ARGUMENTS:
             if hasattr(args, name):
                 values[name] = getattr(args, name)
@@ -629,6 +692,11 @@ if _IS_MLX:
             )
             if "max_length" in kwargs and "max_seq_length" not in kwargs:
                 kwargs["max_seq_length"] = kwargs["max_length"]
+            elif (
+                "max_length" in kwargs
+                and _positive_mlx_context_length(kwargs.get("max_seq_length", None)) is not None
+            ):
+                max_length_value = kwargs["max_seq_length"]
             if "num_train_epochs" in kwargs and "max_steps" not in kwargs:
                 kwargs["max_steps"] = -1
 
@@ -668,7 +736,7 @@ if _IS_MLX:
                 if target in _MLX_TRAINING_CONFIG_FIELDS:
                     filtered_kwargs[target] = value
                 else:
-                    extra_kwargs[key] = value
+                    extra_kwargs[target if target in _MLX_ALLOWED_EXTRA_ARGUMENTS else key] = value
 
             _raise_unknown_mlx_training_args(extra_kwargs)
 
@@ -932,6 +1000,84 @@ if _IS_MLX:
                 return not bool(getattr(collator, "mlm", False))
         return False
 
+    _MLX_VISION_COLLATOR_FORWARDED_KWARGS = frozenset(
+        ("completion_only_loss", "formatting_func", "max_seq_length")
+    )
+    _MLX_VISION_COLLATOR_IMAGE_KWARGS = frozenset(("image_size", "resize"))
+    _MLX_VISION_COLLATOR_POSITIONAL_KWARGS = (
+        "max_seq_length",
+        "formatting_func",
+        "resize",
+        "ignore_index",
+        "train_on_responses_only",
+        "instruction_part",
+        "response_part",
+        "force_match",
+        "num_proc",
+        "completion_only_loss",
+        "pad_to_multiple_of",
+        "resize_dimension",
+        "snap_to_patch_size",
+        "last_response_only",
+    )
+    _MLX_VISION_COLLATOR_UNSUPPORTED_DEFAULTS = {
+        "ignore_index": -100,
+        "train_on_responses_only": False,
+        "instruction_part": None,
+        "response_part": None,
+        "force_match": True,
+        "num_proc": None,
+        "pad_to_multiple_of": None,
+        "resize_dimension": 0,
+        "snap_to_patch_size": False,
+        "last_response_only": False,
+    }
+
+    def _is_default_mlx_vision_collator_value(key, value):
+        """Return whether an unsupported collator value is the CUDA default."""
+        if key not in _MLX_VISION_COLLATOR_UNSUPPORTED_DEFAULTS:
+            return False
+        default = _MLX_VISION_COLLATOR_UNSUPPORTED_DEFAULTS[key]
+        if default is None:
+            return value is None
+        if isinstance(default, bool):
+            return value is default
+        return value == default and type(value) is type(default)
+
+    def _has_mlx_training_arg_value(args, key):
+        """Return whether training args already carry an explicit config value."""
+        if args is None or isinstance(args, (str, os.PathLike)):
+            return False
+        if isinstance(args, dict):
+            return key in args
+        return getattr(args, key, None) is not None
+
+    def _raise_unsupported_mlx_vision_collator_kwargs(collator_kwargs):
+        """Reject VLM collator kwargs that cannot be ignored safely on MLX."""
+        unsupported = sorted(
+            key
+            for key, value in collator_kwargs.items()
+            if (
+                key not in _MLX_VISION_COLLATOR_FORWARDED_KWARGS
+                and key not in _MLX_VISION_COLLATOR_IMAGE_KWARGS
+                and (
+                    (
+                        key in _MLX_VISION_COLLATOR_UNSUPPORTED_DEFAULTS
+                        and not _is_default_mlx_vision_collator_value(key, value)
+                    )
+                    or (
+                        key not in _MLX_VISION_COLLATOR_UNSUPPORTED_DEFAULTS
+                        and _is_meaningful_mlx_extra_value(value)
+                    )
+                )
+            )
+        )
+        if unsupported:
+            raise NotImplementedError(
+                "Unsloth MLX: unsupported UnslothVisionDataCollator kwargs "
+                f"cannot be ignored safely: {', '.join(unsupported)}."
+            )
+
     class UnslothTrainer(MLXTrainer):
         """Backend-aware public trainer that routes supported SFT notebooks to MLX."""
 
@@ -966,6 +1112,11 @@ if _IS_MLX:
                                 collator_processor,
                             )
                     collator_kwargs = getattr(data_collator, "kwargs", None) or {}
+                    collator_explicit_kwargs = getattr(
+                        data_collator,
+                        "_unsloth_mlx_explicit_kwargs",
+                        set(collator_kwargs),
+                    )
                     collator_image_size = collator_kwargs.get(
                         "image_size",
                         collator_kwargs.get("resize", None),
@@ -987,6 +1138,19 @@ if _IS_MLX:
                         )
                     ):
                         kwargs["image_size"] = collator_image_size
+                    for collator_key in _MLX_VISION_COLLATOR_FORWARDED_KWARGS:
+                        collator_defaulted_value = collator_key not in collator_explicit_kwargs
+                        if collator_defaulted_value and _has_mlx_training_arg_value(
+                            kwargs.get("args"), collator_key
+                        ):
+                            continue
+                        if (
+                            collator_key in collator_kwargs
+                            and collator_key not in kwargs
+                            and collator_kwargs[collator_key] is not None
+                        ):
+                            kwargs[collator_key] = collator_kwargs[collator_key]
+                    _raise_unsupported_mlx_vision_collator_kwargs(collator_kwargs)
                 elif _is_mlx_native_text_collator(data_collator):
                     pass  # redundant on MLX; MLXTrainer batches/masks/pads natively
                 else:
@@ -1007,6 +1171,14 @@ if _IS_MLX:
             ) is True and not _is_vlm_model(trainer_kwargs.get("model")):
                 raise NotImplementedError(
                     "Unsloth MLX: completion_only_loss=True is only supported "
+                    "for VLM training. For text SFT, call train_on_responses_only "
+                    "after constructing the trainer."
+                )
+            if getattr(
+                trainer_kwargs["args"], "train_on_completions", None
+            ) is True and not _is_vlm_model(trainer_kwargs.get("model")):
+                raise NotImplementedError(
+                    "Unsloth MLX: train_on_completions=True is only supported "
                     "for VLM training. For text SFT, call train_on_responses_only "
                     "after constructing the trainer."
                 )
@@ -1037,10 +1209,27 @@ if _IS_MLX:
             *args,
             **kwargs,
         ):
+            explicit_kwargs = set(kwargs)
+            if len(args) > len(_MLX_VISION_COLLATOR_POSITIONAL_KWARGS):
+                raise TypeError(
+                    "UnslothVisionDataCollator on MLX accepts at most "
+                    f"{len(_MLX_VISION_COLLATOR_POSITIONAL_KWARGS)} positional "
+                    "options after model and processor."
+                )
+            for key, value in zip(_MLX_VISION_COLLATOR_POSITIONAL_KWARGS, args):
+                if key in kwargs:
+                    raise TypeError(
+                        f"UnslothVisionDataCollator got multiple values for argument {key!r}"
+                    )
+                kwargs[key] = value
+                explicit_kwargs.add(key)
+            if "completion_only_loss" not in kwargs:
+                kwargs["completion_only_loss"] = True
             self.model = model
             self.processor = processor
-            self.args = args
+            self.args = ()
             self.kwargs = kwargs
+            self._unsloth_mlx_explicit_kwargs = explicit_kwargs
 
         def __call__(self, features):
             raise NotImplementedError(

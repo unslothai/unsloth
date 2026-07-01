@@ -39,6 +39,12 @@ class _DummyModel:
         return {}
 
 
+class _DummyVLMModel(_DummyModel):
+    """Small VLM model stub for MLX vision trainer constructor probes."""
+
+    _is_vlm_model = True
+
+
 def test_mlx_exports_unsloth_trainer_api():
     """MLX imports should expose the public Unsloth trainer API."""
     unsloth = _import_mlx_unsloth()
@@ -138,7 +144,11 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     )
 
     assert args.max_seq_length == 456
+    assert args.max_length == 456
+    assert args._unsloth_mlx_max_length_value == 456
     assert dict_args.max_seq_length == 456
+    assert dict_args.max_length == 456
+    assert dict_args._unsloth_mlx_max_length_value == 456
     assert args._unsloth_mlx_max_seq_length_explicit is True
     assert dict_args._unsloth_mlx_max_seq_length_explicit is True
 
@@ -155,6 +165,22 @@ def test_mlx_training_arguments_preserve_explicit_positive_warmup_steps():
 
     assert args.warmup_steps == 5
     assert args._unsloth_mlx_warmup_steps_explicit is True
+
+
+def test_mlx_clear_gpu_memory_uses_metal_fallback(monkeypatch):
+    """Older MLX releases expose cache clearing under mx.metal.clear_cache."""
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    called = []
+    metal = getattr(mx, "metal", None) or type("Metal", (), {})()
+    monkeypatch.delattr(mx, "clear_cache", raising = False)
+    monkeypatch.setattr(mx, "metal", metal, raising = False)
+    monkeypatch.setattr(metal, "clear_cache", lambda: called.append("metal"), raising = False)
+
+    unsloth.clear_gpu_memory()
+
+    assert called == ["metal"]
 
 
 def test_mlx_training_arguments_preserve_explicit_epoch_training():
@@ -574,10 +600,10 @@ def test_mlx_trainer_vision_collator_processor_overrides_processing_class():
 
     processor = Processor()
     processor.tokenizer = tokenizer
-    collator = unsloth.UnslothVisionDataCollator(_DummyModel(), processor)
+    collator = unsloth.UnslothVisionDataCollator(_DummyVLMModel(), processor)
 
     trainer = unsloth.UnslothTrainer(
-        model = _DummyModel(),
+        model = _DummyVLMModel(),
         tokenizer = None,
         train_dataset = [],
         args = {"max_steps": 1},
@@ -600,10 +626,10 @@ def test_mlx_trainer_preserves_explicit_processor_over_vision_collator():
 
     collator_processor = Processor()
     collator_processor.tokenizer = tokenizer
-    collator = unsloth.UnslothVisionDataCollator(_DummyModel(), collator_processor)
+    collator = unsloth.UnslothVisionDataCollator(_DummyVLMModel(), collator_processor)
 
     trainer = unsloth.UnslothTrainer(
-        model = _DummyModel(),
+        model = _DummyVLMModel(),
         tokenizer = None,
         train_dataset = [],
         args = {"max_steps": 1},
@@ -616,24 +642,54 @@ def test_mlx_trainer_preserves_explicit_processor_over_vision_collator():
     assert trainer.tokenizer is tokenizer
 
 
-def test_mlx_trainer_forwards_vision_collator_resize_max():
-    """Vision collator resize=max should stay explicit through MLX args."""
+def test_mlx_trainer_forwards_vision_collator_positional_defaults():
+    """Vision collator CUDA-style positionals should route into MLX args."""
     unsloth = _import_mlx_unsloth()
     collator = unsloth.UnslothVisionDataCollator(
-        _DummyModel(),
+        _DummyVLMModel(),
         object(),
-        resize = "max",
+        2048,
+        None,
+        "max",
+        -100,
+        False,
+        None,
+        None,
+        True,
+        None,
+        False,
     )
 
     trainer = unsloth.UnslothTrainer(
-        model = _DummyModel(),
+        model = _DummyVLMModel(),
         tokenizer = None,
         train_dataset = [],
         args = {"max_steps": 1},
         data_collator = collator,
     )
 
+    assert trainer.args.max_seq_length == 2048
     assert trainer.args.image_size == "max"
+    assert trainer.args.completion_only_loss is False
+
+
+def test_mlx_vision_collator_default_does_not_override_explicit_args():
+    """Implicit collator defaults should not override explicit trainer args."""
+    unsloth = _import_mlx_unsloth()
+    collator = unsloth.UnslothVisionDataCollator(_DummyVLMModel(), object())
+
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyVLMModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            completion_only_loss = False,
+        ),
+        data_collator = collator,
+    )
+
+    assert trainer.args.completion_only_loss is False
 
 
 def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
@@ -750,7 +806,8 @@ def test_mlx_trainer_accepts_trl_none_placeholder_positionals():
         processing_class,
     )
 
-    assert trainer.train_dataset is dataset
+    assert getattr(trainer.train_dataset, "_dataset", trainer.train_dataset) is dataset
+    assert getattr(trainer, "_mlx_train_dataset_for_batches", dataset) is dataset
     assert trainer.tokenizer is processing_class
     assert trainer.args.max_steps == 60
 
@@ -883,7 +940,7 @@ def test_mlx_trl_star_import_exports_public_shims():
     exec("from trl import *", namespace)
 
     assert namespace["SFTTrainer"] is unsloth.UnslothTrainer
-    assert namespace["SFTConfig"] is unsloth.UnslothTrainingArguments
+    assert issubclass(namespace["SFTConfig"], unsloth.UnslothTrainingArguments)
 
 
 def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
@@ -1002,7 +1059,7 @@ def test_mlx_vision_collator_is_constructor_compatible():
 
     assert collator.model == "model"
     assert collator.processor == "processor"
-    assert collator.kwargs == {"flag": True}
+    assert collator.kwargs == {"completion_only_loss": True, "flag": True}
 
 
 def test_mlx_train_on_responses_only_returns_shared_mask_function():
