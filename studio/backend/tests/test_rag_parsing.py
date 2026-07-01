@@ -180,22 +180,74 @@ def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
     assert "line1 line2 | mid | end" in text  # internal newline collapsed to a space
 
 
-def test_docx_table_dedups_merged_cells(tmp_path):
-    # A horizontally merged cell repeats across the spanned columns; dedup on the shared
-    # <w:tc> so it appears once, not once per column it spans.
+def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
+    # A horizontally merged cell repeats across the spanned columns: emit its text once
+    # then a placeholder, so the row keeps as many fields as its siblings (columns stay
+    # aligned) without duplicating the merged text.
     pytest.importorskip("docx")
     import docx
 
     from core.rag import parsers
 
     document = docx.Document()
-    table = document.add_table(rows = 1, cols = 3)
+    table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "WIDE"
     table.cell(0, 2).text = "END"
     table.cell(0, 0).merge(table.cell(0, 1))  # span the first two columns
+    table.cell(1, 0).text = "a"
+    table.cell(1, 1).text = "b"
+    table.cell(1, 2).text = "c"
     path = tmp_path / "merged.docx"
     document.save(str(path))
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert text.count("WIDE") == 1  # merged cell not duplicated across spanned columns
-    assert "WIDE | END" in text
+    assert "WIDE |  | END" in text  # placeholder keeps 3 fields, aligned with "a | b | c"
+    assert "a | b | c" in text
+
+
+def test_docx_table_pads_omitted_grid_columns(tmp_path):
+    # A row that skips leading grid columns exposes the gap via grid_cols_before; pad it
+    # with empty fields so the value stays under the right header instead of shifting left.
+    pytest.importorskip("docx")
+    import docx
+    from docx.oxml.ns import qn
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    table = document.add_table(rows = 2, cols = 3)
+    table.cell(0, 0).text = "H1"
+    table.cell(0, 1).text = "H2"
+    table.cell(0, 2).text = "H3"
+    tr = table.rows[1]._tr  # drop the first cell and mark it skipped via <w:gridBefore>
+    tr.remove(tr.tc_lst[0])
+    trPr = tr.get_or_add_trPr()
+    trPr.insert(0, trPr.makeelement(qn("w:gridBefore"), {qn("w:val"): "1"}))
+    table.rows[1].cells[0].text = "X"  # sits in column 2
+    path = tmp_path / "gap.docx"
+    document.save(str(path))
+
+    text = "\n".join(p.text for p in parsers.parse(str(path)))
+    assert " | X | " in text  # leading gap padded so X lines up under H2, not H1
+
+
+def test_docx_flattens_nested_table(tmp_path):
+    # cell.text ignores tables nested inside a cell; walk cell.tables so nested rows are
+    # not silently dropped from the indexed text.
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    outer = document.add_table(rows = 1, cols = 1).cell(0, 0)
+    outer.text = "outer"
+    nested = outer.add_table(rows = 1, cols = 2)
+    nested.cell(0, 0).text = "NESTED-A"
+    nested.cell(0, 1).text = "NESTED-B"
+    path = tmp_path / "nested.docx"
+    document.save(str(path))
+
+    text = "\n".join(p.text for p in parsers.parse(str(path)))
+    assert "NESTED-A | NESTED-B" in text  # nested table flattened, not dropped

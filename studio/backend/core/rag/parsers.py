@@ -354,22 +354,29 @@ def render_pdf_pages(
 
 def _docx_table_rows(table) -> list[str]:
     """Each row as pipe-joined cell text (the locator splits anchors on pipes).
-    Merged cells repeat across spanned columns, so dedup by the underlying <w:tc>."""
+    Keeps columns aligned to the layout grid: a merged cell fills its spanned slots
+    (text once, then placeholders), skipped leading/trailing grid columns become
+    empty fields, and tables nested in a cell are flattened in place."""
     rows: list[str] = []
     for row in table.rows:
+        cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
+        nested: list = []
         seen: set = set()
-        cells: list[str] = []
         for cell in row.cells:
-            # ._tc is the underlying <w:tc> lxml element (hashable); merged cells repeat
-            # across spanned columns and share one _tc, so dedup on it.
+            # row.cells repeats a merged cell (shared <w:tc>) once per spanned column:
+            # emit its text once then placeholders so field counts match sibling rows.
             if cell._tc in seen:
+                cells.append("")
                 continue
             seen.add(cell._tc)
-            # Collapse internal newlines/whitespace so a multi-paragraph cell stays on one
-            # row; keep empty cells so columns still line up across rows.
+            # Collapse in-cell newlines; keep empty cells so columns line up.
             cells.append(" ".join(cell.text.split()))
-        if any(cells):
+            nested.extend(cell.tables)  # cell.text ignores nested tables
+        cells.extend([""] * getattr(row, "grid_cols_after", 0))
+        if any(c.strip() for c in cells):
             rows.append(" | ".join(cells))
+        for inner in nested:
+            rows.extend(_docx_table_rows(inner))
     return rows
 
 
