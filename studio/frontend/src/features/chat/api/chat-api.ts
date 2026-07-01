@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -321,8 +322,12 @@ export interface CachedModelRepo {
   last_modified?: number;
 }
 
-export async function listCachedModels(): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models");
+export async function listCachedModels(
+  hfToken?: string | null,
+): Promise<CachedModelRepo[]> {
+  const response = await authFetch("/api/models/cached-models", {
+    headers: hubTokenHeader(hfToken),
+  });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
 }
@@ -786,8 +791,9 @@ export async function listGgufVariants(
   hfToken?: string,
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  if (hfToken) params.set("hf_token", hfToken);
-  const response = await authFetch(`/api/models/gguf-variants?${params}`);
+  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
