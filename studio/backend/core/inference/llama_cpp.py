@@ -2206,6 +2206,21 @@ class LlamaCppBackend:
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
+    def _gpu_is_integrated(ordinal: int) -> bool:
+        """True iff CUDA device ``ordinal`` is integrated (cudaDeviceProp.integrated):
+        CPU and GPU share one physical RAM pool, so there is no dedicated VRAM
+        (NVIDIA GB10 / DGX Spark, Jetson). PyTorch surfaces this as
+        ``get_device_properties(...).is_integrated``. Fails closed to False, so a
+        discrete card, an older torch without the attribute, or any error leaves
+        the reported free/total untouched."""
+        try:
+            import torch
+            props = torch.cuda.get_device_properties(ordinal)
+            return bool(getattr(props, "is_integrated", 0))
+        except Exception:
+            return False
+
+    @staticmethod
     def _get_gpu_memory() -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
@@ -2295,15 +2310,39 @@ class LlamaCppBackend:
             # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
             # with the nvidia-smi path.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            # On a unified-memory GPU (integrated: CPU and GPU share one physical
+            # RAM pool -- NVIDIA GB10 / DGX Spark, Jetson) mem_get_info's "free"
+            # tracks raw MemFree and ignores reclaimable page cache, so it reads a
+            # small fraction of what is really usable and the context fit floors at
+            # min_ctx (#6757). System MemAvailable is the real ceiling there, and
+            # what the weights + KV actually draw from; total stays as reported.
+            #
+            # NVIDIA (non-HIP) only: PyTorch also flags AMD APUs as integrated, but
+            # their unified-memory handling is scoped to gfx1150/gfx1151 in
+            # _amd_apu_wants_unified_memory (sets GGML_CUDA_ENABLE_UNIFIED_MEMORY +
+            # the RAM guard at launch). Lifting the budget for other AMD APUs here
+            # would let selection believe a model fits while the launch path leaves
+            # llama.cpp on the ROCm budget -> OOM, so leave ROCm to that path.
+            is_rocm = getattr(torch.version, "hip", None) is not None
+            sys_avail_mib = LlamaCppBackend._available_system_memory_mib()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
+                free_mib = free_bytes // (1024 * 1024)
+                total_mib = total_bytes // (1024 * 1024)
+                if (
+                    not is_rocm
+                    and sys_avail_mib is not None
+                    and sys_avail_mib > free_mib
+                    and LlamaCppBackend._gpu_is_integrated(ordinal)
+                ):
+                    free_mib = sys_avail_mib
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                gpus.append((idx, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024)))
+                gpus.append((idx, free_mib, total_mib))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
@@ -2311,23 +2350,61 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
+    def _cgroup_available_memory_mib(
+        _path_pairs = (
+            ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),  # v2
+            (
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+            ),  # v1
+        ),
+    ) -> Optional[int]:
+        """Memory a memory-capped Linux container can still allocate (cgroup limit
+        minus current usage), in MiB; None when there is no cap or it is unreadable
+        (bare metal, macOS, Windows). cgroup v2 first, then v1. An unlimited v1
+        limit reads as a huge sentinel, which the caller's ``min`` folds back to
+        the host figure. Used to clamp host-wide MemAvailable so a container on a
+        large host does not pick a context that fits the host but exceeds the
+        container cap and gets OOM-killed."""
+        for limit_path, usage_path in _path_pairs:
+            try:
+                with open(limit_path) as f:
+                    raw = f.read().strip()
+                if raw == "max":
+                    return None  # cgroup v2 explicit "no limit"
+                limit = int(raw)
+                with open(usage_path) as f:
+                    usage = int(f.read().strip())
+                return max(0, limit - usage) // (1024 * 1024)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
-        """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
-        neither is readable. On a unified-memory APU this, not the ROCm-reported
-        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        """Available system RAM in MiB (psutil, then /proc/meminfo), clamped to the
+        cgroup's remaining allowance inside a memory-capped container, or None if
+        unreadable. On a unified-memory host this, not the reported VRAM, is the
+        real ceiling: the weights load into shared system RAM."""
+        host: Optional[int] = None
         try:
             import psutil
-            return int(psutil.virtual_memory().available // (1024 * 1024))
+            host = int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
-        try:
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        return int(line.split()[1]) // 1024  # kB -> MiB
-        except Exception:
-            pass
-        return None
+        if host is None:
+            try:
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("MemAvailable:"):
+                            host = int(line.split()[1]) // 1024  # kB -> MiB
+                            break
+            except Exception:
+                pass
+        if host is None:
+            return None
+        cgroup = LlamaCppBackend._cgroup_available_memory_mib()
+        return min(host, cgroup) if cgroup is not None else host
 
     @staticmethod
     def _apu_ram_shortfall_message(
