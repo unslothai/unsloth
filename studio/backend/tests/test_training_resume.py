@@ -360,3 +360,62 @@ def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
     assert old_run["resumed_later"] == 1
     assert resume.can_resume_run(old_run) is False
     assert studio_db.get_resumable_run_by_output_dir(str(out)) is None
+
+
+def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
+    # A stop-and-save whose checkpoint write failed must finalize as an error
+    # so history explains the missing resume state (keep_error_status flag).
+    from core.training.training import TrainingBackend
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    studio_db.create_run(
+        id = "run-failed-save",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 10,
+    )
+    backend = TrainingBackend()
+    backend.current_job_id = "run-failed-save"
+    backend._db_run_created = True
+    backend._should_stop = True
+    backend._handle_event(
+        {
+            "type": "error",
+            "error": "Failed to save a resumable checkpoint after stop.",
+            "keep_error_status": True,
+        }
+    )
+
+    run = studio_db.get_run("run-failed-save")
+    assert run["status"] == "error"
+    assert "resumable checkpoint" in run["error_message"]
+
+
+def test_user_stop_error_without_flag_still_finalizes_stopped(monkeypatch, tmp_path):
+    # Errors surfaced while honouring a plain user stop keep the stopped status.
+    from core.training.training import TrainingBackend
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    studio_db.create_run(
+        id = "run-user-stop",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 10,
+    )
+    backend = TrainingBackend()
+    backend.current_job_id = "run-user-stop"
+    backend._db_run_created = True
+    backend._should_stop = True
+    backend._handle_event({"type": "error", "error": "interrupted"})
+
+    assert studio_db.get_run("run-user-stop")["status"] == "stopped"
