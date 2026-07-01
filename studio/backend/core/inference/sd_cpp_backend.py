@@ -35,8 +35,10 @@ from typing import Any, Optional
 
 from core.inference.diffusion_device import resolve_diffusion_device_target
 from core.inference.diffusion_families import (
+    DIFFUSION_CANCELLED_MSG,
+    DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
-    detect_family,
+    detect_family_for_pick,
     family_sd_cpp_supported,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -242,7 +244,10 @@ class SdCppDiffusionBackend:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
             )
-        fam = detect_family(repo_id, family_override)
+        # Use the filename-fallback detector the route validated with, so a local
+        # .gguf pick whose family keyword lives only in the basename doesn't pass
+        # validation and then dead-end here on a no-GPU (native-routed) host.
+        fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(f"Could not infer a diffusion family for '{repo_id}'.")
         if not family_sd_cpp_supported(fam):
@@ -464,7 +469,7 @@ class SdCppDiffusionBackend:
             with self._lock:
                 state = self._state
                 if state is None:
-                    raise RuntimeError("No diffusion model is loaded.")
+                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
             engine = self._resolve_engine()
             try:
@@ -485,7 +490,7 @@ class SdCppDiffusionBackend:
                 with tempfile.TemporaryDirectory(prefix = "sdcpp_gen_") as tmpdir:
                     for index in range(max(1, int(batch_size))):
                         if cancel.is_set():
-                            raise RuntimeError("Diffusion generation was cancelled.")
+                            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                         # Distinct seed per batch image (sd-cli is one image/run here),
                         # so a batch is reproducible image-by-image from the base seed.
                         # Mask to sd-cli's int64 range, NOT 53 bits: the request model and
@@ -522,7 +527,7 @@ class SdCppDiffusionBackend:
                             images.append(im.copy())
                         seeds.append(seed_i)
                 if cancel.is_set():
-                    raise RuntimeError("Diffusion generation was cancelled.")
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # ``seeds`` is the per-image seed (each sd-cli run used seed+index), so
                 # the route can persist the real seed for every image in the batch.
                 return {
@@ -532,7 +537,7 @@ class SdCppDiffusionBackend:
                     "repo_id": state.repo_id,
                 }
             except SdCppCancelled as exc:
-                raise RuntimeError("Diffusion generation was cancelled.") from exc
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
             finally:
                 self._gen = None
                 with self._lock:

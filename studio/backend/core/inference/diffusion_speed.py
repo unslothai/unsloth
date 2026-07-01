@@ -161,12 +161,11 @@ def apply_speed_optims(
         "compiled": False,
     }
     mode = normalize_speed_mode(speed_mode)
-    # TF32 is the one PROCESS-GLOBAL flag we flip (on max). Restore it whenever this
-    # load isn't max, so a later default/off diffusion load -- or chat inference in the
-    # same long-lived process -- doesn't silently inherit a prior max load's TF32 and
-    # lose the bit-identical default the regression harness checks.
-    if mode != SPEED_MAX:
-        _restore_tf32(logger)
+    # TF32 and cudnn.benchmark are the process-global flags this may flip (TF32 on max,
+    # cudnn.benchmark on any non-off CUDA load). The caller snapshots them before this
+    # call and restores on unload / failed load via snapshot_backend_flags /
+    # restore_backend_flags, so a later `off` load -- or chat inference in the same
+    # process -- never inherits them. We keep no separate bookkeeping here.
     if mode == SPEED_OFF:
         return applied
 
@@ -251,48 +250,15 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         return False
 
 
-# The TF32 flag values from before the first max load flipped them, so a later
-# non-max load / unload can put the process back exactly as it found it (rather than
-# forcing a hardcoded default that might clobber another component's choice).
-_tf32_prev: Optional[tuple[bool, bool]] = None
-
-
 def _enable_tf32(logger: Any) -> bool:
-    global _tf32_prev
     try:
         import torch
-
-        if _tf32_prev is None:
-            _tf32_prev = (
-                torch.backends.cuda.matmul.allow_tf32,
-                torch.backends.cudnn.allow_tf32,
-            )
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "tf32", exc)
         return False
-
-
-def restore_tf32(logger: Any = None) -> None:
-    """Put the process-global TF32 flags back to their pre-max-load values. No-op if
-    a max load never set them. Called on a non-max load and on unload."""
-    _restore_tf32(logger)
-
-
-def _restore_tf32(logger: Any) -> None:
-    global _tf32_prev
-    if _tf32_prev is None:
-        return
-    try:
-        import torch
-        torch.backends.cuda.matmul.allow_tf32 = _tf32_prev[0]
-        torch.backends.cudnn.allow_tf32 = _tf32_prev[1]
-    except Exception as exc:  # noqa: BLE001 — best-effort restore
-        _warn(logger, "tf32_restore", exc)
-    finally:
-        _tf32_prev = None
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
