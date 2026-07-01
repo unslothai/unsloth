@@ -157,6 +157,7 @@ def test_export_merged_relaxes_is_peft_guard():
 def test_unsloth_save_has_torchao_registry_and_path():
     # The core normalizer + registry + save path must exist for the backend to route to them.
     import unsloth.save as us
+
     assert hasattr(us, "_normalize_torchao_method")
     assert hasattr(us, "TORCHAO_EXPORT_SCHEMES")
     assert hasattr(us, "_unsloth_save_torchao")
@@ -187,6 +188,7 @@ def test_export_gguf_normalizes_quant_list():
 
 def test_lora_request_has_gguf_fields():
     from models.export import ExportLoRAAdapterRequest
+
     r = ExportLoRAAdapterRequest(save_directory = "/tmp/x")
     assert r.gguf is False and r.gguf_outtype == "f16"
     r2 = ExportLoRAAdapterRequest(save_directory = "/tmp/x", gguf = True, gguf_outtype = "q8_0")
