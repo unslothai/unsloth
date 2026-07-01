@@ -14,9 +14,6 @@ from .training import (
     TrainingRunDetailResponse,
     TrainingRunDeleteResponse,
     TrainingRunUpdateRequest,
-    DiffusionTrainingStartRequest,
-    DiffusionTrainingStartResponse,
-    DiffusionTrainingStatusResponse,
 )
 from .models import (
     CheckpointInfo,
@@ -75,9 +72,6 @@ from .data_recipe import (
 __all__ = [
     # Training schemas
     "TrainingStartRequest",
-    "DiffusionTrainingStartRequest",
-    "DiffusionTrainingStartResponse",
-    "DiffusionTrainingStatusResponse",
     "TrainingJobResponse",
     "TrainingStatus",
     "TrainingProgress",

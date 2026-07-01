@@ -56,6 +56,8 @@ from models import (
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
+)
+from models.training import (
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
@@ -1031,8 +1033,7 @@ async def stream_training_progress(
 
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
-    body: DiffusionTrainingStartRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: DiffusionTrainingStartRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Start an SDXL LoRA training job from an image + caption dataset."""
     from core.training.diffusion_training_service import get_diffusion_training_service
@@ -1047,8 +1048,11 @@ async def start_diffusion_training(
         raise HTTPException(status_code = 409, detail = str(e))
     except Exception as e:
         raise log_and_http_error(
-            e, 500, "Failed to start diffusion training",
-            event = "diffusion_training.start_failed", log = logger,
+            e,
+            500,
+            "Failed to start diffusion training",
+            event = "diffusion_training.start_failed",
+            log = logger,
         )
     return DiffusionTrainingStartResponse(job_id = job_id, status = "running")
 
@@ -1066,5 +1070,4 @@ async def stop_diffusion_training(current_subject: str = Depends(get_current_sub
 async def diffusion_training_status(current_subject: str = Depends(get_current_subject)):
     """Poll the current diffusion training job's status/progress (JSON)."""
     from core.training.diffusion_training_service import get_diffusion_training_service
-
     return DiffusionTrainingStatusResponse(**get_diffusion_training_service().status())
