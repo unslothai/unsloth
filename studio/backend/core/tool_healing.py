@@ -329,12 +329,19 @@ def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
       later sibling after an omitted close marker is still recovered as its own call.
     """
     n = len(content)
+    brace_regions = [(s, be) for (s, be, _k, _m) in markers if be >= 0]
     events = []  # (position, order) with order 0 = braces-done, 1 = close marker
     for idx, (_start, brace_end, _kind, _m) in enumerate(markers):
         if brace_end >= 0:
             events.append((brace_end, 0, _kind, idx))
     for kind, close_re in (("json", _TC_END_TAG_RE), ("gemma", _TC_GEMMA_END_TAG_RE)):
         for cm in close_re.finditer(content):
+            # A close token inside another call's balanced braces is that call's
+            # quoted argument data, not a structural close. Ignore it, else it
+            # could pop an earlier close-less marker and extend its coverage over a
+            # later valid sibling (dropping that sibling).
+            if any(s < cm.start() < be for s, be in brace_regions):
+                continue
             events.append((cm.start(), 1, kind, cm.end()))
     events.sort(key = lambda e: (e[0], e[1]))
     waiting = {"json": [], "gemma": []}
@@ -424,22 +431,16 @@ def parse_tool_calls_from_text(
         )
 
     if not tool_calls:
-        # Exclude <function=> markers inside any marker's envelope -- its data
-        # through the close marker (searched after the braces) or EOF, even if the
-        # call failed to parse -- so nested XML cannot escape as a real call.
-        envelopes = []
-        for s, be, kind, _m in markers:
-            if be < 0:
-                envelopes.append((s, len(content)))
-            else:
-                close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
-                cm = close_re.search(content, be + 1)
-                envelopes.append((s, cm.end() if cm else len(content)))
+        # Exclude <function=> markers inside any marker's coverage -- its braces,
+        # or the gap up to its close -- even if that call failed to parse, so
+        # nested XML cannot escape as a real call. Reusing the same coverage as the
+        # candidate loop keeps this consistent: a <function=> after a balanced
+        # close-less marker is a sibling (recovered), not swallowed to EOF.
         func_starts = [
             fm
             for fm in _TC_FUNC_START_RE.finditer(content)
             if not _inside_open_parameter(content, fm.start())
-            and not any(s <= fm.start() < e for s, e in envelopes)
+            and not any(s <= fm.start() < e for s, e in coverage)
         ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
