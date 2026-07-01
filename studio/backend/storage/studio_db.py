@@ -1689,6 +1689,43 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
+def upsert_app_setting_map_entry(
+    key: str, entry_key: str, entry_value: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
+    app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
+    sub-entries cannot drop each other's updates."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], {}) if row else {}
+        if not isinstance(current, dict):
+            current = {}
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(current), now),
+        )
+        conn.commit()
+        return current
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def list_chat_settings() -> dict[str, Any]:
     conn = get_connection()
     try:
