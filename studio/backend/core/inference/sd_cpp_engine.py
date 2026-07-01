@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -37,6 +39,7 @@ from core.inference.sd_cpp_args import (
     SdCppUpscaleParams,
     build_sd_cpp_command,
     build_sd_cpp_upscale_command,
+    native_speed_flags,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,6 +192,7 @@ class SdCppEngine:
         *,
         output_path: str,
         offload: Optional[list[str]] = None,
+        native_speed: Optional[str] = None,
         threads: Optional[int] = None,
         verbose: bool = False,
         extra_args: Optional[list[str]] = None,
@@ -198,10 +202,15 @@ class SdCppEngine:
     ) -> Path:
         """Run one ``sd-cli`` generation; return the written image path.
 
-        Raises ``RuntimeError`` if the binary is missing, the process exits
-        nonzero, or no output file is produced. ``on_log`` (if given) receives
-        each line of sd-cli's progress output as it arrives.
+        ``native_speed`` ("default"/"max") adds sd.cpp's own speed flags
+        (``--diffusion-fa`` etc.), de-duplicated against the offload flags that may
+        already include them. Raises ``RuntimeError`` if the binary is missing, the
+        process exits nonzero, or no output file is produced. ``on_log`` (if given)
+        receives each line of sd-cli's progress output as it arrives.
         """
+        offload = list(offload or [])
+        speed = [f for f in native_speed_flags(native_speed) if f not in offload]
+        merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
             self._require_binary(),
             files,
@@ -210,7 +219,7 @@ class SdCppEngine:
             offload = offload,
             threads = threads,
             verbose = verbose,
-            extra_args = extra_args,
+            extra_args = merged_extra,
         )
         return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
 
@@ -281,20 +290,49 @@ class SdCppEngine:
             errors = "replace",
             env = run_env,
         )
+        # Drain stdout on a reader thread so the timeout is enforced even when the
+        # child hangs WITHOUT printing (e.g. stuck in model load / GPU init): a plain
+        # `for line in proc.stdout` blocks until EOF, so proc.wait(timeout) would
+        # never be reached. The reader pushes lines (then a None sentinel at EOF) to a
+        # queue the main loop polls against a wall-clock deadline.
         tail: list[str] = []
+        line_q: "queue.Queue[Optional[str]]" = queue.Queue()
+
+        def _drain() -> None:
+            try:
+                assert proc.stdout is not None
+                for raw in proc.stdout:
+                    line_q.put(raw.rstrip("\n"))
+            finally:
+                line_q.put(None)
+
+        reader = threading.Thread(target = _drain, daemon = True)
+        reader.start()
+
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        stdout_done = False
         try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip("\n")
+            while True:
+                if deadline is not None and time.monotonic() >= deadline and proc.poll() is None:
+                    proc.kill()
+                    raise RuntimeError(f"sd-cli timed out after {timeout}s")
+                try:
+                    line = line_q.get(timeout = 0.1)
+                except queue.Empty:
+                    if proc.poll() is not None and stdout_done:
+                        break
+                    continue
+                if line is None:
+                    stdout_done = True
+                    if proc.poll() is not None:
+                        break
+                    continue
                 tail.append(line)
                 if len(tail) > 40:
                     tail.pop(0)
                 if on_log is not None:
                     on_log(line)
-            ret = proc.wait(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            raise RuntimeError(f"sd-cli timed out after {timeout}s")
+            ret = proc.wait(timeout = 5.0)
         finally:
             if proc.poll() is None:
                 proc.kill()

@@ -185,6 +185,9 @@ def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
         base_overhead_mib = 1000,
     )
     assert plan.offload_policy == OFFLOAD_GROUP
+    # Group keeps the VAE resident, so it uses exact slicing but NOT lossy tiling
+    # -> balanced stays bit-identical while still capping the offload footprint.
+    assert plan.vae_slicing is True and plan.vae_tiling is False
 
 
 def test_auto_model_offload_when_companions_exceed_budget():
@@ -430,6 +433,18 @@ def test_apply_group_falls_back_to_model_without_transformer():
     pipe = _RecordingPipe()
     effective, _ = apply_memory_plan(pipe, _plan(OFFLOAD_GROUP, tiling = True), device = "cuda")
     assert effective == OFFLOAD_MODEL and "model_offload" in pipe.calls
+
+
+def test_apply_group_fallback_enables_vae_tiling():
+    # A balanced/group plan keeps the VAE resident (tiling off); when group offload can't
+    # engage and we drop to whole-module offload, the applier must turn VAE tiling ON to
+    # cap the decode-time spike on what is now a low-VRAM path.
+    plan = _plan(OFFLOAD_GROUP, tiling = True)
+    assert plan.vae_tiling is False  # group plan leaves tiling off by design
+    pipe = _RecordingPipe()  # no .transformer -> group offload falls back to model
+    effective, tiled = apply_memory_plan(pipe, plan, device = "cuda")
+    assert effective == OFFLOAD_MODEL
+    assert tiled is True and "vae_tiling" in pipe.calls
 
 
 def test_apply_sequential_offload():

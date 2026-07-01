@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -242,6 +243,55 @@ def test_generate_raises_when_binary_missing():
         )
 
 
+class _HangingPopen:
+    """A child that runs but never prints and never exits -- the case a plain
+    `for line in stdout` would block on forever, ignoring the timeout."""
+
+    def __init__(self, cmd, **_kw):
+        self._alive = True
+
+    class _Blocking:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            while self.owner._alive:
+                time.sleep(0.01)
+            raise StopIteration
+
+    @property
+    def stdout(self):
+        return self._Blocking(self)
+
+    def poll(self):
+        return None if self._alive else -9
+
+    def wait(self, timeout = None):
+        self._alive = False
+        return -9
+
+    def kill(self):
+        self._alive = False
+
+
+def test_generate_times_out_on_silent_hang(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    monkeypatch.setattr(eng.subprocess, "Popen", lambda cmd, **kw: _HangingPopen(cmd, **kw))
+    t0 = time.time()
+    with pytest.raises(RuntimeError, match = "timed out"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(tmp_path / "x.png"),
+            timeout = 0.3,
+        )
+    # The timeout is enforced promptly (not blocked until stdout EOF).
+    assert time.time() - t0 < 5.0
+
+
 def test_img2img_generate_passes_init_image(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
@@ -255,6 +305,36 @@ def test_img2img_generate_passes_init_image(tmp_path, monkeypatch):
     )
     assert "--init-img" in _FakePopen.captured_cmd
     assert str(src) == _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--init-img") + 1]
+
+
+def test_generate_native_speed_dedupes_against_offload(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out)
+    # offload already adds --diffusion-fa; native_speed="default" would add it again.
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x"),
+        output_path = str(out),
+        offload = ["--offload-to-cpu", "--diffusion-fa"],
+        native_speed = "default",
+    )
+    # --diffusion-fa appears exactly once (de-duped), not twice.
+    assert _FakePopen.captured_cmd.count("--diffusion-fa") == 1
+
+
+def test_generate_native_speed_adds_flag_when_not_offloaded(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out)
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x"),
+        output_path = str(out),
+        offload = [],  # fast/resident tier: no offload, but speed flag still applies
+        native_speed = "default",
+    )
+    assert _FakePopen.captured_cmd.count("--diffusion-fa") == 1
 
 
 def test_upscale_runs_and_returns_path(tmp_path, monkeypatch):

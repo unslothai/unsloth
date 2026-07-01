@@ -118,6 +118,34 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
+# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed's
+# modes. off: nothing (default). default: --diffusion-fa (flash attention; upstream
+# reports it usually speeds CUDA and cuts attention memory, near-lossless). max: also
+# --diffusion-conv-direct (direct conv; helps some backends, but measured +45% on
+# CUDA here, so it stays opt-in/experimental, never auto-on for CUDA).
+NATIVE_SPEED_OFF = "off"
+NATIVE_SPEED_DEFAULT = "default"
+NATIVE_SPEED_MAX = "max"
+NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
+
+
+def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
+    """sd-cli speed flags for a native speed mode (empty for off / None).
+
+    These are separate from the offload flags: ``--diffusion-fa`` is a speed/memory
+    win in its own right, not tied to whether weights are offloaded. De-duplicated
+    against offload flags at the call site (offload already adds ``--diffusion-fa``).
+    """
+    mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
+    if mode in ("", NATIVE_SPEED_OFF):
+        return []
+    if mode == NATIVE_SPEED_DEFAULT:
+        return ["--diffusion-fa"]
+    if mode == NATIVE_SPEED_MAX:
+        return ["--diffusion-fa", "--diffusion-conv-direct"]
+    raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
 def offload_flags(
     policy: str,
     *,

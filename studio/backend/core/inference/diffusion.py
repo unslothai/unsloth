@@ -44,7 +44,13 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     snapshot_device_memory,
 )
-from .diffusion_speed import SPEED_OFF, apply_speed_optims
+from .diffusion_speed import (
+    SPEED_OFF,
+    apply_speed_optims,
+    resolve_speed_mode,
+    restore_backend_flags,
+    snapshot_backend_flags,
+)
 from .diffusion_precision import quantize_text_encoders
 
 logger = get_logger(__name__)
@@ -69,6 +75,10 @@ class _LoadState:
     # The opt-in speed profile (Phase 3).
     speed_mode: str = SPEED_OFF
     speed_optims: tuple = ()
+    # Process-wide torch backend flags (TF32 / cudnn.benchmark) captured before the
+    # speed layer mutated them, restored on unload so a later `off` load is not
+    # contaminated by this one's globals. None when nothing was changed.
+    backend_flags_before: Optional[dict] = None
     # Text-encoder quantisation actually engaged: "fp8" | "nvfp4" | None (Phase 2B/2C).
     text_encoder_quant: Optional[str] = None
 
@@ -495,56 +505,77 @@ class DiffusionBackend:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
                 pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
+                # Resolve the effective speed mode: GGUF models default to the
+                # near-lossless `default` profile (compile is ~2.2x and sits below
+                # the quant noise floor), dense models stay bit-identical `off`. An
+                # explicit speed_mode (incl. "off") is honored verbatim.
+                effective_speed = resolve_speed_mode(speed_mode, is_gguf = bool(gguf_filename))
                 # Opt-in speed optims run BEFORE placement (channels_last / compile
-                # must precede CPU offload). Off by default -> bit-identical output.
-                speed_applied = apply_speed_optims(
-                    pipe,
-                    target,
-                    is_gguf = bool(gguf_filename),
-                    family = fam,
-                    speed_mode = speed_mode or SPEED_OFF,
-                    logger = logger,
-                )
-                # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
-                # also before placement so the offload hooks move the smaller weights.
-                te_quant = quantize_text_encoders(
-                    pipe,
-                    target,
-                    mode = text_encoder_quant,
-                    logger = logger,
-                )
+                # must precede CPU offload). Snapshot the process-wide backend flags
+                # first so unload can restore them: TF32 / cudnn.benchmark are global,
+                # and a later `off` load must not inherit this load's settings.
+                backend_flags_before = snapshot_backend_flags()
+                # apply_speed_optims mutates PROCESS-WIDE flags (TF32 / cudnn.benchmark);
+                # they are only restored via _LoadState.backend_flags_before on unload. If
+                # the build fails after this but before _state commits (e.g. an OOM in
+                # apply_memory_plan / pipe.to), nothing would restore them and a later `off`
+                # generation would be contaminated, so restore on any non-committed exit.
+                committed = False
+                try:
+                    speed_applied = apply_speed_optims(
+                        pipe,
+                        target,
+                        is_gguf = bool(gguf_filename),
+                        family = fam,
+                        speed_mode = effective_speed,
+                        logger = logger,
+                    )
+                    # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
+                    # also before placement so the offload hooks move the smaller weights.
+                    te_quant = quantize_text_encoders(
+                        pipe,
+                        target,
+                        mode = text_encoder_quant,
+                        logger = logger,
+                    )
 
-                # Decide placement from MEASURED free device memory vs the model's
-                # estimated resident size (transformer GGUF dequantised + the
-                # companion text-encoder / VAE already cached for `base`), then
-                # apply it. Computed here, after the build but before placement,
-                # because the weights are still on CPU so free VRAM is the real
-                # budget. `cpu_offload=True` stays an explicit override.
-                plan = self._plan_memory(
-                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
-                )
-                # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
-                # may fall back to whole-module offload, and tiling is a no-op on a
-                # pipeline with no tiling control), so status stays honest.
-                effective_policy, effective_tiling = apply_memory_plan(
-                    pipe, plan, device = device, logger = logger
-                )
+                    # Decide placement from MEASURED free device memory vs the model's
+                    # estimated resident size (transformer GGUF dequantised + the
+                    # companion text-encoder / VAE already cached for `base`), then
+                    # apply it. Computed here, after the build but before placement,
+                    # because the weights are still on CPU so free VRAM is the real
+                    # budget. `cpu_offload=True` stays an explicit override.
+                    plan = self._plan_memory(
+                        target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
+                    )
+                    # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
+                    # may fall back to whole-module offload, and tiling is a no-op on a
+                    # pipeline with no tiling control), so status stays honest.
+                    effective_policy, effective_tiling = apply_memory_plan(
+                        pipe, plan, device = device, logger = logger
+                    )
 
-                self._state = _LoadState(
-                    pipe = pipe,
-                    family = fam,
-                    repo_id = repo_id,
-                    base_repo = base,
-                    device = device,
-                    dtype = str(dtype).replace("torch.", ""),
-                    cpu_offload = effective_policy != OFFLOAD_NONE,
-                    offload_policy = effective_policy,
-                    vae_tiling = effective_tiling,
-                    memory_mode = plan.requested_mode,
-                    speed_mode = (speed_mode or SPEED_OFF),
-                    speed_optims = tuple(k for k, v in speed_applied.items() if v),
-                    text_encoder_quant = te_quant,
-                )
+                    self._state = _LoadState(
+                        pipe = pipe,
+                        family = fam,
+                        repo_id = repo_id,
+                        base_repo = base,
+                        device = device,
+                        dtype = str(dtype).replace("torch.", ""),
+                        cpu_offload = effective_policy != OFFLOAD_NONE,
+                        offload_policy = effective_policy,
+                        vae_tiling = effective_tiling,
+                        memory_mode = plan.requested_mode,
+                        speed_mode = effective_speed,
+                        speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                        backend_flags_before = backend_flags_before,
+                        text_encoder_quant = te_quant,
+                    )
+                    committed = True
+                finally:
+                    if not committed:
+                        restore_backend_flags(backend_flags_before)
+                        clear_gpu_cache()
 
         logger.info(
             "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
@@ -679,7 +710,10 @@ class DiffusionBackend:
 
                 self._gen = gen
                 try:
-                    images = state.pipe(**kwargs).images
+                    # inference_mode is strictly faster than the no_grad diffusers
+                    # uses internally and numerically identical for inference.
+                    with torch.inference_mode():
+                        images = state.pipe(**kwargs).images
                 finally:
                     self._gen = None
                 # A cancelled denoise returns early with a partial/garbage image;
@@ -738,6 +772,9 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
+        # Restore the process-wide backend flags (TF32 / cudnn.benchmark) this load
+        # may have flipped, so the next `off` load is bit-identical again.
+        restore_backend_flags(state.backend_flags_before)
         self._state = None
         del state
         clear_gpu_cache()

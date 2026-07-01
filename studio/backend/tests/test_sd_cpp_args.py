@@ -23,6 +23,7 @@ from core.inference.sd_cpp_args import (
     SdCppUpscaleParams,
     build_sd_cpp_command,
     build_sd_cpp_upscale_command,
+    native_speed_flags,
     offload_flags,
     text_encoder_flags_for_family,
 )
@@ -45,6 +46,16 @@ def test_te_flags_by_family():
 
 
 # ── offload policy -> sd-cli flags ──────────────────────────────────────────
+
+
+def test_native_speed_flags():
+    assert native_speed_flags(None) == []
+    assert native_speed_flags("off") == []
+    assert native_speed_flags("") == []
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    assert native_speed_flags("max") == ["--diffusion-fa", "--diffusion-conv-direct"]
+    with pytest.raises(ValueError):
+        native_speed_flags("ludicrous")
 
 
 def test_offload_none_is_empty():

@@ -400,17 +400,21 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("explicit cpu_offload overrides resident placement")
 
-    # VAE tiling/slicing decode the image in chunks, capping the decode-time spike
-    # that often dominates peak VRAM at high resolution. Turn it on whenever weights
-    # are being offloaded (the device is already tight) or the backend has no spare
-    # device pool (MPS/CPU). On a roomy discrete GPU it stays off so output is
-    # bit-identical to a plain resident run.
-    tile = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
+    # VAE savers cap the decode-time spike that dominates peak VRAM at high res.
+    # Slicing (decode a batch one image at a time) is EXACT, so enable it on any
+    # offload tier / non-discrete backend. Tiling (spatial chunks) is only bit-
+    # identical for a single tile (<=1MP), so restrict it to the lowest tiers where
+    # the VAE itself is offloaded (model / sequential) or there is no spare device
+    # pool (MPS / CPU). Under group offload the transformer streams but the VAE stays
+    # resident and fits, so it keeps exact full-image decode -> balanced is both
+    # faster and bit-identical. On a roomy discrete GPU both stay off.
+    any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
+    tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
         vae_tiling = tile,
-        vae_slicing = tile,
+        vae_slicing = any_offload,
         device_memory = device_memory,
         estimates = estimates,
         reasons = tuple(reasons),
@@ -442,12 +446,22 @@ def apply_memory_plan(
     if plan.vae_slicing:
         _enable_vae_saver(pipe, "enable_vae_slicing", "enable_slicing", logger)
 
+    def _fallback_to_model_offload() -> None:
+        # Group offload keeps the VAE resident, so the GROUP plan set vae_tiling=False.
+        # When group offload is unavailable and we drop to whole-module offload, the card
+        # is in the low-VRAM situation where the decode-time spike can OOM, so turn VAE
+        # tiling on now (if not already engaged) to cap it.
+        nonlocal tiling_engaged
+        pipe.enable_model_cpu_offload()
+        if not tiling_engaged:
+            tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
+
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload()
     elif policy == OFFLOAD_GROUP:
         if not _apply_group_offload(pipe, device, logger):
-            pipe.enable_model_cpu_offload()
+            _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
@@ -459,7 +473,7 @@ def apply_memory_plan(
                     "falling back to whole-module offload",
                     exc,
                 )
-            pipe.enable_model_cpu_offload()
+            _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
         pipe.to(device)
@@ -491,32 +505,40 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
     if transformer is None:
         return False
     try:
+        import inspect
+
         import torch
         from diffusers.hooks import apply_group_offloading
 
         onload = torch.device(device)
         use_stream = onload.type == "cuda"  # overlap H2D copies with compute on CUDA
-        # Place the smaller components resident FIRST: moving them onto the device is
-        # the only step here that can OOM on a tight GPU. Doing it before
-        # apply_group_offloading means a failure leaves NO group-offload hooks on the
-        # transformer, so the caller's whole-module-offload fallback gets a clean
-        # pipeline -- diffusers refuses enable_model_cpu_offload() while group hooks
-        # are attached, which would otherwise turn the fallback into a hard crash.
+        gkwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
+            "use_stream": use_stream,
+        }
+        # On the CUDA stream path, overlap each block's host->device copy with
+        # compute: non_blocking issues the copy asynchronously and record_stream
+        # defers the free until the copy's stream is done. Lossless (only transfer
+        # scheduling changes). Safe for the group tier specifically, where the
+        # companions stay resident; gated on the installed signature so an older
+        # diffusers that lacks these kwargs still works (no hard fallback).
+        if use_stream:
+            _params = inspect.signature(apply_group_offloading).parameters
+            if "non_blocking" in _params:
+                gkwargs["non_blocking"] = True
+            if "record_stream" in _params:
+                gkwargs["record_stream"] = True
+        apply_group_offloading(transformer, **gkwargs)
+        # Place the remaining (smaller) components resident; the streamed
+        # transformer manages its own placement via the offloading hooks.
         for name, comp in getattr(pipe, "components", {}).items():
             if name == "transformer":
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
-        # Stream the transformer a few blocks at a time; it manages its own placement
-        # via the offloading hooks.
-        apply_group_offloading(
-            transformer,
-            onload_device = onload,
-            offload_device = torch.device("cpu"),
-            offload_type = "block_level",
-            num_blocks_per_group = DEFAULT_GROUP_BLOCKS,
-            use_stream = use_stream,
-        )
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if logger is not None:

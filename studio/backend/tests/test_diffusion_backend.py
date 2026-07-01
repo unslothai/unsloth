@@ -10,6 +10,7 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import types
 
@@ -202,6 +203,8 @@ def fake_runtime(monkeypatch):
     torch.Generator = _FakeGenerator
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
+    # generate() wraps the pipe call in torch.inference_mode(); a no-op CM here.
+    torch.inference_mode = lambda: contextlib.nullcontext()
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
@@ -856,12 +859,19 @@ def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
     assert status["offload_policy"] == "model" and status["cpu_offload"] is True
 
 
-def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
-    # No speed_mode -> off, no optimisations engaged (the bit-identical default).
+def test_load_speed_mode_gguf_auto_defaults_and_explicit(fake_runtime, tmp_path):
+    # No speed_mode on a GGUF model -> auto `default` (near-lossless, compile sits
+    # below the quant noise floor). compile itself only engages on CUDA, so on this
+    # CPU stub no optim need engage, but the resolved mode is `default`.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
-    assert status["speed_mode"] == "off" and status["speed_optims"] == []
+    assert status["speed_mode"] == "default"
+    # An explicit "off" opts back into the bit-identical path (engages nothing).
+    status_off = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "off"
+    )
+    assert status_off["speed_mode"] == "off" and status_off["speed_optims"] == []
     # An explicit speed_mode threads through to status (engaged optims are GPU-verified).
     status2 = backend.load_pipeline(
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "max"
