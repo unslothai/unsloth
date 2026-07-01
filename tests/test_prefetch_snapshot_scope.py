@@ -261,6 +261,22 @@ def test_no_variant_keeps_bin_when_only_variant_safetensors(monkeypatch):
     assert "*.bin" in ig2
 
 
+def test_variant_keeps_bin_for_noncanonical_sidecar(monkeypatch):
+    """With variant='fp16', a NON-canonical sidecar (consolidated.fp16.safetensors) must not prove the
+    variant pytorch_model.fp16.bin redundant: a transformers variant load reads model.fp16.safetensors,
+    not consolidated.*, so dropping the .bin would leave the only loadable weights to an in-process Xet
+    fetch. The .bin stays warmed (Codex #6638)."""
+    _install_fake_model_info(
+        monkeypatch, ["consolidated.fp16.safetensors", "pytorch_model.fp16.bin"]
+    )
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    assert "*.bin" not in ig
+    # A canonical variant safetensors DOES make the variant .bin redundant.
+    _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
+    ig2 = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    assert "*.bin" in ig2
+
+
 def test_is_canonical_model_weight_safetensors():
     """The canonical detector matches only the non-variant model-weight safetensors names a default
     load reads, and rejects variant / sidecar names (Codex #6638)."""
@@ -304,6 +320,63 @@ def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
     # F2: the load-mode validation runs before the prefetch (fewer source lines = earlier).
     val_lineno = src[: src.index("Can only load in 4bit or 8bit or 16bit")].count("\n")
     assert val_lineno < call.lineno, "load-mode validation must precede the ST prefetch"
+
+
+def test_st_cache_resolutions_honor_explicit_hf_cache_dir():
+    """Every ST cache resolution (the prefetch and the fallback module loads) that falls back to
+    SENTENCE_TRANSFORMERS_HOME must first honor an explicit HF cache_dir. The FastModel fallback load
+    forwards kwargs['cache_dir'], so a caller passing cache_dir would otherwise warm one cache and read
+    another, missing the warm and fetching in-process over Xet (Codex #6638). Static guard."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+    resolutions = [
+        kw
+        for kw in ast.walk(tree)
+        if isinstance(kw, ast.keyword)
+        and kw.arg == "cache_dir"
+        and "SENTENCE_TRANSFORMERS_HOME" in ast.dump(kw.value)
+    ]
+    assert resolutions, "expected cache_dir resolutions referencing SENTENCE_TRANSFORMERS_HOME"
+    for kw in resolutions:
+        assert "'cache_dir'" in ast.dump(kw.value), (
+            "an ST cache_dir resolution must read an explicit kwargs.get('cache_dir') first"
+        )
+
+
+def test_vision_warms_vllm_tokenizer_after_remap():
+    """On the vLLM path the base warm is skipped and the tokenizer warm is deferred until after
+    fast_inference_setup may remap model_name. The final tokenizer repo must then be warmed (tokenizer
+    only) so the in-process processor / tokenizer load is a cache hit, not an unprotected Xet fetch
+    (Codex #6638). Static guard: the vLLM-gated tokenizer warm appears after the remap."""
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "vision.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    guard = "if _vllm_owns_weights and isinstance(tokenizer_name"
+    assert guard in src, "expected a vLLM-gated tokenizer warm"
+    assert src.index(guard) > src.index("fast_inference_setup("), (
+        "the vLLM tokenizer warm must run after the fast_inference_setup remap"
+    )
+
+
+def test_diffusion_forwards_variant_to_real_load():
+    """FastDiffusionModel must forward `variant` to the real model_cls.from_pretrained load, not only to
+    the prefetch: without it the pipeline asks for the default weight variant, missing the warmed variant
+    weights (wrong precision, or a default weight fetched in-process over Xet) (Codex #6638). Static
+    guard."""
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "diffusion.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    assert 'load_kwargs["variant"] = kwargs["variant"]' in src, (
+        "the diffusion load must forward variant to model_cls.from_pretrained"
+    )
 
 
 def test_vision_prefetch_runs_after_load_mode_validation():
@@ -536,14 +609,22 @@ def test_st_fallback_model_load_resolves_env_cache():
     ), "kwargs['cache_dir'] must be resolved before the fallback FastModel weight load"
 
 
-def test_filename_has_variant_matches_single_and_sharded():
-    """The variant detector matches both the single-file (.fp16.) and SHARDED (.fp16-) infixes and
-    rejects the default (non-variant) names (gemini #6638)."""
-    assert U._filename_has_variant("model.fp16.safetensors", "fp16") is True
-    assert U._filename_has_variant("model.fp16-00001-of-00002.safetensors", "fp16") is True
-    assert U._filename_has_variant("diffusion_pytorch_model.fp16.safetensors", "fp16") is True
-    assert U._filename_has_variant("model.safetensors", "fp16") is False
-    assert U._filename_has_variant("model-00001-of-00002.safetensors", "fp16") is False
+def test_canonical_variant_model_weight_matches_transformers_names():
+    """The variant safetensors detector matches only CANONICAL model variant names a transformers load
+    reads (single, either shard infix, and the variant index) and rejects a non-canonical sidecar
+    (consolidated.fp16.safetensors) so its variant .bin is never wrongly dropped, plus the default and
+    wrong-variant names (Codex #6638)."""
+    f = U._is_canonical_variant_model_weight_safetensors
+    assert f("model.fp16.safetensors", "fp16") is True
+    assert f("model.fp16-00001-of-00002.safetensors", "fp16") is True
+    assert f("model-00001-of-00002.fp16.safetensors", "fp16") is True
+    assert f("model.safetensors.index.fp16.json", "fp16") is True
+    # A non-canonical sidecar variant does NOT prove the .bin redundant (the M2 hang guard).
+    assert f("consolidated.fp16.safetensors", "fp16") is False
+    # Default (non-variant) and wrong-variant names are not a match for variant='fp16'.
+    assert f("model.safetensors", "fp16") is False
+    assert f("model-00001-of-00002.safetensors", "fp16") is False
+    assert f("model.bf16.safetensors", "fp16") is False
 
 
 def test_variant_is_forwarded_to_downloader(capture):

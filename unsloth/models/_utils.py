@@ -1045,11 +1045,24 @@ def _is_model_weight_safetensors(filename):
     return True
 
 
-def _filename_has_variant(filename, variant):
-    """True if a weight filename carries the variant token: `.{variant}.` (single file) or
-    `.{variant}-` (sharded) infix. Matching both recognizes a sharded variant."""
+def _is_canonical_variant_model_weight_safetensors(filename, variant):
+    """True for a canonical model-weights safetensors carrying the requested *variant* token, in the
+    forms transformers reads: model.<variant>.safetensors (single), a numbered shard (either
+    model.<variant>-00001-of-00002.safetensors or model-00001-of-00002.<variant>.safetensors), or the
+    index model.safetensors.index.<variant>.json. Errs strict (base must be ``model``): a non-canonical
+    sidecar such as consolidated.<variant>.safetensors does NOT prove the variant .bin redundant, so its
+    .bin is not wrongly dropped from the warm and left to an unprotected in-process fetch."""
     base = filename.replace("\\", "/").rsplit("/", 1)[-1]
-    return f".{variant}." in base or f".{variant}-" in base
+    v = re.escape(variant)
+    return bool(
+        re.match(
+            rf"^(?:model\.{v}\.safetensors"
+            rf"|model\.{v}-\d{{5}}-of-\d{{5}}\.safetensors"
+            rf"|model-\d{{5}}-of-\d{{5}}\.{v}\.safetensors"
+            rf"|model\.safetensors\.index\.{v}\.json)$",
+            base,
+        )
+    )
 
 
 _CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE = re.compile(
@@ -1166,7 +1179,7 @@ def _prefetch_ignore_patterns(
                 _is_model_weight_safetensors(sibling.rfilename)
                 and _in_requested_load_scope(sibling.rfilename, subfolder)
                 and (
-                    _filename_has_variant(sibling.rfilename, variant)
+                    _is_canonical_variant_model_weight_safetensors(sibling.rfilename, variant)
                     if variant
                     else _is_canonical_model_weight_safetensors(sibling.rfilename)
                 )

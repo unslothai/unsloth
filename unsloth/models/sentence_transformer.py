@@ -1447,13 +1447,14 @@ class FastSentenceTransformer(FastModel):
 
         # Pre-download in a killable subprocess (Xet -> HTTP on a stall) so the ST load below is a cache
         # hit. weights_at_root stays False since ST component weights live in per-module subfolders.
-        # Resolve the cache the load uses: cache_folder, else SENTENCE_TRANSFORMERS_HOME (which ST honors
-        # when cache_folder is unset), else the default HF cache -- a wrong-cache warm would be missed.
+        # Resolve the cache the load uses: an explicit HF cache_dir wins (the FastModel fallback load
+        # forwards it), else cache_folder, else SENTENCE_TRANSFORMERS_HOME (which ST honors when
+        # cache_folder is unset), else the default HF cache -- a wrong-cache warm would be missed.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
             revision = revision,
-            cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             local_files_only = kwargs.get("local_files_only", False),
         )
 
@@ -1708,7 +1709,8 @@ class FastSentenceTransformer(FastModel):
             FastSentenceTransformer._module_path(
                 model_name,
                 token,
-                cache_dir = kwargs.get("cache_folder")
+                cache_dir = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
                 or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
                 revision = revision,
             )
@@ -1773,7 +1775,7 @@ class FastSentenceTransformer(FastModel):
             pooling_mode,
             trust_remote_code = trust_remote_code,
             # Same resolved cache as above so the fallback module loads hit the warm, not Xet.
-            cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             # Read the modules from the SAME revision the model weights load from (FastModel forwards
             # revision to the weight load), so a revision-pinned repo hits the prefetch's warm instead
             # of fetching default-branch module files in-process over Xet (and mixing them with the

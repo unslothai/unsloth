@@ -1257,6 +1257,21 @@ class FastBaseModel:
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
 
+        # On the vLLM path the base warm above was skipped (vLLM owns the weight download) and the
+        # tokenizer warm was deferred because fast_inference_setup may remap model_name. Now that the
+        # final tokenizer repo is known, warm it (tokenizer-only) so the in-process processor / tokenizer
+        # load below is a cache hit rather than an unprotected in-process Xet fetch. A re-warm of an
+        # already-cached repo (or a local path) is a fast no-op.
+        if _vllm_owns_weights and isinstance(tokenizer_name, str) and tokenizer_name:
+            maybe_prefetch_hf_snapshot(
+                tokenizer_name,
+                token = token,
+                revision = kwargs.get("revision"),
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         # Fix _Unsloth_Patched_ prefix in local config files from old saves (issue #4085)
         if os.path.isdir(tokenizer_name):
             import json as _json

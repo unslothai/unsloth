@@ -213,6 +213,11 @@ class FastDiffusionModel:
         # use_safetensors=None (auto) already matches the prefetch's heuristic.
         if kwargs.get("use_safetensors") is not None:
             load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
+        # Forward the variant to the real load too, so it reads the variant weights the prefetch warmed.
+        # Without it the pipeline asks for the default weight variant, missing the warm (wrong precision,
+        # or a default weight a variant-only repo may not ship, fetched in-process over un-killable Xet).
+        if kwargs.get("variant") is not None:
+            load_kwargs["variant"] = kwargs["variant"]
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
