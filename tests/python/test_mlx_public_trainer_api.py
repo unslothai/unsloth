@@ -956,6 +956,26 @@ def test_mlx_preserve_dataset_order_is_accepted():
     assert getattr(args, "preserve_dataset_order", False) is True
 
 
+def test_mlx_sftconfig_alias_keeps_trl_epoch_default(monkeypatch):
+    """`trl.SFTConfig` (aliased on MLX) keeps TRL's default training length: with
+    no explicit max_steps/num_train_epochs it runs TRL's 3 epochs, not the native
+    MLX 60-step default. An explicit length is authoritative and untouched."""
+    unsloth = _import_mlx_unsloth()
+    trl = types.ModuleType("trl")
+    trl.__path__ = ["real-trainer-package"]
+    monkeypatch.setitem(sys.modules, "trl", trl)
+
+    unsloth._install_mlx_trl_sft_shim()
+
+    # no explicit length -> TRL epoch default (3 epochs, step cap disabled)
+    cfg = trl.SFTConfig(output_dir = "mlx-out")
+    assert cfg.num_train_epochs == 3
+    assert cfg.max_steps == -1
+    # explicit step / epoch counts stay exactly as written
+    assert trl.SFTConfig(output_dir = "mlx-out", max_steps = 17).max_steps == 17
+    assert trl.SFTConfig(output_dir = "mlx-out", num_train_epochs = 2).num_train_epochs == 2
+
+
 def test_mlx_vision_collator_is_constructor_compatible():
     """Vision notebooks should be able to instantiate the collator placeholder."""
     unsloth = _import_mlx_unsloth()

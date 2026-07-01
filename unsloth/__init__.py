@@ -1099,6 +1099,24 @@ if _IS_MLX:
 
         return type(name, (), {"__init__": __init__, "_unsloth_mlx_unsupported": True})
 
+    class _MLXSFTConfig(UnslothTrainingArguments):
+        """`trl.SFTConfig` alias that keeps TRL's default training length.
+
+        TRL/HF SFTConfig defaults to num_train_epochs=3 (max_steps=-1); the
+        native MLX config defaults to max_steps=60. An unmigrated notebook that
+        builds SFTConfig without an explicit length would otherwise silently run
+        60 MLX steps under this alias, so seed the TRL epoch default when neither
+        max_steps nor num_train_epochs is given (epoch mode is MLX-supported).
+        """
+
+        def __init__(self, *args, **kwargs):
+            keys = set(kwargs)
+            if len(args) == 1 and isinstance(args[0], dict):
+                keys |= set(args[0])
+            if not ({"max_steps", "num_train_epochs"} & keys):
+                kwargs.setdefault("num_train_epochs", 3)
+            super().__init__(*args, **kwargs)
+
     def _install_mlx_trl_sft_shim():
         """Install MLX-backed TRL SFT shims without replacing the TRL module."""
         _trl = _sys.modules.get("trl")
@@ -1114,7 +1132,7 @@ if _IS_MLX:
                 _sys.modules["trl"] = _trl
 
         _trl.SFTTrainer = UnslothTrainer
-        _trl.SFTConfig = UnslothTrainingArguments
+        _trl.SFTConfig = _MLXSFTConfig
         # Only retarget trainers the installed trl actually exposes (don't invent
         # attributes); idempotent so re-importing unsloth is a no-op.
         # Decide what to stub from trl's declared exports (__all__) and already
