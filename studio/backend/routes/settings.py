@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
+from auth.storage import rotate_preview_link_secret
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -30,6 +31,11 @@ from utils.helper_precache_settings import (
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.preview_sharing_settings import (
+    DEFAULT_PREVIEW_SHARING_ENABLED,
+    get_preview_sharing_enabled,
+    set_preview_sharing_enabled,
 )
 
 router = APIRouter()
@@ -120,6 +126,55 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+class PreviewLinkRotateResponse(BaseModel):
+    rotated: bool = True
+
+
+@router.post("/preview-links/rotate", response_model = PreviewLinkRotateResponse)
+def rotate_preview_links(
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewLinkRotateResponse:
+    """Rotate the preview-link signing secret, revoking every previously shared `/p` link."""
+    rotate_preview_link_secret()
+    logger.info("settings.preview_links_rotated subject=%s", current_subject)
+    return PreviewLinkRotateResponse(rotated = True)
+
+
+class PreviewSharingPayload(BaseModel):
+    enabled: bool
+
+
+class PreviewSharingResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+@router.get("/preview-sharing", response_model = PreviewSharingResponse)
+def get_preview_sharing(
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewSharingResponse:
+    return PreviewSharingResponse(enabled = get_preview_sharing_enabled())
+
+
+@router.put("/preview-sharing", response_model = PreviewSharingResponse)
+def update_preview_sharing(
+    payload: PreviewSharingPayload, current_subject: str = Depends(get_current_subject)
+) -> PreviewSharingResponse:
+    """Enable/disable the public `/p` preview surface. When off, links 404 even with a token."""
+    try:
+        enabled = set_preview_sharing_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid preview sharing setting."),
+            event = "settings.update_preview_sharing_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
+    return PreviewSharingResponse(enabled = enabled)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

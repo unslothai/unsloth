@@ -143,9 +143,17 @@ def _load(
     scheme = "fp8",
     load_raises = False,
     exists = True,
+    allow_local = True,
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
+    # The local-path branch is opt-in via a directory ALLOWLIST (it unpickles an arbitrary
+    # file); these tests exercise the load mechanics, so allowlist tmp_path (where ckpt.pt
+    # lives) unless a test is checking the gate.
+    if allow_local:
+        monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    else:
+        monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
     path = tmp_path / "ckpt.pt"
     if exists:
         path.write_bytes(b"x")
@@ -195,3 +203,146 @@ def test_load_scheme_mismatch_is_none(monkeypatch, tmp_path):
 
 def test_load_base_mismatch_is_none(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, _good_ckpt(base = "other/model")) is None
+
+
+# ── local-path opt-in gate (RCE guard) ───────────────────────────────────────────
+def test_load_local_path_refused_by_default(monkeypatch, tmp_path):
+    # A valid checkpoint at a real file is still refused: torch.load must never run on a
+    # request-supplied path without the operator opt-in.
+    called = {"load": False}
+
+    def _explode(*a, **k):
+        called["load"] = True
+        raise AssertionError("torch.load must not run on a refused local path")
+
+    torch = types.ModuleType("torch")
+    torch.load = _explode
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
+
+    path = tmp_path / "ckpt.pt"
+    path.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(path), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is None
+    assert called["load"] is False
+
+
+def test_load_local_path_allowed_with_optin(monkeypatch, tmp_path):
+    assert _load(monkeypatch, tmp_path, _good_ckpt(), allow_local = True) is not None
+
+
+def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
+    # The hosted-repo branch is first-party and trusted: it loads with no opt-in env set.
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, _good_ckpt())
+    monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
+
+    downloaded = tmp_path / "transformer_fp8.pt"
+    downloaded.write_bytes(b"x")
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_download = lambda repo_id, filename, token = None: str(downloaded)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+    source = PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "transformer_fp8.pt")
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is not None
+
+
+def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
+    # Even with the opt-in set, a path OUTSIDE every allowlisted directory must not be
+    # unpickled: enabling one trusted dir is not a wildcard for arbitrary request paths.
+    called = {"load": False}
+
+    def _explode(*a, **k):
+        called["load"] = True
+        raise AssertionError("torch.load must not run on a path outside the allowlist")
+
+    torch = types.ModuleType("torch")
+    torch.load = _explode
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(allowed))
+
+    outside = tmp_path / "evil.pt"  # a real file, but outside the allowlisted dir
+    outside.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(outside), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is None
+    assert called["load"] is False
+
+
+def test_load_min_features_mismatch_is_none(monkeypatch, tmp_path):
+    # A checkpoint built with a different --min-features quantises a different Linear set,
+    # so it must be rejected when the runtime threshold is supplied.
+    ckpt = _good_ckpt()
+    ckpt["metadata"]["min_features"] = 256  # built with 256, runtime asks for 512
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, ckpt)
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    path = tmp_path / "ckpt.pt"
+    path.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(path), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        min_features = 512,
+        logger = None,
+    )
+    assert result is None
+
+
+def test_load_base_fork_tail_matches(monkeypatch, tmp_path):
+    # A local path / fork id with the same final segment as the canonical base is accepted.
+    ckpt = _good_ckpt(base = "Tongyi-MAI/Z-Image-Turbo")
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, ckpt)
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    path = tmp_path / "ckpt.pt"
+    path.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(path), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "/local/models/Z-Image-Turbo",  # different prefix, same tail
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is not None

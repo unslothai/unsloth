@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -324,8 +325,12 @@ export interface CachedModelRepo {
   task?: string | null;
 }
 
-export async function listCachedModels(): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models");
+export async function listCachedModels(
+  hfToken?: string | null,
+): Promise<CachedModelRepo[]> {
+  const response = await authFetch("/api/models/cached-models", {
+    headers: hubTokenHeader(hfToken),
+  });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
 }
@@ -789,8 +794,9 @@ export async function listGgufVariants(
   hfToken?: string,
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  if (hfToken) params.set("hf_token", hfToken);
-  const response = await authFetch(`/api/models/gguf-variants?${params}`);
+  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
@@ -855,79 +861,96 @@ export async function* streamChatCompletions(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        completed = true;
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
+
+        const dataLines = parseSseEvent(rawEvent);
+        if (dataLines.length === 0) {
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+
+        const dataText = dataLines.join("\n");
+        if (dataText === "[DONE]") {
+          completed = true;
+          return;
+        }
+
+        const parsed = JSON.parse(dataText) as
+          | OpenAIChatChunk
+          | { type?: string; content?: string; error?: { message?: string } };
+        if ("error" in parsed && parsed.error) {
+          throw new Error(parsed.error.message || "Stream error");
+        }
+        // Tool status events are custom SSE payloads, not OpenAI chunks
+        if ("type" in parsed && parsed.type === "tool_status") {
+          yield {
+            _toolStatus: parsed.content ?? "",
+          } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // Diffusion frame: a per-step canvas snapshot. Custom SSE payload (not an OpenAI chunk) with
+        // no assistant text, surfaced as a transient marker for the in-place renderer, never the transcript.
+        if ("type" in parsed && parsed.type === "diffusion_frame") {
+          yield {
+            _diffusionFrame: parsed,
+          } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // Tool start/end events carry full input/output for the tool outputs panel
+        if (
+          "type" in parsed &&
+          (parsed.type === "tool_start" || parsed.type === "tool_end")
+        ) {
+          yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // Relay server-side reasoning duration.
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "type" in parsed &&
+          parsed.type === "reasoning_summary"
+        ) {
+          yield {
+            _reasoningDurationMs: (parsed as { duration_ms?: number }).duration_ms,
+          } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        yield parsed as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+      }
     }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
-
-      const dataLines = parseSseEvent(rawEvent);
-      if (dataLines.length === 0) {
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
+  } finally {
+    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
+    // EOF) the request is logically complete and the backend finalizes its
+    // api-monitor entry right after the sentinel; cancelling here can be seen as
+    // a disconnect and mark a successful request as cancelled.
+    if (!completed) {
+      try {
+        await reader.cancel();
+      } catch {
+        // already closed
       }
-
-      const dataText = dataLines.join("\n");
-      if (dataText === "[DONE]") {
-        return;
-      }
-
-      const parsed = JSON.parse(dataText) as
-        | OpenAIChatChunk
-        | { type?: string; content?: string; error?: { message?: string } };
-      if ("error" in parsed && parsed.error) {
-        throw new Error(parsed.error.message || "Stream error");
-      }
-      // Tool status events are custom SSE payloads, not OpenAI chunks
-      if ("type" in parsed && parsed.type === "tool_status") {
-        yield {
-          _toolStatus: parsed.content ?? "",
-        } as unknown as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-      // Diffusion frame: a per-step canvas snapshot. Custom SSE payload (not an OpenAI chunk) with
-      // no assistant text, surfaced as a transient marker for the in-place renderer, never the transcript.
-      if ("type" in parsed && parsed.type === "diffusion_frame") {
-        yield {
-          _diffusionFrame: parsed,
-        } as unknown as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-      // Tool start/end events carry full input/output for the tool outputs panel
-      if (
-        "type" in parsed &&
-        (parsed.type === "tool_start" || parsed.type === "tool_end")
-      ) {
-        yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-      // Relay server-side reasoning duration.
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        "type" in parsed &&
-        parsed.type === "reasoning_summary"
-      ) {
-        yield {
-          _reasoningDurationMs: (parsed as { duration_ms?: number }).duration_ms,
-        } as unknown as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-      yield parsed as OpenAIChatChunk;
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
   }
 }

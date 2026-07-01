@@ -36,7 +36,11 @@ def _evict_chat() -> None:
     from routes.inference import get_llama_cpp_backend
 
     llama = get_llama_cpp_backend()
-    if llama.is_loaded:
+    # is_active (process exists), not is_loaded (process exists AND healthy): a
+    # chat model still starting up holds/keeps allocating VRAM but isn't healthy
+    # yet, so gating on is_loaded would skip it and let the load race the
+    # diffusion pipeline. unload_model() sets _cancel_event and kills the process.
+    if llama.is_active:
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:

@@ -1,9 +1,9 @@
 """_fix_pad_token dispatch in unsloth/tokenizer_utils.py.
 
 It must delegate to unsloth_zoo's shared fix_pad_token when present (single
-source of truth), and fall back to the narrow vision-token swap against an
-older unsloth_zoo. Static + CPU-only: the two helpers are exec'd in isolation
-so the test never imports torch / transformers / unsloth.
+source of truth), and fall back to a no-op against an older unsloth_zoo. Static
++ CPU-only: _fix_pad_token is exec'd in isolation so the test never imports
+torch / transformers / unsloth.
 """
 
 import ast
@@ -15,9 +15,6 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TOK_PATH = os.path.join(REPO_ROOT, "unsloth", "tokenizer_utils.py")
 
 WANTED = {
-    "_VISION_PAD_TOKENS",
-    "_SAFE_TEXT_PAD_TOKENS",
-    "_fix_vision_pad_token",
     "_fix_pad_token",
 }
 
@@ -69,17 +66,17 @@ def test_fix_pad_token_none_is_noop():
     assert ns["_fix_pad_token"](None) is None
 
 
-def test_fix_pad_token_falls_back_without_shared_module(monkeypatch):
+def test_fallback_keeps_pad_named_token(monkeypatch):
     ns = _load_pad_helpers()
     _block_shared_module(monkeypatch)
-    # Qwen3 text tokenizer shipping a vision pad_token -> narrow swap heals it.
+    # A pad-named token (e.g. <|vision_pad|>) is a valid pad -> fallback keeps it.
     tok = FakeTok(
         {"<|endoftext|>": 1, "<|im_end|>": 2, "<|vision_pad|>": 3},
         pad = "<|vision_pad|>",
         eos = "<|im_end|>",
     )
     ns["_fix_pad_token"](tok)
-    assert tok.pad_token == "<|endoftext|>"
+    assert tok.pad_token == "<|vision_pad|>"
     assert tok.pad_token != tok.eos_token
 
 
