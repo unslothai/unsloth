@@ -198,7 +198,7 @@ export function EvaluationDocumentScoreDialog({
         <FieldLabel
           label="Schema (optional, JSON)"
           htmlFor={`${config.id}-schema`}
-          hint="JSON Schema or studio field→comparator map. Leave empty to apply the default comparator to every leaf."
+          hint="Field→comparator map. Leave empty to apply the default comparator to every leaf."
         />
         <Textarea
           id={`${config.id}-schema`}
