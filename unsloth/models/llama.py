@@ -2429,7 +2429,10 @@ class FastLlamaModel:
             token = token,
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = kwargs.get("local_files_only", False),
-            fast_inference = fast_inference,
+            # Only a real vLLM-owned load skips the warm. A num_labels classification load takes the
+            # AutoModelForSequenceClassification branch below (an in-process download) even under
+            # fast_inference=True, so it must still be warmed or its weights fetch over un-killable Xet.
+            fast_inference = fast_inference and num_labels is None,
             subfolder = kwargs.get("subfolder"),
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),

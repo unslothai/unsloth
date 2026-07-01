@@ -306,6 +306,60 @@ def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
     assert val_lineno < call.lineno, "load-mode validation must precede the ST prefetch"
 
 
+def test_vision_prefetch_runs_after_load_mode_validation():
+    """The FastBaseModel (vision / FastModel) prefetch must run AFTER the mutually-exclusive load-mode
+    validation, so an invalid load_in_4bit/8bit/16bit combination fails locally without first downloading
+    a multi-GB snapshot (Codex #6638). check_and_disable_bitsandbytes_loading can only resolve after the
+    config fetch, so the check cannot move earlier; the prefetch moves after it instead. Static guard:
+    importing the loader pulls heavy optional deps."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "vision.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+    prefetch_calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "maybe_prefetch_hf_snapshot"
+    ]
+    assert prefetch_calls, "expected a vision prefetch call"
+    first_prefetch = min(call.lineno for call in prefetch_calls)
+    val_lineno = src[: src.index("Can only load in 4bit or 8bit or 16bit")].count("\n")
+    assert val_lineno < first_prefetch, "load-mode validation must precede the vision prefetch"
+
+
+def test_llama_prefetch_skips_only_real_vllm_loads():
+    """A num_labels classification load takes the AutoModelForSequenceClassification branch (an in-process
+    download) even under fast_inference=True, so the llama prefetch's fast_inference skip must be gated on
+    num_labels is None -- else that load's weights fetch over un-killable Xet (Codex #6638). Static guard:
+    the base prefetch's fast_inference kwarg references both fast_inference and num_labels."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "llama.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+    gated = False
+    for n in ast.walk(tree):
+        if not (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "maybe_prefetch_hf_snapshot"
+        ):
+            continue
+        fi_kw = next((kw for kw in n.keywords if kw.arg == "fast_inference"), None)
+        if fi_kw is None:
+            continue
+        dumped = ast.dump(fi_kw.value)
+        if "fast_inference" in dumped and "num_labels" in dumped:
+            gated = True
+    assert gated, "llama prefetch fast_inference must be gated on num_labels is None"
+
+
 def test_st_fallback_module_loads_resolve_env_cache():
     """The fallback module loads must resolve the SAME cache the prefetch warmed. _module_path /
     _read_pooling_mode call hf_hub_download directly, which does NOT honor SENTENCE_TRANSFORMERS_HOME,

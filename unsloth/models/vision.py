@@ -805,55 +805,10 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
-        # vLLM owns the weight download only when available; if requested but missing, the load falls
-        # through to the in-process HF path, so weights must still be warmed here.
-        _vllm_owns_weights = fast_inference and is_vLLM_available()
-
-        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
-        # in-process load below is a cache hit and cannot hang.
-        _prefetched = maybe_prefetch_hf_snapshot(
-            model_name,
-            token = token,
-            revision = kwargs.get("revision"),
-            cache_dir = kwargs.get("cache_dir"),
-            local_files_only = kwargs.get("local_files_only", False),
-            fast_inference = _vllm_owns_weights,
-            subfolder = kwargs.get("subfolder"),
-            force_download = kwargs.get("force_download", False),
-            use_safetensors = kwargs.get("use_safetensors"),
-            from_tf = kwargs.get("from_tf", False),
-            from_flax = kwargs.get("from_flax", False),
-            # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
-            # when a subfolder is set.
-            weights_at_root = True,
-            variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
-            gguf_file = kwargs.get(
-                "gguf_file"
-            ),  # forward so the warm fetches the GGUF (else ignored)
-        )
-        # Child already did the forced download; clear the flag so the load reuses the warm cache.
-        if _prefetched and kwargs.get("force_download", False):
-            kwargs["force_download"] = False
-
-        # Warm a SEPARATE tokenizer repo (explicit tokenizer_name); when it is model_name it is already
-        # covered. Do NOT warm model_name here on the vLLM path: this runs before fast_inference_setup may
-        # remap "*-unsloth-bnb-4bit" -> "*-bnb-4bit", so it would warm the wrong repo.
-        _tokenizer_repo = (
-            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
-        )
-        _warm_tokenizer_repo = (
-            isinstance(_tokenizer_repo, str)
-            and bool(_tokenizer_repo)
-            and _tokenizer_repo != model_name
-        )
-        if _warm_tokenizer_repo:
-            maybe_prefetch_hf_snapshot(
-                _tokenizer_repo,
-                token = token,
-                cache_dir = kwargs.get("cache_dir"),
-                local_files_only = kwargs.get("local_files_only", False),
-                tokenizer_only = True,
-            )
+        # NOTE: the base + tokenizer prefetch (the Xet -> HTTP stall fallback warm) runs AFTER the
+        # load-mode validation below, so an invalid load_in_4bit/8bit/16bit combination fails locally
+        # without first downloading a multi-GB snapshot. See the maybe_prefetch_hf_snapshot block placed
+        # right after that check.
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -951,6 +906,58 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+
+        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
+        # in-process load below is a cache hit and cannot hang. Runs AFTER the load-mode validation
+        # above so an invalid load_in_* combination fails without first pulling a multi-GB snapshot.
+        # vLLM owns the weight download only when actually available; if fast_inference was requested
+        # but vLLM is missing, the load falls through to the in-process HF path (fast_inference_setup
+        # flips the flag below), so the weights must still be warmed here. Resolve availability now.
+        _vllm_owns_weights = fast_inference and is_vLLM_available()
+        _prefetched = maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = kwargs.get("revision"),
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            fast_inference = _vllm_owns_weights,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            from_tf = kwargs.get("from_tf", False),
+            from_flax = kwargs.get("from_flax", False),
+            # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
+            # when a subfolder is set.
+            weights_at_root = True,
+            variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get(
+                "gguf_file"
+            ),  # forward so the warm fetches the GGUF (else ignored)
+        )
+        # Child already did the forced download; clear the flag so the load reuses the warm cache.
+        if _prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
+
+        # Warm a SEPARATE tokenizer repo (explicit tokenizer_name); when it is model_name it is already
+        # covered. Do NOT warm model_name here on the vLLM path: this runs before fast_inference_setup may
+        # remap "*-unsloth-bnb-4bit" -> "*-bnb-4bit", so it would warm the wrong repo.
+        _tokenizer_repo = (
+            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
+        )
+        _warm_tokenizer_repo = (
+            isinstance(_tokenizer_repo, str)
+            and bool(_tokenizer_repo)
+            and _tokenizer_repo != model_name
+        )
+        if _warm_tokenizer_repo:
+            maybe_prefetch_hf_snapshot(
+                _tokenizer_repo,
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         _skip_modules = SKIP_QUANTIZATION_MODULES.copy()
         # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers.
         # Mamba fused kernels pass out_proj.weight directly to F.linear,
