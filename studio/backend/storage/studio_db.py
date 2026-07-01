@@ -587,7 +587,12 @@ def finish_run(
             """
             UPDATE training_runs
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
-                duration_seconds = ?, loss_sparkline = ?, output_dir = ?,
+                duration_seconds = ?, loss_sparkline = ?,
+                output_dir = CASE
+                    WHEN ? IS NOT NULL THEN ?
+                    WHEN ? = 'error' THEN output_dir
+                    ELSE NULL
+                END,
                 error_message = ?
             WHERE id = ?
             """,
@@ -599,6 +604,8 @@ def finish_run(
                 duration_seconds,
                 loss_sparkline,
                 output_dir,
+                output_dir,
+                status,
                 error_message,
                 id,
             ),
@@ -659,6 +666,18 @@ def update_run_display_name(id: str, display_name: Optional[str]) -> None:
         conn.close()
 
 
+def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE training_runs SET output_dir = ? WHERE id = ?",
+            (output_dir, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def list_runs(limit: int = 50, offset: int = 0) -> dict:
     conn = get_connection()
     try:
@@ -670,13 +689,13 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
                    r.output_dir, r.duration_seconds, r.error_message,
                    r.loss_sparkline, r.display_name, r.config_json,
                    CASE
-                       WHEN r.status = 'stopped'
+                       WHEN r.status IN ('stopped', 'error')
                             AND r.output_dir IS NOT NULL
                             AND EXISTS (
                                 SELECT 1
                                 FROM training_runs newer
                                 WHERE newer.output_dir = r.output_dir
-                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.status IN ('stopped', 'completed', 'error', 'running')
                                   AND newer.started_at > r.started_at
                             )
                        THEN 1 ELSE 0
@@ -711,13 +730,13 @@ def get_run(id: str) -> Optional[dict]:
             """
             SELECT r.*,
                    CASE
-                       WHEN r.status = 'stopped'
+                       WHEN r.status IN ('stopped', 'error')
                             AND r.output_dir IS NOT NULL
                             AND EXISTS (
                                 SELECT 1
                                 FROM training_runs newer
                                 WHERE newer.output_dir = r.output_dir
-                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.status IN ('stopped', 'completed', 'error', 'running')
                                   AND newer.started_at > r.started_at
                             )
                        THEN 1 ELSE 0
@@ -752,12 +771,12 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
                    0 AS resumed_later
             FROM training_runs r
             WHERE r.output_dir = ?
-              AND r.status = 'stopped'
+              AND r.status IN ('stopped', 'error')
               AND NOT EXISTS (
                   SELECT 1
                   FROM training_runs newer
                   WHERE newer.output_dir = r.output_dir
-                    AND newer.status IN ('stopped', 'completed')
+                    AND newer.status IN ('stopped', 'completed', 'error', 'running')
                     AND newer.started_at > r.started_at
               )
             ORDER BY r.started_at DESC

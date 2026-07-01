@@ -363,6 +363,7 @@ class TrainingBackend:
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "output_dir": kwargs.get("output_dir"),
             "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
@@ -1017,6 +1018,10 @@ class TrainingBackend:
             elif etype == "eval_configured":
                 self.eval_enabled = True
 
+            elif etype == "output_dir":
+                self._output_dir = event.get("output_dir")
+                db_action = "persist_output_dir"
+
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
@@ -1050,6 +1055,7 @@ class TrainingBackend:
                 db_action_kwargs = {
                     "status": "stopped" if self._should_stop else "error",
                     "error_message": event.get("error", "Unknown error"),
+                    "output_dir": self._output_dir,
                 }
 
         # --- DB I/O outside the lock ---
@@ -1068,8 +1074,11 @@ class TrainingBackend:
                 self._db_run_created = True
                 if db_action_kwargs["total_steps"]:
                     self._db_total_steps_set = True
+                self._persist_output_dir()
             except Exception:
                 logger.warning("Failed to create DB run record", exc_info = True)
+        elif db_action == "persist_output_dir":
+            self._persist_output_dir()
         elif db_action == "create_and_finalize":
             self._ensure_db_run_created()
             self._finalize_run_in_db(**db_action_kwargs)
@@ -1084,6 +1093,16 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+    def _persist_output_dir(self) -> None:
+        if not self._output_dir or not self.current_job_id or not self._db_run_created:
+            return
+        try:
+            from storage.studio_db import update_run_output_dir
+
+            update_run_output_dir(self.current_job_id, self._output_dir)
+        except Exception:
+            logger.warning("Failed to persist output_dir", exc_info = True)
 
     def _ensure_db_run_created(self) -> None:
         """Create the DB row if it doesn't exist yet. Called outside the lock."""
