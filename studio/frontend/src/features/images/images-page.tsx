@@ -1425,7 +1425,7 @@ export function ImagesPage() {
           // ControlNet: sent only when a model + control image are chosen; v1 conditions plain
           // text-to-image only, so skip it for image-conditioned workflows.
           controlnet:
-            controlnetCapable && controlnetId && controlImage && workflow === "txt2img"
+            controlnetCapable && controlnetId && controlImage && workflow === "create"
               ? {
                   id: controlnetId,
                   image: controlImage,
@@ -1971,7 +1971,7 @@ export function ImagesPage() {
           {/* ControlNet: shown when the loaded model supports it, a model is discoverable, and
               the plain text-to-image workflow is active (v1 conditions txt2img only). Pick a
               model, add a control image, choose how to derive the map, and set the strength. */}
-          {controlnetCapable && availableControlNets.length > 0 && workflow === "txt2img" && (
+          {controlnetCapable && availableControlNets.length > 0 && workflow === "create" && (
             <Field
               label="ControlNet"
               hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
