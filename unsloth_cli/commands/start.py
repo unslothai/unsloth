@@ -217,7 +217,9 @@ def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(server.pid), "/T", "/F"],
-                capture_output = True, timeout = 15, check = False,
+                capture_output = True,
+                timeout = 15,
+                check = False,
             )
             server.wait(timeout = 5)
         except Exception:
