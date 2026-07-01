@@ -3186,11 +3186,17 @@ class LlamaCppBackend:
         drain-thread join in ``_wait_for_health``.
         """
         try:
+            from loggers.config import logs_verbose
+            mirror = logs_verbose()
             for line in self._process.stdout:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
-                    logger.debug(f"[llama-server] {line}")
+                    # The full output is always tee'd to the log file below; only
+                    # mirror it line-by-line to the logger when verbose, else it's
+                    # a firehose at DEBUG.
+                    if mirror:
+                        logger.debug(f"[llama-server] {line}")
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
                         try:
@@ -3477,9 +3483,9 @@ class LlamaCppBackend:
                 )
 
             if self._context_length:
-                logger.info(f"GGUF metadata: context_length={self._context_length}")
+                logger.debug(f"GGUF metadata: context_length={self._context_length}")
             if self._chat_template:
-                logger.info(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
+                logger.debug(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
                 # Detect thinking/reasoning support from chat template.
                 flags = detect_reasoning_flags(
                     self._chat_template,

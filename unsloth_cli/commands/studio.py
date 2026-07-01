@@ -25,10 +25,15 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
 def _enable_verbose_access_logs() -> None:
-    """Restore every per-request access log by disabling the burst dedup and the
-    quiet-poll heartbeat. Inherited by the spawned/re-exec'd server via the env."""
+    """Make --verbose restore EVERY log: per-request access lines (disable the
+    burst dedup + quiet-poll heartbeat) plus all other noise suppression
+    (scanner probes, library INFO, llama-server mirror, model-load narration)
+    via UNSLOTH_STUDIO_VERBOSE + DEBUG. Inherited by the spawned server's env."""
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+    os.environ["UNSLOTH_STUDIO_VERBOSE"] = "1"
+    # Force DEBUG so demoted lines reappear even if LOG_LEVEL was preset.
+    os.environ["LOG_LEVEL"] = "DEBUG"
 
 
 # Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then

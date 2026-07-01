@@ -19,6 +19,7 @@ import base64
 import os
 import signal
 from loggers import get_logger
+from loggers.progress import progress_throttle
 import multiprocessing as mp
 import queue
 import threading
@@ -133,10 +134,10 @@ class InferenceOrchestrator:
                 ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
-                    logger.info("Top GGUF models: %s", gguf_ids)
+                    logger.debug("Top GGUF models: %s", gguf_ids)
                 if hub_ids:
                     self._top_hub_cache = hub_ids
-                    logger.info("Top hub models: %s", hub_ids)
+                    logger.debug("Top hub models: %s", hub_ids)
         except Exception as e:
             logger.warning("Failed to fetch top models: %s", e)
         finally:
@@ -335,7 +336,11 @@ class InferenceOrchestrator:
                 raise RuntimeError(f"Subprocess error: {error_msg}")
 
             if rtype == "status":
-                logger.info("Subprocess status: %s", resp.get("message", ""))
+                msg = resp.get("message", "")
+                # Throttle the repeated heartbeat line to ~10s, but keep resetting
+                # the deadline on every tick (the subprocess is still alive).
+                if progress_throttle.should_log(("inference-load", id(self)), msg):
+                    logger.info("Subprocess status: %s", msg)
                 # Reset deadline — subprocess is still alive and working
                 deadline = time.monotonic() + timeout
                 continue
@@ -540,9 +545,11 @@ class InferenceOrchestrator:
                 rid = resp.get("request_id")
                 rtype = resp.get("type", "")
 
-                # Status messages: log and skip
+                # Status messages: log (throttled to ~10s) and skip
                 if rtype == "status":
-                    logger.info("Subprocess status: %s", resp.get("message", ""))
+                    msg = resp.get("message", "")
+                    if progress_throttle.should_log(("inference-dispatch", id(self)), msg):
+                        logger.info("Subprocess status: %s", msg)
                     continue
 
                 # Route to mailbox if a matching request_id exists
@@ -821,6 +828,9 @@ class InferenceOrchestrator:
                     if isinstance(_tpl_info, dict):
                         self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
+                    # Clear the heartbeat state so the next load logs its first
+                    # status line immediately instead of being throttled.
+                    progress_throttle.reset(("inference-load", id(self)))
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
