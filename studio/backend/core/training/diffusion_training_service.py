@@ -193,7 +193,11 @@ class DiffusionTrainingService:
             if ev.get("type") in _TERMINAL:
                 return
 
-    def _apply_event(self, ev: dict[str, Any], proc: Any = None) -> None:
+    def _apply_event(
+        self,
+        ev: dict[str, Any],
+        proc: Any = None,
+    ) -> None:
         """Fold one trainer event into the status snapshot. Pure state update -- unit
         tested by feeding events directly. ``proc`` (when given) fences a stale pump:
         an event from a superseded job's process must not touch the current job's
