@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,30 @@ def test_compose_preexec_passes_real_parent_pid(monkeypatch):
     monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda ppid: seen.append(ppid))
     pl.compose_preexec(None)()
     assert seen == [4321]
+
+
+def test_spawn_parent_pid_prefers_multiprocessing(monkeypatch):
+    # multiprocessing captures the spawning parent's pid at spawn; it stays put
+    # even after that parent dies, so an orphaned worker (getppid() now 1) still
+    # compares against the real original parent rather than looking like a
+    # healthy PID-1 child.
+    import multiprocessing
+
+    monkeypatch.setattr(
+        multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242)
+    )
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)  # pretend we were reparented
+    assert pl._spawn_parent_pid() == 4242
+
+
+def test_spawn_parent_pid_falls_back_to_getppid(monkeypatch):
+    # Not started via multiprocessing (main process / plain fork): no recorded
+    # parent, so use the live getppid().
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 777)
+    assert pl._spawn_parent_pid() == 777
 
 
 # ── reparent guard: fire on a real orphan, never on a healthy PID-1 child ──

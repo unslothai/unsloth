@@ -174,12 +174,29 @@ def _pdeathsig_preexec(expected_parent_pid: int) -> None:
         pass
 
 
+def _spawn_parent_pid() -> int:
+    """The pid of the process that started us, captured at spawn and stable even
+    after that parent dies. multiprocessing records it at fork/spawn, so it
+    survives reparenting to init -- unlike getppid(), which returns 1 once the
+    child is orphaned and would make an already-dead parent look like a healthy
+    PID-1 one. Fall back to the live getppid() when we were not started via
+    multiprocessing (or the lookup fails)."""
+    try:
+        import multiprocessing
+        parent = multiprocessing.parent_process()
+        if parent is not None and parent.pid is not None:
+            return parent.pid
+    except Exception:
+        pass
+    return os.getppid()
+
+
 def bind_current_process_to_parent_lifetime() -> None:
     """Bind the CURRENT process to its parent's death (Linux). For multiprocessing
     children, which cannot take a preexec_fn, so the parent cannot set
     PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
     if _is_linux():
-        _pdeathsig_preexec(os.getppid())
+        _pdeathsig_preexec(_spawn_parent_pid())
 
 
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
