@@ -11,6 +11,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -575,13 +576,40 @@ def _print_env(
     typer.echo(shlex.join(command))
 
 
+def _install_agent(name: str, install_hint: str) -> Optional[str]:
+    # Missing agent under --launch: offer to run its documented install command, then
+    # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
+    # silently), and a non-interactive stdin cannot answer the prompt, so both the
+    # no-TTY and declined cases return None and let the caller print the hint and exit.
+    if not sys.stdin.isatty():
+        return None
+    typer.echo(f"`{name}` is not installed.")
+    if not typer.confirm(f"Install it now with `{install_hint}`?", default = False):
+        return None
+    # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
+    # on Windows, /bin/sh (curl | bash, or npm) everywhere else.
+    if os.name == "nt":
+        install_command = ["powershell", "-NoProfile", "-Command", install_hint]
+    else:
+        install_command = ["/bin/sh", "-c", install_hint]
+    if subprocess.run(install_command).returncode != 0:
+        _fail(f"Install command failed. Run it yourself, then re-run: {install_hint}")
+    executable = shutil.which(name)
+    if executable is None:
+        _fail(
+            f"`{name}` installed but isn't on PATH yet. Open a new shell (or add it to "
+            f"PATH), then re-run. Install command: {install_hint}"
+        )
+    return executable
+
+
 def _launch(
     command: list,
     env: dict,
     install_hint: str,
     unset_env: tuple = (),
 ) -> NoReturn:
-    executable = shutil.which(command[0])
+    executable = shutil.which(command[0]) or _install_agent(command[0], install_hint)
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
     wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()

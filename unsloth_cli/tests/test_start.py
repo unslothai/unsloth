@@ -77,6 +77,44 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
     ]
 
 
+def test_install_agent_prompts_then_installs(monkeypatch):
+    # TTY + yes: run the documented install command, then re-resolve the now-present binary.
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, *a, **k: ran.append(command) or SimpleNamespace(returncode = 0),
+    )
+    # _install_agent only re-resolves after installing (the pre-install check is the
+    # caller's job), so `which` reports the now-present binary.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    executable = start._install_agent("codex", "npm install -g @openai/codex")
+    assert executable == "/usr/local/bin/codex"
+    assert ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+
+
+def test_install_agent_declined_returns_none(monkeypatch):
+    # TTY + no: never runs anything; caller falls back to the print-hint failure.
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: pytest.fail("should not install when declined")
+    )
+    assert start._install_agent("codex", "npm install -g @openai/codex") is None
+
+
+def test_install_agent_non_interactive_returns_none(monkeypatch):
+    # No TTY (piped stdin): cannot prompt, so don't install; return None silently.
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: False))
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: pytest.fail("should not install without a TTY")
+    )
+    assert start._install_agent("codex", "npm install -g @openai/codex") is None
+
+
 def _parse_toml(text: str) -> dict:
     tomllib = pytest.importorskip("tomllib")
     return tomllib.loads(text)
