@@ -7457,9 +7457,8 @@ class LlamaCppBackend:
                 return False
 
             try:
-                # trust_env=False: never route the loopback health probe through
-                # an ambient HTTP(S)_PROXY. A proxy that 503s for 127.0.0.1 makes
-                # the probe loop until timeout and hangs Studio load.
+                # trust_env=False: skip ambient HTTP(S)_PROXY, which if it 503s
+                # for 127.0.0.1 loops the probe until timeout and hangs load.
                 resp = httpx.get(url, timeout = 2.0, trust_env = False)
                 if resp.status_code == 200:
                     return True
