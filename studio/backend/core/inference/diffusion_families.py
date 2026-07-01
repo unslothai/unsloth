@@ -182,7 +182,9 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
 
 
 def detect_family_for_pick(
-    repo_id: str, gguf_filename: Optional[str] = None, override: Optional[str] = None
+    repo_id: str,
+    gguf_filename: Optional[str] = None,
+    override: Optional[str] = None,
 ) -> Optional[DiffusionFamily]:
     """``detect_family``, falling back to the combined path/filename for a direct
     local ``.gguf`` pick. The frontend splits such a pick into (parent dir, basename),

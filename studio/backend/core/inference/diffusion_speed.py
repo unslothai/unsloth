@@ -253,6 +253,7 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
 def _enable_tf32(logger: Any) -> bool:
     try:
         import torch
+
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         return True
