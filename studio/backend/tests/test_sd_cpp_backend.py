@@ -219,6 +219,17 @@ def test_begin_load_requires_gguf_filename():
         b.begin_load("unsloth/Z-Image-Turbo-GGUF")
 
 
+def test_begin_load_resolves_family_from_filename_only(monkeypatch):
+    # A local .gguf pick whose family keyword lives only in the basename (parent dir
+    # carries none) must resolve via the same filename fallback the route validated
+    # with -- not dead-end with "Could not infer" on a native (no-GPU) host.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)  # skip the download thread
+    b.begin_load("/models/gguf-store", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf")
+    # Validation passed (no ValueError) and the family was inferred from the filename.
+    assert b._loading is not None and b._loading.repo_id == "/models/gguf-store"
+
+
 def test_ensure_binary_returns_found(monkeypatch):
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/usr/bin/sd-cli")
     assert ensure_sd_cpp_binary() == "/usr/bin/sd-cli"
