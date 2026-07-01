@@ -274,9 +274,7 @@ def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
     return -1
 
 
-def _gguf_has_genuine_tool_signal(
-    text: str, signals, active_tools: list[dict]
-) -> bool:
+def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) -> bool:
     """True when ``text`` holds a genuine tool-call boundary for one of ``signals``.
 
     Unambiguous markers (``<tool_call>``, ``[TOOL_CALLS]``, ``<function=``) count on a
@@ -8340,9 +8338,12 @@ class LlamaCppBackend:
                                                 # not a call start, so gate it the same
                                                 # way the safetensors loop does instead
                                                 # of draining/parsing prose.
-                                                if _gguf_rehearsal_signal_pos(
-                                                    stripped_buf, active_tools
-                                                ) >= 0:
+                                                if (
+                                                    _gguf_rehearsal_signal_pos(
+                                                        stripped_buf, active_tools
+                                                    )
+                                                    >= 0
+                                                ):
                                                     is_match = True
                                                     break
                                             elif sig.startswith("[") and sig in stripped_buf:

@@ -2057,8 +2057,6 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
     # ONE stream is supplied, so a spurious disabled-``foo`` no-op + re-prompt would
     # exhaust the stream list and error -- the clean completion proves no retry turn.
     assert calls == [], calls
-    assert not any(
-        e.get("type") in ("tool_start", "tool_end") for e in events
-    ), events
+    assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert any("is just syntax." in t for t in content_texts), content_texts

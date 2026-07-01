@@ -326,9 +326,7 @@ def _detect_render_html_tool_start(content: str) -> bool:
             # resolve the first call through the parser, which reads top-level names.
             arr_calls = parse_tool_calls_from_text(content[mt:])
             if arr_calls:
-                candidates.append(
-                    (mt, (arr_calls[0].get("function") or {}).get("name") or "")
-                )
+                candidates.append((mt, (arr_calls[0].get("function") or {}).get("name") or ""))
     for rm in _REHEARSAL_RENDER_NAME_RE.finditer(content):
         if not _in_think(rm.start(1)):
             candidates.append((rm.start(1), rm.group(1)))

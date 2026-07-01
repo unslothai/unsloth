@@ -224,8 +224,7 @@ class TestParser:
         # a render_html card but executes the real (non-render_html) call after the
         # block. The first EXECUTABLE call (outside think) decides.
         assert not _detect_render_html_tool_start(
-            '<think>draft render_html[ARGS]{"code":"x"}</think>'
-            'python[ARGS]{"code":"print(1)"}'
+            '<think>draft render_html[ARGS]{"code":"x"}</think>python[ARGS]{"code":"print(1)"}'
         )
         assert not _detect_render_html_tool_start(
             '[THINK]render_html[ARGS]{"code":"x"}[/THINK]web_search[ARGS]{"q":"y"}'
@@ -235,9 +234,7 @@ class TestParser:
             '<think>web_search[ARGS]{"q":"x"}</think>render_html[ARGS]{"code":"<html>"}'
         )
         # A render_html rehearsed inside think with no real call after does not fire.
-        assert not _detect_render_html_tool_start(
-            '<think>render_html[ARGS]{"code":"x"}</think>'
-        )
+        assert not _detect_render_html_tool_start('<think>render_html[ARGS]{"code":"x"}</think>')
 
     def test_render_html_start_detector_reads_top_level_array_name(self):
         # ``[TOOL_CALLS] [{...}]`` array: the real tool name is the object's top-level
