@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from utils.process_lifetime import child_popen_kwargs
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
@@ -125,7 +126,8 @@ def find_sd_cpp_binary() -> Optional[str]:
     both engines look):
       1. ``SD_CLI_PATH`` env -- a direct path to the binary.
       2. ``UNSLOTH_SD_CPP_PATH`` env -- a stable-diffusion.cpp install dir.
-      3. ``~/.unsloth/stable-diffusion.cpp`` build layouts (the installer target).
+      3. the installer target: ``<UNSLOTH_STUDIO_HOME>/../stable-diffusion.cpp`` when
+         that env (or ``STUDIO_HOME``) is set, else ``~/.unsloth/stable-diffusion.cpp``.
       4. ``./stable-diffusion.cpp`` in-tree build (developer checkout).
       5. ``sd-cli`` (then legacy ``sd``) on PATH.
     """
@@ -151,8 +153,12 @@ def find_sd_cpp_binary() -> Optional[str]:
         if hit:
             return hit
 
-    # 3. Default install root (sibling of ~/.unsloth/llama.cpp).
-    hit = _first_file(_layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp"))
+    # 3. Default install root: the installer's default_install_dir() -- a sibling of
+    #    the llama.cpp install under UNSLOTH_STUDIO_HOME / STUDIO_HOME when set, else
+    #    ~/.unsloth. Mirror that env resolution or a custom Studio home never resolves.
+    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    default_base = Path(studio_home).parent if studio_home else Path.home() / ".unsloth"
+    hit = _first_file(_layout_candidates(default_base / "stable-diffusion.cpp"))
     if hit:
         return hit
 
@@ -342,6 +348,10 @@ class SdCppEngine:
             # Own session/process group so cancellation/timeout can kill the whole
             # tree, not just the parent (POSIX only; harmless flag elsewhere).
             start_new_session = (os.name == "posix"),
+            # Bind the child to the parent's lifetime (Linux PR_SET_PDEATHSIG), so a
+            # hard parent crash mid-generation can't orphan sd-cli holding VRAM/RAM --
+            # matching every llama.cpp Popen site. Composes with start_new_session.
+            **child_popen_kwargs(),
         )
         # Drain stdout on a reader thread so the timeout is enforced even when the
         # child hangs WITHOUT printing (e.g. stuck in model load / GPU init): a plain

@@ -10373,6 +10373,10 @@ async def generate_diffusion_image(
 ):
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import (
+        DIFFUSION_CANCELLED_MSG,
+        DIFFUSION_NOT_LOADED_MSG,
+    )
 
     backend = get_active_diffusion_engine()
     try:
@@ -10388,11 +10392,15 @@ async def generate_diffusion_image(
             batch_size = request.batch_size,
         )
     except RuntimeError as exc:
-        # Only "no model loaded" / cancelled are client-state (409). The native
-        # sd.cpp engine also raises RuntimeError for execution failures (nonzero
-        # exit, timeout, missing output), which are server errors (500).
+        # Only "no model loaded" / user-cancelled are client-state (409); both engines
+        # raise these two EXACT messages. The native sd.cpp engine also raises
+        # RuntimeError for execution failures (nonzero exit, timeout, missing output)
+        # whose text can embed the raw sd-cli tail (local paths / argv) -- those are
+        # server errors (500) returned as a fixed literal, never echoed. Match the
+        # sentinels exactly, not as a substring, so an sd-cli failure that merely
+        # contains "cancelled" can't misroute to 409 and leak that output.
         msg = str(exc)
-        if "No diffusion model is loaded" in msg or "cancelled" in msg.lower():
+        if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
             raise HTTPException(status_code = 409, detail = msg)
         logger.error("diffusion.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")

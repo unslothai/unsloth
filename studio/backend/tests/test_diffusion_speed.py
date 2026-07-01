@@ -216,6 +216,24 @@ def test_speed_default_channels_last_compile_and_cudnn_benchmark(monkeypatch):
     assert applied["tf32"] is False and applied["fused_qkv"] is False
 
 
+def test_offload_active_drops_fullgraph(monkeypatch):
+    # Group/model/sequential offload installs a torch.compiler.disable'd onload hook;
+    # compiling with fullgraph=True then crashes at the first denoise step. Same reason
+    # as an active step cache -> fullgraph must drop to False when offload is planned.
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe,
+        _target(),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert applied["compiled"] is True
+    assert pipe.compile_kwargs["fullgraph"] is False
+
+
 def test_speed_default_compiles_gguf(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
