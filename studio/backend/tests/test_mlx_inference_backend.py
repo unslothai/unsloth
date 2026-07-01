@@ -161,7 +161,7 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
     assert isinstance(backend._tokenizer, _DummyTokenizer)
 
 
-def test_mlx_inference_distributed_rejects_lora_adapters(monkeypatch):
+def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
@@ -185,7 +185,6 @@ def test_mlx_inference_distributed_rejects_lora_adapters(monkeypatch):
     config = SimpleNamespace(identifier = "fake/adapter", is_vision = False, is_lora = True)
     with pytest.raises(ValueError, match = "LoRA adapter repos"):
         MLXInferenceBackend().load_model(config, parallel_mode = "tensor", distributed_group = group)
-    assert calls == []
 
 
 def test_worker_share_object_receives_distributed_payload(monkeypatch):

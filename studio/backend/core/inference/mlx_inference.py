@@ -177,10 +177,6 @@ class MLXInferenceBackend:
             distributed_size,
             parallel_mode,
         )
-        if is_vision and is_distributed:
-            raise ValueError(
-                "Unsloth: distributed MLX inference for VLM models is not supported yet."
-            )
         if is_distributed and parallel_mode not in ("pipeline", "tensor"):
             raise ValueError(
                 "Unsloth: distributed MLX inference requires parallel_mode='pipeline' "
