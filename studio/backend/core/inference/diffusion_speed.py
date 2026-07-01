@@ -250,6 +250,7 @@ def _compile_repeated_blocks(
         kwargs["mode"] = "max-autotune-no-cudagraphs"
     try:
         import torch
+
         # Heterogeneous-block DiTs (e.g. Z-Image) compile ~one graph per distinct block
         # shape through compile_repeated_blocks; Z-Image needs ~11, above dynamo's default
         # recompile_limit of 8. Once the limit is hit a resident load hard-errors under

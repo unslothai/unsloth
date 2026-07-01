@@ -520,9 +520,7 @@ class DiffusionBackend:
                 # the real budget) -- this also doubles as the dense-quant preflight: the
                 # dense bf16 transformer must fit resident, so the fast path is offered only
                 # when the plan is `none`.
-                plan = self._plan_memory(
-                    target, gguf_path, base, fam, memory_mode, cpu_offload
-                )
+                plan = self._plan_memory(target, gguf_path, base, fam, memory_mode, cpu_offload)
 
                 # Opt-in fast path: load the DENSE bf16 transformer and torchao-quantise it
                 # (int8 / fp8 / fp4 tensor cores), which beats GGUF's bf16-rate per-matmul
