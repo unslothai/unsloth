@@ -89,11 +89,21 @@ class DiffusionTrainingService:
 
         _config_from_dict(config).normalized()
 
+        # Join a finished job's pump OUTSIDE the lock: its final state writes take this
+        # lock (via _apply_event / the exit handler), so joining under it would stall
+        # the start for the whole timeout and then let the stale pump overwrite the new
+        # job's state once the lock was released.
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
-            if self._pump is not None and self._pump.is_alive():
-                self._pump.join(timeout = 5.0)
+            pump = self._pump
+        if pump is not None and pump.is_alive():
+            pump.join(timeout = 5.0)
+
+        with self._lock:
+            # Re-check: another start() may have won the race while we joined.
+            if self._proc is not None and self._proc.is_alive():
+                raise RuntimeError("A diffusion training job is already running.")
 
             job_id = uuid.uuid4().hex
             event_queue = self._ctx.Queue()
@@ -162,11 +172,13 @@ class DiffusionTrainingService:
                     drained = False
                     while True:
                         try:
-                            self._apply_event(event_queue.get_nowait())
+                            self._apply_event(event_queue.get_nowait(), proc = proc)
                             drained = True
                         except Exception:  # noqa: BLE001
                             break
                     with self._lock:
+                        if self._proc is not proc:
+                            return  # superseded by a newer job; don't touch its state
                         if self._state.get("status") not in ("completed", "stopped", "error"):
                             self._state.update(
                                 active = False,
@@ -177,15 +189,19 @@ class DiffusionTrainingService:
                     _ = drained
                     return
                 continue
-            self._apply_event(ev)
+            self._apply_event(ev, proc = proc)
             if ev.get("type") in _TERMINAL:
                 return
 
-    def _apply_event(self, ev: dict[str, Any]) -> None:
+    def _apply_event(self, ev: dict[str, Any], proc: Any = None) -> None:
         """Fold one trainer event into the status snapshot. Pure state update -- unit
-        tested by feeding events directly."""
+        tested by feeding events directly. ``proc`` (when given) fences a stale pump:
+        an event from a superseded job's process must not touch the current job's
+        state."""
         etype = ev.get("type")
         with self._lock:
+            if proc is not None and self._proc is not proc:
+                return
             s = self._state
             s["updated_at"] = time.time()
             if etype == "model_load_started":

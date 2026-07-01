@@ -261,9 +261,12 @@ def run_diffusion_lora_training(
     torch.manual_seed(cfg.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[
-        cfg.mixed_precision if device == "cuda" else "no"
-    ]
+    precision = cfg.mixed_precision if device == "cuda" else "no"
+    if precision == "bf16" and device == "cuda" and not torch.cuda.is_bf16_supported():
+        # The default is bf16, but pre-Ampere GPUs (T4 / V100 / RTX 20xx) have no
+        # bf16 compute; fall back to fp16 there instead of failing at load/forward.
+        precision = "fp16"
+    weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
