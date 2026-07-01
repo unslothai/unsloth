@@ -819,6 +819,27 @@ def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
     assert ec_mtp < ec_no
 
 
+def test_tp_plan_reserves_context_linear_compute_buffer():
+    # Tensor mode replicates the compute graph on every device; measured on
+    # Qwen3.5-9B at f16 the per-device buffer grows ~n_ubatch*2 B/token (~1024
+    # B/tok), so the fit must reserve n_dev x that on top of the flat reserve or
+    # it over-pins and OOMs at high context. The chosen KV must leave room for it.
+    b, (ec, mac, gi, ts) = _plan(50)
+    cc = len(gi) * b._compute_buffer_ctx_bytes(ec, None, "f16")
+    assert cc > 0
+    assert b._estimate_kv_cache_bytes(ec) + cc <= _kv_budget_b(50)
+
+
+def test_tp_plan_context_shrinks_vs_compute_unaware():
+    # With the context-linear term the pinned context is strictly below what a
+    # KV-only (compute-unaware) fit at the same budget would allow.
+    b, (ec, *_r) = _plan(50)
+    b2 = _kv_seeded_backend()
+    b2._embedding_length = 0  # kills the context-linear compute term (returns 0)
+    ec_naive, *_r2 = b2._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
+    assert ec < ec_naive
+
+
 def test_tp_plan_no_kv_metadata_floors_context():
     b = LlamaCppBackend()  # no KV metadata -> can't size safely
     ec, mac, gi, ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
