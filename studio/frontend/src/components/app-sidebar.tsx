@@ -467,7 +467,6 @@ export function AppSidebar() {
   }
 
   function openNewChat(projectId = activeProjectId) {
-    console.log("[voice-newchat] openNewChat called: current activeThreadId(before setActiveThreadId null)=", useChatRuntimeStore.getState().activeThreadId, "projectId=", projectId);
     clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
