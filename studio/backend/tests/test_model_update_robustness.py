@@ -358,8 +358,12 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
 
     monkeypatch.setattr(X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True)
 
-    X.hf_hub_download_with_xet_fallback("unsloth/repo", "model.gguf", token = None, force_download = False)
-    X.hf_hub_download_with_xet_fallback("unsloth/repo", "model.gguf", token = None, force_download = True)
+    X.hf_hub_download_with_xet_fallback(
+        "unsloth/repo", "model.gguf", token = None, force_download = False
+    )
+    X.hf_hub_download_with_xet_fallback(
+        "unsloth/repo", "model.gguf", token = None, force_download = True
+    )
     assert seen == [False, True]  # the shim forwards force_download to the shared helper unchanged
 
 
