@@ -4601,20 +4601,39 @@ def _unsloth_save_torchao(
                 x.endswith("ForVisionText2Text") for x in archs
             )
             trust_remote_code = bool(getattr(model.config, "auto_map", None))
+        # Custom code can be declared only in the tokenizer/processor config, so also honor an
+        # auto_map in any staged config (the original load already had the user's consent).
+        if not trust_remote_code:
+            for _cfg in (
+                "config.json", "tokenizer_config.json",
+                "processor_config.json", "preprocessor_config.json",
+            ):
+                try:
+                    _p = os.path.join(staging, _cfg)
+                    if os.path.exists(_p):
+                        with open(_p, "r", encoding = "utf-8") as _f:
+                            if "auto_map" in json.load(_f):
+                                trust_remote_code = True
+                                break
+                except Exception:
+                    pass
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
-        # 3) Free the in-memory model's CUDA memory before reloading a fresh copy from disk.
+        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from disk.
+        #    Covers CUDA and XPU (torchao runs on Intel GPUs too), so the original doesn't sit
+        #    resident alongside the reloaded copy and OOM a device that fit the model once.
+        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         try:
             if (
-                torch.cuda.is_available()
+                (torch.cuda.is_available() or _has_xpu)
                 and hasattr(model, "parameters")
                 and not getattr(model, "is_loaded_in_4bit", False)
                 and not getattr(model, "is_loaded_in_8bit", False)
                 and not getattr(model, "is_quantized", False)
             ):
                 _devs = {str(p.device) for p in model.parameters()}
-                if len(_devs) == 1 and next(iter(_devs)).startswith("cuda"):
+                if len(_devs) == 1 and next(iter(_devs)).startswith(("cuda", "xpu")):
                     _dev = next(model.parameters()).device
                     model.to("cpu")
                     model_dev = _dev
@@ -4624,6 +4643,8 @@ def _unsloth_save_torchao(
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if _has_xpu:
+                torch.xpu.empty_cache()
 
         # 4) Reload the staged 16bit checkpoint with torchao applied. bfloat16 is required;
         #    device_map="auto" falls back to CPU, so this works on any hardware.

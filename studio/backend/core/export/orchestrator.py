@@ -563,9 +563,13 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
+                    # GGUF for 30B+ models can take 30+ min per quant; a multi-quant list runs them
+                    # all in one op off a single merge, so scale the timeout by the quant count.
+                    _qm = params.get("quantization_method")
+                    _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600,  # GGUF for 30B+ models can take 30+ min
+                        timeout = 3600 * max(1, _n),
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")
