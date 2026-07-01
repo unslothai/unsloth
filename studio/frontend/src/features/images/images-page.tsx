@@ -2037,9 +2037,10 @@ export function ImagesPage() {
           )}
         </div>
 
-        {/* Right-docked Advanced panel (mirrors Chat's settings panel): open by default and
-            toggleable, so the optimisation controls are discoverable instead of buried at the
-            bottom of the left rail. */}
+        {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default,
+            opened by the single fixed top-bar toggle above (which never moves between states,
+            like Chat's run-settings toggle), so the optimisation controls are discoverable
+            without being docked open or buried at the bottom of the left rail. */}
         {advancedOpen && (
           <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
             <div className="flex h-[52px] shrink-0 items-center border-b border-border/60 px-4">
