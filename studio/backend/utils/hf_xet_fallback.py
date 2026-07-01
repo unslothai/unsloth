@@ -222,9 +222,11 @@ def hf_hub_download_with_xet_fallback(
     interval: float = DEFAULT_HEARTBEAT_INTERVAL,
     grace_period: float = DEFAULT_GRACE_PERIOD,
     on_status: Optional[Callable[[str], None]] = None,
+    force_download: bool = False,
 ) -> str:
     """Single-file download with the shared Xet -> HTTP stall fallback, using
-    Studio's marker-aware cache prep on the HTTP retry."""
+    Studio's marker-aware cache prep on the HTTP retry. ``force_download`` re-fetches a newer
+    remote blob even if an older one is cached (Studio's model-update path)."""
     return _shared_hf_hub_download_with_xet_fallback(
         repo_id,
         filename,
@@ -236,6 +238,7 @@ def hf_hub_download_with_xet_fallback(
         interval = interval,
         grace_period = grace_period,
         on_status = on_status,
+        force_download = force_download,
         prepare_for_http_fn = _studio_prepare_for_http,
     )
 

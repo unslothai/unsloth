@@ -97,6 +97,7 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
         interval,
         grace_period,
         on_status,
+        force_download = False,
     ):
         seen_disable_xet.append(disable_xet)
         return ("ok", "/cache/model.gguf") if disable_xet else ("stall", None)
