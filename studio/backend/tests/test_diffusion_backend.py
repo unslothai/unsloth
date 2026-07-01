@@ -26,6 +26,7 @@ from core.inference.diffusion_families import (
     detect_family,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 
 
@@ -80,6 +81,16 @@ def test_detect_family_override():
     assert detect_family("local/path", override = "z-image").name == "z-image"
     assert detect_family("local/path", override = "zimage").name == "z-image"
     assert detect_family("local/path", override = "not-a-family") is None
+
+
+def test_supported_family_names():
+    names = supported_family_names()
+    # The unknown-model error lists these, so the key families must be present.
+    for expected in ("flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "z-image"):
+        assert expected in names
+    # Every listed name is a valid family_override (round-trips through detect_family).
+    for name in names:
+        assert detect_family("some/unknown-repo", override = name) is not None
 
 
 def test_resolve_base_repo():

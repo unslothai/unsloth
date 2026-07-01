@@ -95,9 +95,9 @@ class DiffusionFamily:
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
 # is read from its HF base_model tag at load time, so one entry covers Turbo/full,
 # schnell/dev, etc. base_repo here is only a fallback. Only archs whose diffusers
-# transformer supports from_single_file load here (ERNIE-Image does not, yet).
-# FLUX.2-dev and FLUX.2-klein-9B are left out only because their base diffusers
-# repos are gated; the open klein-4B base stands in for the klein family below.
+# transformer supports from_single_file load here (ERNIE-Image does not, yet; LTX
+# video models are out of scope). FLUX.2-klein-9B shares the klein family (its base
+# repo is resolved per-variant), and FLUX.2-dev has its own family below.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -114,8 +114,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
     ),
     # FLUX.2-klein is a distinct pipeline (Flux2KleinPipeline) with a Qwen3 text
-    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic
-    # flux match. The base Flux2Pipeline (FLUX.2-dev) is gated, so it's omitted.
+    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic flux
+    # match. The Mistral-based Flux2Pipeline is the separate flux.2-dev family below.
     DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
@@ -282,6 +282,12 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             return None
         return match
     return None
+
+
+def supported_family_names() -> tuple[str, ...]:
+    """Family names accepted as ``family_override`` and shown in the unknown-model
+    error. Kept in registry order so the message lists what the backend can load."""
+    return tuple(fam.name for fam in _FAMILIES)
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:

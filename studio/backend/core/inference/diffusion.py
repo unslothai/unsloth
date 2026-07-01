@@ -33,6 +33,7 @@ from .diffusion_families import (
     detect_family,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -399,7 +400,10 @@ class DiffusionBackend:
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
+                f"'{repo_id}' is not a supported diffusion image model. Supported families: "
+                f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
+                f"pass family_override with that family name. (Video models and image models "
+                f"whose diffusers transformer has no single-file loader are not supported.)"
             )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
