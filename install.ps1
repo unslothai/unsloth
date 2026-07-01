@@ -1939,6 +1939,11 @@ exit 0
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        # Explicit override for hosts where GPU probing is impossible or must not
+        # happen (image builds, CI runners that build for a different target than
+        # they run on). Names the wheel index path leaf directly, e.g.
+        # UNSLOTH_TORCH_INDEX_FAMILY=cu128 | cu130 | cu126 | cpu | rocm6.4 | ...
+        if ($env:UNSLOTH_TORCH_INDEX_FAMILY) { return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY)" }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
