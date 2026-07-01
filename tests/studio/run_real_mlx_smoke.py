@@ -565,6 +565,13 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(f"no .gguf files in {save_dir}")
     gguf_path = gguf_files[0]
 
+    # This is a save/reload-integrity smoke (assert below only needs a few chars),
+    # so keep generation short. BF16 GGUF decode is CPU-bound on the macOS runner
+    # (~10s+/token); 24 tokens sat right on the 300s cliff. Generate a handful of
+    # tokens with explicit threads, both env-tunable.
+    n_predict = os.environ.get("UNSLOTH_GGUF_RELOAD_N", "8")
+    n_threads = os.environ.get("UNSLOTH_GGUF_RELOAD_THREADS", str(os.cpu_count() or 4))
+    reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
     with Phase("reload_gguf", metrics):
         proc = subprocess.run(
             [
@@ -574,7 +581,9 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                 "-p",
                 PROMPT,
                 "-n",
-                "24",
+                n_predict,
+                "-t",
+                n_threads,
                 "--temp",
                 "0",
                 "--seed",
@@ -584,7 +593,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
             ],
             capture_output = True,
             text = True,
-            timeout = 300,
+            timeout = reload_timeout,
             # Hand llama-cli an immediate EOF; without it -no-cnv can still leave the
             # process blocked reading stdin, which times out instead of generating.
             stdin = subprocess.DEVNULL,
