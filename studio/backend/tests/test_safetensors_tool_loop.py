@@ -138,6 +138,22 @@ class TestParser:
         assert len(result) == 1
         assert "print('hi')" in result[0]["function"]["arguments"]
 
+    def test_xml_param_preserves_leading_indentation(self):
+        # The chat template wraps the value in a single \n on each side; only
+        # that wrapping newline is trimmed, so significant indentation in a code
+        # argument survives (str.strip() used to destroy it).
+        text = (
+            "<function=python><parameter=code>\n"
+            "    indented = 1\n"
+            "    more\n"
+            "</parameter></function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "code": "    indented = 1\n    more"
+        }
+
     def test_function_signal_inside_parameter_is_literal(self):
         text = (
             "<function=python>"
@@ -189,6 +205,15 @@ class TestParser:
         text = 'before <|tool_call>call:terminal{command:"ls"}<tool_call|> after'
         assert strip_tool_markup(text) == "before  after"
 
+    def test_strip_named_mistral_call_consumes_trailing_eos(self):
+        # The named ``[TOOL_CALLS]name{json}`` shape must eat the optional
+        # trailing ``</s>`` like the array shape, so the EOS marker is not left
+        # behind as visible content.
+        text = '[TOOL_CALLS]web_search{"query":"cats"}</s>'
+        assert strip_tool_markup(text) == ""
+        text = '[TOOL_CALLS]web_search{"query":"cats"}</s> and then'
+        assert strip_tool_markup(text) == " and then"
+
     def test_strip_markup_unclosed_final(self):
         text = "before <tool_call>{partial"
         # final=True drops the trailing run.
@@ -213,6 +238,384 @@ class TestParser:
             )
             == "before "
         )
+
+    def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
+        # A literal ``<function=...>`` inside a parameter value is data, not a nested
+        # call, so the streaming strip must close the call at its REAL ``</function>``
+        # and keep the trailing prose -- matching the guarded final strip. The raw
+        # open-ended regex ate everything to EOF, dropping `` tail``.
+        raw = (
+            "pref <function=python><parameter=code>"
+            'print("<function=x>")</parameter></function> tail'
+        )
+        assert strip_tool_markup_streaming(raw) == "pref  tail"
+        # Streaming and final strip agree on the visible text (final also trims).
+        assert strip_tool_markup_streaming(raw) == strip_tool_markup(raw, final = True)
+
+
+class TestParserMultiFormat:
+    """Parser coverage for Llama-3 / Mistral / Gemma 4 emission formats.
+
+    Each model family upstream of GGUF emits a different tool-call
+    shape. The shared parser must turn all of them into the same
+    OpenAI ``{name, arguments}`` shape so the safetensors / MLX
+    agentic loop is family-agnostic.
+    """
+
+    # ── Llama-3 ────────────────────────────────────────────────────
+
+    def test_llama3_python_tag_dot_call(self):
+        # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
+        import json
+
+        text = '<|python_tag|>brave_search.call(query="weather in Tokyo")'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "brave_search"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "weather in Tokyo"}
+
+    def test_llama3_python_tag_dot_call_multi_arg(self):
+        import json
+
+        text = "<|python_tag|>get_weather.call(" 'location="Tokyo", units="celsius", days=5)'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"location": "Tokyo", "units": "celsius", "days": 5}
+
+    def test_llama3_python_tag_json_form(self):
+        import json
+
+        text = '<|python_tag|>{"name":"web_search","parameters":{"query":"hi","n":5}}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "hi", "n": 5}
+
+    def test_llama3_python_tag_json_form_with_eom(self):
+        # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
+        import json
+
+        text = '<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"code": "print(2+2)"}
+
+    def test_llama3_strip_markup_final(self):
+        text = '<|python_tag|>brave_search.call(query="x")'
+        assert strip_tool_markup(text, final = True) == ""
+
+    # ── Llama-3.2 bare JSON ``custom_tools`` ─────────────────────
+
+    def test_llama3_2_bare_json_parameters(self):
+        # Llama-3.2-Instruct emits bare JSON directly as content; no
+        # <|python_tag|> prefix per its training template.
+        import json
+
+        text = '{"name":"web_search","parameters":{"query":"Tokyo weather"}}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "Tokyo weather"}
+
+    def test_llama3_2_bare_json_arguments_key(self):
+        import json
+
+        text = '{"name":"add","arguments":{"a":1,"b":2}}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"a": 1, "b": 2}
+
+    def test_llama3_2_bare_json_multi_call(self):
+        # Llama-3 may chain calls with ``; `` per training template.
+        text = '{"name":"a","parameters":{}}; {"name":"b","parameters":{}}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "a"
+        assert result[1]["function"]["name"] == "b"
+
+    def test_llama3_2_bare_json_with_eom_sentinel(self):
+        text = '{"name":"x","parameters":{"y":1}}<|eom_id|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "x"
+
+    def test_llama3_2_bare_json_leading_sentinel_skipped(self):
+        # Sometimes prior <|eot_id|> leaks into the next turn.
+        text = '<|eot_id|>{"name":"x","parameters":{}}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "x"
+
+    def test_llama3_2_bare_json_plain_prose_does_not_fire(self):
+        # Defensive: must NOT fire on plain assistant prose.
+        text = "Hello world, how are you today?"
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_embedded_in_prose_does_not_fire(self):
+        # Defensive: JSON embedded in prose must NOT fire (parser is
+        # strict about content STARTING with `{`).
+        text = 'The tool result was: {"name":"foo"}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_missing_name_does_not_fire(self):
+        text = '{"result":"ok","data":[1,2,3]}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_missing_args_does_not_fire(self):
+        text = '{"name":"x"}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_args_not_dict_does_not_fire(self):
+        text = '{"name":"x","parameters":42}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_string_parameters_does_not_fire(self):
+        # Llama-3 spec: parameters must be a dict. Prose like
+        # ``{"name":"foo","parameters":"a sentence"}`` must NOT trigger.
+        text = '{"name":"foo","parameters":"this is a sentence"}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_string_arguments_not_json_does_not_fire(self):
+        # OpenAI ``arguments`` may be a JSON-string of a dict, but a
+        # plain non-JSON string must not pass the guard.
+        text = '{"name":"foo","arguments":"not json"}'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_llama3_2_bare_json_string_arguments_json_dict_fires(self):
+        # OpenAI shape: arguments is a JSON-encoded string of a dict.
+        text = '{"name":"foo","arguments":"{\\"q\\":\\"x\\"}"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "foo"
+        # arguments stays as the original JSON-string.
+        assert result[0]["function"]["arguments"] == '{"q":"x"}'
+
+    def test_llama3_2_bare_json_string_arguments_json_non_dict_does_not_fire(self):
+        # JSON-string that parses to a list / scalar / null must NOT fire.
+        for bad in (
+            '{"name":"foo","arguments":"[1,2,3]"}',
+            '{"name":"foo","arguments":"\\"plain\\""}',
+            '{"name":"foo","arguments":"null"}',
+            '{"name":"foo","arguments":"42"}',
+        ):
+            assert parse_tool_calls_from_text(bad) == [], bad
+
+    # ── Mistral pre-v11 ───────────────────────────────────────────
+
+    def test_mistral_pre_v11_array(self):
+        import json
+
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"query":"hello"},"id":"abc"}]'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        # Mistral provides its own id; preserve it.
+        assert result[0]["id"] == "abc"
+        assert json.loads(result[0]["function"]["arguments"]) == {"query": "hello"}
+
+    def test_mistral_array_parameters_key_alias(self):
+        import json
+
+        # Array object keyed on ``parameters`` (not ``arguments``) must keep its
+        # payload, matching the JSON/XML paths and SGLang's base detector.
+        text = '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Paris"}
+
+    def test_mistral_pre_v11_array_multi(self):
+        text = (
+            '[TOOL_CALLS] [{"name":"a","arguments":{"x":1},"id":"id1"},'
+            '{"name":"b","arguments":{"y":2},"id":"id2"}]'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "a"
+        assert result[1]["function"]["name"] == "b"
+
+    def test_mistral_pre_v11_unclosed_array(self):
+        # Closing ``]`` truncated -- parser must heal off individual objects.
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    # ── Mistral v11+ ───────────────────────────────────────────────
+
+    def test_mistral_v11_single(self):
+        # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
+        import json
+
+        text = '[TOOL_CALLS]add{"a":3.5,"b":4}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "add"
+        assert json.loads(result[0]["function"]["arguments"]) == {"a": 3.5, "b": 4}
+
+    def test_mistral_v11_parallel(self):
+        # v11+ parallel: ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``.
+        text = '[TOOL_CALLS]add{"a":1}[TOOL_CALLS]sub{"b":2}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "add"
+        assert result[1]["function"]["name"] == "sub"
+
+    def test_mistral_v11_with_args_marker(self):
+        # Ministral / Mistral Large 3: ``[TOOL_CALLS]name[ARGS]{json}``.
+        import json
+
+        text = '[TOOL_CALLS]add[ARGS]{"a":1,"b":2}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "add"
+        assert json.loads(result[0]["function"]["arguments"]) == {"a": 1, "b": 2}
+
+    def test_mistral_strip_markup_v11(self):
+        text = '[TOOL_CALLS]add{"a":1}'
+        assert strip_tool_markup(text, final = True) == ""
+
+    def test_mistral_call_id_form(self):
+        # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``.
+        # The ``[CALL_ID]`` segment must be skipped, not treated as a stop
+        # (llama.cpp test-chat.cpp:4785 parses this to one call).
+        import json
+
+        text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "special_function"
+        assert json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+
+    def test_mistral_call_id_form_parallel(self):
+        text = (
+            '[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
+            "[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002"
+            '[ARGS]{"arg1": 1, "arg2": 2}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "special_function"
+        assert result[1]["function"]["name"] == "special_function_with_opt"
+
+    def test_mistral_call_id_form_stripped(self):
+        text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
+        assert strip_tool_markup(text, final = True) == ""
+
+    def test_mistral_think_reasoning_ignored(self):
+        # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]``
+        # inside the reasoning is chain-of-thought, not a real call; only the
+        # call after ``[/THINK]`` counts (llama.cpp test-chat.cpp:2285).
+        import json
+
+        text = (
+            '[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
+            'and more[/THINK][TOOL_CALLS]real_fn[ARGS]{"y":2}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "real_fn"
+        assert json.loads(result[0]["function"]["arguments"]) == {"y": 2}
+
+    def test_mistral_think_reasoning_no_real_call(self):
+        # Reasoning that merely mentions a tool call but does not emit one
+        # after ``[/THINK]`` yields no calls.
+        text = '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_mistral_think_literal_in_argument_preserved(self):
+        # A literal ``[THINK]`` inside a real tool argument (after the call)
+        # must not be stripped or corrupt the parse.
+        import json
+
+        text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {"q": "explain the [THINK] token"}
+
+    # ── Gemma 4 ───────────────────────────────────────────────────
+
+    def test_gemma4_simple_call(self):
+        import json
+
+        text = (
+            "<|tool_call>call:get_weather{"
+            'location:<|"|>Tokyo<|"|>,units:<|"|>celsius<|"|>}<tool_call|>'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"location": "Tokyo", "units": "celsius"}
+
+    def test_gemma4_with_primitives(self):
+        import json
+
+        text = (
+            "<|tool_call>call:set_pref{"
+            "enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None}
+
+    def test_gemma4_nested_args(self):
+        # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
+        import json
+
+        text = (
+            "<|tool_call>call:search{"
+            'query:<|"|>foo<|"|>,filters:{site:<|"|>example.com<|"|>,recent:true},'
+            'tags:[<|"|>a<|"|>,<|"|>b<|"|>]}<tool_call|>'
+        )
+        result = parse_tool_calls_from_text(text)
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args["query"] == "foo"
+        assert args["filters"] == {"site": "example.com", "recent": True}
+        assert args["tags"] == ["a", "b"]
+
+    def test_gemma4_multi_call(self):
+        text = "<|tool_call>call:a{x:1}<tool_call|><|tool_call>call:b{y:2}<tool_call|>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "a"
+        assert result[1]["function"]["name"] == "b"
+
+    def test_gemma4_unclosed_does_not_raise(self):
+        # Truncated mid-stream; must not raise.
+        text = '<|tool_call>call:foo{x:<|"|>bar<|"|>'
+        result = parse_tool_calls_from_text(text)
+        assert isinstance(result, list)
+
+    def test_gemma4_strip_markup_final(self):
+        text = "<|tool_call>call:foo{x:1}<tool_call|>"
+        assert strip_tool_markup(text, final = True) == ""
+
+    # ── Cross-format sentinels ────────────────────────────────────
+
+    def test_all_markers_in_tool_xml_signals(self):
+        # Streaming buffer wakes up on every emission marker.
+        from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+        for marker in (
+            "<tool_call>",
+            "<function=",
+            "<|python_tag|>",
+            "[TOOL_CALLS]",
+            "<|tool_call>",
+        ):
+            assert marker in TOOL_XML_SIGNALS, f"streaming loop would not wake on {marker!r}"
+
+    def test_has_tool_signal_for_all_formats(self):
+        assert has_tool_signal('<|python_tag|>brave_search.call(q="x")')
+        assert has_tool_signal('[TOOL_CALLS] [{"name":"x"}]')
+        assert has_tool_signal('[TOOL_CALLS]add{"a":1}')
+        assert has_tool_signal("<|tool_call>call:foo{}<tool_call|>")
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -347,6 +750,144 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
+    # A tool call emitted AFTER plain prose has flipped the loop to STREAMING is
+    # caught by the safety-net parser. An unclosed ``<tool_call>`` heals only when
+    # Auto-Heal is on; with it off the safety net must not pass
+    # ``allow_incomplete=True`` and execute a truncated call. (The DRAINING path
+    # already gated this; the safety-net call site previously omitted the flag.)
+    prose = "Sure, let me look that up for you right now. "
+    incomplete = '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
+
+    loop_off, exec_off = _make_loop(
+        turns = [[prose, incomplete], ["Final answer."]],
+        exec_results = ["RESULT"],
+        auto_heal_tool_calls = False,
+        max_tool_iterations = 3,
+    )
+    events_off = _collect_events(loop_off)
+    assert exec_off.calls == [], "disabled Auto-Heal must not execute a healed incomplete call"
+    assert not [e for e in events_off if e.get("type") == "tool_start"]
+
+    loop_on, exec_on = _make_loop(
+        turns = [[prose, incomplete], ["Final answer."]],
+        exec_results = ["RESULT"],
+        auto_heal_tool_calls = True,
+        max_tool_iterations = 3,
+    )
+    _collect_events(loop_on)
+    assert exec_on.calls == [("web_search", {"query": "weather in Sydney"})], exec_on.calls
+
+
+def test_bare_json_tool_call_is_not_streamed_as_content():
+    # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no
+    # XML signal. The loop must BUFFER it until the object closes and execute it via
+    # the safety net, never leaking the raw JSON to streaming clients as content.
+    bare = '{"name":"web_search","parameters":{"query":"cats"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[bare], ["Here are the results."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any('"name"' in t or "web_search" in t for t in contents), contents
+    assert any("Here are the results." in t for t in contents)
+
+
+def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
+    # Markerless JSON whose "name" is not an enabled tool (e.g. a person record
+    # ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call
+    # to a disabled tool and dropped. _make_loop enables web_search/python/terminal.
+    answer = '{"name":"Alice","parameters":{"age":30}}'
+    loop, exec_fn = _make_loop(turns = [[answer]], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Alice" in contents, contents
+
+
+def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
+    # Same as above but the bare object arrives split mid-key, so the buffer is
+    # held open across chunks before it balances.
+    loop, exec_fn = _make_loop(
+        turns = [
+            ['{"name":"web_', 'search","parameters":{"query":"cats"}}'],
+            ["Done."],
+        ],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any('"name"' in t or "web_search" in t for t in contents), contents
+
+
+def test_leading_json_answer_is_not_dropped():
+    # A leading ``{...}`` that is NOT a tool call must still surface as content:
+    # the bare-JSON hold can only ever delay it to end-of-object, never drop it.
+    obj = '{"answer": 42, "note": "done"}'
+    loop, exec_fn = _make_loop(
+        turns = [[obj]],
+        exec_results = [],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == []
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert any('"answer"' in t for t in contents), contents
+
+
+def _reprompt_loop(*, auto_heal_tool_calls):
+    """Drive a single restricted tool (search_knowledge_base) with an intent-only
+    first turn so the plan-without-action nudge is exercised. Returns the captured
+    per-turn conversations and the collected events."""
+    captured: list[list] = []
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        if len(captured) == 1:
+            yield "I'll search for that now."  # forward-looking intent, no call
+        else:
+            yield "Final answer."
+
+    exec_fn = FakeExecuteTool([])
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "find X"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+            max_tool_iterations = 3,
+        )
+    )
+    return captured, events
+
+
+def test_reprompt_names_only_active_tools_not_hardcoded():
+    # The plan-without-action nudge must name the tools actually enabled, never the
+    # old hardcoded ``web_search``/``python`` (which a restricted set would reject).
+    captured, _events = _reprompt_loop(auto_heal_tool_calls = True)
+    assert len(captured) >= 2, "intent prose should have triggered a re-prompt turn"
+    reprompt = captured[1][-1]
+    assert reprompt["role"] == "user"
+    assert "search_knowledge_base" in reprompt["content"]
+    assert "web_search" not in reprompt["content"]
+    assert "python" not in reprompt["content"]
+
+
+def test_reprompt_suppressed_when_auto_heal_disabled():
+    # With Auto-Heal off the safetensors nudge must stay silent for backend parity
+    # with the GGUF loop, so only the single initial generation runs.
+    captured, events = _reprompt_loop(auto_heal_tool_calls = False)
+    assert len(captured) == 1, captured
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert any("search for that" in t for t in contents)
+
+
 class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".
@@ -405,6 +946,90 @@ class TestLoopBasic:
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
         contents = [e for e in events if e["type"] == "content"]
         assert "Result: 1" in contents[-1]["text"]
+
+    def test_llama3_python_tag_form(self):
+        # The agentic loop must recognise Llama-3's <|python_tag|>
+        # marker, drain the rest of the turn, and execute the call.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<|python_tag|>web_search.call(",
+                    'query="weather in Tokyo"',
+                    ")",
+                ],
+                ["The weather is sunny."],
+            ],
+            exec_results = ["Sunny, 22C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather in Tokyo"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert "sunny" in contents[-1]["text"].lower()
+
+    def test_llama3_bare_json_form_fires_tool(self):
+        # Llama-3.1 / 3.2 emit a bare-JSON tool call
+        # ``{"name":..,"parameters":..}`` with NO XML signal. The loop's
+        # safety-net parse must still fire the tool instead of treating the
+        # turn as "planned without calling tools" and re-prompting the model
+        # into giving up. Regression for the has_tool_signal gate that
+        # dropped these; GGUF's llama-server parses them natively.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
+                ["The weather is sunny."],
+            ],
+            exec_results = ["Sunny, 18C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather in SF"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert "sunny" in contents[-1]["text"].lower()
+
+    def test_mistral_pre_v11_form(self):
+        # Pre-v11 Mistral emission: ``[TOOL_CALLS] [{...}]``.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '[TOOL_CALLS] [{"name":"web_search",',
+                    '"arguments":{"query":"hi"},"id":"abc"}]',
+                ],
+                ["done"],
+            ],
+            exec_results = ["ok"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "hi"})]
+        # Mistral-provided ids must propagate to tool_start events.
+        tool_start = next(e for e in events if e["type"] == "tool_start")
+        assert tool_start["tool_call_id"] == "abc"
+
+    def test_mistral_v11_form(self):
+        # v11+ Mistral emission: bare ``name{json}`` after the trigger.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['[TOOL_CALLS]web_search{"query":"hi"}'],
+                ["done"],
+            ],
+            exec_results = ["ok"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "hi"})]
+
+    def test_gemma4_form(self):
+        # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<|tool_call>call:web_search{",
+                    'query:<|"|>weather<|"|>',
+                    "}<tool_call|>",
+                ],
+                ["sunny"],
+            ],
+            exec_results = ["Sunny, 22C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather"})]
 
     def test_render_html_emits_provisional_tool_start(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -765,6 +1390,59 @@ class TestLoopBehaviour:
         assert len(duplicate_nudges) == 1
         assert captured_tool_names[2] == ["web_search", "python"]
 
+    def test_duplicate_noop_does_not_consume_budget_at_small_cap(self):
+        # A duplicate/disabled no-op turn is a correction turn and must NOT spend the
+        # caller's tool budget, so with max_tool_iterations=2 the model can still make a
+        # DISTINCT valid call after repeating one. Only turns that actually execute a
+        # tool count -- matching the GGUF loop. (The budget used to be charged per
+        # non-re-prompt iteration, so the duplicate burned the second slot and the third
+        # turn was sent with no tools, dropping the ``python`` call.)
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (active_tools or [])
+                    if tool.get("function", {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result", "python-result"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
+        )
+
+        # Both distinct tools execute; the repeated call in between did not cost a slot.
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+        # The turn after the duplicate still offered tools (budget not yet spent).
+        assert captured_tool_names[2] == ["web_search", "python"]
+
     def test_repeated_duplicate_noop_transitions_to_final_attempt(self):
         captured_tool_names: list[list[str]] = []
         turns = iter(
@@ -951,6 +1629,263 @@ class TestLoopBehaviour:
         events = _collect_events(loop)
         tool_end = next(e for e in events if e["type"] == "tool_end")
         assert "boom" in tool_end["result"]
+
+
+class TestLoopRePrompt:
+    """Re-prompt-on-plan-without-action parity with the GGUF path.
+
+    When the model emits forward-looking intent ("Let me search for
+    that") without actually calling a tool, the loop must nudge it to
+    act instead of silently terminating. Up to ``_MAX_REPROMPTS`` (3)
+    re-prompts per request, drawn from extra iteration slots so the
+    caller's tool-call budget is preserved.
+    """
+
+    def test_intent_signal_triggers_reprompt(self):
+        # Turn 1: intent signal, no tool call.
+        # Turn 2 (re-prompt): proper tool call -> executes.
+        # Turn 3: final answer.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me search for that."],
+                [
+                    '<tool_call>{"name":"web_search","arguments":'
+                    '{"query":"sky color"}}</tool_call>'
+                ],
+                ["The sky is blue."],
+            ],
+            exec_results = ["Blue (Rayleigh scattering)"],
+        )
+        events = _collect_events(loop)
+        # web_search must have been called once (after the re-prompt).
+        assert exec_fn.calls == [("web_search", {"query": "sky color"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "blue" in contents[-1]["text"].lower()
+
+    def test_intent_signal_without_tools_does_not_reprompt(self):
+        # Same intent signal but no tools enabled -- must NOT re-prompt.
+        loop, exec_fn = _make_loop(
+            turns = [["Let me think about that for a moment."]],
+            exec_results = [],
+        )
+        # _make_loop hard-codes three tools; rebuild without tools.
+        from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+        def _gen(_messages):
+            yield "Let me think about that for a moment."
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [],
+                execute_tool = exec_fn,
+            )
+        )
+        assert exec_fn.calls == []
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "think" in contents[-1]["text"].lower()
+
+    def test_direct_answer_does_not_trigger_reprompt(self):
+        # Plain answer with no intent words: do NOT re-prompt.
+        loop, exec_fn = _make_loop(
+            turns = [["4"]],
+            exec_results = [],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and contents[-1]["text"].strip() == "4"
+
+    def test_max_reprompts_capped_at_three(self):
+        # Model keeps stalling with intent -- after 3 re-prompts the
+        # loop must give up rather than burn forever.
+        turns = [["Let me search for that."]] * 6  # well over the cap
+        loop, exec_fn = _make_loop(
+            turns = turns,
+            exec_results = [],
+        )
+        events = _collect_events(loop, max_events = 500)
+        # No tool ever ran, but the loop terminated cleanly.
+        assert exec_fn.calls == []
+        statuses = [e for e in events if e["type"] == "status"]
+        assert statuses and statuses[-1]["text"] == ""
+
+    def test_short_intent_below_buffer_threshold_triggers_reprompt(self):
+        # Short emission that never exits BUFFERING (< 32 chars + no
+        # marker prefix). The unified buffer-end path must still
+        # trigger the intent re-prompt, not silently terminate.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me check."],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ["found"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+
+    def test_reprompt_does_not_consume_tool_budget(self):
+        # max_tool_iterations=1: one re-prompt, then one real tool call,
+        # then the budget-exhausted final answer must still fire. If the
+        # re-prompt ate the slot the tool call would never run.
+        loop, exec_fn = _make_loop(
+            turns = [
+                # 1. Intent stall (re-prompt 1/3).
+                ["Let me search for that."],
+                # 2. Real tool call (uses the budget slot).
+                ['<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'],
+                # 3. Budget exhausted -> nudged final answer.
+                ["Final: it is sunny"],
+            ],
+            exec_results = ["sunny"],
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "sunny" in contents[-1]["text"].lower()
+
+
+class TestLoopCanonicalHealKey:
+    """Per-tool canonical heal key (``code`` for python, ``command`` for
+    terminal, ``query`` for everything else). Mirrors GGUF after the
+    PR-5615 follow-up that ported this mapping over."""
+
+    def test_python_bare_string_heals_to_code(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"python","arguments":"print(1)"}' "</tool_call>"],
+                ["done"],
+            ],
+            exec_results = ["1\n"],
+        )
+        events = _collect_events(loop)
+        # The bare string must heal to {"code": "print(1)"}, not
+        # {"query": ...}, so the python sandbox actually executes it.
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+
+    def test_terminal_bare_string_heals_to_command(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"terminal","arguments":"ls -la"}' "</tool_call>"],
+                ["done"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("terminal", {"command": "ls -la"})]
+
+    def test_unknown_tool_bare_string_heals_to_query(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":"hello"}' "</tool_call>"],
+                ["ok"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "hello"})]
+
+
+class TestGGUFSafetensorsHealingParity:
+    """Pin parity between the GGUF agentic loop and the safetensors /
+    MLX loop so a regression on either side breaks CI."""
+
+    def test_gguf_imports_shared_signal_markers(self):
+        # The GGUF BUFFERING state machine must wake on every emission
+        # marker the shared parser knows -- otherwise Llama-3 / Mistral
+        # / Gemma 4 emissions slip past as plain prose when the
+        # llama-server structured channel fails.
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
+        assert "_SHARED_TOOL_XML_SIGNALS" in src, (
+            "GGUF agentic loop must reuse the shared TOOL_XML_SIGNALS "
+            "tuple so it wakes on all five emission formats"
+        )
+
+    def test_gguf_uses_shared_strip_helper(self):
+        # The GGUF stream-cleanup function must delegate to the shared
+        # strip_tool_markup so closed-pair markup is removed for every
+        # emission family (Llama-3 <|python_tag|>, Mistral [TOOL_CALLS],
+        # Gemma 4 <|tool_call>...<tool_call|>).
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
+        assert (
+            "_shared_strip_tool_markup" in src
+        ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+
+    def test_gguf_uses_canonical_heal_keys(self):
+        # GGUF and safetensors heal a bare-string ``arguments`` to the same
+        # per-tool canonical key -- ``code`` for python, ``command`` for
+        # terminal, ``query`` for everything else. The mapping is centralised in
+        # the shared ToolLoopController (both backends route bare-string args
+        # through ``coerce_tool_arguments``), so the two paths cannot drift.
+        from core.inference.tool_loop_controller import (
+            _CANONICAL_HEAL_ARG,
+            coerce_tool_arguments,
+        )
+
+        assert _CANONICAL_HEAL_ARG["python"] == "code"
+        assert _CANONICAL_HEAL_ARG["terminal"] == "command"
+        assert coerce_tool_arguments("print(1)", heal = True, tool_name = "python").arguments == {
+            "code": "print(1)"
+        }
+        assert coerce_tool_arguments("ls -la", heal = True, tool_name = "terminal").arguments == {
+            "command": "ls -la"
+        }
+        assert coerce_tool_arguments("weather", heal = True, tool_name = "web_search").arguments == {
+            "query": "weather"
+        }
+
+    def test_intent_regex_matches_same_phrases_as_gguf(self):
+        # The intent re-prompt regex must match the SAME forward-looking
+        # phrases on both backends so behaviour is the same on Mac (MLX
+        # / safetensors) and on Linux (GGUF).
+        from core.inference.llama_cpp import _INTENT_SIGNAL as gguf_re
+        from core.inference.safetensors_agentic import (
+            _INTENT_SIGNAL as sf_re,
+        )
+
+        for phrase in (
+            "I'll search for that",
+            "I will look it up",
+            "Let me check",
+            "I am going to call the tool",
+            "First, I will explore",
+            "Here's my plan",
+            "Now I need to call web_search",
+        ):
+            assert gguf_re.search(phrase), f"GGUF missed {phrase!r}"
+            assert sf_re.search(phrase), f"safetensors missed {phrase!r}"
+
+        for plain in (
+            "4",
+            "Hello!",
+            "The sky is blue.",
+            "I can help with that.",
+            "I should mention",
+            "Let's go.",
+            # Negated intent is a refusal, not a plan: neither backend may
+            # force a tool-call re-prompt on it.
+            "I will not search the web for that.",
+            "I'll never call that tool.",
+        ):
+            assert not gguf_re.search(plain), f"GGUF wrongly fired on {plain!r}"
+            assert not sf_re.search(plain), f"safetensors wrongly fired on {plain!r}"
+
+    def test_max_reprompts_equal_on_both_backends(self):
+        from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap
+        from core.inference.safetensors_agentic import _MAX_REPROMPTS as sf_cap
+        assert gguf_cap == sf_cap == 3
 
 
 class TestLoopControl:
@@ -1407,5 +2342,371 @@ class TestGptOssNameDetection:
         assert is_gpt_oss_model_name(cast(str, None)) is False
 
 
+# ────────────────────────────────────────────────────────────────────
+# Routes-level python_tag strip (multi-line; stop on next sentinel)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestRoutesPythonTagStrip:
+    """Earlier revisions of ``_TOOL_XML_RE`` in
+    ``studio.backend.routes.inference`` used either ``[^\\n<]*`` (5615 --
+    leaked the tail of any tool call whose argument contained a literal
+    ``<`` like ``code="if x < 10"``) or ``[^\\n]*`` (5620 round one --
+    single-line only, so the second line of
+    ``python.call(code="line1\\nline2")`` leaked). The current pattern
+    ``(?:[^<]|<(?!\\|))*`` consumes any character that is not a Llama-3
+    ``<|`` sentinel start, so multi-line code, embedded JSON, and bare
+    ``<`` characters in code all stay inside the strip.
+
+    The fully resolved strip is also exposed via
+    ``strip_tool_markup(text, final=True)`` in the parser; the
+    streaming path's routes-level strip is the regression-prone one
+    because it runs on every cumulative emission while content is
+    still arriving.
+    """
+
+    def _strip(self, text: str) -> str:
+        # Import inside the test so a routes-module import error does
+        # not blow up the entire test file at collection time.
+        from routes.inference import _strip_tool_xml
+        return _strip_tool_xml(text)
+
+    def test_single_line_python_tag_stripped(self):
+        # Floor: the original 5620 single-line behaviour still works.
+        text = '<|python_tag|>brave_search.call(query="weather")'
+        assert self._strip(text) == ""
+
+    def test_python_tag_with_less_than_in_code(self):
+        # 5615 regression: literal ``<`` inside code must NOT terminate
+        # the strip early.
+        text = '<|python_tag|>python.call(code="if x < 10: pass")'
+        assert self._strip(text) == ""
+
+    def test_python_tag_multiline_code_stripped(self):
+        # 5620 round-1 regression: multi-line code's second line leaked.
+        text = '<|python_tag|>python.call(code="line1\nline2\nline3")'
+        assert self._strip(text) == ""
+
+    def test_python_tag_multiline_with_less_than(self):
+        # Combined: multi-line code AND literal ``<`` in code.
+        text = (
+            '<|python_tag|>python.call(code="for i in range(10):\n'
+            "    if i < 5:\n"
+            '        print(i)")'
+        )
+        assert self._strip(text) == ""
+
+    def test_python_tag_stops_at_eom_sentinel(self):
+        # Strip stops at the next Llama-3 ``<|`` sentinel so any
+        # trailing assistant content survives.
+        text = '<|python_tag|>python.call(code="multi\nline")' "<|eom_id|>final answer text"
+        assert self._strip(text) == "<|eom_id|>final answer text"
+
+    def test_python_tag_stops_at_eot_sentinel(self):
+        text = '<|python_tag|>brave_search.call(query="x")' "<|eot_id|>after"
+        assert self._strip(text) == "<|eot_id|>after"
+
+    def test_python_tag_json_form_multiline_stripped(self):
+        # The JSON form of python_tag with newlines inside string args.
+        text = '<|python_tag|>{"name":"python","parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}'
+        assert self._strip(text) == ""
+
+    def test_python_tag_with_eom_then_trailing_python_tag(self):
+        # Two python_tag emissions back-to-back across a sentinel: both
+        # should strip independently.
+        text = (
+            '<|python_tag|>brave_search.call(query="a")'
+            "<|eom_id|>"
+            '<|python_tag|>python.call(code="x=1")'
+        )
+        # ``<|eom_id|>`` between the two strips remains; both
+        # python_tag blocks are fully consumed.
+        assert self._strip(text) == "<|eom_id|>"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Robustness fixes uncovered while validating against vLLM / sglang.
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestParserRobustness:
+    def test_tool_call_json_accepts_parameters_key(self):
+        # Hermes wrapper around a Llama-3.2 bare-JSON object that uses
+        # ``parameters`` instead of ``arguments``. The bare-JSON and
+        # python_tag paths already accept both keys; this path now does
+        # too. Was extracting name only and silently dropping the args.
+        import json
+
+        text = "<tool_call>\n" '{"name": "search", "parameters": {"q": "ramen"}}\n' "</tool_call>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "search"
+        assert json.loads(result[0]["function"]["arguments"]) == {"q": "ramen"}
+
+    def test_function_xml_attribute_form(self):
+        # MiniCPM-5 / MiniMax-M2 attribute syntax:
+        # ``<function name="..."><param name="...">v</param></function>``.
+        import json
+
+        text = '<function name="get_weather">' '<param name="city">Tokyo</param>' "</function>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_function_xml_attribute_form_multi_param(self):
+        import json
+
+        text = (
+            '<function name="get_weather">'
+            '<param name="city">Tokyo</param>'
+            '<param name="unit">celsius</param>'
+            "</function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"city": "Tokyo", "unit": "celsius"}
+
+    def test_function_xml_legacy_equals_form_still_works(self):
+        # Regression guard: the old ``<function=name><parameter=k>v``
+        # syntax must keep parsing after the regex broadening.
+        import json
+
+        text = "<function=get_weather><parameter=city>Tokyo</parameter></function>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_function_attribute_form_has_tool_signal(self):
+        # The standalone ``<function name="...">`` attribute form must flip
+        # the streaming buffer; otherwise the end-of-turn safety-net parse in
+        # the agentic loop is gated off and the real call is dropped.
+        assert has_tool_signal('<function name="get_weather">') is True
+
+    def test_function_attribute_form_strip_markup(self):
+        # The attribute form must also be stripped from displayed text, like
+        # the legacy ``<function=...>`` form.
+        text = 'result <function name="g"><param name="c">X</param></function>'
+        assert strip_tool_markup(text, final = True) == "result"
+
+    def test_llama3_chat_template_round_trip(self):
+        # Meta's official Llama-3.x chat template prefixes every
+        # assistant turn with
+        # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The
+        # sentinel-strip in ``_parse_llama3_bare_json`` must reach past
+        # the role label to the JSON body, else every round-tripped
+        # tool call in history silently drops.
+        import json
+
+        text = (
+            "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            '{"name": "get_weather", "parameters": {"city": "Tokyo"}}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_llama3_round_trip_all_roles(self):
+        # Same logic must work for every role the chat template inserts.
+        import json
+        for role in ("assistant", "user", "system", "tool", "ipython"):
+            text = (
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+                '{"name": "f", "parameters": {"x": 1}}'
+            )
+            result = parse_tool_calls_from_text(text)
+            assert len(result) == 1, f"failed for role={role}"
+            assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
+
+    def test_llama3_round_trip_with_eot_prefix(self):
+        # Prior assistant turn closes with ``<|eot_id|>``, then the
+        # new header opens. Both sentinels + the role must be consumed.
+        import json
+
+        text = (
+            "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            '{"name": "f", "parameters": {}}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "f"
+
+    def test_function_xml_followed_by_prose(self):
+        # Models routinely follow a tool call with explanatory prose.
+        # Body must terminate at ``</function>`` even without a
+        # ``</tool_call>`` wrapper, else trailing prose leaks into the
+        # last parameter value.
+        import json
+
+        text = (
+            "<function=get_weather>"
+            "<parameter=city>Tokyo</parameter>"
+            "</function>\n\nHere is what I found."
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_function_attribute_xml_followed_by_prose(self):
+        # Same expectation for the MiniCPM-5 attribute form.
+        import json
+
+        text = (
+            '<function name="get_weather">'
+            '<param name="city">Tokyo</param>'
+            "</function>\n\nLet me know if you need anything else."
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+
+def test_truncated_bare_json_at_eof_is_not_leaked():
+    # Stream ends mid bare-JSON object: the held fragment must be dropped at the
+    # EOF resolver, not flushed as plain assistant content (GGUF parity).
+    loop, _exec = _make_loop(
+        turns = [['{"name":"web_search","parameters":{"query":"weather in S']],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any('"name"' in t for t in contents), contents
+
+
+def test_oversized_bare_json_call_is_not_leaked_and_executes():
+    # A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER must DRAIN
+    # (suppress) rather than stream the raw JSON prefix, and still execute once
+    # the full object is parsed by the safety net.
+    from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
+
+    big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
+    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
+    loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
+    events = _collect_events(loop)
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
+    assert exec_fn.calls and exec_fn.calls[0][0] == "python"
+    assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
+
+
+def test_oversized_plain_json_answer_still_streams():
+    # A giant plain JSON answer (no "name" key) is NOT a tool call and must still
+    # stream -- the oversized DRAIN route is gated on a "name" key.
+    from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
+
+    big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
+    full = '{"result":"' + big + '"}'
+    chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
+    loop, _exec = _make_loop(turns = [chunks], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert '"result"' in contents
+
+
+def test_oversized_disabled_name_json_answer_still_streams():
+    # A giant still-open JSON answer whose "name" is NOT an enabled tool must stream:
+    # the oversized DRAIN branch was gated only on the presence of a "name" key, so a
+    # large ordinary record ({"name":"Alice",...}) was drained instead of shown.
+    from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
+
+    big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
+    answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
+    chunks = [answer[i : i + 2000] for i in range(0, len(answer), 2000)]
+    loop, exec_fn = _make_loop(turns = [chunks], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Alice" in contents, contents[:80]
+
+
+def test_truncated_disabled_name_json_is_shown_at_eof():
+    # A truncated ordinary JSON answer whose name is not an enabled tool, held to EOF,
+    # must be shown -- the EOF bare-JSON DRAIN branch was gated only on a "name" key.
+    truncated = '{"name":"Alice","parameters":{"age":'
+    loop, exec_fn = _make_loop(turns = [[truncated]], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Alice" in contents, contents
+
+
+def test_truncated_plain_json_with_nested_enabled_name_is_visible():
+    # A truncated ordinary JSON answer with a NESTED ``"name"`` matching an enabled
+    # tool ({"result":{"name":"web_search",...) must be shown, not suppressed: the
+    # gate now extracts the TOP-LEVEL name only, so the nested field is just data.
+    loop, exec_fn = _make_loop(
+        turns = [['{"result":{"name":"web_search","age":']],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == []
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert '"result"' in contents and "web_search" in contents, contents
+
+
+def test_bare_json_call_not_replayed_in_next_turn_content():
+    # After a complete bare-JSON call executes, the assistant content fed to the
+    # next turn must not contain the raw call (next-turn contamination).
+    captured: list[list[dict]] = []
+    exec_fn = FakeExecuteTool(["RESULT"])
+
+    def st(messages, active_tools = None):
+        captured.append([dict(m) for m in messages])
+        if len(captured) == 1:
+            yield '{"name":"web_search","parameters":{"query":"cats"}}'
+        else:
+            yield "Found."
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = st,
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
+            max_tool_iterations = 3,
+        )
+    )
+    assert len(captured) >= 2, captured
+    asst = [m for m in captured[1] if m.get("role") == "assistant"]
+    assert asst and not any('"name"' in (m.get("content") or "") for m in asst), asst
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
+    # F3: with Auto-Heal OFF, a truncated ENABLED-name bare-JSON fragment that did
+    # not parse must stay visible (disabled-Auto-Heal contract: malformed markup is
+    # preserved), matching the XML strip in the same drain branch. With Auto-Heal ON
+    # the same fragment is suppressed.
+    trunc = '{"name":"web_search","parameters":{"query":"weather'
+    off, exec_off = _make_loop(turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = False)
+    events_off = _collect_events(off)
+    assert exec_off.calls == [], exec_off.calls
+    contents_off = "".join(e["text"] for e in events_off if e["type"] == "content")
+    assert "web_search" in contents_off, contents_off
+
+    on, exec_on = _make_loop(turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = True)
+    events_on = _collect_events(on)
+    assert exec_on.calls == [], exec_on.calls
+    contents_on = "".join(e["text"] for e in events_on if e["type"] == "content")
+    assert "web_search" not in contents_on, contents_on
+
+
+def test_looks_like_enabled_bare_json_accepts_function_alias():
+    # The safetensors buffering gate must recognise the "function" bare-JSON alias
+    # the parser accepts, so a truncated/complete {"function":<enabled tool>} call is
+    # buffered/healed instead of streaming as visible content.
+    from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
+
+    enabled = {"web_search"}
+    assert _looks_like_enabled_bare_json(
+        '{"function":"web_search","parameters":{"q":"x"}}', enabled
+    )
+    # A non-tool "function" value is an ordinary JSON answer -> not gated.
+    assert not _looks_like_enabled_bare_json('{"function":"Alice","parameters":{}}', enabled)

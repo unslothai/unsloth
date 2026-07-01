@@ -80,6 +80,25 @@ class TestFunctionStyleTrailingText:
         text = "<function=web_search><parameter=query>weather london</function>"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
+    def test_attribute_form_literal_close_tag_is_preserved(self):
+        # The attribute form <function name="..."> (MiniCPM-5 / MiniMax-M2) must
+        # also end at the LAST </function>, so a literal close tag inside a code
+        # argument survives instead of truncating the call.
+        text = (
+            '<function name="python"><param name="code">'
+            'print("</function>")'
+            "</param></function> all done"
+        )
+        call = _only(text)
+        assert call == {"name": "python", "arguments": {"code": 'print("</function>")'}}
+
+    def test_closed_zero_param_attribute_call_is_accepted_in_strict_mode(self):
+        # A closed call with no parameters is a valid zero-argument call; strict
+        # mode must not treat the empty parameter list as a truncated call.
+        assert _only('<function name="ping"></function>') == {"name": "ping", "arguments": {}}
+        # A no-arg call that never closes is still rejected as truncated.
+        assert parse_tool_calls_from_text('<function name="ping">', allow_incomplete = False) == []
+
 
 class TestParityWithJsonStyle:
     def test_json_tool_call_with_trailing_prose_is_accepted(self):
@@ -154,9 +173,304 @@ class TestGemmaNativeStyle:
         }
 
 
+class TestLlama3PythonTagStrict:
+    def test_closed_dot_call_is_accepted(self):
+        text = '<|python_tag|>get_weather.call(location="Tokyo")'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "get_weather"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"location": "Tokyo"}
+
+    def test_truncated_dot_call_is_rejected(self):
+        # No closing paren (depth > 0 at EOF): truncated, reject in strict mode.
+        text = '<|python_tag|>get_weather.call(location="Tokyo"'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        # Auto-Heal still recovers it.
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
+class TestMistralArrayStrict:
+    def test_closed_array_is_accepted(self):
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"}}]'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "web_search"
+
+    def test_unclosed_array_is_rejected(self):
+        # Missing the closing ]; strict mode must not heal it.
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"}}'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        # Auto-Heal still recovers the object by hand.
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
 class TestHealingPathUnaffected:
     def test_auto_heal_still_repairs_unclosed_function(self):
         text = "<function=web_search><parameter=query>cats"
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
+
+
+class TestParserLinearity:
+    """The Llama-3 ``.call`` kwargs and Mistral-array healing paths must stay
+    linear: both formerly ran a regex per offset and blew up (tens of seconds)
+    on a long truncated body reachable from the agentic loop."""
+
+    def test_llama3_unterminated_call_arg_is_linear(self):
+        import time
+
+        text = '<|python_tag|>upload.call(data="' + "A" * 200_000  # no closing quote/paren
+        t0 = time.perf_counter()
+        parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_llama3_huge_wordrun_call_arg_is_linear(self):
+        import time
+
+        text = "<|python_tag|>upload.call(" + "a" * 200_000  # giant word run, no '='
+        t0 = time.perf_counter()
+        parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_mistral_unclosed_array_open_braces_is_linear(self):
+        import time
+
+        text = "[TOOL_CALLS] [" + "{" * 200_000  # unclosed array, all open braces
+        t0 = time.perf_counter()
+        parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_llama3_call_kwargs_still_parse(self):
+        text = '<|python_tag|>do.call(s="hi 😀", n=42, f=1.5, b=true, z=null)'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "s": "hi 😀",
+            "n": 42,
+            "f": 1.5,
+            "b": True,
+            "z": None,
+        }
+
+    def test_llama3_call_scientific_notation_args_parse(self):
+        # The numeric kwarg regex matched only the mantissa, so scientific notation
+        # was truncated to its leading digits (1e-3 -> 1) and the call executed with
+        # the wrong value. Exponent and decimal forms must decode as float.
+        text = "<|python_tag|>calc.call(x=1e-3, y=-2E+4, z=0.5e2, n=42)"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"x": 1e-3, "y": -2e4, "z": 50.0, "n": 42}
+        assert isinstance(args["n"], int) and isinstance(args["x"], float)
+
+    def test_mistral_unclosed_array_recovers_top_level_objects(self):
+        text = (
+            '[TOOL_CALLS] [{"name":"a","arguments":{"k":1}},'
+            '{"name":"b","arguments":{"j":2}}'  # missing closing ]
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert [c["function"]["name"] for c in calls] == ["a", "b"]
+
+
+class TestLlamaBuiltinChainAndNesting:
+    """Llama-3 ``<|python_tag|>NAME.call(...)`` built-in form: ``; ``-chaining and
+    nested-tag isolation."""
+
+    def test_semicolon_chained_builtin_calls_all_parse(self):
+        # Only the first call is anchored to <|python_tag|>; the rest chain via ';'.
+        text = "<|python_tag|>alpha.call(x=1); beta.call(y=2); gamma.call(z=3)"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert [c["function"]["name"] for c in calls] == ["alpha", "beta", "gamma"]
+        assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
+
+    def test_nested_python_tag_in_json_string_arg_is_not_a_call(self):
+        # The custom JSON form carries a code arg that literally contains a
+        # <|python_tag|>...call(...) string. The real call is the outer "python",
+        # not the nested "os" -- the built-in scan must stay anchored to the first
+        # tag and let the JSON parser win.
+        text = (
+            '<|python_tag|>{"name":"python","parameters":'
+            '{"code":"<|python_tag|>os.call(\'rm -rf /\')"}}'
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "python"
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "<|python_tag|>os.call('rm -rf /')"
+
+    def test_single_builtin_call_unchanged(self):
+        text = '<|python_tag|>web_search.call(query="cats")'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "web_search"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+
+def test_strip_leading_bare_json_call_drops_complete_call():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    # A complete Llama-3.2 bare-JSON call is removed; trailing prose is kept.
+    assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"cats"}}') == ""
+    assert (
+        strip_leading_bare_json_call('{"name":"python","parameters":{"code":"x"}} done') == "done"
+    )
+
+
+def test_strip_leading_bare_json_call_drops_truncated_call():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    # A truncated call (no closing brace) collapses to "" -- nothing recoverable.
+    assert (
+        strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"weather in S')
+        == ""
+    )
+
+
+def test_strip_leading_bare_json_call_preserves_plain_json_and_prose():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    # No "name" key -> plain JSON answer, left untouched.
+    assert (
+        strip_leading_bare_json_call('{"result": 42, "ok": true}') == '{"result": 42, "ok": true}'
+    )
+    # Prose before the brace -> not a leading bare call, untouched.
+    assert strip_leading_bare_json_call('here is {"name":"x"}') == 'here is {"name":"x"}'
+    # Ordinary text untouched.
+    assert strip_leading_bare_json_call("just a sentence.") == "just a sentence."
+
+
+def test_bare_json_gated_on_enabled_tool_names():
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    alice = '{"name":"Alice","parameters":{"age":30}}'
+    real = '{"name":"web_search","parameters":{"query":"cats"}}'
+    # With an enabled set, markerless JSON whose name is not a tool is NOT a call.
+    assert parse_tool_calls_from_text(alice, enabled_tool_names = {"web_search"}) == []
+    # A real call (enabled name) still parses.
+    got = parse_tool_calls_from_text(real, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in got] == ["web_search"]
+    # No enabled set (None) keeps the name-agnostic behaviour for direct callers.
+    assert [c["function"]["name"] for c in parse_tool_calls_from_text(alice)] == ["Alice"]
+    # Marker-based forms are NOT gated (an explicit signal is a real call attempt).
+    xml = '<tool_call>{"name":"Alice","arguments":{}}</tool_call>'
+    assert parse_tool_calls_from_text(xml, enabled_tool_names = {"web_search"})
+
+
+def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    alice = '{"name":"Alice","parameters":{"age":30}}'
+    # Not an enabled tool -> ordinary JSON answer, kept verbatim.
+    assert strip_leading_bare_json_call(alice, {"web_search"}) == alice
+    # Enabled tool -> a real call, stripped (trailing prose kept).
+    assert (
+        strip_leading_bare_json_call(
+            '{"name":"web_search","parameters":{"q":1}} hi', {"web_search"}
+        )
+        == "hi"
+    )
+
+
+def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # The parser uses the LAST </function>; the strip must too, so a literal
+    # </function> inside a parameter value does not truncate the strip and leak the
+    # tail. Separate calls must still be stripped independently.
+    text = '<function=python><parameter=code>print("</function>")</parameter></function> done'
+    assert strip_tool_markup(text, final = True) == "done"
+    two = (
+        "a <function=f><parameter=x>1</parameter></function> mid "
+        "<function=g><parameter=y>2</parameter></function> end"
+    )
+    assert strip_tool_markup(two, final = True) == "a  mid  end"
+
+
+def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
+    from core.inference.tool_call_parser import parse_tool_calls_from_text, strip_tool_markup
+
+    # A literal ``<function=x>`` OPENER inside a parameter value is data, not a new
+    # call (the parser ignores it via _inside_open_parameter). The strip must do the
+    # same: a regex negative-lookahead stopped at the nested opener and the
+    # unclosed-tail arm then ate the trailing prose. Scan-based strip keeps " done".
+    text = '<function=python><parameter=code>print("<function=x>")</parameter></function> done'
+    assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
+    assert strip_tool_markup(text, final = True) == "done"
+    # Non-final (streaming) keeps an unclosed call buffered, does not eat prose early.
+    open_text = 'pre <function=python><parameter=code>print("<function=x>")'
+    assert strip_tool_markup(open_text, final = False) == open_text
+
+
+def test_strip_leading_bare_json_call_ignores_nested_name():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    # A nested ``"name"`` equal to an enabled tool must NOT gate the strip: the object
+    # is an ordinary JSON answer, not a call. Both truncated and complete forms are
+    # kept verbatim. Only a TOP-LEVEL enabled name is treated as a real call.
+    nested_trunc = '{"result":{"name":"web_search","age":'
+    nested_full = '{"result":{"name":"web_search","age":1}}'
+    assert strip_leading_bare_json_call(nested_trunc, {"web_search"}) == nested_trunc
+    assert strip_leading_bare_json_call(nested_full, {"web_search"}) == nested_full
+    # A real top-level call (even with a top-level array before the name) still strips.
+    assert (
+        strip_leading_bare_json_call(
+            '{"data":[1,2],"name":"web_search","parameters":{}}', {"web_search"}
+        )
+        == ""
+    )
+
+
+def test_mistral_single_object_call_is_stripped_for_display():
+    from core.inference.tool_call_parser import (
+        _strip_mistral_closed_calls,
+        parse_tool_calls_from_text,
+    )
+
+    # The parser accepts the single-object [TOOL_CALLS]{...} shape, so the display
+    # strip must remove it too (asymmetry would leak the raw object).
+    text = '[TOOL_CALLS]{"name":"web_search","arguments":{"filters":{"date":"2024"}}} tail'
+    assert [c["function"]["name"] for c in parse_tool_calls_from_text(text)] == ["web_search"]
+    assert _strip_mistral_closed_calls(text) == " tail"
+    # A literal [TOOL_CALLS] in prose (no following object) is left untouched.
+    assert _strip_mistral_closed_calls("See the [TOOL_CALLS] docs") == "See the [TOOL_CALLS] docs"
+
+
+def test_tool_call_parser_declares_future_annotations_for_py39_import():
+    # F1: the parser is dependency-light (external llama-server wrappers import it
+    # standalone) and the package targets python >=3.9. Its PEP 604 ``X | None``
+    # return annotations would raise TypeError on a 3.9 import without
+    # ``from __future__ import annotations``; guard that the import stays present.
+    from pathlib import Path
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
+    ).read_text()
+    assert "from __future__ import annotations" in src
+
+
+def test_bare_json_function_alias_parses_and_strips_symmetrically():
+    # The markerless bare-JSON parser accepts the "function" alias for the call name
+    # (obj.get("name") or obj.get("function")). strip_leading_bare_json_call must
+    # recognise the same alias so an executed {"function":...} call is not left as
+    # raw content (parser/strip symmetry).
+    from core.inference.tool_call_parser import (
+        parse_tool_calls_from_text,
+        strip_leading_bare_json_call,
+        _top_level_bare_json_name,
+    )
+
+    enabled = {"web_search"}
+    text = '{"function":"web_search","parameters":{"query":"cats"}}'
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = enabled)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert strip_leading_bare_json_call(text, enabled) == ""
+
+    # "name" still takes precedence when both are present; nested aliases are data.
+    assert _top_level_bare_json_name('{"function":"foo","name":"web_search"}') == "web_search"
+    assert _top_level_bare_json_name('{"function":"web_search"}') == "web_search"
+    assert _top_level_bare_json_name('{"result":{"function":"web_search"}}') is None
+    # A non-enabled function-alias object is ordinary content and is preserved.
+    assert (
+        strip_leading_bare_json_call('{"function":"not_a_tool","parameters":{}}', enabled)
+        == '{"function":"not_a_tool","parameters":{}}'
+    )

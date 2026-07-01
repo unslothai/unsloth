@@ -27,12 +27,17 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-_TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w-]+)\s*\{")
+# Name class ``[\w.\-]`` (dots/hyphens) matches the wrapper-less ``_GEMMA_BARE_TC_RE``
+# and the other parsers, so a dotted/namespaced Gemma tool name (mcp.server-list)
+# in the wrapped form is parsed instead of silently producing no call.
+_TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
+# Trailing class is horizontal whitespace only so the wrapping newline + the
+# value's first-line indentation survive; _trim_param_value trims one newline.
+_TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>[^\S\n]*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
@@ -267,7 +272,10 @@ def _quote_gemma_object_keys(src: str) -> str:
                     json.loads(raw.strip())
                     parts.append(raw)
                 except (json.JSONDecodeError, ValueError):
-                    parts.append(json.dumps(raw.strip()) if raw.strip() else raw)
+                    # Bare value: quote it. An empty value ({k:}) must become ""
+                    # so json.loads sees {"k":""} instead of invalid {"k":}, which
+                    # would drop the whole call.
+                    parts.append(json.dumps(raw.strip()))
         else:
             parts.append(src[key_start:i])
     return "".join(parts)
@@ -294,6 +302,19 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
     last_param_close = content.rfind(_PARAM_CLOSE_TAG, 0, pos)
     last_func_close = content.rfind(_FUNC_CLOSE_TAG, 0, pos)
     return last_param_start > max(last_param_close, last_func_close)
+
+
+def _trim_param_value(val: str) -> str:
+    """Trim a single wrapping newline the chat template adds around an XML
+    parameter value (``<parameter=k>\nVALUE\n</parameter>``) while preserving any
+    significant leading indentation / trailing whitespace inside VALUE. Using
+    ``str.strip()`` here destroyed the indentation of code/diff arguments; SGLang's
+    qwen3_coder detector trims only the wrapping newline."""
+    if val.startswith("\n"):
+        val = val[1:]
+    if val.endswith("\n"):
+        val = val[:-1]
+    return val
 
 
 def parse_tool_calls_from_text(
@@ -354,7 +375,11 @@ def parse_tool_calls_from_text(
             if kind == "json":
                 obj = json.loads(content[m.end() - 1 : end + 1])
                 name = obj.get("name", "")
-                arguments = obj.get("arguments", {})
+                # Accept ``parameters`` as an alias for ``arguments`` (Llama-3.2
+                # drift inside a Hermes ``<tool_call>``); else it parses to ``{}``.
+                arguments = obj.get("arguments")
+                if arguments is None:
+                    arguments = obj.get("parameters", {})
                 if isinstance(arguments, dict):
                     arguments = json.dumps(arguments)
             else:
@@ -393,7 +418,12 @@ def parse_tool_calls_from_text(
                     continue
                 body = body[:close_idx]
             else:
-                body = _TC_FUNC_CLOSE_RE.sub("", body)
+                # Lenient: terminate at the last </function> so trailing prose
+                # after a bare call doesn't leak into the final parameter value;
+                # with no close at all, heal by keeping the whole body.
+                close_idx = body.rfind(_FUNC_CLOSE_TAG)
+                if close_idx >= 0:
+                    body = body[:close_idx]
 
             arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
@@ -407,7 +437,7 @@ def parse_tool_calls_from_text(
                     val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
                 else:
                     val = _TC_PARAM_CLOSE_RE.sub("", val)
-                arguments[pm.group(1)] = val.strip()
+                arguments[pm.group(1)] = _trim_param_value(val)
             else:
                 valid_params = True
                 for pidx, pm in enumerate(param_starts):
@@ -427,7 +457,7 @@ def parse_tool_calls_from_text(
                         val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
                     else:
                         val = _TC_PARAM_CLOSE_RE.sub("", val)
-                    arguments[param_name] = val.strip()
+                    arguments[param_name] = _trim_param_value(val)
                 if not valid_params:
                     continue
 
