@@ -3203,7 +3203,6 @@ def _repo_is_diffusers(repo_info) -> bool:
         pass
     try:
         from core.inference.diffusion_families import detect_family
-
         if detect_family(getattr(repo_info, "repo_id", "") or "") is not None:
             return True
     except Exception:
