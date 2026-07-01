@@ -240,8 +240,7 @@ NUM_LOGITS_TO_KEEP = dict()
 
 
 def _unsloth_generate_accepts_kwarg(model, key):
-    # Mirror transformers _validate_model_kwargs: only inject a generate kwarg the top
-    # level accepts (gpt-oss exposes logits_to_keep on an inner forward only).
+    # True if the top level accepts this generate kwarg (some models expose it on an inner forward only).
     try:
         model_args = set(inspect.signature(model.prepare_inputs_for_generation).parameters)
     except (TypeError, ValueError, AttributeError):
@@ -255,9 +254,8 @@ def _unsloth_generate_accepts_kwarg(model, key):
 
 
 def _install_offload_embedding_hooks(embed_tokens):
-    # Run the (offloaded) embedding lookup on the weight's CURRENT device, then move the
-    # output back. Read at call time so a bf16 embedding pulled back to GPU by a later
-    # model.to(...) still works; origin device rides on the moved tensor (thread-safe).
+    # Run the offloaded lookup on the weight's current device, then move the output back.
+    # Device read per-call (bf16 may be pulled to GPU); origin rides the tensor (thread-safe).
     if embed_tokens is None:
         return False
     if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
@@ -1134,7 +1132,7 @@ class FastBaseModel:
                         print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
                         embed_tokens.to("cpu")
 
-                        # Device-safe embedding offload (see helper for the bf16 caveat).
+                        # Device-safe embedding offload.
                         _install_offload_embedding_hooks(embed_tokens)
                         # Must free GPU memory otherwise will not free!
                         torch.cuda.empty_cache()

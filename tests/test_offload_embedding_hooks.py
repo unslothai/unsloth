@@ -33,13 +33,13 @@ def test_install_and_idempotent():
     assert emb._unsloth_offload_hooks_installed is True
     n_pre = len(emb._forward_pre_hooks)
     n_post = len(emb._forward_hooks)
-    assert install(emb) is True  # idempotent
+    assert install(emb) is True
     assert len(emb._forward_pre_hooks) == n_pre and len(emb._forward_hooks) == n_post
     assert install(None) is False
 
 
 def test_cpu_noop_forward():
-    # weight on cpu, input on cpu -> pre-hook is a no-op, forward works.
+    # cpu weight + cpu input -> pre-hook no-op.
     emb = _fresh_emb()
     install(emb)
     x = torch.randint(0, 32, (2, 5))
@@ -52,7 +52,7 @@ def test_cuda_offloaded_weight_roundtrip():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # BUG 1: weight offloaded to CPU, input on CUDA -> must not raise; output back on CUDA.
+    # BUG 1: CPU weight, CUDA input -> must not raise; output back on CUDA.
     emb = _fresh_emb().to("cpu")
     install(emb)
     x = torch.randint(0, 32, (2, 5), device = "cuda")
@@ -64,8 +64,7 @@ def test_cuda_weight_pulled_back_to_gpu():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # BUG 2: weight on CUDA (bf16 pulled back), input on CUDA -> must be a no-op, not send
-    # the index to CPU. Hard-coded ".to('cpu')" would crash here.
+    # BUG 2: CUDA weight (bf16 pulled back) + CUDA input -> no-op (hard-coded .to('cpu') would crash).
     emb = _fresh_emb().to("cuda")
     install(emb)
     x = torch.randint(0, 32, (2, 5), device = "cuda")

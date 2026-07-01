@@ -23,8 +23,7 @@ accepts = _load_helper()
 
 
 class PrepHasKwargs_ForwardHasKey:
-    # prepare_inputs_for_generation takes **kwargs -> transformers unions forward params,
-    # and forward names logits_to_keep -> ACCEPTED.
+    # **kwargs on prepare unions forward params; key in forward -> ACCEPTED.
     def prepare_inputs_for_generation(self, input_ids, **kwargs): ...
     def forward(
         self,
@@ -35,8 +34,7 @@ class PrepHasKwargs_ForwardHasKey:
 
 
 class PrepNoKwargs_ForwardHasKey:
-    # prepare has NO **kwargs -> forward is NOT unioned; key only in forward -> REJECTED.
-    # (This is the fused/PEFT gpt-oss failure shape.)
+    # no **kwargs -> forward not unioned; key only in forward -> REJECTED (gpt-oss shape).
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -50,7 +48,7 @@ class PrepNoKwargs_ForwardHasKey:
 
 
 class PrepHasKeyDirectly:
-    # key present directly on prepare_inputs_for_generation -> ACCEPTED.
+    # key directly on prepare -> ACCEPTED.
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -60,7 +58,7 @@ class PrepHasKeyDirectly:
 
 
 class NoPrepare:
-    # no prepare_inputs_for_generation at all -> model_args empty, no union -> REJECTED.
+    # no prepare -> empty args, no union -> REJECTED.
     def forward(
         self,
         input_ids,
@@ -137,7 +135,7 @@ def run():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}: got={got} expected={expected}")
         assert ok, f"{name}: got {got}, expected {expected}"
 
-    # Parity check against transformers' real _validate_model_kwargs for the accept case.
+    # Optional transformers parity smoke for the accept case.
     try:
         import torch  # noqa
         from transformers import AutoModelForCausalLM, AutoConfig
