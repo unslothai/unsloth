@@ -1790,18 +1790,21 @@ export function HubModelPicker({
       ),
     [cachedGguf, downloadedSort, loadTimes, task],
   );
-  // Non-GGUF (safetensors) cached repos aren't single-file diffusion GGUFs, so
-  // hide them entirely when a task filter is active (the Images picker). In chat,
-  // drop cached diffusers pipeline repos (a Z-Image / FLUX base) the same way.
+  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos. In the
+  // Images picker (task set) it keeps them, but limit to repos this backend can actually
+  // load as diffusion: unsloth-hosted ones. Base repos (Qwen/Qwen-Image, FLUX bases) are
+  // cached as dependencies and fail the diffusion trust gate, so listing them would dead-end.
   const sortedCachedModels = useMemo(
     () =>
-      task
-        ? []
-        : sortCachedRepos(
-            cachedModels.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
-            downloadedSort,
-            loadTimes,
-          ),
+      sortCachedRepos(
+        cachedModels.filter(
+          (c) =>
+            passesTaskGate(c.task, c.repo_id, task) &&
+            (!task || isUnslothRepoId(c.repo_id)),
+        ),
+        downloadedSort,
+        loadTimes,
+      ),
     [cachedModels, downloadedSort, loadTimes, task],
   );
   // Each local section's search is scoped to its own models (matched by name).
