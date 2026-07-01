@@ -384,6 +384,9 @@ def run_diffusion_lora_training(
         running_loss += step_loss
         done = opt_step + 1
         if done % cfg.log_every == 0 or done == cfg.train_steps:
+            # ``learning_rate`` (not ``lr``) is the field the Studio training pump reads, so
+            # these progress events are directly consumable by the existing training
+            # status/SSE machinery when the diffusion trainer is wired into the worker.
             _emit(
                 on_event,
                 "progress",
@@ -391,7 +394,7 @@ def run_diffusion_lora_training(
                 total_steps=cfg.train_steps,
                 loss=round(step_loss, 5),
                 avg_loss=round(running_loss / done, 5),
-                lr=lr_sched.get_last_lr()[0],
+                learning_rate=lr_sched.get_last_lr()[0],
             )
 
         if should_stop is not None and should_stop():
@@ -502,7 +505,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if t == "progress":
             print(
                 f"step {ev['step']}/{ev['total_steps']} loss={ev['loss']} "
-                f"avg={ev['avg_loss']} lr={ev['lr']:.2e}",
+                f"avg={ev['avg_loss']} lr={ev['learning_rate']:.2e}",
                 flush=True,
             )
         elif t == "complete":
