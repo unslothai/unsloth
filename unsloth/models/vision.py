@@ -254,9 +254,8 @@ def _unsloth_generate_accepts_kwarg(model, key):
 
 
 def _install_offload_embedding_hooks(embed_tokens, return_device):
-    # Offloaded lookup runs on the weight's current device (per-call, so a bf16 weight pulled
-    # back to GPU still works); output always goes to return_device (the decoder device saved
-    # before offload) so it reaches the GPU even when inputs arrive on CPU. No per-request state.
+    # Lookup on the weight's current device (CPU when offloaded); output always returns to
+    # return_device (the decoder device saved before offload) so it reaches the GPU decoder.
     if embed_tokens is None:
         return False
     if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
@@ -290,8 +289,7 @@ def _install_offload_embedding_hooks(embed_tokens, return_device):
 
 
 def _embeddings_are_tied(input_embeddings, output_embeddings):
-    # Tied = lm_head shares the embedding weight; offloading it to CPU strands the
-    # output projection there (and frees no VRAM, since lm_head needs it on GPU).
+    # Tied lm_head reuses this weight; offloading to CPU would strand the output projection.
     if input_embeddings is None or output_embeddings is None:
         return False
     w_in = getattr(input_embeddings, "weight", None)
