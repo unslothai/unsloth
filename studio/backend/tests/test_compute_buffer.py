@@ -61,7 +61,11 @@ from core.inference.llama_cpp import LlamaCppBackend
 MIB = 1024 * 1024
 
 
-def _backend(vocab = 248320, embd = 5120, mla = None):
+def _backend(
+    vocab = 248320,
+    embd = 5120,
+    mla = None,
+):
     """Backend with just the dims the compute-buffer estimate reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._vocab_size = vocab
@@ -162,7 +166,7 @@ class TestContextLinearBuffer:
     # (model, n_embd, ctx, measured CUDA0 compute buffer MiB at that ctx, q8_0/ub512)
     _MEASURED = [
         ("Qwen3.5-2B", 2048, 262144, 796),
-        ("Qwen3.5-4B", 2560, 262144, 1330),   # worst slope, 2.02 x n_embd
+        ("Qwen3.5-4B", 2560, 262144, 1330),  # worst slope, 2.02 x n_embd
         ("Qwen3.5-9B", 4096, 262144, 1336),
         ("Qwen3.6-27B", 5120, 262144, 1360),
         ("Gemma-4-31B", 5376, 262144, 2392),
@@ -225,8 +229,9 @@ class TestContextBufferKVQuant:
         # None -> f16 (llama.cpp's default); the env-quantized case is covered by the
         # KV budget's f16 over-reservation, so we take the lighter mask-only rate.
         b = _backend(embd = 4096)
-        assert b._compute_buffer_ctx_bytes(131072, cache_type_kv = None) == \
-            b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+        assert b._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = None
+        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
 
     @pytest.mark.parametrize("ct", ["f16", "bf16", "f32"])
     def test_unquantized_uses_mask_only_rate(self, ct):
@@ -267,10 +272,13 @@ class TestContextBufferMLA:
         mla = _backend(embd = 6144, mla = 256)._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0")
         assert mla < reg
 
-    @pytest.mark.parametrize("name,embd,ctx,measured", [
-        ("GLM-5.2", 6144, 754688, 4141),   # per-device compute MiB at q8_0
-        ("Kimi-K2.7", 7168, 262144, 1690),
-    ])
+    @pytest.mark.parametrize(
+        "name,embd,ctx,measured",
+        [
+            ("GLM-5.2", 6144, 754688, 4141),  # per-device compute MiB at q8_0
+            ("Kimi-K2.7", 7168, 262144, 1690),
+        ],
+    )
     def test_mla_rate_covers_measured(self, name, embd, ctx, measured):
         b = _backend(embd = embd, mla = 256)
         est = b._compute_buffer_ctx_bytes(ctx, cache_type_kv = "q8_0") / MIB
@@ -284,7 +292,7 @@ class TestContextBufferMLA:
         assert est <= 4141 * 1.7
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 def _ws_backend(embd = 5120, layers = 64):
@@ -314,8 +322,9 @@ class TestDecodeWorkspace:
 
     def test_mtp_inflates(self):
         b = _ws_backend()
-        assert b._estimate_decode_workspace_bytes(4, mtp_active = True) > \
-            b._estimate_decode_workspace_bytes(4)
+        assert b._estimate_decode_workspace_bytes(
+            4, mtp_active = True
+        ) > b._estimate_decode_workspace_bytes(4)
 
     def test_27b_per_slot_matches_calibration(self):
         # Calibration anchor: Qwen3.6-27B (5120 x 64) ~2 GiB/slot non-MTP, so --parallel 4
@@ -336,9 +345,16 @@ def _cap_backend(embd = 5120, layers = 64):
     # KV estimate reaches a real path instead of AttributeError; the cap's
     # try/except would otherwise silently swallow it and return n_parallel.
     for attr in (
-        "_kv_lora_rank", "_kv_key_length", "_kv_value_length", "_n_kv_heads_by_layer",
-        "_shared_kv_layers", "_ssm_inner_size", "_full_attention_interval",
-        "_sliding_window", "_sliding_window_pattern", "_kv_key_length_swa",
+        "_kv_lora_rank",
+        "_kv_key_length",
+        "_kv_value_length",
+        "_n_kv_heads_by_layer",
+        "_shared_kv_layers",
+        "_ssm_inner_size",
+        "_full_attention_interval",
+        "_sliding_window",
+        "_sliding_window_pattern",
+        "_kv_key_length_swa",
         "_kv_value_length_swa",
     ):
         setattr(b, attr, None)
@@ -352,7 +368,17 @@ def _cap_backend(embd = 5120, layers = 64):
     return b
 
 
-def _cap(b, free_gb, total_gb, *, ndev = 1, ctx = 90624, model_gib = 17.0, mtp = False, n_par = 4):
+def _cap(
+    b,
+    free_gb,
+    total_gb,
+    *,
+    ndev = 1,
+    ctx = 90624,
+    model_gib = 17.0,
+    mtp = False,
+    n_par = 4,
+):
     gpus = [(i, int(free_gb * 1024)) for i in range(ndev)]
     tbi = {i: int(total_gb * 1024) for i in range(ndev)}
     fn = (lambda c: int(0.5 * GIB)) if mtp else None
@@ -394,12 +420,25 @@ class TestCapServingSlots:
         gpus = [(0, 80 * 1024), (1, 20 * 1024)]
         tbi = {0: 80 * 1024, 1: 24 * 1024}
         k = b._cap_serving_slots(
-            4, 90624, [0, 1], gpus, tbi, int(34 * GIB), 0, "q8_0", (lambda c: int(0.5 * GIB)), True, 512
+            4,
+            90624,
+            [0, 1],
+            gpus,
+            tbi,
+            int(34 * GIB),
+            0,
+            "q8_0",
+            (lambda c: int(0.5 * GIB)),
+            True,
+            512,
         )
         assert k < 4
 
     def test_no_gpu_pin_unchanged(self):
         # No GPU indices (CPU / --fit path): slot count untouched.
-        assert _cap_backend()._cap_serving_slots(
-            4, 90624, None, [], {}, int(17 * GIB), 0, "q8_0", None, False, 512
-        ) == 4
+        assert (
+            _cap_backend()._cap_serving_slots(
+                4, 90624, None, [], {}, int(17 * GIB), 0, "q8_0", None, False, 512
+            )
+            == 4
+        )

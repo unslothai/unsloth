@@ -3000,9 +3000,9 @@ class LlamaCppBackend:
     # an 8 GB card, far below the ~1-2.4 GiB quantized buffer at 256k): e.g. Qwen3.5-4B
     # Q4 at 256k needs ~8.5 GiB on a real 8 GB card (weights 2.4 + KV 4.3 + compute 1.3
     # + CUDA ctx) -> CPU spill; with this reserve the auto context caps to ~210k, fits.
-    _CTX_COMPUTE_BYTES_PER_EMBD = 2.25    # quantized KV, regular attention (dequant scratch)
+    _CTX_COMPUTE_BYTES_PER_EMBD = 2.25  # quantized KV, regular attention (dequant scratch)
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
-    _CTX_COMPUTE_F16_MASK_SAFETY = 1.5    # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
+    _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
 
     # A --parallel N serving config needs free VRAM headroom to decode at full speed: each
     # slot's compute graph must fit at its preferred size, or llama.cpp shrinks the compute
@@ -3016,7 +3016,7 @@ class LlamaCppBackend:
     # used ONLY to cap the effective slot count on a memory-tight card (keeping the chosen
     # context); it never spills, and roomy cards keep every configured slot unchanged.
     _DECODE_WORKSPACE_BYTES_PER_EMBD_LAYER = 6554  # per slot, per (n_embd * n_layers)
-    _DECODE_WORKSPACE_MTP_MULT = 1.5              # speculative decode inflates the workspace
+    _DECODE_WORKSPACE_MTP_MULT = 1.5  # speculative decode inflates the workspace
     _DECODE_WORKSPACE_FLOOR_BYTES = 256 * 1024 * 1024  # per-slot floor for tiny models
 
     def _estimate_compute_buffer_bytes(
@@ -3150,14 +3150,14 @@ class LlamaCppBackend:
 
             def _fits(k: int) -> bool:
                 kv_total = (
-                    self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel=k)
+                    self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = k)
                     if self._can_estimate_kv()
                     else 0
                 )
                 static = self._estimate_compute_buffer_bytes(
-                    n_ubatch=n_ubatch, n_parallel=k, per_device_tensor=False
+                    n_ubatch = n_ubatch, n_parallel = k, per_device_tensor = False
                 )
-                workspace = self._estimate_decode_workspace_bytes(k, mtp_active=mtp_active)
+                workspace = self._estimate_decode_workspace_bytes(k, mtp_active = mtp_active)
                 for idx in gpu_indices:
                     free_mib = free_by_idx.get(idx, 0)
                     total_mib = total_by_idx.get(idx, 0) if total_by_idx else 0
@@ -4493,9 +4493,11 @@ class LlamaCppBackend:
                 if mtp_overhead_fn is not None:
                     # kv(ctx)+mtp(ctx)+compute(ctx) is not single-linear, so binary search.
                     def _consumer(c: int) -> int:
-                        return self._estimate_kv_cache_bytes(
-                            c, cache_type_kv, n_parallel = n_parallel
-                        ) + _mtp_at(c) + _cc_ctx(c)
+                        return (
+                            self._estimate_kv_cache_bytes(c, cache_type_kv, n_parallel = n_parallel)
+                            + _mtp_at(c)
+                            + _cc_ctx(c)
+                        )
 
                     if _consumer(ctx) <= kv_budget_b:
                         return ctx
