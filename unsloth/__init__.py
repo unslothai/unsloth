@@ -282,6 +282,7 @@ if _IS_MLX:
                 """Reset MLX's peak-memory counter so a later max_memory_reserved /
                 max_memory_allocated scopes to the run, not earlier model-load peaks."""
                 import mlx.core as mx
+
                 reset = getattr(mx, "reset_peak_memory", None)
                 if reset is None and hasattr(mx, "metal"):
                     reset = getattr(mx.metal, "reset_peak_memory", None)
