@@ -71,7 +71,15 @@ export function ShutdownDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            onClick={handleStop}
+            onClick={(event) => {
+              // AlertDialogAction auto-closes the dialog by default.
+              // On the shutdown error path we toast + reset `stopping`
+              // to let the user retry, which only works if the dialog
+              // stays open. preventDefault keeps it open; on success
+              // the handler replaces document.body anyway.
+              event.preventDefault();
+              void handleStop();
+            }}
             disabled={stopping}
             variant="destructive"
           >
