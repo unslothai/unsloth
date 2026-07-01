@@ -491,9 +491,7 @@ class ExportBackend:
 
                 # Compressed export writes to the "<dir>-<suffix>" sibling; report that as output.
                 final_dir = (
-                    f"{save_directory}-{compressed_suffix}"
-                    if is_compressed
-                    else save_directory
+                    f"{save_directory}-{compressed_suffix}" if is_compressed else save_directory
                 )
                 self._write_export_metadata(final_dir)
                 logger.info(f"Model saved successfully to {final_dir}")

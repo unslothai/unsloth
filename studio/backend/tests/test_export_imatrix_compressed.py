@@ -133,7 +133,7 @@ def test_export_merged_resolves_alias_via_registry():
     assert "compressed_method" in m
     assert "_normalize_compressed_method(compressed_alias)" in m
     assert "compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)" in m
-    assert "compressed_suffix" in m and "f\"{save_directory}-{compressed_suffix}\"" in m
+    assert "compressed_suffix" in m and 'f"{save_directory}-{compressed_suffix}"' in m
 
 
 def test_orchestrator_and_worker_pass_compressed_method():
