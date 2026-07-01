@@ -3185,14 +3185,27 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
 
 
 def _repo_is_diffusers(repo_info) -> bool:
-    """A diffusers pipeline repo (e.g. a Z-Image / FLUX base) carries a top-level
-    model_index.json. These render images rather than chat, so the chat picker
-    hides them — mirroring how cached diffusion GGUFs are classified by arch."""
+    """True for an image-diffusion repo, so the chat picker hides it (it renders
+    images, not chat) and the Images picker claims it — mirroring how cached
+    diffusion GGUFs are classified by arch.
+
+    Two signals: a full diffusers pipeline carries a top-level model_index.json,
+    while single-file / ComfyUI / ControlNet image checkpoints (e.g. an FP8
+    Qwen-Image or a z-image .safetensors) ship none. For those, fall back to the
+    repo id resolving to a known diffusion family — the same resolver the Images
+    backend loads from — so they don't surface as loadable chat models."""
     try:
         for rev in repo_info.revisions:
             for f in rev.files:
                 if f.file_name == "model_index.json" or f.file_name.endswith("/model_index.json"):
                     return True
+    except Exception:
+        pass
+    try:
+        from core.inference.diffusion_families import detect_family
+
+        if detect_family(getattr(repo_info, "repo_id", "") or "") is not None:
+            return True
     except Exception:
         pass
     return False
