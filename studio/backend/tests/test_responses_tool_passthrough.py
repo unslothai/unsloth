@@ -2020,9 +2020,7 @@ class TestReasoningPrefilledExtractor:
 
     def test_prefilled_close_split_across_feeds(self):
         # T3: </think> straddles two feed() calls; holdback resolves it.
-        ex = _ResponsesReasoningExtractor(
-            parse_think_markers = True, reasoning_prefilled = True
-        )
+        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
         r1, v1 = ex.feed("plan</th")
         r2, v2 = ex.feed("ink>ans")
         fr, fv = ex.finish()
@@ -2031,9 +2029,7 @@ class TestReasoningPrefilledExtractor:
 
     def test_prefilled_close_split_one_char_per_feed(self):
         # T4: every char in its own feed still splits correctly.
-        ex = _ResponsesReasoningExtractor(
-            parse_think_markers = True, reasoning_prefilled = True
-        )
+        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
         reasoning, visible = "", ""
         for ch in "plan</think>x":
             r, v = ex.feed(ch)

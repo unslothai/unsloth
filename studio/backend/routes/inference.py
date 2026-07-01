@@ -6211,9 +6211,7 @@ async def openai_chat_completions(
                         )
                     if visible_delta:
                         api_monitor.append_reply(monitor_id, visible_delta)
-                        yield _chat_content_chunk(
-                            completion_id, created, model_name, visible_delta
-                        )
+                        yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
                 for _c in _sf_flush_reasoning():
                     yield _c
@@ -6434,20 +6432,14 @@ async def openai_chat_completions(
                         )
                     if visible_delta:
                         api_monitor.append_reply(monitor_id, visible_delta)
-                        yield _chat_content_chunk(
-                            completion_id, created, model_name, visible_delta
-                        )
+                        yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
                 final_reasoning, final_visible = reasoning_extractor.finish()
                 if final_reasoning:
-                    yield _chat_reasoning_chunk(
-                        completion_id, created, model_name, final_reasoning
-                    )
+                    yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
                 if final_visible:
                     api_monitor.append_reply(monitor_id, final_visible)
-                    yield _chat_content_chunk(
-                        completion_id, created, model_name, final_visible
-                    )
+                    yield _chat_content_chunk(completion_id, created, model_name, final_visible)
                 yield _chat_final_chunk(completion_id, created, model_name, "stop")
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
