@@ -1814,10 +1814,8 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
 
-    # Custom templates have no predefined default, but may still carry a
-    # {system_message} placeholder. Handle it before the no-default early return
-    # below, which would otherwise leave the literal "{system_message}" in the
-    # template. A placeholder with no system message is an error, not a no-op.
+    # Custom templates have no default but may carry a {system_message} placeholder;
+    # fill it before the no-default return below. A missing message here is an error.
     if default_system_message is None and "{system_message}" in template:
         if system_message is None:
             raise ValueError("Unsloth: You need to provide a system message for custom templates.")
