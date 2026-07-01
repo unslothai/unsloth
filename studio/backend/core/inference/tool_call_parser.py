@@ -583,11 +583,7 @@ def has_tool_signal(text: str) -> bool:
 # envelope opens before the first DeepSeek/Kimi marker so the marker pre-pass is
 # skipped for it.
 _EMBEDDED_MARKER_RE = re.compile(
-    _DEEPSEEK_OPEN_RE_SRC
-    + "|"
-    + re.escape(_KIMI_SECTION_BEGIN)
-    + "|"
-    + re.escape(_KIMI_CALL_BEGIN)
+    _DEEPSEEK_OPEN_RE_SRC + "|" + re.escape(_KIMI_SECTION_BEGIN) + "|" + re.escape(_KIMI_CALL_BEGIN)
 )
 _OUTER_ENVELOPE_OPEN_RE = re.compile(r"<tool_call>|<function=")
 
