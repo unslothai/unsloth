@@ -546,6 +546,7 @@ class FastSentenceTransformer(FastModel):
         model_name,
         token,
         cache_dir = None,
+        revision = None,
     ):
         """Read the pooling mode from modules.json, else return "mean"."""
         try:
@@ -555,7 +556,8 @@ class FastSentenceTransformer(FastModel):
                 modules_json_path = os.path.join(model_name, "modules.json")
             else:
                 modules_json_path = hf_hub_download(
-                    model_name, "modules.json", token = token, cache_dir = cache_dir
+                    model_name, "modules.json", token = token, cache_dir = cache_dir,
+                    revision = revision,
                 )
 
             with open(modules_json_path, "r", encoding = "utf-8") as f:
@@ -579,6 +581,7 @@ class FastSentenceTransformer(FastModel):
                                 os.path.join(pooling_path, "config.json"),
                                 token = token,
                                 cache_dir = cache_dir,
+                                revision = revision,
                             )
                         break
 
@@ -962,6 +965,7 @@ class FastSentenceTransformer(FastModel):
         model_name,
         token = None,
         cache_dir = None,
+        revision = None,
     ):
         """Return the path to the modules.json file, or None."""
         try:
@@ -971,7 +975,8 @@ class FastSentenceTransformer(FastModel):
             else:
                 try:
                     return hf_hub_download(
-                        model_name, "modules.json", token = token, cache_dir = cache_dir
+                        model_name, "modules.json", token = token, cache_dir = cache_dir,
+                        revision = revision,
                     )
                 except:
                     return None
@@ -1150,6 +1155,7 @@ class FastSentenceTransformer(FastModel):
         pooling_mode,
         trust_remote_code = False,
         cache_dir = None,
+        revision = None,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules.
 
@@ -1161,7 +1167,7 @@ class FastSentenceTransformer(FastModel):
 
         modules = OrderedDict()
         modules_json_path = FastSentenceTransformer._module_path(
-            model_name, token, cache_dir = cache_dir
+            model_name, token, cache_dir = cache_dir, revision = revision
         )
 
         if modules_json_path:
@@ -1189,7 +1195,8 @@ class FastSentenceTransformer(FastModel):
                     else:
                         try:
                             load_path = load_dir_path(
-                                model_name, module_path, token = token, cache_folder = cache_dir
+                                model_name, module_path, token = token,
+                                cache_folder = cache_dir, revision = revision,
                             )
                         except Exception as e:
                             print(f"Unsloth Warning: Could not download module {module_path}: {e}")
@@ -1218,7 +1225,7 @@ class FastSentenceTransformer(FastModel):
 
         if pooling_mode == "mean":
             pooling_mode = FastSentenceTransformer._read_pooling_mode(
-                model_name, token, cache_dir = cache_dir
+                model_name, token, cache_dir = cache_dir, revision = revision
             )
 
         modules["1"] = Pooling(word_embedding_dimension = hidden_size, pooling_mode = pooling_mode)
@@ -1702,6 +1709,7 @@ class FastSentenceTransformer(FastModel):
                 token,
                 cache_dir = kwargs.get("cache_folder")
                 or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                revision = revision,
             )
             is not None
         )
@@ -1758,6 +1766,11 @@ class FastSentenceTransformer(FastModel):
             # Reuse the prefetch's resolved cache (see _module_path note above) so the fallback
             # modules.json / module-file loads hit the warm instead of an in-process Xet download.
             cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            # Read the modules from the SAME revision the model weights load from (FastModel forwards
+            # revision to the weight load), so a revision-pinned repo hits the prefetch's warm instead
+            # of fetching default-branch module files in-process over Xet (and mixing them with the
+            # revision-pinned weights). A None revision resolves to the default branch as before.
+            revision = revision,
         )
 
         st_device = device_map

@@ -345,6 +345,83 @@ def test_st_fallback_module_loads_resolve_env_cache():
     ), "expected the fallback _module_path and _load_modules calls to resolve the env cache"
 
 
+def test_st_fallback_module_loads_forward_revision():
+    """A revision-pinned ST repo loaded via the custom fallback path loads its model WEIGHTS from the
+    requested revision (FastModel forwards revision to the weight load), so the module files (modules.json,
+    pooling config, per-module dirs) must load from the SAME revision. Otherwise they resolve the repo
+    default branch: fetched in-process over Xet (missing the prefetch's revision-pinned warm) and mixed
+    with the revision-pinned weights (Codex #6638). Static guard: (a) _module_path / _read_pooling_mode /
+    _load_modules accept a revision arg, (b) every hf_hub_download / load_dir_path inside them forwards
+    revision, (c) _load_modules threads revision into its internal _module_path / _read_pooling_mode
+    calls, (d) the from_pretrained fallback _module_path / _load_modules calls forward revision. Importing
+    ST pulls heavy optional deps."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+
+    funcs = {
+        n.name: n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_module_path", "_read_pooling_mode", "_load_modules")
+    }
+    assert set(funcs) == {"_module_path", "_read_pooling_mode", "_load_modules"}
+
+    # (a) each helper takes a revision parameter.
+    for name, fn in funcs.items():
+        arg_names = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+        assert "revision" in arg_names, f"{name} must accept a revision argument"
+
+    # (b) every direct download primitive inside the helpers forwards revision.
+    downloads = 0
+    for name, fn in funcs.items():
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id not in ("hf_hub_download", "load_dir_path"):
+                continue
+            downloads += 1
+            assert any(
+                kw.arg == "revision" for kw in node.keywords
+            ), f"{node.func.id} in {name} must forward revision"
+    assert downloads >= 3, "expected the module-download primitives to be revision-guarded"
+
+    # (c) _load_modules threads revision into its internal _module_path / _read_pooling_mode calls.
+    internal = 0
+    for node in ast.walk(funcs["_load_modules"]):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ("_module_path", "_read_pooling_mode"):
+            continue
+        internal += 1
+        assert any(
+            kw.arg == "revision" for kw in node.keywords
+        ), f"_load_modules must forward revision to {node.func.attr}"
+    assert internal >= 2, "expected _load_modules to call _module_path and _read_pooling_mode"
+
+    # (d) the from_pretrained fallback _module_path / _load_modules sites forward revision.
+    checked = 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ("_module_path", "_load_modules"):
+            continue
+        cache_dir_kw = next((kw for kw in node.keywords if kw.arg == "cache_dir"), None)
+        if cache_dir_kw is None or "cache_folder" not in ast.dump(cache_dir_kw.value):
+            continue  # internal pass-through, not a from_pretrained fallback site
+        checked += 1
+        rev_kw = next((kw for kw in node.keywords if kw.arg == "revision"), None)
+        assert rev_kw is not None and "revision" in ast.dump(
+            rev_kw.value
+        ), f"{node.func.attr} fallback call must forward revision"
+    assert (
+        checked >= 2
+    ), "expected the fallback _module_path and _load_modules calls to forward revision"
+
+
 def test_filename_has_variant_matches_single_and_sharded():
     """The variant detector matches both the single-file (.fp16.) and SHARDED (.fp16-) infixes and
     rejects the default (non-variant) names (gemini #6638)."""
