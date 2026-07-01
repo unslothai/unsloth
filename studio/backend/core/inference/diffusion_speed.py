@@ -148,11 +148,17 @@ def apply_speed_optims(
     family: Any,
     speed_mode: str = SPEED_OFF,
     cache_active: bool = False,
+    offload_active: bool = False,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optimisations for ``speed_mode`` to a built pipeline,
     BEFORE placement / offload. Returns which optimisations actually engaged. Every
-    step is best-effort: a pipeline that doesn't support one is simply skipped."""
+    step is best-effort: a pipeline that doesn't support one is simply skipped.
+
+    ``offload_active`` is the planned offload policy != none: group/model/sequential
+    offloading installs ``@torch.compiler.disable``d onload hooks, so the compile must
+    drop ``fullgraph`` (same reason as an active step cache) or it crashes at the first
+    denoise step."""
     applied = {
         "channels_last": False,
         "cudnn_benchmark": False,
@@ -182,7 +188,11 @@ def apply_speed_optims(
     # max-autotune (longer compile, autotuned kernels).
     if compile_eligible(target, is_gguf = is_gguf, family = family):
         applied["compiled"] = _compile_repeated_blocks(
-            pipe, logger, max_autotune = mode == SPEED_MAX, cache_active = cache_active
+            pipe,
+            logger,
+            max_autotune = mode == SPEED_MAX,
+            cache_active = cache_active,
+            offload_active = offload_active,
         )
 
     if mode == SPEED_MAX:
@@ -213,6 +223,7 @@ def _compile_repeated_blocks(
     *,
     max_autotune: bool = False,
     cache_active: bool = False,
+    offload_active: bool = False,
 ) -> bool:
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "compile_repeated_blocks", None)
@@ -225,14 +236,33 @@ def _compile_repeated_blocks(
     # / max-autotune) are deliberately NOT used: they crash on the regionally-compiled
     # block because its static output buffer is overwritten across denoise steps.
     #
-    # fullgraph drops to False when a step cache is engaged: FBCache's per-step decision is
-    # ``@torch.compiler.disable``d, i.e. a graph break, which fullgraph=True rejects ("Skip
-    # inlining torch.compiler.disable()d function"). The break is cheap and the rest of the
-    # block still compiles.
-    kwargs: dict[str, Any] = {"fullgraph": not cache_active, "dynamic": not max_autotune}
+    # fullgraph drops to False when a step cache OR CPU offloading is engaged: both insert
+    # an ``@torch.compiler.disable``d function into the forward -- FBCache's per-step
+    # decision, and group/model/sequential offload's ``ModuleGroup.onload_`` streaming hook
+    # -- i.e. a graph break, which fullgraph=True rejects ("Skip inlining
+    # torch.compiler.disable()d function"). The break is cheap and the rest of the block
+    # still compiles.
+    kwargs: dict[str, Any] = {
+        "fullgraph": not (cache_active or offload_active),
+        "dynamic": not max_autotune,
+    }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
     try:
+        import torch
+        # Heterogeneous-block DiTs (e.g. Z-Image) compile ~one graph per distinct block
+        # shape through compile_repeated_blocks; Z-Image needs ~11, above dynamo's default
+        # recompile_limit of 8. Once the limit is hit a resident load hard-errors under
+        # fullgraph (and an offload/cache load silently drops the overflow blocks to eager),
+        # so raise it well past that (64) for headroom on larger heterogeneous DiTs. This is
+        # diffusers' own documented fix for regional-compile recompilation (their guide bumps
+        # cache_size_limit). Deliberately NOT force_parameter_static_shapes=False: it doesn't
+        # cut the variant count here and makes each compile ~6x slower (24s -> 143s cold).
+        dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
+        if dynamo_cfg is not None:
+            for _limit_attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch ver
+                if hasattr(dynamo_cfg, _limit_attr):
+                    setattr(dynamo_cfg, _limit_attr, max(getattr(dynamo_cfg, _limit_attr) or 0, 64))
         fn(**kwargs)
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only

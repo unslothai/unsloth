@@ -39,10 +39,9 @@ from .diffusion_device import (
 from .diffusion_memory import (
     OFFLOAD_NONE,
     apply_memory_plan,
-    estimate_gguf_dense_mib,
+    estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     file_size_mib,
-    infer_gguf_quant_label,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
@@ -522,7 +521,7 @@ class DiffusionBackend:
                 # dense bf16 transformer must fit resident, so the fast path is offered only
                 # when the plan is `none`.
                 plan = self._plan_memory(
-                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
+                    target, gguf_path, base, fam, memory_mode, cpu_offload
                 )
 
                 # Opt-in fast path: load the DENSE bf16 transformer and torchao-quantise it
@@ -641,6 +640,9 @@ class DiffusionBackend:
                         family = fam,
                         speed_mode = effective_speed,
                         cache_active = cache_engaged is not None,
+                        # The planned offload policy: group/model/sequential offload installs
+                        # compiler-disabled onload hooks, so compile must drop fullgraph.
+                        offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
                     if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
@@ -797,7 +799,6 @@ class DiffusionBackend:
         self,
         target: DiffusionDeviceTarget,
         gguf_path: str,
-        gguf_filename: Optional[str],
         base: str,
         fam: DiffusionFamily,
         memory_mode: Optional[str],
@@ -808,16 +809,14 @@ class DiffusionBackend:
         offload policy + VAE memory savers. Kept on the backend so the cached base
         repo (companion text-encoder / VAE) feeds the size estimate."""
         device_memory = snapshot_device_memory(target)
-        transformer_dense = estimate_gguf_dense_mib(
-            file_size_mib(gguf_path), infer_gguf_quant_label(gguf_filename)
-        )
+        transformer_resident = estimate_gguf_resident_mib(file_size_mib(gguf_path))
         # The companion components (VAE + text encoders) load near their on-disk
         # size; sum whatever the prefetch already placed in the base-repo cache.
         companion = self._cache_bytes(base)
         companion_mib = int(companion // (1024 * 1024)) if companion else None
         model_dense_mib = None
-        if transformer_dense is not None:
-            model_dense_mib = transformer_dense + (companion_mib or 0)
+        if transformer_resident is not None:
+            model_dense_mib = transformer_resident + (companion_mib or 0)
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
         return plan_diffusion_memory(
             target = target,
