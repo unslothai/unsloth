@@ -25,7 +25,7 @@ import numpy as np
 
 BASE = "Tongyi-MAI/Z-Image-Turbo"
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/perf_levers_images")
+OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "perf_levers_images"
 
 
 _LP = {"fn": None}
@@ -36,11 +36,14 @@ def _lpips(ref, arr):
         import lpips
         import torch
 
+        # Keep the metric model on CPU: caching it on CUDA leaves it resident across
+        # variants, and each run resets peak-memory stats, so its VRAM would be charged
+        # to (and reduce headroom for) every later variant's measurement.
         if _LP["fn"] is None:
-            _LP["fn"] = lpips.LPIPS(net = "alex", verbose = False).cuda().eval()
+            _LP["fn"] = lpips.LPIPS(net = "alex", verbose = False).eval()
 
         def t(x):
-            return (torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0).cuda()
+            return torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
 
         with torch.no_grad():
             return float(_LP["fn"](t(ref), t(arr)).item())
@@ -69,6 +72,12 @@ def _reset_inductor_flags():
     ic.coordinate_descent_tuning = False
     ic.coordinate_descent_check_all_directions = False
     ic.epilogue_fusion = True
+    # Reset the int-mm fusion flag too, or it leaks from the inductor_flags variant into
+    # every later compiled row and the attention/fbcache measurements stop being isolated.
+    try:
+        ic.force_fuse_int_mm_with_mul = False
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _load():
@@ -136,6 +145,8 @@ def run(
         except Exception as exc:  # noqa: BLE001
             note = f"attn({attn})={type(exc).__name__}:{str(exc)[:60]}"
             print(f"    [{tag}] {note}", flush = True)
+            del pipe  # free the resident pipe so a skipped variant doesn't leak VRAM
+            torch.cuda.empty_cache()
             return None
     if fbcache is not None:
         try:
@@ -143,6 +154,8 @@ def run(
             apply_first_block_cache(pipe.transformer, FirstBlockCacheConfig(threshold = fbcache))
         except Exception as exc:  # noqa: BLE001
             print(f"    [{tag}] fbcache={type(exc).__name__}:{str(exc)[:60]}", flush = True)
+            del pipe
+            torch.cuda.empty_cache()
             return None
     try:
         pipe.transformer.compile_repeated_blocks(fullgraph = True, dynamic = True)

@@ -902,6 +902,20 @@ def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
     assert status["cpu_offload"] is False
 
 
+def test_low_vram_ignored_off_cuda(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        base_repo = "base/repo",
+        memory_mode = "low_vram",
+    )
+    # No CUDA in the stub, so offload is not engaged regardless of the request.
+    assert status["cpu_offload"] is False
+
+
 def test_generate_without_load_raises(fake_runtime):
     backend = DiffusionBackend()
     with pytest.raises(RuntimeError):
@@ -1582,6 +1596,9 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
         transformer_quant = "fp8",
     )
     assert status["transformer_quant"] == "fp8"
+    # No speed_mode was given, but a quantized transformer is ~30x slower eager, so the
+    # backend promotes it to `default` (regional compile) instead of the dense `off`.
+    assert status["speed_mode"] == "default"
     assert calls["from_pretrained"] == 1 and calls["quantize"] == 1
     assert calls["quant_mode"] == "fp8"
     assert calls["fp_kwargs"]["subfolder"] == "transformer"  # dense transformer subfolder

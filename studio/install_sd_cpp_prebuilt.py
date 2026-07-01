@@ -205,25 +205,67 @@ def _make_executable(path: Path) -> None:
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _download(
-    url: str,
-    dest: Path,
-    *,
-    timeout: float = 300.0,
-) -> None:
-    """Stream a release asset to ``dest`` with a timeout. ``urlretrieve`` has no timeout,
-    so a stalled connection would hang the lazy first-load (ensure_sd_cpp_binary) forever.
-    Anonymous, matching the public release URL -- the API fetch carries any token."""
-    with urllib.request.urlopen(url, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
-        shutil.copyfileobj(resp, f)
-
-
 def _locate_sd_cli(root: Path) -> Optional[Path]:
     name = "sd-cli.exe" if sys.platform == "win32" else "sd-cli"
     for p in root.rglob(name):
         if p.is_file():
             return p
     return None
+
+
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    timeout: float = 300.0,
+) -> None:
+    """Stream ``url`` to ``dest`` with an explicit timeout. ``urlretrieve`` takes no
+    timeout and can hang forever on a stalled socket. A User-Agent is set because the
+    GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
+    import shutil
+
+    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
+    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+        shutil.copyfileobj(resp, f)
+
+
+def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
+    """``extractall`` with a per-member containment check, so an archive carrying an
+    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip)."""
+    base = target.resolve()
+    for member in zf.infolist():
+        dest = (base / member.filename).resolve()
+        if dest != base and base not in dest.parents:
+            raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+    zf.extractall(target)
+
+
+def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:
+    """On Windows + a CUDA build, also fetch the separate CUDA-runtime DLL archive.
+
+    Upstream ships the runtime as ``cudart-sd-...-win-cu12-...zip`` (which
+    ``resolve_release_asset`` filters out); without those DLLs ``sd-cli.exe`` cannot start
+    on a machine that does not already have the CUDA runtime installed."""
+    if platform.system().lower() != "windows" or "cuda" not in chosen.lower():
+        return
+    cudart = next(
+        (
+            a
+            for a in release.get("assets", [])
+            if a["name"].lower().startswith("cudart") and "win" in a["name"].lower()
+        ),
+        None,
+    )
+    if cudart is None:
+        return
+    dest = target / cudart["name"]
+    print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
+    try:
+        _download(cudart["browser_download_url"], dest)
+        with zipfile.ZipFile(dest) as zf:
+            _safe_extractall(zf, target)
+    finally:
+        dest.unlink(missing_ok = True)
 
 
 def install(
@@ -264,7 +306,9 @@ def install(
         _verify_sha256(archive, asset.get("digest"))
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
-            zf.extractall(target)
+            _safe_extractall(zf, target)
+        # Windows CUDA builds need the separately-published cudart runtime DLLs.
+        _maybe_fetch_windows_cudart(release, chosen, target)
     finally:
         # Always drop the archive: on a sha256 mismatch / corrupt zip / network error it
         # must not linger (and a stale partial would defeat a later retry).
@@ -303,7 +347,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         install(
-            install_dir = Path(args.install_dir) if args.install_dir else None,
+            install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
             accelerator = args.accelerator,
         )
     except RuntimeError as exc:

@@ -14,6 +14,7 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -333,6 +334,6 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     child = repo_root.joinpath(*rel.parts).resolve()
     if child != repo_real and repo_real not in child.parents:
         raise ValueError("gguf_filename must resolve to a file inside the repo.")
-    if not child.exists():
-        raise FileNotFoundError(f"'{gguf_filename}' not found under {repo_root}.")
+    if not child.is_file():
+        raise FileNotFoundError(f"'{gguf_filename}' is not a file under {repo_root}.")
     return child

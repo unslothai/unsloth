@@ -221,6 +221,10 @@ const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
+// Convenient drag range for the Runs slider. The number box accepts higher typed
+// values on purpose (set it large to generate all night); the loop only floors at
+// 1 and ignores non-numeric input.
+const RUNS_SLIDER_MAX = 128;
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
@@ -783,12 +787,17 @@ function RecipeRow({
 function RecipePopover({
   image,
   onRestore,
+  active,
 }: {
   image: GalleryImage;
   onRestore: (image: GalleryImage) => void;
+  active: boolean;
 }) {
+  // Controlled + force-closed off-tab: PopoverContent portals to body, so the
+  // hidden/inert page wrapper can't contain it when the page is kept mounted.
+  const [open, setOpen] = useState(false);
   return (
-    <Popover>
+    <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
         <Button size="sm" variant="ghost" className="gap-1.5">
           <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
@@ -824,7 +833,7 @@ function RecipePopover({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
-export function ImagesPage() {
+export function ImagesPage({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -903,6 +912,11 @@ export function ImagesPage() {
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  // Controlled so the body-portaled overlays force-close when this page is mounted
+  // but off-tab (a hidden/inert parent can't contain a body portal): the model
+  // selector and the aspect-ratio dropdown.
+  const [selectorOpen, setSelectorOpen] = useState(false);
+  const [aspectOpen, setAspectOpen] = useState(false);
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
@@ -913,6 +927,10 @@ export function ImagesPage() {
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
+  // False once the page truly unmounts (app close / chat-only eject). The page now
+  // stays mounted across tab switches, so a switch does NOT flip this -- a batch keeps
+  // generating off-tab; the multi-run loop only stops on a real unmount.
+  const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -1022,6 +1040,9 @@ export function ImagesPage() {
     setSeed(String(image.seed));
     setWidth(image.width);
     setHeight(image.height);
+    // The batch shared one seed, so image batch_index>0 only reproduces by replaying the
+    // whole batch: restore the batch size too (older recipes without it default to 1).
+    setBatchSize(image.batch_size ?? 1);
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -1064,17 +1085,28 @@ export function ImagesPage() {
     }
   }, []);
 
+  // Track mount so a long generate run stops issuing GPU work when the page is
+  // truly unmounted (app close / chat-only eject). The page now stays mounted
+  // across tab switches (RootLayout keeps it alive like chat), so a switch no
+  // longer breaks the loop -- a batch keeps generating off-tab. The mount-time
+  // refreshStatus and timer/toast cleanup live in the load-resume effect below,
+  // so this one carries only the mount flag.
   useEffect(() => {
-    void refreshStatus();
-    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
-    // load toast — its poll loop is gone, so it would otherwise hang forever
-    // (duration: Infinity) on whatever page the user navigated to.
+    isMounted.current = true;
     return () => {
-      if (pollTimer.current) clearTimeout(pollTimer.current);
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      dismissLoadToast();
+      isMounted.current = false;
     };
-  }, [refreshStatus, dismissLoadToast]);
+  }, []);
+
+  // Re-sync model status when the tab becomes active again: while off-tab the
+  // diffusion model may have been evicted (e.g. a chat load claimed the GPU),
+  // and the page no longer remounts on return to refresh it on its own.
+  useEffect(() => {
+    if (!active) return;
+    void (async () => {
+      await refreshStatus();
+    })();
+  }, [active, refreshStatus]);
 
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
@@ -1092,6 +1124,19 @@ export function ImagesPage() {
         dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
+        // A failed load may have freed a previously-loaded model, so resync to
+        // the real backend state (the synchronous failure path does the same).
+        void refreshStatus();
+        return;
+      }
+      if (p.phase === null) {
+        // No load in flight and nothing loaded: the load was cancelled or
+        // evicted (e.g. a chat load took the GPU) and the backend cleared its
+        // state. Terminal — otherwise this loop would spin forever and leave
+        // busy stuck on "loading", deadening the picker and Generate button.
+        dismissLoadToast();
+        setBusy(null);
+        void refreshStatus();
         return;
       }
       // Include bytes_total: the estimate lands as a 0→real jump while phase and
@@ -1105,7 +1150,37 @@ export function ImagesPage() {
       // Transient poll failure: keep trying.
     }
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast]);
+  }, [dismissLoadToast, refreshStatus]);
+
+  useEffect(() => {
+    void (async () => {
+      await refreshStatus();
+      // A load runs on the backend as a daemon thread that survives navigation.
+      // On (re)mount, resume tracking one that's still in flight so the page
+      // shows progress and updates on completion, instead of a stale view that
+      // never polls (no toast, and no refresh when the load finishes).
+      try {
+        const p = await getDiffusionLoadProgress();
+        if (p.phase === "downloading" || p.phase === "finalizing") {
+          setBusy("loading");
+          dismissLoadToast();
+          lastLoadSig.current = null;
+          loadToastId.current = toast(null, loadToastArgs(p));
+          void pollLoadProgress();
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
+    })();
+    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
+    // load toast — its poll loop is gone, so it would otherwise hang forever
+    // (duration: Infinity) on whatever page the user navigated to.
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
+      dismissLoadToast();
+    };
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
 
   const handleLoad = useCallback(
     async (
@@ -1184,6 +1259,10 @@ export function ImagesPage() {
   // inputs with that model's defaults.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
+      // Ignore picks while a load/generation/unload is in flight: starting a
+      // replacement load now would tear down the live poll/toast and reset
+      // busy, while the backend rejects the second load with a 409.
+      if (busy !== null) return;
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = SAFETENSORS_MODELS[id];
       if (spec) {
@@ -1218,10 +1297,18 @@ export function ImagesPage() {
       setGuidance(d.guidance);
       void handleLoad(id, { kind: "pipeline" });
     },
-    [handleLoad],
+    [busy, handleLoad],
   );
 
   const handleUnload = useCallback(async () => {
+    // Ejecting cancels any in-flight replacement load on the backend, so tear
+    // down its client-side tracking too: the load poll reschedules on phase
+    // null and the persistent toast never resolves, so both would otherwise
+    // leak forever after the unload.
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    dismissLoadToast();
+    lastLoadSig.current = null;
     setBusy("unloading");
     try {
       setStatus(await unloadDiffusionModel());
@@ -1232,7 +1319,7 @@ export function ImagesPage() {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, dismissLoadToast]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
@@ -1332,6 +1419,12 @@ export function ImagesPage() {
     const w = snapDim(width);
     const h = snapDim(height);
 
+    // A large run count (generate all night) is a legitimate choice, so there's
+    // no upper cap; just floor at 1 and ignore non-numeric input (the number box
+    // can yield NaN), which would otherwise make the loop a silent no-op.
+    const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
+    if (runs !== count) setCount(runs);
+
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -1351,7 +1444,10 @@ export function ImagesPage() {
       }
     }, 300);
     try {
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < runs; i++) {
+        // The page truly unmounted mid-run (app close / chat-only eject): stop
+        // issuing more GPU generations. A plain tab switch keeps it mounted.
+        if (!isMounted.current) break;
         const res = await generateDiffusionImage({
           prompt: prompt.trim(),
           // Only send a negative prompt when guidance uses it, so the recipe
@@ -1372,6 +1468,7 @@ export function ImagesPage() {
           upscale: condUpscale,
           reference_images: condRefImages,
         });
+        if (!isMounted.current) break;
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
         if (res.images[0]) setSelectedId(res.images[0].id);
@@ -1518,6 +1615,8 @@ export function ImagesPage() {
           variant="ghost"
           className="!h-[34px]"
           task={IMAGE_GEN_TASKS}
+          open={active && selectorOpen}
+          onOpenChange={(o) => setSelectorOpen(active && o)}
         />
         {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
             toggle, same icon in both states so it never moves). Highlighted when open. */}
@@ -1844,7 +1943,12 @@ export function ImagesPage() {
             hint="Pick a ratio to lock the proportions, then set the size with the sliders. Flip swaps width and height. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
           >
             <div className="flex items-center gap-2">
-              <Select value={aspect} onValueChange={changeAspect}>
+              <Select
+                value={aspect}
+                onValueChange={changeAspect}
+                open={active && aspectOpen}
+                onOpenChange={(o) => setAspectOpen(active && o)}
+              >
                 <SelectTrigger className="flex-1">
                   <SelectValue />
                 </SelectTrigger>
@@ -1903,7 +2007,7 @@ export function ImagesPage() {
             hint="How many times to repeat the generation, one after another. Each run uses the next seed, so the images differ and can be reproduced."
             value={count}
             min={1}
-            max={128}
+            max={RUNS_SLIDER_MAX}
             step={1}
             onChange={setCount}
           />
@@ -1937,7 +2041,7 @@ export function ImagesPage() {
                     any image and read as a unit instead of blending into the canvas.
                     Size/seed live in the Recipe popover, so no separate chip here. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
-                  <RecipePopover image={selected} onRestore={restoreSettings} />
+                  <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <Button
                     size="sm"
                     variant="ghost"

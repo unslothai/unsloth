@@ -39,7 +39,12 @@ export const QUANT_OPTIONS: {
   value: string;
   label: string;
   recommended?: boolean;
+  imatrix?: boolean; // IQ quants require an importance matrix (the imatrix toggle below)
 }[] = [
+  { value: "iq2_xxs", label: "IQ2_XXS", imatrix: true },
+  { value: "iq2_m", label: "IQ2_M", imatrix: true },
+  { value: "iq3_xxs", label: "IQ3_XXS", imatrix: true },
+  { value: "iq4_xs", label: "IQ4_XS", imatrix: true },
   { value: "q2_k_l", label: "Q2_K_L" },
   { value: "q3_k_m", label: "Q3_K_M" },
   { value: "q4_k_m", label: "Q4_K_M", recommended: true },
@@ -50,12 +55,44 @@ export const QUANT_OPTIONS: {
   { value: "f16", label: "F16" },
 ];
 
+/** Merged-export precision formats. The compressed-tensors ones run llm-compressor for vLLM. */
+export type MergedFormat =
+  | "16-bit (FP16)"
+  | "FP8 (compressed-tensors)"
+  | "NVFP4 (compressed-tensors)";
+
+export const MERGED_FORMATS: {
+  value: MergedFormat;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    value: "16-bit (FP16)",
+    label: "16-bit",
+    hint: "Full precision, runs anywhere.",
+  },
+  {
+    value: "FP8 (compressed-tensors)",
+    label: "FP8 (vLLM)",
+    hint: "compressed-tensors FP8 for vLLM. Needs an NVIDIA GPU.",
+  },
+  {
+    value: "NVFP4 (compressed-tensors)",
+    label: "NVFP4 (vLLM)",
+    hint: "compressed-tensors NVFP4 for vLLM. Needs an NVIDIA GPU; calibrates.",
+  },
+];
+
 /**
  * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
  * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
  * embeddings). Approximate ("~"), not exact file sizes.
  */
 export const GGUF_BPW: Record<string, number> = {
+  iq2_xxs: 2.06,
+  iq2_m: 2.7,
+  iq3_xxs: 3.06,
+  iq4_xs: 4.25,
   q2_k_l: 3.35,
   q3_k_m: 3.91,
   q4_k_m: 4.83,
