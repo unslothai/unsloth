@@ -125,7 +125,8 @@ def find_sd_cpp_binary() -> Optional[str]:
     both engines look):
       1. ``SD_CLI_PATH`` env -- a direct path to the binary.
       2. ``UNSLOTH_SD_CPP_PATH`` env -- a stable-diffusion.cpp install dir.
-      3. ``~/.unsloth/stable-diffusion.cpp`` build layouts (the installer target).
+      3. The default install root build layouts (the installer target); honors
+         ``UNSLOTH_STUDIO_HOME`` / ``STUDIO_HOME``, else ``~/.unsloth/stable-diffusion.cpp``.
       4. ``./stable-diffusion.cpp`` in-tree build (developer checkout).
       5. ``sd-cli`` (then legacy ``sd``) on PATH.
     """
@@ -151,8 +152,17 @@ def find_sd_cpp_binary() -> Optional[str]:
         if hit:
             return hit
 
-    # 3. Default install root (sibling of ~/.unsloth/llama.cpp).
-    hit = _first_file(_layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp"))
+    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME the same way
+    #    the installer's default_install_dir does (base = the Studio home's parent), so
+    #    a binary installed under a custom Studio root is discovered and side-by-side
+    #    Studios stay isolated; falls back to the sibling of ~/.unsloth/llama.cpp.
+    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    default_root = (
+        Path(studio_home).parent / "stable-diffusion.cpp"
+        if studio_home
+        else Path.home() / ".unsloth" / "stable-diffusion.cpp"
+    )
+    hit = _first_file(_layout_candidates(default_root))
     if hit:
         return hit
 

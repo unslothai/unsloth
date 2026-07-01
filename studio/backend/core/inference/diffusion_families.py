@@ -14,6 +14,7 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -95,9 +96,9 @@ class DiffusionFamily:
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
 # is read from its HF base_model tag at load time, so one entry covers Turbo/full,
 # schnell/dev, etc. base_repo here is only a fallback. Only archs whose diffusers
-# transformer supports from_single_file load here (ERNIE-Image does not, yet).
-# FLUX.2-dev and FLUX.2-klein-9B are left out only because their base diffusers
-# repos are gated; the open klein-4B base stands in for the klein family below.
+# transformer supports from_single_file load here (ERNIE-Image does not, yet; LTX
+# video models are out of scope). FLUX.2-klein-9B shares the klein family (its base
+# repo is resolved per-variant), and FLUX.2-dev has its own family below.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -114,8 +115,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
     ),
     # FLUX.2-klein is a distinct pipeline (Flux2KleinPipeline) with a Qwen3 text
-    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic
-    # flux match. The base Flux2Pipeline (FLUX.2-dev) is gated, so it's omitted.
+    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic flux
+    # match. The Mistral-based Flux2Pipeline is the separate flux.2-dev family below.
     DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
@@ -136,6 +137,28 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+        ),
+    ),
+    # FLUX.2-dev is the full (non-distilled) FLUX.2. It uses the Mistral-based
+    # Flux2Pipeline, distinct from klein's Qwen3-based Flux2KleinPipeline, so it needs
+    # its own entry. Its base diffusers repo is gated (gated=auto) but reachable with an
+    # HF token. text-to-image only: diffusers 0.38 ships no Flux2 img2img / inpaint
+    # pipeline for dev. VAE + Mistral text encoder come from the open Comfy-Org/flux2-dev
+    # mirror for the sd-cli path (shares the FLUX.2 32-channel AE with klein).
+    DiffusionFamily(
+        name = "flux.2-dev",
+        pipeline_class = "Flux2Pipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-dev",
+        aliases = ("flux2-dev", "flux2dev"),
+        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae_format = "flux2",
+        sd_cpp_text_encoders = (
+            (
+                "Comfy-Org/flux2-dev",
+                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+                "llm",
+            ),
         ),
     ),
     DiffusionFamily(
@@ -262,6 +285,12 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
     return None
 
 
+def supported_family_names() -> tuple[str, ...]:
+    """Family names accepted as ``family_override`` and shown in the unknown-model
+    error. Kept in registry order so the message lists what the backend can load."""
+    return tuple(fam.name for fam in _FAMILIES)
+
+
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     """The companion diffusers repo: caller-supplied if given, else the family fallback."""
     base = (base_repo or "").strip()
@@ -305,6 +334,6 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     child = repo_root.joinpath(*rel.parts).resolve()
     if child != repo_real and repo_real not in child.parents:
         raise ValueError("gguf_filename must resolve to a file inside the repo.")
-    if not child.exists():
-        raise FileNotFoundError(f"'{gguf_filename}' not found under {repo_root}.")
+    if not child.is_file():
+        raise FileNotFoundError(f"'{gguf_filename}' is not a file under {repo_root}.")
     return child

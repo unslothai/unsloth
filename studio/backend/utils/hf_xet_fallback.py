@@ -161,6 +161,7 @@ def _download_child_entry(
     repo_type: str,
     disable_xet: bool,
     result_queue: Any,
+    force_download: bool = False,
 ) -> None:
     """Spawn-child entrypoint: download one file and report the result.
 
@@ -211,6 +212,7 @@ def _download_child_entry(
             filename = filename,
             repo_type = repo_type,
             token = token,
+            force_download = force_download,
         )
         result_queue.put({"ok": True, "path": path})
     except BaseException as e:  # noqa: BLE001 - report every failure to the parent
@@ -264,6 +266,7 @@ def _run_download_attempt(
     interval: float,
     grace_period: float,
     on_status: Optional[Callable[[str], None]],
+    force_download: bool = False,
 ) -> tuple[str, Optional[str]]:
     """Run one download in a spawn child supervised by the no-progress watchdog.
 
@@ -280,6 +283,7 @@ def _run_download_attempt(
             repo_type = repo_type,
             disable_xet = disable_xet,
             result_queue = result_queue,
+            force_download = force_download,
         ),
         daemon = True,
     )
@@ -345,21 +349,28 @@ def hf_hub_download_with_xet_fallback(
     interval: float = DEFAULT_HEARTBEAT_INTERVAL,
     grace_period: float = DEFAULT_GRACE_PERIOD,
     on_status: Optional[Callable[[str], None]] = None,
+    force_download: bool = False,
 ) -> str:
     """Download a single file with Xet primary and HTTP as a stall-only fallback.
 
     Returns the local cache path. Raises ``RuntimeError("Cancelled")`` if
     *cancel_event* is set, re-raises a deterministic child error unchanged (no
     fallback), and raises ``DownloadStallError`` only if BOTH transports stall.
+
+    When *force_download* is True the cache-first early-return is skipped and the
+    flag is threaded to ``hf_hub_download`` so a newer remote blob is re-fetched
+    even if an older blob is already cached.
     """
     # Finalized blob already cached: return it with no child and no network.
-    try:
-        from huggingface_hub import try_to_load_from_cache
-        cached = try_to_load_from_cache(repo_id, filename, repo_type = repo_type)
-        if isinstance(cached, str) and os.path.exists(cached):
-            return cached
-    except Exception as e:
-        logger.debug("Cached probe failed for %s/%s: %s", repo_id, filename, e)
+    # Skipped when force_download is set so an update re-fetches a newer blob.
+    if not force_download:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            cached = try_to_load_from_cache(repo_id, filename, repo_type = repo_type)
+            if isinstance(cached, str) and os.path.exists(cached):
+                return cached
+        except Exception as e:
+            logger.debug("Cached probe failed for %s/%s: %s", repo_id, filename, e)
 
     if cancel_event is not None and cancel_event.is_set():
         raise RuntimeError("Cancelled")
@@ -386,6 +397,7 @@ def hf_hub_download_with_xet_fallback(
             interval = interval,
             grace_period = grace_period,
             on_status = on_status,
+            force_download = force_download,
         )
 
         if kind == "ok":

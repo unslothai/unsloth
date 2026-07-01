@@ -123,6 +123,7 @@ export interface GalleryImage {
   guidance: number;
   seed: number;
   batch_index: number;
+  batch_size: number;
   model: string | null;
   loras?: string[];
   created_at: number;

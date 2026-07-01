@@ -119,6 +119,19 @@ def test_list_skips_foreign_pngs(tmp_path):
     assert [r["prompt"] for r in listed] == ["ours"]
 
 
+def test_foreign_png_in_window_does_not_drop_valid_images():
+    # A foreign PNG sorting INTO the requested page must not consume a window slot and
+    # drop a valid image that sorts after it: paging is over readable records, not files.
+    _save_with_mtime("p2", 100.0)
+    foreign = gallery.gallery_dir() / "zzz_foreign.png"
+    _img().save(foreign, format = "PNG")  # newest by mtime (set below), sorts first
+    os.utime(foreign, (300.0, 300.0))
+    _save_with_mtime("p1", 200.0)
+    # First page of 2 must still return both real images, not [p1] (foreign eating a slot).
+    page1 = gallery.list_images(limit = 2, offset = 0)
+    assert [r["prompt"] for r in page1] == ["p1", "p2"]
+
+
 def test_list_skips_recipe_missing_required_fields(tmp_path):
     # A PNG carrying our chunk but an incomplete/older-schema recipe (no seed etc.)
     # must be skipped, not crash the whole listing when the route builds GalleryImage.
