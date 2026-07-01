@@ -379,8 +379,14 @@ def test_tokenizer_only_warms_slow_sentencepiece_vocab(capture):
     _, st = capture(tokenizer_only = True)
     allow = st["allow_patterns"]
     for name in (
-        "sentencepiece.bpe.model", "source.spm", "target.spm", "bpe.codes", "vocab.bpe",
-        "sentencepiece.model", "vocab-src.json", "vocab-tgt.json",
+        "sentencepiece.bpe.model",
+        "source.spm",
+        "target.spm",
+        "bpe.codes",
+        "vocab.bpe",
+        "sentencepiece.model",
+        "vocab-src.json",
+        "vocab-tgt.json",
     ):
         assert name in allow, name
 
@@ -540,9 +546,9 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     # local_files_only must be forwarded so an offline / cache-only load does not start a Hub download
     # via the prefetch before the ST load sees the flag (Codex #6638).
     prefetch_call = fp.body[prefetch_pos].value
-    assert "local_files_only" in {kw.arg for kw in prefetch_call.keywords}, (
-        "prefetch must forward local_files_only"
-    )
+    assert "local_files_only" in {
+        kw.arg for kw in prefetch_call.keywords
+    }, "prefetch must forward local_files_only"
 
 
 def test_st_module_download_forwards_cache_folder():
@@ -558,11 +564,9 @@ def test_st_module_download_forwards_cache_folder():
     calls = [
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "load_dir_path"
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "load_dir_path"
     ]
     assert calls, "expected a load_dir_path call in sentence_transformer.py"
-    assert all("cache_folder" in {kw.arg for kw in c.keywords} for c in calls), (
-        "every load_dir_path call must forward cache_folder"
-    )
+    assert all(
+        "cache_folder" in {kw.arg for kw in c.keywords} for c in calls
+    ), "every load_dir_path call must forward cache_folder"
