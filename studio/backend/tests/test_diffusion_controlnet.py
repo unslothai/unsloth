@@ -37,6 +37,14 @@ def test_resolve_controlnet_catalog_bare_repo_and_unknown():
         dc.resolve_controlnet("not-a-known-id")
 
 
+def test_resolve_controlnet_rejects_filesystem_like_ids():
+    # The bare-repo fallback must never accept a path-shaped id: from_pretrained
+    # would treat it as a local directory, bypassing the controlnets_dir() contract.
+    for bad in ("/tmp/model", "../some/model", "./x/y", "~/x/y", "a/b/c", "C:\\x/y", ".hidden/x"):
+        with pytest.raises(FileNotFoundError):
+            dc.resolve_controlnet(bad)
+
+
 def test_resolve_controlnet_local(tmp_path, monkeypatch):
     d = tmp_path / "controlnets"
     d.mkdir()
