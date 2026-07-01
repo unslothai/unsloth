@@ -5,8 +5,9 @@
 Covers:
   * GGUF variant listing computes update_available from the already-fetched
     sibling metadata instead of a second Hub call.
-  * hf_hub_download_with_xet_fallback(force_download=True) bypasses the
-    try_to_load_from_cache cache-first early-return.
+  * hf_hub_download_with_xet_fallback forwards force_download through the
+    deduplicated shim to the shared unsloth_zoo helper (which owns the
+    try_to_load_from_cache cache-first early-return and its bypass).
 
 The cache "Update" action now runs through the download manager as a normal
 managed download (so it shows in the Downloads panel with progress + cancel),
@@ -341,44 +342,29 @@ def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
 
 
-def test_force_download_bypasses_cache_first_early_return(monkeypatch):
-    """force_download=True skips the try_to_load_from_cache early-return and
-    proceeds to the real download path; force_download=False returns the cached
-    path without ever attempting a download (X2/F2)."""
-    import huggingface_hub as hf
+def test_force_download_is_forwarded_through_the_shim(monkeypatch):
+    """The deduplicated shim delegates to the shared unsloth_zoo helper, which owns the
+    try_to_load_from_cache early-return and its force_download bypass (covered by the zoo suite's
+    test_force_download_file_skips_cache_probe). The shim's own contract is to forward force_download
+    unchanged so Studio's model-update path re-fetches a newer blob; verify both force_download=False
+    and force_download=True reach the shared helper (X2/F2)."""
     import utils.hf_xet_fallback as X
 
-    cached_path = "/cache/blob/cached.gguf"
+    seen = []
 
-    # Pretend the blob IS cached on disk (try_to_load_from_cache is imported
-    # inside the function from huggingface_hub, and os.path.exists must agree).
-    monkeypatch.setattr(hf, "try_to_load_from_cache", lambda *a, **k: cached_path, raising = False)
-    monkeypatch.setattr(X.os.path, "exists", lambda p: True, raising = False)
+    def fake_shared(repo_id, filename, token, **kwargs):
+        seen.append(kwargs.get("force_download"))
+        return "/downloaded/path"
 
-    attempts = []
+    monkeypatch.setattr(X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True)
 
-    def fake_attempt(repo_id, filename, token, **kwargs):
-        attempts.append(
-            {"repo_id": repo_id, "filename": filename, "force": kwargs.get("force_download")}
-        )
-        return ("ok", "/freshly/downloaded/path")
-
-    monkeypatch.setattr(X, "_run_download_attempt", fake_attempt, raising = True)
-
-    # force_download=False: cache-first early-return, no download attempt.
-    out = X.hf_hub_download_with_xet_fallback(
+    X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = False
     )
-    assert out == cached_path
-    assert attempts == []  # never reached the real download
-
-    # force_download=True: bypass the early-return, run the real download.
-    out2 = X.hf_hub_download_with_xet_fallback(
+    X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = True
     )
-    assert out2 == "/freshly/downloaded/path"
-    assert len(attempts) == 1
-    assert attempts[0]["force"] is True
+    assert seen == [False, True]  # the shim forwards force_download to the shared helper unchanged
 
 
 # ── multi-revision GGUF blob comparison and update reclaim ──

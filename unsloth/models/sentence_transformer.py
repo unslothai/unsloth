@@ -19,6 +19,7 @@ from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
     resolve_encoder_attention_implementation,
+    maybe_prefetch_hf_snapshot,
 )
 import inspect
 import json
@@ -541,7 +542,12 @@ class FastSentenceTransformer(FastModel):
         return transformer_module
 
     @staticmethod
-    def _read_pooling_mode(model_name, token):
+    def _read_pooling_mode(
+        model_name,
+        token,
+        cache_dir = None,
+        revision = None,
+    ):
         """Read the pooling mode from modules.json, else return "mean"."""
         try:
             if os.path.exists(model_name) and os.path.exists(
@@ -549,7 +555,13 @@ class FastSentenceTransformer(FastModel):
             ):
                 modules_json_path = os.path.join(model_name, "modules.json")
             else:
-                modules_json_path = hf_hub_download(model_name, "modules.json", token = token)
+                modules_json_path = hf_hub_download(
+                    model_name,
+                    "modules.json",
+                    token = token,
+                    cache_dir = cache_dir,
+                    revision = revision,
+                )
 
             with open(modules_json_path, "r", encoding = "utf-8") as f:
                 modules_config = json.load(f)
@@ -571,6 +583,8 @@ class FastSentenceTransformer(FastModel):
                                 model_name,
                                 os.path.join(pooling_path, "config.json"),
                                 token = token,
+                                cache_dir = cache_dir,
+                                revision = revision,
                             )
                         break
 
@@ -950,7 +964,12 @@ class FastSentenceTransformer(FastModel):
             f.write(content)
 
     @staticmethod
-    def _module_path(model_name, token = None):
+    def _module_path(
+        model_name,
+        token = None,
+        cache_dir = None,
+        revision = None,
+    ):
         """Return the path to the modules.json file, or None."""
         try:
             if os.path.exists(model_name) and os.path.isdir(model_name):
@@ -958,7 +977,13 @@ class FastSentenceTransformer(FastModel):
                 return path if os.path.exists(path) else None
             else:
                 try:
-                    return hf_hub_download(model_name, "modules.json", token = token)
+                    return hf_hub_download(
+                        model_name,
+                        "modules.json",
+                        token = token,
+                        cache_dir = cache_dir,
+                        revision = revision,
+                    )
                 except:
                     return None
         except:
@@ -1135,6 +1160,8 @@ class FastSentenceTransformer(FastModel):
         max_seq_length,
         pooling_mode,
         trust_remote_code = False,
+        cache_dir = None,
+        revision = None,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules.
 
@@ -1145,7 +1172,9 @@ class FastSentenceTransformer(FastModel):
         from sentence_transformers.models import Pooling, Normalize
 
         modules = OrderedDict()
-        modules_json_path = FastSentenceTransformer._module_path(model_name, token)
+        modules_json_path = FastSentenceTransformer._module_path(
+            model_name, token, cache_dir = cache_dir, revision = revision
+        )
 
         if modules_json_path:
             with open(modules_json_path, encoding = "utf8") as f:
@@ -1171,7 +1200,13 @@ class FastSentenceTransformer(FastModel):
                         load_path = os.path.join(model_name, module_path)
                     else:
                         try:
-                            load_path = load_dir_path(model_name, module_path, token = token)
+                            load_path = load_dir_path(
+                                model_name,
+                                module_path,
+                                token = token,
+                                cache_folder = cache_dir,
+                                revision = revision,
+                            )
                         except Exception as e:
                             print(f"Unsloth Warning: Could not download module {module_path}: {e}")
                             continue
@@ -1198,7 +1233,9 @@ class FastSentenceTransformer(FastModel):
         hidden_size = getattr(model.config, "hidden_size", 768)
 
         if pooling_mode == "mean":
-            pooling_mode = FastSentenceTransformer._read_pooling_mode(model_name, token)
+            pooling_mode = FastSentenceTransformer._read_pooling_mode(
+                model_name, token, cache_dir = cache_dir, revision = revision
+            )
 
         modules["1"] = Pooling(word_embedding_dimension = hidden_size, pooling_mode = pooling_mode)
         modules["2"] = Normalize()
@@ -1386,6 +1423,43 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        # Validate the mutually-exclusive load modes BEFORE the prefetch (a config rejected locally must
+        # not first download many GB of weights). Only the non-for_inference path uses these flags; the
+        # for_inference branch below skips them, so guard the check to preserve its behavior.
+        if not for_inference:
+            # sanity check, thanks Etherl:
+            if full_finetuning and (load_in_4bit or load_in_8bit):
+                print(
+                    "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
+                )
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_fp8 = False
+                load_in_16bit = False
+
+            if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
+                raise RuntimeError(
+                    "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                    "Also, we by default set `load_in_16bit = True`.\n"
+                    "If you want 4bit LoRA finetuning, set `load_in_16bit = False` and `load_in_4bit = True`\n"
+                    "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
+                )
+
+        # Pre-download in a killable subprocess (Xet -> HTTP on a stall) so the ST load below is a cache
+        # hit. weights_at_root stays False since ST component weights live in per-module subfolders.
+        # Resolve the cache the load uses: an explicit HF cache_dir wins (the FastModel fallback load
+        # forwards it), else cache_folder, else SENTENCE_TRANSFORMERS_HOME (which ST honors when
+        # cache_folder is unset), else the default HF cache -- a wrong-cache warm would be missed.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = kwargs.get("cache_dir")
+            or kwargs.get("cache_folder")
+            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            local_files_only = kwargs.get("local_files_only", False),
+        )
+
         # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues
         if for_inference:
             st_device = device_map
@@ -1419,24 +1493,7 @@ class FastSentenceTransformer(FastModel):
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
-        # sanity check, thanks Etherl:
-        if full_finetuning and (load_in_4bit or load_in_8bit):
-            print(
-                "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
-            )
-            load_in_4bit = False
-            load_in_8bit = False
-            load_in_fp8 = False
-            load_in_16bit = False
-
-        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
-            raise RuntimeError(
-                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
-                "Also, we by default set `load_in_16bit = True`.\n"
-                "If you want 4bit LoRA finetuning, set `load_in_16bit = False` and `load_in_4bit = True`\n"
-                "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
-            )
-
+        # Load-mode validation + full_finetuning normalization already ran before the prefetch above.
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 
@@ -1533,7 +1590,8 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # Load via native SentenceTransformer (bypasses Unsloth patching)
+            # Forward cache_folder so this load reads the cache the prefetch warmed (None lets ST honor
+            # SENTENCE_TRANSFORMERS_HOME, matching the prefetch); a custom one would otherwise miss it.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1541,6 +1599,7 @@ class FastSentenceTransformer(FastModel):
                 token = token,
                 revision = revision,
                 model_kwargs = model_kwargs,
+                cache_folder = kwargs.get("cache_folder"),
             )
 
             # Store metadata for get_peft_model
@@ -1646,7 +1705,19 @@ class FastSentenceTransformer(FastModel):
 
         # No modules.json -> force 16-bit: saving is custom for these models and
         # 4-bit would need dequant in save_pretrained_merged, not worth it.
-        has_modules_json = FastSentenceTransformer._module_path(model_name, token) is not None
+        # Resolve the same cache the prefetch warmed: hf_hub_download (used here and by
+        # _load_modules) ignores SENTENCE_TRANSFORMERS_HOME, so passing bare cache_folder would miss it.
+        has_modules_json = (
+            FastSentenceTransformer._module_path(
+                model_name,
+                token,
+                cache_dir = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                revision = revision,
+            )
+            is not None
+        )
 
         if not has_modules_json and load_in_4bit:
             print(
@@ -1655,6 +1726,14 @@ class FastSentenceTransformer(FastModel):
             )
             load_in_4bit = False
             load_in_16bit = True
+
+        # The fallback FastModel weight load resolves its cache from the HF cache_dir, not ST's
+        # cache_folder / SENTENCE_TRANSFORMERS_HOME. Point it at the SAME cache the prefetch warmed above,
+        # else the weights miss the warm and start an unprotected in-process Xet download. Only set it when
+        # a custom ST cache is in play and the caller passed no explicit HF cache_dir (which wins).
+        _st_cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+        if _st_cache_dir is not None and "cache_dir" not in kwargs:
+            kwargs["cache_dir"] = _st_cache_dir
 
         try:
             model, tokenizer = FastModel.from_pretrained(
@@ -1697,6 +1776,15 @@ class FastSentenceTransformer(FastModel):
             max_seq_length,
             pooling_mode,
             trust_remote_code = trust_remote_code,
+            # Same resolved cache as above so the fallback module loads hit the warm, not Xet.
+            cache_dir = kwargs.get("cache_dir")
+            or kwargs.get("cache_folder")
+            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            # Read the modules from the SAME revision the model weights load from (FastModel forwards
+            # revision to the weight load), so a revision-pinned repo hits the prefetch's warm instead
+            # of fetching default-branch module files in-process over Xet (and mixing them with the
+            # revision-pinned weights). A None revision resolves to the default branch as before.
+            revision = revision,
         )
 
         st_device = device_map

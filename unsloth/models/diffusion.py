@@ -24,7 +24,7 @@ import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
-from ._utils import is_bfloat16_supported
+from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
@@ -79,7 +79,14 @@ def _resolve_diffusion_model_class(config):
     )
 
 
-def _load_diffusion_config(model_name, token, trust_remote_code, revision, local_files_only):
+def _load_diffusion_config(
+    model_name,
+    token,
+    trust_remote_code,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
     """Load the config, aliasing the legacy ``diffusion_gemma`` model_type to the ``diffusion_gemma4``
     classes current transformers ships. AutoConfig raises on the legacy type; catch that, rewrite the
     type/arch names in-memory, and rebuild."""
@@ -90,6 +97,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
             trust_remote_code = trust_remote_code,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
     except ValueError as e:
         if "diffusion_gemma" not in str(e):
@@ -103,6 +111,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
             token = token,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
         with open(cfg_path, encoding = "utf-8") as f:
             cd = json.load(f)
@@ -152,12 +161,16 @@ class FastDiffusionModel:
                 os.environ.get("HF_HUB_OFFLINE", "0") == "1"
                 or os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1"
             )
+
+        cache_dir = kwargs.get("cache_dir")
+
         config = _load_diffusion_config(
             model_name,
             token,
             trust_remote_code,
             revision,
             local_files_only,
+            cache_dir = cache_dir,
         )
         model_type = getattr(config, "model_type", None)
         if not is_diffusion_model_type(model_type):
@@ -168,6 +181,23 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
+        # Pre-download the confirmed diffusion repo (Xet -> HTTP on a stall) so the weight load is a cache
+        # hit. subfolder is NOT forwarded: the pipeline loads the whole repo root (every component
+        # subfolder), so narrowing to one would leave unet/, vae/, text_encoder/ to in-process Xet.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            fast_inference = False,
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            # Diffusion variants (variant="fp16") are common: forward it so the warm never drops a
+            # variant .bin for a non-variant safetensors.
+            variant = kwargs.get("variant"),
+        )
+
         load_kwargs = dict(
             dtype = dtype,
             device_map = device_map,
@@ -176,7 +206,18 @@ class FastDiffusionModel:
             attn_implementation = attn_implementation,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
+        # Honor an explicit weight format on the real load too, so it reads the format the prefetch
+        # warmed (else a mixed-format repo could pick the other and start an in-process Xet download).
+        # use_safetensors=None (auto) already matches the prefetch's heuristic.
+        if kwargs.get("use_safetensors") is not None:
+            load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
+        # Forward the variant to the real load too, so it reads the variant weights the prefetch warmed.
+        # Without it the pipeline asks for the default weight variant, missing the warm (wrong precision,
+        # or a default weight a variant-only repo may not ship, fetched in-process over un-killable Xet).
+        if kwargs.get("variant") is not None:
+            load_kwargs["variant"] = kwargs["variant"]
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
@@ -222,6 +263,7 @@ class FastDiffusionModel:
                 trust_remote_code = trust_remote_code,
                 revision = revision,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
             )
         except Exception:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -230,6 +272,7 @@ class FastDiffusionModel:
                 trust_remote_code = trust_remote_code,
                 revision = revision,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
             )
 
         return model, tokenizer

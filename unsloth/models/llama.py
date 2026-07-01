@@ -2420,6 +2420,55 @@ class FastLlamaModel:
 
         preferred_attn_impl = resolve_attention_implementation(model_function, model_config)
 
+        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a stall) so the weight load is
+        # a cache hit. After the AutoConfig/model-class check, so an unsupported repo fails on its small
+        # config fetch. revision is NOT forwarded: the load resolves model_name (possibly a remapped
+        # prequantized repo where the caller's revision does not exist) on its default branch.
+        _prefetched = maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            # Only a real vLLM-owned load skips the warm. A num_labels classification load takes the
+            # AutoModelForSequenceClassification branch below (an in-process download) even under
+            # fast_inference=True, so it must still be warmed or its weights fetch over un-killable Xet.
+            fast_inference = fast_inference and num_labels is None,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            from_tf = kwargs.get("from_tf", False),
+            from_flax = kwargs.get("from_flax", False),
+            # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
+            # when a subfolder is set.
+            weights_at_root = True,
+            variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get(
+                "gguf_file"
+            ),  # forward so the warm fetches the GGUF (else ignored)
+        )
+        # Child already did the forced download; clear the flag so the load reuses the warm cache.
+        if _prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
+
+        # The tokenizer loads in-process regardless of the vLLM path; the base prefetch already covered
+        # model_name, so only warm here for a different tokenizer repo, or when fast_inference skipped it.
+        _tokenizer_repo = (
+            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
+        )
+        _warm_tokenizer_repo = (
+            isinstance(_tokenizer_repo, str)
+            and bool(_tokenizer_repo)
+            and (_tokenizer_repo != model_name or fast_inference)
+        )
+        if _warm_tokenizer_repo:
+            maybe_prefetch_hf_snapshot(
+                _tokenizer_repo,
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         has_rope_scaling = False
         try:
             with open(inspect.getfile(model_function), "r", encoding = "utf-8") as file:
@@ -2672,6 +2721,11 @@ class FastLlamaModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
+        # With a custom cache_dir the prefetch warmed it (incl. tokenizer files); route the tokenizer
+        # load there too so it reuses that cache instead of its own in-process Hub/Xet download.
+        _tokenizer_cache_kwargs = {}
+        if kwargs.get("cache_dir") is not None:
+            _tokenizer_cache_kwargs["cache_dir"] = kwargs["cache_dir"]
         tokenizer = load_correct_tokenizer(
             tokenizer_name = tokenizer_name,
             model_max_length = max_position_embeddings,
@@ -2679,6 +2733,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
+            **_tokenizer_cache_kwargs,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -2805,6 +2860,7 @@ class FastLlamaModel:
                 model_max_length = max_position_embeddings,
                 padding_side = "right",
                 token = token,
+                cache_dir = kwargs.get("cache_dir"),
             )
         patch_saving_functions(tokenizer)
 
