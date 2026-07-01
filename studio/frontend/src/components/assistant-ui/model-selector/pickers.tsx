@@ -1690,10 +1690,12 @@ export function HubModelPicker({
   // curates them; already-downloaded ones show under Downloaded instead.
   const curatedSafetensorsRows = useMemo(() => {
     if (!task) return [];
-    return models.filter(
-      (m) => m.isGguf === false && !downloadedSet.has(m.id.toLowerCase()),
-    );
-  }, [models, task, downloadedSet]);
+    // Always list the curated safetensors (bnb-4bit / fp8) diffusion models. They
+    // render with a "downloaded" badge when cached (like GGUF Recommended rows), so
+    // they must not be hidden once on disk -- otherwise they vanish from the picker
+    // entirely after the first load.
+    return models.filter((m) => m.isGguf === false);
+  }, [models, task]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
