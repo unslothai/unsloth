@@ -48,6 +48,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -527,6 +528,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+
+      <ModelAutoSwitchSection />
 
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
