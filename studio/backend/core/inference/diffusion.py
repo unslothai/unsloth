@@ -237,6 +237,8 @@ class _LoadState:
     # Pre-warmed torch.compile cache context (diffusion_compile_cache.CacheContext) when a
     # compiled tier ran, else None. Carries the per-key inductor dir + bundle for save/restore.
     compile_cache_ctx: Any = None
+    # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
+    hf_token: Optional[str] = None
 
 
 @dataclass
@@ -941,6 +943,7 @@ class DiffusionBackend:
                         transformer_cache = cache_engaged,
                         eager_patched = eager_patched,
                         compile_cache_ctx = compile_ctx,
+                        hf_token = hf_token,
                     )
                     state_committed = True
                 finally:
@@ -1148,6 +1151,78 @@ class DiffusionBackend:
         except (StopIteration, AttributeError, RuntimeError):
             pass
 
+    def _apply_loras(
+        self, state: Any, loras: Optional[list[tuple[str, float]]], cancel: threading.Event
+    ) -> None:
+        """Load + activate requested LoRA adapters on ``state.pipe`` (non-fused), or clear
+        them when none are requested.
+
+        The applied set is recorded on the pipe object, so an unchanged selection is a no-op
+        and a model swap (a fresh pipe with no marker) resets naturally. Never fuses: fusing
+        breaks on quantized (bnb-4bit / torchao) transformers and blocks live weight tweaks.
+        """
+        from core.inference import diffusion_lora
+
+        pipe = state.pipe
+        current = getattr(pipe, "_unsloth_loras", ())
+        specs = [(i, w) for (i, w) in (loras or []) if w != 0]
+
+        if not specs:
+            if current:
+                try:
+                    pipe.unload_lora_weights()
+                except Exception:  # noqa: BLE001 -- best-effort clear
+                    pass
+                pipe._unsloth_loras = ()
+            return
+
+        if not diffusion_lora.supports_lora(
+            engine = "diffusers",
+            family = getattr(state.family, "name", None),
+            model_kind = state.kind,
+            transformer_quant = state.transformer_quant,
+        ):
+            raise ValueError(
+                "LoRA is not supported for this model/quantisation on the diffusers engine "
+                "(GGUF-via-diffusers or torchao fp8/int8). Use a bf16 or bnb-4bit load, or the "
+                "native engine for GGUF models."
+            )
+
+        resolved = diffusion_lora.resolve_specs(
+            specs, hf_token = state.hf_token, cancel_event = cancel
+        )
+        # Unique adapter names (diffusers requires distinct names; sanitized stems can collide).
+        uniq: list[tuple[str, str, float]] = []
+        seen: set[str] = set()
+        for r in resolved:
+            name = r.alias
+            n = 1
+            while name in seen:
+                n += 1
+                name = f"{r.alias}_{n}"
+            seen.add(name)
+            uniq.append((name, r.path, r.weight))
+
+        desired = tuple(uniq)
+        if desired == current:
+            return
+        try:
+            if current:
+                pipe.unload_lora_weights()
+            for name, path, _weight in uniq:
+                pipe.load_lora_weights(path, adapter_name = name)
+            pipe.set_adapters(
+                [name for name, _p, _w in uniq], adapter_weights = [w for _n, _p, w in uniq]
+            )
+        except Exception as exc:  # noqa: BLE001 -- surface as a clean 400
+            try:
+                pipe.unload_lora_weights()
+            except Exception:  # noqa: BLE001
+                pass
+            pipe._unsloth_loras = ()
+            raise ValueError(f"Failed to apply LoRA: {exc}") from exc
+        pipe._unsloth_loras = desired
+
     def generate(
         self,
         *,
@@ -1175,6 +1250,9 @@ class DiffusionBackend:
         # pipeline accepts a list, so multiple references can be combined (subject + style,
         # character + scene). Ignored by non-reference workflows.
         reference_images: Optional[list[str]] = None,
+        # LoRA adapters as (id, weight) pairs; loaded onto the pipe (non-fused) and activated
+        # with set_adapters for this generation. None/empty = no LoRA (adapters cleared).
+        loras: Optional[list[tuple[str, float]]] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -1206,6 +1284,10 @@ class DiffusionBackend:
                 else:
                     seed = int(seed)
                 generator.manual_seed(seed)
+
+                # Apply/adjust LoRA adapters on the resident pipe (non-fused) before picking
+                # the workflow pipe; from_pipe pipes share the transformer, so it propagates.
+                self._apply_loras(state, loras, cancel)
 
                 # Select the pipeline for this workflow. txt2img uses the loaded pipe;
                 # img2img/inpaint reuse its resident modules via from_pipe (no reload);
@@ -1439,6 +1521,13 @@ class DiffusionBackend:
         if state.eager_patched:
             uninstall_patches()
             uninstall_arch_patches()
+        # Drop any LoRA adapters applied to the pipe so a later reference-path load is
+        # bit-identical and the freed transformer carries no adapter layers. Idempotent.
+        try:
+            if getattr(state.pipe, "_unsloth_loras", ()):
+                state.pipe.unload_lora_weights()
+        except Exception:  # noqa: BLE001 -- best-effort cleanup on teardown
+            pass
         # Drop the workflow pipes built around this load's modules so they don't pin the
         # freed pipeline (they only re-wire its components, but holding the wrappers
         # would keep the modules alive past unload).
@@ -1469,7 +1558,10 @@ class DiffusionBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "workflows": [],
+                "supports_lora": False,
             }
+        from core.inference import diffusion_lora
+
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -1491,6 +1583,12 @@ class DiffusionBackend:
             # Image-conditioned workflows the loaded family supports, so the UI can gate
             # its tabs. txt2img is always available on the diffusers engine.
             "workflows": _family_workflows(state.family),
+            "supports_lora": diffusion_lora.supports_lora(
+                engine = "diffusers",
+                family = state.family.name,
+                model_kind = state.kind,
+                transformer_quant = state.transformer_quant,
+            ),
         }
 
 

@@ -18,6 +18,9 @@ export interface DiffusionStatus {
   // Image workflows the loaded family supports (drives tab gating): txt2img, img2img,
   // inpaint. Absent/empty when nothing is loaded or on the native sd.cpp engine.
   workflows?: string[];
+  // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA
+  // picker's enabled state). False on unsupported families/quant.
+  supports_lora?: boolean;
 }
 
 export interface DiffusionGenerateProgress {
@@ -86,6 +89,26 @@ export interface DiffusionGenerateRequest {
   upscale?: number;
   // Additional reference images for the FLUX.2 reference workflow, combined with init_image.
   reference_images?: string[];
+  // LoRA adapters to apply for this generation (by discovery id + weight, 0..2). Omitted
+  // or empty applies none. Rejected (400) when the loaded model/quant can't apply LoRA.
+  loras?: LoraSpecInput[];
+}
+
+// One LoRA selection sent with a generation.
+export interface LoraSpecInput {
+  id: string;
+  weight: number;
+}
+
+// A discoverable diffusion LoRA adapter (from GET /api/models/diffusion-loras).
+export interface DiffusionLoraInfo {
+  id: string;
+  display_name: string;
+  source: "local" | "hub";
+  format: "safetensors" | "gguf";
+  families: string[];
+  size_bytes: number;
+  weight_default: number;
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).
@@ -101,6 +124,7 @@ export interface GalleryImage {
   seed: number;
   batch_index: number;
   model: string | null;
+  loras?: string[];
   created_at: number;
 }
 
@@ -151,6 +175,15 @@ export async function generateDiffusionImage(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
+}
+
+/** List diffusion LoRA adapters, optionally filtered to a model family. */
+export async function listDiffusionLoras(family?: string): Promise<DiffusionLoraInfo[]> {
+  const qs = family ? `?family=${encodeURIComponent(family)}` : "";
+  const data = await parseJson<{ loras: DiffusionLoraInfo[] }>(
+    await authFetch(`/api/models/diffusion-loras${qs}`),
+  );
+  return data.loras ?? [];
 }
 
 export interface GalleryPage {
