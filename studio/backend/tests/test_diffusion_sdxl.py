@@ -127,3 +127,23 @@ def test_sdxl_lora_supported_on_diffusers():
     assert diffusion_lora.supports_lora(
         engine = "diffusers", family = "sdxl", model_kind = "single_file", transformer_quant = None
     )
+
+
+def test_pipeline_prefetch_skips_non_torch_artifacts():
+    # The SDXL Base repo ships fp16 variants, ONNX, OpenVINO and Flax exports next to
+    # the default safetensors; from_pretrained (no variant kwarg) loads only the
+    # default torch weights, so the prefetch filter must skip everything else or a
+    # catalog load pulls tens of GB of unused artifacts.
+    from core.inference.diffusion import _pipeline_file_downloaded as keep
+
+    assert keep("model_index.json")
+    assert keep("unet/diffusion_pytorch_model.safetensors")
+    assert keep("text_encoder/model.safetensors")
+    assert keep("scheduler/scheduler_config.json")
+    assert not keep("sd_xl_base_1.0.safetensors")  # top-level single-file twin
+    assert not keep("unet/diffusion_pytorch_model.fp16.safetensors")
+    assert not keep("text_encoder/model.onnx")
+    assert not keep("text_encoder/openvino_model.bin")
+    assert not keep("unet/flax_model.msgpack")
+    assert not keep("vae_decoder/model.onnx_data")
+    assert not keep("assets/preview.png")
