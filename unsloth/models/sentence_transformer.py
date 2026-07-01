@@ -1454,7 +1454,9 @@ class FastSentenceTransformer(FastModel):
             model_name,
             token = token,
             revision = revision,
-            cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            cache_dir = kwargs.get("cache_dir")
+            or kwargs.get("cache_folder")
+            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             local_files_only = kwargs.get("local_files_only", False),
         )
 
@@ -1775,7 +1777,9 @@ class FastSentenceTransformer(FastModel):
             pooling_mode,
             trust_remote_code = trust_remote_code,
             # Same resolved cache as above so the fallback module loads hit the warm, not Xet.
-            cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            cache_dir = kwargs.get("cache_dir")
+            or kwargs.get("cache_folder")
+            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             # Read the modules from the SAME revision the model weights load from (FastModel forwards
             # revision to the weight load), so a revision-pinned repo hits the prefetch's warm instead
             # of fetching default-branch module files in-process over Xet (and mixing them with the

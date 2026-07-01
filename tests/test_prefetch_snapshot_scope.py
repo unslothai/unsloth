@@ -342,9 +342,9 @@ def test_st_cache_resolutions_honor_explicit_hf_cache_dir():
     ]
     assert resolutions, "expected cache_dir resolutions referencing SENTENCE_TRANSFORMERS_HOME"
     for kw in resolutions:
-        assert "'cache_dir'" in ast.dump(kw.value), (
-            "an ST cache_dir resolution must read an explicit kwargs.get('cache_dir') first"
-        )
+        assert "'cache_dir'" in ast.dump(
+            kw.value
+        ), "an ST cache_dir resolution must read an explicit kwargs.get('cache_dir') first"
 
 
 def test_vision_warms_vllm_tokenizer_after_remap():
@@ -359,9 +359,9 @@ def test_vision_warms_vllm_tokenizer_after_remap():
         src = f.read()
     guard = "if _vllm_owns_weights and isinstance(tokenizer_name"
     assert guard in src, "expected a vLLM-gated tokenizer warm"
-    assert src.index(guard) > src.index("fast_inference_setup("), (
-        "the vLLM tokenizer warm must run after the fast_inference_setup remap"
-    )
+    assert src.index(guard) > src.index(
+        "fast_inference_setup("
+    ), "the vLLM tokenizer warm must run after the fast_inference_setup remap"
 
 
 def test_diffusion_forwards_variant_to_real_load():
@@ -374,9 +374,9 @@ def test_diffusion_forwards_variant_to_real_load():
     src_path = os.path.join(os.path.dirname(U.__file__), "diffusion.py")
     with open(src_path, "r", encoding = "utf-8") as f:
         src = f.read()
-    assert 'load_kwargs["variant"] = kwargs["variant"]' in src, (
-        "the diffusion load must forward variant to model_cls.from_pretrained"
-    )
+    assert (
+        'load_kwargs["variant"] = kwargs["variant"]' in src
+    ), "the diffusion load must forward variant to model_cls.from_pretrained"
 
 
 def test_vision_prefetch_runs_after_load_mode_validation():
