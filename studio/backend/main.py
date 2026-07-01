@@ -24,6 +24,18 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # process is covered before its heavy ML imports.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Windows terminals default to the active system code page. Reconfigure
+# stdout/stderr before the startup banner so non-ASCII output cannot crash the
+# backend process.
+if sys.platform == "win32":
+    for _win_stream in (sys.stdout, sys.stderr):
+        if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
+            try:
+                _win_stream.reconfigure(encoding = "utf-8", errors = "replace")
+            except Exception:
+                pass
+    del _win_stream
+
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
@@ -520,6 +532,11 @@ async def lifespan(app: FastAPI):
     _start_helper_precache_if_enabled()
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
+    # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
+    from core.inference.llama_keepwarm import idle_unload_loop
+
+    app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
+
     # Initialize RSA key pair for API key encryption (external providers).
     from core.inference.key_exchange import init_key_pair
 
@@ -548,6 +565,14 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
     yield
+
+    _idle_task = getattr(app.state, "idle_unload_task", None)
+    if _idle_task is not None:
+        _idle_task.cancel()
+        try:
+            await _idle_task
+        except asyncio.CancelledError:
+            pass
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -870,6 +895,11 @@ app.add_middleware(
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
+
+# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
