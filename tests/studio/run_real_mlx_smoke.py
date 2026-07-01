@@ -515,14 +515,48 @@ def cmd_reload(args) -> int:
     return 0
 
 
+def _find_llama_cli() -> Path | None:
+    """Locate the llama-cli binary save_pretrained_gguf built.
+
+    save_pretrained_gguf installs llama.cpp under unsloth_zoo's LLAMA_CPP_DEFAULT_DIR
+    ($UNSLOTH_LLAMA_CPP_PATH or ~/.unsloth/llama.cpp), not the working directory, so
+    search there first and keep the CWD-relative layout as a fallback.
+    """
+    bases: list[Path] = []
+    env_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+    if env_dir:
+        bases.append(Path(env_dir))
+    try:
+        from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+        bases.append(Path(LLAMA_CPP_DEFAULT_DIR))
+    except Exception:
+        bases.append(Path.home() / ".unsloth" / "llama.cpp")
+    bases.append(Path("llama.cpp"))
+
+    seen: set[Path] = set()
+    for base in bases:
+        if base in seen:
+            continue
+        seen.add(base)
+        for rel in ("llama-cli", "build/bin/llama-cli"):
+            cand = base / rel
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return cand
+        # Last resort: the binary may sit under an unexpected build subdir.
+        if base.is_dir():
+            for cand in sorted(base.glob("**/llama-cli")):
+                if cand.is_file() and os.access(cand, os.X_OK):
+                    return cand
+    return None
+
+
 def _reload_gguf(save_dir: Path, metrics: dict) -> int:
-    candidates = [
-        Path("llama.cpp/llama-cli"),
-        Path("llama.cpp/build/bin/llama-cli"),
-    ]
-    llama_cli = next((c for c in candidates if c.exists()), None)
+    llama_cli = _find_llama_cli()
     if llama_cli is None:
-        raise SystemExit(f"llama-cli not found; checked {candidates}")
+        raise SystemExit(
+            "llama-cli not found under $UNSLOTH_LLAMA_CPP_PATH, "
+            "~/.unsloth/llama.cpp, or ./llama.cpp"
+        )
 
     gguf_files = sorted(save_dir.glob("*.gguf"))
     if not gguf_files:
