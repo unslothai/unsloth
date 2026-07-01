@@ -1363,24 +1363,25 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
-# Bound the automatic first-use install of llm-compressor to its current 0.x series. Without any
-# bound, `pip install llmcompressor` resolves to whatever the configured index offers, so a
-# compromised, dependency-confused, or inflated-version ("999.0.0") release could be pulled and
-# executed under the Unsloth process at install/import time; the "<1.0" ceiling blocks that jump.
-# The range still lets pip pick up new 0.x releases, which is where support for brand-new
-# architectures lands (the gate below can require a newer llm-compressor for newer schemes/models)
-# -- an exact pin would break exporting new models. Bump the ceiling deliberately when
-# llm-compressor reaches 1.0 so a new major is vetted before it is auto-installed.
+# Bound the automatic first-use install of llm-compressor to a vetted window. Without a bound,
+# `pip install llmcompressor` resolves to whatever the configured index offers, so a compromised,
+# dependency-confused, or inflated-version release could be pulled and executed under the Unsloth
+# process at install/import time. The ceiling must cap to a vetted minor, NOT just "<1.0": every 0.x
+# version satisfies "<1.0", so an inflated "0.999.0" on a malicious/misconfigured index would still
+# win pip's highest-version selection. "<0.13" caps to the current 0.12 series and blocks that jump.
+# Bump this ceiling deliberately (after vetting) when a newer llm-compressor is needed -- e.g. for a
+# brand-new architecture whose scheme the installed build does not yet support. Current new models
+# still resolve: 0.12.0 is < 0.13 and supports them.
 #
 # The floor is 0.6.0 (its metadata only needs torch>=1.7) so it never conflicts with the torch this
 # install pins in the constraints file below: Unsloth supports torch>=2.4, but llm-compressor
 # 0.7.0+ require torch>=2.7 (0.10+ need >=2.9, 0.12+ need >=2.10). A higher floor would leave pip
 # with no candidate on a supported torch 2.4-2.6 box and break FP8/FP4 export before quantization.
-# pip still prefers the newest compatible release, so modern torch gets the latest 0.x anyway.
+# pip still prefers the newest compatible release, so modern torch gets the latest vetted 0.x anyway.
 #
 # An already-installed newer llm-compressor is used as-is (the import below short-circuits), so this
 # only constrains the auto-install, never what the user installed themselves.
-_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<1.0"
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<0.13"
 
 
 def install_llm_compressor():

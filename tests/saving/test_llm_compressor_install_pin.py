@@ -54,6 +54,22 @@ def test_spec_is_a_bounded_pin() -> None:
     assert ">=" in spec and "<" in spec, f"spec must have lower and upper bounds, got {spec!r}"
 
 
+def test_ceiling_blocks_inflated_versions() -> None:
+    """The ceiling must cap to a vetted minor, not just <1.0.
+
+    A bare <1.0 still admits any 0.x, so an inflated 0.999.0 served by a compromised/misconfigured
+    index would win pip's highest-version selection -- the exact dependency-confusion this pin is
+    meant to block. Assert the current-latest vetted release resolves while an inflated 0.x and the
+    next major do not.
+    """
+    from packaging.requirements import Requirement
+
+    spec = Requirement(_spec_value()).specifier
+    assert spec.contains("0.12.0"), "the current vetted release must resolve"
+    assert not spec.contains("0.999.0"), "an inflated 0.x must be blocked (cap to a vetted minor)"
+    assert not spec.contains("1.0.0"), "a new major must not be auto-installed"
+
+
 def test_floor_stays_compatible_with_supported_torch() -> None:
     """The floor must not require a torch newer than the oldest torch Unsloth supports (>=2.4).
 
