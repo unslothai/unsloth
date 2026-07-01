@@ -164,11 +164,17 @@ def apply_speed_optims(
     family: Any,
     speed_mode: str = SPEED_OFF,
     cache_active: bool = False,
+    offload_active: bool = False,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optimisations for ``speed_mode`` to a built pipeline,
     BEFORE placement / offload. Returns which optimisations actually engaged. Every
-    step is best-effort: a pipeline that doesn't support one is simply skipped."""
+    step is best-effort: a pipeline that doesn't support one is simply skipped.
+
+    ``offload_active`` is the planned offload policy != none: group/model/sequential
+    offloading installs ``@torch.compiler.disable``d onload hooks, so the compile must
+    drop ``fullgraph`` (same reason as an active step cache) or it crashes at the first
+    denoise step."""
     applied = {
         "channels_last": False,
         "cudnn_benchmark": False,
@@ -178,12 +184,11 @@ def apply_speed_optims(
         "compiled_dequant": False,
     }
     mode = normalize_speed_mode(speed_mode)
-    # TF32 is the one PROCESS-GLOBAL flag we flip (on max). Restore it whenever this
-    # load isn't max, so a later default/off diffusion load -- or chat inference in the
-    # same long-lived process -- doesn't silently inherit a prior max load's TF32 and
-    # lose the bit-identical default the regression harness checks.
-    if mode != SPEED_MAX:
-        _restore_tf32(logger)
+    # TF32 and cudnn.benchmark are the process-global flags this may flip (TF32 on max,
+    # cudnn.benchmark on any non-off CUDA load). The caller snapshots them before this
+    # call and restores on unload / failed load via snapshot_backend_flags /
+    # restore_backend_flags, so a later `off` load -- or chat inference in the same
+    # process -- never inherits them. We keep no separate bookkeeping here.
     if mode == SPEED_OFF:
         return applied
 
@@ -212,11 +217,19 @@ def apply_speed_optims(
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family):
             applied["compiled"] = _compile_repeated_blocks(
-                pipe, logger, max_autotune = False, cache_active = cache_active
+                pipe,
+                logger,
+                max_autotune = False,
+                cache_active = cache_active,
+                offload_active = offload_active,
             )
     elif mode == SPEED_MAX and compile_eligible(target, is_gguf = is_gguf, family = family):
         applied["compiled"] = _compile_repeated_blocks(
-            pipe, logger, max_autotune = True, cache_active = cache_active
+            pipe,
+            logger,
+            max_autotune = True,
+            cache_active = cache_active,
+            offload_active = offload_active,
         )
 
     if mode == SPEED_MAX:
@@ -247,6 +260,7 @@ def _compile_repeated_blocks(
     *,
     max_autotune: bool = False,
     cache_active: bool = False,
+    offload_active: bool = False,
 ) -> bool:
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "compile_repeated_blocks", None)
@@ -259,14 +273,34 @@ def _compile_repeated_blocks(
     # / max-autotune) are deliberately NOT used: they crash on the regionally-compiled
     # block because its static output buffer is overwritten across denoise steps.
     #
-    # fullgraph drops to False when a step cache is engaged: FBCache's per-step decision is
-    # ``@torch.compiler.disable``d, i.e. a graph break, which fullgraph=True rejects ("Skip
-    # inlining torch.compiler.disable()d function"). The break is cheap and the rest of the
-    # block still compiles.
-    kwargs: dict[str, Any] = {"fullgraph": not cache_active, "dynamic": not max_autotune}
+    # fullgraph drops to False when a step cache OR CPU offloading is engaged: both insert
+    # an ``@torch.compiler.disable``d function into the forward -- FBCache's per-step
+    # decision, and group/model/sequential offload's ``ModuleGroup.onload_`` streaming hook
+    # -- i.e. a graph break, which fullgraph=True rejects ("Skip inlining
+    # torch.compiler.disable()d function"). The break is cheap and the rest of the block
+    # still compiles.
+    kwargs: dict[str, Any] = {
+        "fullgraph": not (cache_active or offload_active),
+        "dynamic": not max_autotune,
+    }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
     try:
+        import torch
+
+        # Heterogeneous-block DiTs (e.g. Z-Image) compile ~one graph per distinct block
+        # shape through compile_repeated_blocks; Z-Image needs ~11, above dynamo's default
+        # recompile_limit of 8. Once the limit is hit a resident load hard-errors under
+        # fullgraph (and an offload/cache load silently drops the overflow blocks to eager),
+        # so raise it well past that (64) for headroom on larger heterogeneous DiTs. This is
+        # diffusers' own documented fix for regional-compile recompilation (their guide bumps
+        # cache_size_limit). Deliberately NOT force_parameter_static_shapes=False: it doesn't
+        # cut the variant count here and makes each compile ~6x slower (24s -> 143s cold).
+        dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
+        if dynamo_cfg is not None:
+            for _limit_attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch ver
+                if hasattr(dynamo_cfg, _limit_attr):
+                    setattr(dynamo_cfg, _limit_attr, max(getattr(dynamo_cfg, _limit_attr) or 0, 64))
         fn(**kwargs)
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
@@ -284,48 +318,16 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         return False
 
 
-# The TF32 flag values from before the first max load flipped them, so a later
-# non-max load / unload can put the process back exactly as it found it (rather than
-# forcing a hardcoded default that might clobber another component's choice).
-_tf32_prev: Optional[tuple[bool, bool]] = None
-
-
 def _enable_tf32(logger: Any) -> bool:
-    global _tf32_prev
     try:
         import torch
 
-        if _tf32_prev is None:
-            _tf32_prev = (
-                torch.backends.cuda.matmul.allow_tf32,
-                torch.backends.cudnn.allow_tf32,
-            )
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "tf32", exc)
         return False
-
-
-def restore_tf32(logger: Any = None) -> None:
-    """Put the process-global TF32 flags back to their pre-max-load values. No-op if
-    a max load never set them. Called on a non-max load and on unload."""
-    _restore_tf32(logger)
-
-
-def _restore_tf32(logger: Any) -> None:
-    global _tf32_prev
-    if _tf32_prev is None:
-        return
-    try:
-        import torch
-        torch.backends.cuda.matmul.allow_tf32 = _tf32_prev[0]
-        torch.backends.cudnn.allow_tf32 = _tf32_prev[1]
-    except Exception as exc:  # noqa: BLE001 — best-effort restore
-        _warn(logger, "tf32_restore", exc)
-    finally:
-        _tf32_prev = None
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
