@@ -51,9 +51,18 @@ def _alive(pid: int) -> bool:
         return _win_alive(pid)
     try:
         os.kill(pid, 0)  # POSIX existence probe (on Windows this would terminate it)
-        return True
     except OSError:
         return False
+    if IS_LINUX and _linux_proc_state(pid) == "Z":
+        return False  # Unreaped zombies are already dead for PDEATHSIG assertions.
+    return True
+
+
+def _linux_proc_state(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding = "utf-8").split()[2]
+    except OSError:
+        return None
 
 
 def _win_alive(pid: int) -> bool:
