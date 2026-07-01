@@ -2674,6 +2674,13 @@ const VoiceEngine: FC = () => {
     const RETRY_MS = 50;
 
     const clickDictate = () => {
+      // Proactively clear any stale text on a FRESH handle before re-arming, in
+      // case the deferred post-send clear hadn't landed before this re-arm got
+      // here. Without it, turn 2's dictation appends onto turn 1's leftover text.
+      const fresh = auiRef.current.composer();
+      if (fresh.getState().text) {
+        fresh.setText("");
+      }
       document
         .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
         ?.click();
@@ -2830,6 +2837,23 @@ const VoiceEngine: FC = () => {
         // composer remount, leaving the utterance as a prefix on the next
         // message. Clear explicitly to guard against that.
         composer.setText("");
+        // The synchronous clear above lands on the pre-remount composer instance,
+        // which the FIRST send unmounts a few ms later (ComposerActionWrapper
+        // remount) — so on turn 1 it has no effect. Re-clear against a FRESH
+        // composer handle (auiRef.current.composer(), never the captured `composer`)
+        // across a few frames until it takes, or voice turns off.
+        const DEFERRED_CLEAR_MAX = 5;
+        const DEFERRED_CLEAR_MS = 50;
+        const deferredClear = (n: number) => {
+          if (voiceModeRef.current !== "active") return;
+          const fresh = auiRef.current.composer();
+          if (!fresh.getState().text) {
+            return;
+          }
+          fresh.setText("");
+          if (n < DEFERRED_CLEAR_MAX) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+        };
+        setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
       } else {
         // No speech this window: stopDictation ends the session but nothing
         // re-arms it, so the loop would die while voiceMode stays "active"
