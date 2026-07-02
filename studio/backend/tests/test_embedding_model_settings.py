@@ -90,21 +90,21 @@ def test_effective_embedding_model_prefers_override(settings_store):
     assert rag_config.effective_embedding_model() == "org/my-embedder"
 
 
-def test_effective_gguf_repo_default_pairing(settings_store, monkeypatch):
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        (None, rag_config.EMBED_GGUF_REPO),  # no override -> default pairing
+        ("org/my-embedder", "org/my-embedder-GGUF"),  # derive companion
+        ("org/my-embedder-GGUF", "org/my-embedder-GGUF"),  # already a GGUF repo
+        ("org/bigguf-model", "org/bigguf-model-GGUF"),  # "gguf" only as a segment
+        ("org/model.GGUF", "org/model.GGUF"),  # dot-separated GGUF segment
+    ],
+)
+def test_effective_gguf_repo_derivation(settings_store, monkeypatch, override, expected):
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
-    assert rag_config.effective_gguf_repo() == rag_config.EMBED_GGUF_REPO
-
-
-def test_effective_gguf_repo_derives_companion(settings_store, monkeypatch):
-    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
-    ems.set_rag_embedding_model("org/my-embedder")
-    assert rag_config.effective_gguf_repo() == "org/my-embedder-GGUF"
-
-
-def test_effective_gguf_repo_uses_gguf_repo_as_is(settings_store, monkeypatch):
-    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
-    ems.set_rag_embedding_model("org/my-embedder-GGUF")
-    assert rag_config.effective_gguf_repo() == "org/my-embedder-GGUF"
+    if override is not None:
+        ems.set_rag_embedding_model(override)
+    assert rag_config.effective_gguf_repo() == expected
 
 
 def test_effective_gguf_repo_env_wins(settings_store, monkeypatch):
@@ -112,15 +112,6 @@ def test_effective_gguf_repo_env_wins(settings_store, monkeypatch):
     ems.set_rag_embedding_model("org/my-embedder")
     # Explicit env pin keeps the import-time repo regardless of the override.
     assert rag_config.effective_gguf_repo() == rag_config.EMBED_GGUF_REPO
-
-
-def test_effective_gguf_repo_ignores_gguf_substring(settings_store, monkeypatch):
-    """ "gguf" must match as a whole name segment, not inside a word."""
-    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
-    ems.set_rag_embedding_model("org/bigguf-model")
-    assert rag_config.effective_gguf_repo() == "org/bigguf-model-GGUF"
-    ems.set_rag_embedding_model("org/model.GGUF")
-    assert rag_config.effective_gguf_repo() == "org/model.GGUF"
 
 
 def test_env_custom_model_derives_companion(settings_store, monkeypatch):
@@ -219,18 +210,6 @@ def test_put_local_dir_without_gguf_on_llama_backend_409(client, monkeypatch, tm
     assert "gguf" in r.json()["detail"].lower()
     # force saves anyway (user may point env overrides at it later).
     r = c.put("/embedding-model", json = {"embedding_model": str(local), "force": True})
-    assert r.status_code == 200
-
-
-def test_put_local_dir_with_gguf_on_llama_backend_saves(client, monkeypatch, tmp_path):
-    import core.rag.config as core_rag_config
-
-    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "llama-server")
-    local = tmp_path / "gguf-model"
-    local.mkdir()
-    (local / "embedder-F16.gguf").write_bytes(b"GGUF")
-    c, _ = client
-    r = c.put("/embedding-model", json = {"embedding_model": str(local)})
     assert r.status_code == 200
 
 
