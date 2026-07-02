@@ -58,6 +58,13 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    DiffusionCaptionUpdateRequest,
+    DiffusionDatasetExample,
+    DiffusionDatasetExamplesResponse,
+    DiffusionDatasetImageRecord,
+    DiffusionDatasetImagesResponse,
+    DiffusionDatasetImportRequest,
+    DiffusionDatasetImportResponse,
     DiffusionDatasetSummary,
     DiffusionDatasetUploadResponse,
     DiffusionMetricHistory,
@@ -1351,3 +1358,473 @@ async def upload_diffusion_dataset(
         caption_count = summary.caption_count,
         uploaded = uploaded,
     )
+
+
+# ── Dataset labeling (per-image caption editing) + one-click example imports ──
+# Thumbnails live in a hidden subdir so they never appear in dataset listings or the
+# trainer's own image discovery (both scan only top-level files).
+_THUMBS_DIRNAME = ".thumbs"
+_MAX_CAPTION_CHARS = 2000
+
+
+def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
+    """Validate ``name`` (single component, no traversal) and resolve it under the Studio
+    datasets root. 404 when a read target is missing."""
+    from utils.paths import datasets_root
+
+    cleaned = _clean_diffusion_dataset_name(name)
+    folder = datasets_root() / cleaned
+    if must_exist and not folder.is_dir():
+        raise HTTPException(status_code = 404, detail = f"Dataset '{cleaned}' not found.")
+    return folder
+
+
+def _safe_dataset_image_path(folder: Path, filename: str) -> Path:
+    """Resolve ``filename`` to an image path strictly inside ``folder``. Rejects any path
+    separators / traversal / null bytes and non-image extensions."""
+    raw = filename or ""
+    if "/" in raw or "\\" in raw or ".." in raw or "\x00" in raw or raw != Path(raw).name:
+        raise HTTPException(status_code = 400, detail = "Invalid image filename.")
+    if Path(raw).suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS:
+        exts = ", ".join(sorted(_DIFFUSION_DATASET_IMAGE_EXTS))
+        raise HTTPException(status_code = 400, detail = f"Not an image file. Allowed: {exts}")
+    path = folder / raw
+    # Defense in depth: the real path must stay under the dataset folder.
+    try:
+        path.resolve().relative_to(folder.resolve())
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "Invalid image filename.")
+    return path
+
+
+def _load_metadata_captions(folder: Path) -> dict[str, str]:
+    """Read metadata.jsonl / captions.jsonl into {file_name: caption}, mirroring the
+    trainer's discovery (keys file_name/image/file; caption in the ``text`` column)."""
+    import json
+
+    out: dict[str, str] = {}
+    for meta_name in ("metadata.jsonl", "captions.jsonl"):
+        meta_path = folder / meta_name
+        if not meta_path.is_file():
+            continue
+        try:
+            lines = meta_path.read_text(encoding = "utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            key = row.get("file_name") or row.get("image") or row.get("file")
+            if key and "text" in row:
+                out[str(key)] = str(row["text"])
+    return out
+
+
+def _image_record(
+    folder: Path, image_path: Path, meta_captions: dict[str, str]
+) -> DiffusionDatasetImageRecord:
+    """Build one image record, resolving its caption with metadata > sidecar precedence
+    (the same order the trainer uses)."""
+    caption: Optional[str] = meta_captions.get(image_path.name)
+    source = "metadata" if caption is not None else "none"
+    if caption is None:
+        for ext in (".txt", ".caption"):
+            sidecar = image_path.with_suffix(ext)
+            if sidecar.is_file():
+                try:
+                    caption = sidecar.read_text(encoding = "utf-8").strip()
+                    source = "sidecar"
+                except OSError:
+                    caption = None
+                break
+    try:
+        size_bytes = image_path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    width = height = 0
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            width, height = im.size
+    except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
+        pass
+    return DiffusionDatasetImageRecord(
+        filename = image_path.name,
+        caption = caption,
+        caption_source = source,  # type: ignore[arg-type]
+        width = width,
+        height = height,
+        size_bytes = size_bytes,
+    )
+
+
+@router.get(
+    "/diffusion/dataset/{name}/images", response_model = DiffusionDatasetImagesResponse
+)
+async def list_diffusion_dataset_images(
+    name: str, current_subject: str = Depends(get_current_subject)
+):
+    """List every image in a dataset folder with its resolved caption (including
+    uncaptioned images), for the labeling grid."""
+    folder = _resolve_dataset_folder(name)
+
+    def scan() -> DiffusionDatasetImagesResponse:
+        meta = _load_metadata_captions(folder)
+        records: list[DiffusionDatasetImageRecord] = []
+        for p in sorted(folder.iterdir()):
+            if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
+                records.append(_image_record(folder, p, meta))
+        return DiffusionDatasetImagesResponse(
+            name = folder.name, path = str(folder), images = records
+        )
+
+    return await asyncio.to_thread(scan)
+
+
+@router.get("/diffusion/dataset/{name}/image/{filename}")
+async def get_diffusion_dataset_image(
+    name: str,
+    filename: str,
+    thumb: Optional[int] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Serve a dataset image. ``?thumb=<px>`` returns a cached downscaled JPEG (regenerated
+    when the source is newer), used by the labeling grid to stay light."""
+    from fastapi.responses import FileResponse
+
+    folder = _resolve_dataset_folder(name)
+    image_path = _safe_dataset_image_path(folder, filename)
+    if not image_path.is_file():
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    if not thumb:
+        return FileResponse(str(image_path))
+
+    size = max(32, min(1024, int(thumb)))
+
+    def make_thumb() -> Path:
+        from PIL import Image
+
+        thumbs_dir = folder / _THUMBS_DIRNAME
+        thumbs_dir.mkdir(exist_ok = True)
+        thumb_path = thumbs_dir / f"{image_path.stem}_{size}.jpg"
+        src_mtime = image_path.stat().st_mtime
+        if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
+            return thumb_path
+        with Image.open(image_path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((size, size), Image.LANCZOS)
+            im.save(thumb_path, format = "JPEG", quality = 85)
+        return thumb_path
+
+    try:
+        thumb_path = await asyncio.to_thread(make_thumb)
+    except Exception as e:  # noqa: BLE001 -- fall back to the original on any decode failure
+        logger.warning("Thumbnail generation failed for %s: %s", image_path, e)
+        return FileResponse(str(image_path))
+    return FileResponse(str(thumb_path), media_type = "image/jpeg")
+
+
+@router.put(
+    "/diffusion/dataset/{name}/caption/{filename}",
+    response_model = DiffusionDatasetImageRecord,
+)
+async def set_diffusion_dataset_caption(
+    name: str,
+    filename: str,
+    body: DiffusionCaptionUpdateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Write (or, when blank, clear) an image's ``.txt`` caption sidecar. Returns the
+    updated image record."""
+    folder = _resolve_dataset_folder(name)
+    image_path = _safe_dataset_image_path(folder, filename)
+    if not image_path.is_file():
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    caption = (body.caption or "").strip()
+    if len(caption) > _MAX_CAPTION_CHARS:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Caption too long (max {_MAX_CAPTION_CHARS} characters).",
+        )
+
+    def write() -> DiffusionDatasetImageRecord:
+        sidecar = image_path.with_suffix(".txt")
+        if caption:
+            sidecar.write_text(caption, encoding = "utf-8")
+        else:
+            # Blank clears the sidecar; also drop a stale .caption so the image reads as
+            # uncaptioned afterwards.
+            sidecar.unlink(missing_ok = True)
+            image_path.with_suffix(".caption").unlink(missing_ok = True)
+        return _image_record(folder, image_path, _load_metadata_captions(folder))
+
+    return await asyncio.to_thread(write)
+
+
+@router.delete("/diffusion/dataset/{name}/image/{filename}")
+async def delete_diffusion_dataset_image(
+    name: str, filename: str, current_subject: str = Depends(get_current_subject)
+):
+    """Remove an image, its caption sidecars, and any cached thumbnails."""
+    folder = _resolve_dataset_folder(name)
+    image_path = _safe_dataset_image_path(folder, filename)
+    if not image_path.is_file():
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+
+    def remove() -> dict:
+        image_path.unlink(missing_ok = True)
+        for ext in (".txt", ".caption"):
+            image_path.with_suffix(ext).unlink(missing_ok = True)
+        thumbs_dir = folder / _THUMBS_DIRNAME
+        if thumbs_dir.is_dir():
+            for t in thumbs_dir.glob(f"{image_path.stem}_*.jpg"):
+                t.unlink(missing_ok = True)
+        return {"deleted": image_path.name}
+
+    return await asyncio.to_thread(remove)
+
+
+# Curated, license-labelled example datasets for one-click import. ``loader`` picks the
+# materialization strategy: "hf_dataset" streams rows from datasets.load_dataset (image +
+# optional caption column); "imagefolder_jsonl" snapshot-downloads a dataset repo whose
+# captions live in a *.jsonl (file_name/text) rather than a standard metadata.jsonl.
+_DATASET_EXAMPLES: list[dict] = [
+    {
+        "id": "dreambooth-dog",
+        "label": "Dog (DreamBooth subject)",
+        "repo": "diffusers/dog-example",
+        "description": (
+            "5 photos of one dog. The classic DreamBooth subject set: teach the model a "
+            "specific subject, then summon it with the trigger prompt."
+        ),
+        "license": "Released by Google for DreamBooth research/demos",
+        "image_cap": 10,
+        "suggested_trigger": "a photo of sks dog",
+        "loader": "hf_dataset",
+        "caption_column": None,
+        "no_checks": False,
+    },
+    {
+        "id": "tuxemon",
+        "label": "Tuxemon (captioned style set)",
+        "repo": "linoyts/Tuxemon",
+        "description": (
+            "Captioned cartoon monster art. A good style set: each image ships a caption, "
+            "so the adapter learns the look without a trigger word."
+        ),
+        "license": "cc-by-sa-3.0",
+        "image_cap": 60,
+        "suggested_trigger": None,
+        "loader": "hf_dataset",
+        "caption_column": "prompt",
+        "no_checks": True,
+    },
+    {
+        "id": "tarot-1920",
+        "label": "1920 Tarot (public domain style set)",
+        "repo": "multimodalart/1920-raider-waite-tarot-public-domain",
+        "description": (
+            "Public-domain 1920 Raider-Waite tarot art with captions. A permissive style "
+            "set for demoing captioned LoRA training."
+        ),
+        "license": "public domain",
+        "image_cap": 60,
+        "suggested_trigger": None,
+        "loader": "imagefolder_jsonl",
+        "caption_column": "text",
+        "no_checks": True,
+    },
+]
+
+
+def _example_by_id(example_id: str) -> dict:
+    for entry in _DATASET_EXAMPLES:
+        if entry["id"] == example_id:
+            return entry
+    raise HTTPException(status_code = 404, detail = f"Unknown example dataset '{example_id}'.")
+
+
+@router.get("/diffusion/dataset-examples", response_model = DiffusionDatasetExamplesResponse)
+async def list_diffusion_dataset_examples(
+    current_subject: str = Depends(get_current_subject),
+):
+    """List the curated example datasets available for one-click import."""
+    return DiffusionDatasetExamplesResponse(
+        examples = [
+            DiffusionDatasetExample(
+                id = e["id"],
+                label = e["label"],
+                repo = e["repo"],
+                description = e["description"],
+                license = e["license"],
+                image_cap = e["image_cap"],
+                suggested_trigger = e["suggested_trigger"],
+            )
+            for e in _DATASET_EXAMPLES
+        ]
+    )
+
+
+def _detect_image_column(features) -> Optional[str]:
+    """Return the first datasets Image-feature column name, else None."""
+    try:
+        from datasets import Image as HFImage
+    except Exception:  # noqa: BLE001
+        HFImage = None  # type: ignore[assignment]
+    for col, feat in features.items():
+        if HFImage is not None and isinstance(feat, HFImage):
+            return col
+        if type(feat).__name__ == "Image":
+            return col
+    return None
+
+
+def _detect_caption_column(entry: dict, columns: list[str]) -> Optional[str]:
+    """Pick the caption column: the entry's declared one if present, else a common name."""
+    declared = entry.get("caption_column")
+    if declared and declared in columns:
+        return declared
+    for cand in ("text", "prompt", "caption", "captions"):
+        if cand in columns:
+            return cand
+    return None
+
+
+def _materialize_hf_dataset(entry: dict, dest: Path, cap: int) -> int:
+    """Stream rows from datasets.load_dataset into ``dest`` as numbered images + optional
+    .txt sidecars. Returns the number of images written."""
+    from datasets import load_dataset
+
+    kwargs = {"split": "train"}
+    if entry.get("no_checks"):
+        kwargs["verification_mode"] = "no_checks"
+    ds = load_dataset(entry["repo"], **kwargs)
+    image_col = _detect_image_column(ds.features)
+    if image_col is None:
+        raise HTTPException(
+            status_code = 502,
+            detail = f"'{entry['repo']}' has no image column to import.",
+        )
+    caption_col = _detect_caption_column(entry, list(ds.features.keys()))
+    written = 0
+    for row in ds:
+        if written >= cap:
+            break
+        img = row[image_col]
+        if img is None:
+            continue
+        img = img.convert("RGB")
+        stem = f"img_{written:04d}"
+        img.save(dest / f"{stem}.png", format = "PNG")
+        if caption_col:
+            cap_text = row.get(caption_col)
+            if cap_text:
+                (dest / f"{stem}.txt").write_text(str(cap_text).strip(), encoding = "utf-8")
+        written += 1
+    return written
+
+
+def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
+    """Snapshot-download a dataset repo whose captions live in *.jsonl (file_name/text),
+    then copy referenced images + write .txt sidecars. Returns images written."""
+    import json
+    import shutil
+
+    from huggingface_hub import snapshot_download
+
+    caption_col = entry.get("caption_column") or "text"
+    snap = Path(
+        snapshot_download(
+            entry["repo"],
+            repo_type = "dataset",
+            allow_patterns = ["*.jsonl", "*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp", "**/*.jpg",
+                              "**/*.jpeg", "**/*.png", "**/*.webp", "**/*.bmp"],
+        )
+    )
+    # Map basename -> caption from every jsonl carrying file_name + caption column.
+    captions: dict[str, str] = {}
+    for jf in snap.rglob("*.jsonl"):
+        for line in jf.read_text(encoding = "utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fn = row.get("file_name") or row.get("image") or row.get("file")
+            if fn and caption_col in row:
+                captions[Path(str(fn)).name] = str(row[caption_col])
+    # Copy images (those with a caption first, so a cap keeps captioned pairs).
+    images = sorted(
+        p for p in snap.rglob("*")
+        if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+    )
+    images.sort(key = lambda p: (p.name not in captions, p.name))
+    written = 0
+    for src in images:
+        if written >= cap:
+            break
+        stem = f"img_{written:04d}"
+        shutil.copyfile(src, dest / f"{stem}{src.suffix.lower()}")
+        cap_text = captions.get(src.name)
+        if cap_text:
+            (dest / f"{stem}.txt").write_text(cap_text.strip(), encoding = "utf-8")
+        written += 1
+    return written
+
+
+@router.post(
+    "/diffusion/dataset/import-example", response_model = DiffusionDatasetImportResponse
+)
+async def import_diffusion_dataset_example(
+    body: DiffusionDatasetImportRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Materialize a curated example dataset into a Studio dataset folder (images + .txt
+    captions), ready to train. Idempotent: a folder that already holds images is returned
+    as-is rather than re-downloaded."""
+    entry = _example_by_id(body.id)
+    folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
+
+    def do_import() -> DiffusionDatasetImportResponse:
+        folder.mkdir(parents = True, exist_ok = True)
+        existing = _diffusion_dataset_summary(folder)
+        imported = 0
+        if existing.image_count == 0:
+            cap = int(entry["image_cap"])
+            try:
+                if entry["loader"] == "imagefolder_jsonl":
+                    imported = _materialize_imagefolder_jsonl(entry, folder, cap)
+                else:
+                    imported = _materialize_hf_dataset(entry, folder, cap)
+            except HTTPException:
+                raise
+            except Exception as e:  # noqa: BLE001 -- surface a readable fetch/parse failure
+                raise HTTPException(
+                    status_code = 502,
+                    detail = f"Could not import '{entry['repo']}': {e}",
+                )
+            if imported == 0:
+                raise HTTPException(
+                    status_code = 502,
+                    detail = f"No images found in '{entry['repo']}'.",
+                )
+        summary = _diffusion_dataset_summary(folder)
+        return DiffusionDatasetImportResponse(
+            name = folder.name,
+            path = str(folder),
+            image_count = summary.image_count,
+            caption_count = summary.caption_count,
+            imported = imported,
+            license = entry["license"],
+            source_repo = entry["repo"],
+        )
+
+    return await asyncio.to_thread(do_import)
