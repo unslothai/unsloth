@@ -49,7 +49,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 import textwrap
-from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
+from ._utils import _get_inference_mode_context_manager
 
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
@@ -1380,6 +1380,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 and mm_token_type_ids is None
                 and _pk_ok is not False
             ):
+                # this function's source is copied into the generated GRPO trainer, so import the
+                # logging flag locally (before the try) to keep the bare name defined there too
+                from unsloth.models._utils import UNSLOTH_ENABLE_LOGGING
                 try:
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
