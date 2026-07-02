@@ -144,7 +144,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             )}
 
             {models.map((model) => {
-              const { owner, name } = splitRepoLabel(model.id);
+              const { name } = splitRepoLabel(model.id);
               return (
                 <button
                   key={model.id}
@@ -155,20 +155,12 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                     value === model.id && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
                   )}
                 >
-                  <span className="flex min-w-0 flex-1 items-baseline">
-                    {owner && (
-                      <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-[13px] text-muted-foreground/90">
-                        <span className="truncate">{owner}</span>
-                        <span className="shrink-0 text-muted-foreground/45">/</span>
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{name}</span>
-                  </span>
+                  <span className="min-w-0 flex-1 truncate">{name}</span>
                   <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                    {!model.source && (
+                    {!model.source && model.isGguf && (
                       <DotTag
-                        tone={model.isGguf ? "gguf" : "checkpoint"}
-                        label={model.isGguf ? "GGUF" : "Safetensors"}
+                        tone="gguf"
+                        label="GGUF"
                         className="h-[18px] gap-1 rounded-md px-1.5"
                         dotClassName="size-[5px]"
                       />
