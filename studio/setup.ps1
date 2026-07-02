@@ -57,15 +57,12 @@ $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
 
-# ─────────────────────────────────────────────
-# Guard: LOCALAPPDATA must not point to systemprofile
-# ─────────────────────────────────────────────
-# When setup.ps1 runs under a SYSTEM/service token (a scheduled task as
-# SYSTEM, psexec -s, an MDM/SCCM deploy) the process inherits that token's
-# LOCALAPPDATA (C:\Windows\system32\config\systemprofile) instead of the
-# real user path. Every code path below (prebuilt installs, CMake probe,
-# source builds) relies on a writable LOCALAPPDATA, so we fix it once here
-# at the top.
+# Guard: LOCALAPPDATA must not point to systemprofile.
+# Under a SYSTEM/service token (a scheduled task as SYSTEM, psexec -s, an
+# MDM/SCCM deploy) the process inherits that token's LOCALAPPDATA
+# (C:\Windows\system32\config\systemprofile), which isn't writable. Every
+# code path below (prebuilt installs, CMake probe, source builds) needs a
+# writable LOCALAPPDATA, so we fix it once here at the top.
 if ([string]::IsNullOrEmpty($env:LOCALAPPDATA) -or $env:LOCALAPPDATA -like "C:\Windows\*\config\systemprofile*") {
     $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
     if (([string]::IsNullOrEmpty($env:LOCALAPPDATA) -or $env:LOCALAPPDATA -like "C:\Windows\*\config\systemprofile*") -and -not [string]::IsNullOrEmpty($env:USERPROFILE)) {
