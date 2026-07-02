@@ -387,18 +387,21 @@ const safeImageUrl: UrlTransform = (url, _key, node) => {
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
   const displayText = useRafCoalescedText(text, status.type === "running");
-  const processedText = useMemo(
-    () => preprocessLaTeX(displayText),
-    [displayText],
-  );
-
+  // Audio-model replies embed a leading <audio-player> tag ahead of the
+  // model's actual text; strip it out of what Streamdown renders and show
+  // the player above the normal chat text instead of hiding the text.
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
-  if (audioMatch) {
-    return <AudioPlayer src={audioMatch[1]} />;
-  }
+  const textForMarkdown = audioMatch
+    ? displayText.replace(AUDIO_PLAYER_RE, "").trimStart()
+    : displayText;
+  const processedText = useMemo(
+    () => preprocessLaTeX(textForMarkdown),
+    [textForMarkdown],
+  );
 
   return (
     <div data-status={status.type} className="min-w-0 max-w-full">
+      {audioMatch && <AudioPlayer src={audioMatch[1]} />}
       <Streamdown
         mode="streaming"
         isAnimating={status.type === "running"}

@@ -3,6 +3,7 @@
 
 import { requestVoiceResume } from "@/components/assistant-ui/thread";
 import { authFetch } from "@/features/auth";
+import { useChatRuntimeStore } from "@/features/chat";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 
@@ -169,6 +170,8 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
       try {
         const form = new FormData();
         form.append("file", wav, "speech.wav");
+        const modelId = useChatRuntimeStore.getState().selectedSttModelId;
+        if (modelId) form.append("model", modelId);
         const response = await authFetch("/api/audio/transcribe", {
           method: "POST",
           body: form,

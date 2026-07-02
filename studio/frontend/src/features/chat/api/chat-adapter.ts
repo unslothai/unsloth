@@ -1983,11 +1983,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
+          // Show the audio player above the model's actual reply text, like a
+          // normal chat message with an attachment -- not audio-only with the
+          // text thrown away.
+          const replyText = result.choices?.[0]?.message?.content?.trim() ?? "";
           yield {
             content: [
               {
                 type: "text" as const,
-                text: `<audio-player src="${audioUrl}" />`,
+                text: replyText
+                  ? `<audio-player src="${audioUrl}" />\n\n${replyText}`
+                  : `<audio-player src="${audioUrl}" />`,
               },
             ],
           };

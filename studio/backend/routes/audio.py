@@ -11,7 +11,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from auth.authentication import get_current_subject
@@ -76,18 +76,25 @@ async def create_speech(
     Mirrors the OpenAI POST /v1/audio/speech interface; `voice` is accepted
     but ignored until per-voice routing is implemented.
     """
-    from routes.inference import get_llama_cpp_backend, get_voice_llama_backend
+    from routes.inference import (
+        get_llama_cpp_backend,
+        get_speecht5_backend,
+        get_voice_llama_backend,
+    )
     from core.inference import get_inference_backend
 
     text = payload.input.strip()
     if not text:
         raise HTTPException(status_code = 400, detail = "input must not be empty.")
 
-    # Priority: voice slot → main llama slot → transformers backend
+    # Priority: SpeechT5 voice slot → GGUF voice slot → main llama slot → transformers backend
+    speecht5_backend = get_speecht5_backend()
     voice_backend = get_voice_llama_backend()
     llama_backend = get_llama_cpp_backend()
 
-    if voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
+    if speecht5_backend.is_loaded:
+        gen = lambda: speecht5_backend.generate_audio_response(text = text)
+    elif voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
         gen = lambda: voice_backend.generate_audio_response(
             text = text,
             audio_type = voice_backend._audio_type,
@@ -113,57 +120,6 @@ async def create_speech(
         raise HTTPException(status_code = 500, detail = str(e))
 
     return Response(content = wav_bytes, media_type = "audio/wav")
-
-
-@router.post("/speech/stream")
-async def create_speech_stream(
-    payload: SpeechRequest, current_subject: str = Depends(get_current_subject)
-):
-    """
-    Token-by-token streaming TTS. Streams raw PCM16 mono @ 24 kHz as the model
-    generates, so playback starts before the whole reply is synthesized.
-
-    SNAC/Orpheus only (the GGUF voice slot or main slot). Other codecs decode
-    from full text and can't stream incrementally; use POST /speech for those.
-    """
-    from routes.inference import get_llama_cpp_backend, get_voice_llama_backend
-
-    text = payload.input.strip()
-    if not text:
-        raise HTTPException(status_code = 400, detail = "input must not be empty.")
-
-    voice_backend = get_voice_llama_backend()
-    llama_backend = get_llama_cpp_backend()
-
-    backend = None
-    if voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
-        backend = voice_backend
-    elif llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
-        backend = llama_backend
-
-    if backend is None or getattr(backend, "_audio_type", None) != "snac":
-        raise HTTPException(
-            status_code = 400,
-            detail = "Streaming TTS requires a loaded SNAC (Orpheus) GGUF voice model.",
-        )
-
-    audio_type = backend._audio_type
-
-    def gen():
-        try:
-            yield from backend.generate_audio_response_stream(
-                text = text, audio_type = audio_type
-            )
-        except Exception as e:
-            # Headers are already sent once streaming starts, so we can't switch
-            # to a 500; log and end the stream cleanly.
-            logger.error("Streaming speech error: %s", e, exc_info = True)
-
-    return StreamingResponse(
-        gen(),
-        media_type = "audio/pcm",
-        headers = {"X-Sample-Rate": "24000", "X-Audio-Format": "pcm_s16le_mono"},
-    )
 
 
 class TranscriptionResponse(BaseModel):

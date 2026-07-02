@@ -2229,8 +2229,15 @@ _llama_cpp_backend = LlamaCppBackend()
 # Voice slot — independent llama-server subprocess for GGUF TTS models only
 _voice_llama_backend = LlamaCppBackend()
 
+# Voice slot — in-process transformers TTS (SpeechT5); not GGUF, no llama-server
+_speecht5_voice_backend = None
+
 # Audio types accepted by the voice slot (GGUF TTS via llama-server token generation)
 _VOICE_SLOT_AUDIO_TYPES: frozenset[str] = frozenset({"snac", "bicodec", "dac"})
+
+# repo_id keyword match for routing /voice/load to the in-process SpeechT5
+# backend instead of the GGUF-only llama-server voice slot.
+_SPEECHT5_REPO_KEYWORDS = ("speecht5", "speech-t5", "speech_t5")
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
@@ -2239,6 +2246,19 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 
 def get_voice_llama_backend() -> LlamaCppBackend:
     return _voice_llama_backend
+
+
+def get_speecht5_backend():
+    global _speecht5_voice_backend
+    if _speecht5_voice_backend is None:
+        from core.inference.speecht5_backend import SpeechT5VoiceBackend
+        _speecht5_voice_backend = SpeechT5VoiceBackend()
+    return _speecht5_voice_backend
+
+
+def _is_speecht5_identifier(model_identifier: str) -> bool:
+    lower = model_identifier.lower()
+    return any(kw in lower for kw in _SPEECHT5_REPO_KEYWORDS)
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
@@ -3340,9 +3360,37 @@ async def voice_load_model(
     """
     from utils.models import ModelConfig
 
-    voice_backend = get_voice_llama_backend()
-
     model_identifier = request.model_path.strip()
+
+    # SpeechT5 is a transformers TTS model (not GGUF) with its own in-process
+    # backend; route it before the GGUF-only resolution below.
+    if _is_speecht5_identifier(model_identifier):
+        # Mutually exclusive with the GGUF voice slot -- one voice model at a time.
+        gguf_voice_backend = get_voice_llama_backend()
+        if gguf_voice_backend.is_active:
+            await asyncio.to_thread(gguf_voice_backend.unload_model)
+
+        speecht5_backend = get_speecht5_backend()
+        try:
+            await asyncio.to_thread(speecht5_backend.load_model, model_identifier)
+        except Exception as e:
+            logger.error("SpeechT5 voice load error: %s", e, exc_info = True)
+            raise HTTPException(
+                status_code = 500, detail = f"Failed to load SpeechT5 voice model: {e}"
+            )
+        logger.info("Voice slot loaded (SpeechT5): %s", model_identifier)
+        return {
+            "status": "loaded",
+            "model": model_identifier,
+            "audio_type": "speecht5",
+        }
+
+    # Mutually exclusive with the SpeechT5 voice slot -- unload it before a GGUF load.
+    speecht5_backend = get_speecht5_backend()
+    if speecht5_backend.is_loaded:
+        await asyncio.to_thread(speecht5_backend.unload_model)
+
+    voice_backend = get_voice_llama_backend()
 
     # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
     # exactly mirroring the ModelConfig.from_identifier() call in /load.
@@ -3438,7 +3486,14 @@ async def voice_load_model(
 
 @router.post("/voice/unload")
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
-    """Unload whatever model is in the voice slot."""
+    """Unload whatever model is in the voice slot (GGUF or SpeechT5)."""
+    speecht5_backend = get_speecht5_backend()
+    if speecht5_backend.is_loaded:
+        model_id = speecht5_backend.model_identifier
+        speecht5_backend.unload_model()
+        logger.info("Voice slot unloaded (SpeechT5): %s", model_id)
+        return {"status": "unloaded", "model": model_id}
+
     voice_backend = get_voice_llama_backend()
     if not voice_backend.is_active:
         return {"status": "not_loaded"}
@@ -3454,7 +3509,16 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
 
 @router.get("/voice/status")
 async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
-    """Return the current state of the voice slot."""
+    """Return the current state of the voice slot (GGUF or SpeechT5)."""
+    speecht5_backend = get_speecht5_backend()
+    if speecht5_backend.is_loaded:
+        return {
+            "loaded": True,
+            "loading": False,
+            "model": speecht5_backend.model_identifier,
+            "audio_type": "speecht5",
+        }
+
     voice_backend = get_voice_llama_backend()
     loaded = voice_backend.is_loaded
     return {

@@ -14,8 +14,9 @@ import {
   rememberedLoadSettingsKey,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
+import { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
 import { authFetch } from "@/features/auth";
-import { TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
+import { STANDALONE_TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -1261,7 +1262,13 @@ export function ChatPage({
   );
   const [voiceSlotLoading, setVoiceSlotLoading] = useState(false);
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
+  const [cachedSpeechT5Models, setCachedSpeechT5Models] = useState<LoraModelOption[]>([]);
+  const [cachedWhisperModels, setCachedWhisperModels] = useState<LoraModelOption[]>([]);
   const cachedGgufsFetchedRef = useRef(false);
+  const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
+  const setSelectedSttModelId = useChatRuntimeStore(
+    (s) => s.setSelectedSttModelId,
+  );
 
   const [listenAdapter, setListenAdapter] = useState<LoraModelOption | null>(null);
   const handleListen = useCallback(
@@ -1381,23 +1388,57 @@ export function ChatPage({
     };
   }, []);
 
-  // Fetch cached GGUFs once when voice mode is first activated.
+  // Fetch cached GGUFs + cached safetensors once when voice mode is first
+  // activated. TTS only lists GGUFs -- /api/inference/voice/load hard-requires
+  // one (separate llama-server voice slot), so a safetensors-only TTS repo
+  // can't load there yet even if it's downloaded. STT has no such
+  // restriction (Whisper runs via a plain transformers pipeline), so it lists
+  // whatever's on device regardless of format. Downloading itself stays in
+  // the main model dropdown's Hub search.
   useEffect(() => {
     if (voiceMode === "off" || cachedGgufsFetchedRef.current) return;
     cachedGgufsFetchedRef.current = true;
-    const TTS_REPO_KEYWORDS = ["orpheus", "kokoro", "csm", "spark", "bicodec", "dac", "tts"];
+    // Standalone TTS voices only -- excludes orpheus/csm/spark, which are
+    // speech-LLMs that speak with their own voice and belong in the chat
+    // model picker, not here. GGUF-only: spark's a safetensors LLM checkpoint
+    // and could never load via /voice/load anyway.
+    const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts"];
+    // SpeechT5 is safetensors (not GGUF) but has its own in-process transformers
+    // voice backend (speecht5_backend.py), so it's listed separately from the
+    // GGUF set from the cached-models (safetensors) scan.
+    const SPEECHT5_REPO_KEYWORDS = ["speecht5", "speech-t5", "speech_t5"];
+    const WHISPER_REPO_KEYWORDS = ["whisper"];
+    const lower = (s: string) => s.toLowerCase();
+    const toOption = (repoId: string, isGguf: boolean): LoraModelOption => ({
+      id: repoId,
+      name: repoId.includes("/") ? (repoId.split("/")[1] ?? repoId) : repoId,
+      isGguf,
+    });
+
     void authFetch("/api/models/cached-gguf")
       .then((r) => (r.ok ? r.json() : { cached: [] }))
       .then((data: { cached: { repo_id: string }[] }) => {
-        const lower = (s: string) => s.toLowerCase();
         setCachedGgufs(
           (data.cached ?? [])
             .filter((c) => TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
-            .map((c) => ({
-              id: c.repo_id,
-              name: c.repo_id.includes("/") ? (c.repo_id.split("/")[1] ?? c.repo_id) : c.repo_id,
-              isGguf: true,
-            })),
+            .map((c) => toOption(c.repo_id, true)),
+        );
+      })
+      .catch(() => {});
+
+    void authFetch("/api/models/cached-models")
+      .then((r) => (r.ok ? r.json() : { cached: [] }))
+      .then((data: { cached: { repo_id: string }[] }) => {
+        const cached = data.cached ?? [];
+        setCachedSpeechT5Models(
+          cached
+            .filter((c) => SPEECHT5_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            .map((c) => toOption(c.repo_id, false)),
+        );
+        setCachedWhisperModels(
+          cached
+            .filter((c) => WHISPER_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            .map((c) => toOption(c.repo_id, false)),
         );
       })
       .catch(() => {});
@@ -2397,12 +2438,21 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
+  // GGUF TTS voices (llama-server voice slot) + SpeechT5 (its own in-process
+  // transformers backend). A safetensors-only repo like a freshly-downloaded
+  // Spark-TTS checkpoint is still excluded -- /voice/load can't run it, it
+  // needs a GGUF variant first -- but SpeechT5 has a real backend so it's in.
   const ttsModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = loraModels.filter((m) =>
-      TTS_AUDIO_TYPES.has(m.audioType ?? ""),
+      STANDALONE_TTS_AUDIO_TYPES.has(m.audioType ?? ""),
     );
-    return [...fromLoras, ...cachedGgufs];
-  }, [loraModels, cachedGgufs]);
+    return [...fromLoras, ...cachedGgufs, ...cachedSpeechT5Models];
+  }, [loraModels, cachedGgufs, cachedSpeechT5Models]);
+
+  const sttModels = useMemo<LoraModelOption[]>(
+    () => cachedWhisperModels,
+    [cachedWhisperModels],
+  );
 
   // A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so
   // a separate TTS voice doesn't apply. Detected from the loaded checkpoint;
@@ -2582,6 +2632,15 @@ export function ChatPage({
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
+              />
+            )}
+            {view.mode !== "compare" && voiceMode !== "off" && (
+              <SttModelSelector
+                models={sttModels}
+                value={selectedSttModelId}
+                onValueChange={setSelectedSttModelId}
+                disabled={!hasActiveModel}
+                className="!h-[34px]"
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && (

@@ -8,11 +8,13 @@ import {
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, CloudIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MicVocalIcon, PhoneIcon } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
+import { DotTag } from "@/features/hub/catalog/dot-tag";
+import { splitRepoLabel } from "./model-selector/row-meta";
 import type { LoraModelOption } from "./model-selector/types";
 
 interface VoiceModelSelectorProps {
@@ -42,8 +44,6 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   className,
 }) => {
   const [open, setOpen] = useState(false);
-  const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
-  const setSttEngine = useChatRuntimeStore((s) => s.setSttEngine);
   // "configuring": dropdown is open (or openable) but the voice ball hasn't
   // been entered yet — picking Listen/Speak options here only configures
   // settings. Entering the ball is a separate, explicit action below.
@@ -99,26 +99,6 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         sideOffset={6}
         className="menu-soft-surface w-[220px] rounded-lg border-0 p-1.5 ring-0"
       >
-        {/* Speech-to-text engine (listening): browser Web Speech vs backend Whisper */}
-        <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Listen with
-        </div>
-        <div className="mb-1 flex gap-1 px-0.5">
-          {(["browser", "whisper"] as const).map((engine) => (
-            <button
-              key={engine}
-              type="button"
-              onClick={() => setSttEngine(engine)}
-              className={cn(
-                "flex-1 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors hover:bg-accent",
-                sttEngine === engine && "bg-accent",
-              )}
-            >
-              {engine === "browser" ? "Browser" : "Whisper"}
-            </button>
-          ))}
-        </div>
-        <div className="my-1 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
         <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Speak with
         </div>
@@ -130,51 +110,81 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
           </p>
         ) : (
           <>
-            {/* Browser voice fallback */}
+            {/* Browser's built-in speech synthesis -- not a downloadable file,
+                so it's badged like a cloud/API entry rather than an on-device one. */}
             <button
               type="button"
               onClick={() => handleSelect(BROWSER_VOICE_ID)}
               className={cn(
-                "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium leading-[1.4] tracking-nav transition-colors hover:bg-accent",
-                value === null && "bg-accent",
+                "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+                value === null && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
               )}
             >
               <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate">{BROWSER_VOICE_LABEL}</span>
-              {value === null && (
-                <span className="ml-auto text-[11px] text-muted-foreground">
-                  active
-                </span>
-              )}
+              <span className="min-w-0 flex-1 truncate">{BROWSER_VOICE_LABEL}</span>
+              <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                <HugeiconsIcon
+                  icon={CloudIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5 text-muted-foreground"
+                />
+                {value === null && (
+                  <DotTag
+                    tone="success"
+                    label="Active"
+                    className="h-[18px] gap-1 rounded-md px-1.5"
+                    dotClassName="size-[5px]"
+                  />
+                )}
+              </span>
             </button>
 
             {models.length > 0 && (
               <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
             )}
 
-            {models.map((model) => (
-              <button
-                key={model.id}
-                type="button"
-                onClick={() => handleSelect(model.id)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium leading-[1.4] tracking-nav transition-colors hover:bg-accent",
-                  value === model.id && "bg-accent",
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                {model.isGguf && !model.source && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
-                    GGUF
+            {models.map((model) => {
+              const { owner, name } = splitRepoLabel(model.id);
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={() => handleSelect(model.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+                    value === model.id && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+                  )}
+                >
+                  <span className="flex min-w-0 flex-1 items-baseline">
+                    {owner && (
+                      <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-[13px] text-muted-foreground/90">
+                        <span className="truncate">{owner}</span>
+                        <span className="shrink-0 text-muted-foreground/45">/</span>
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{name}</span>
                   </span>
-                )}
-                {value === model.id && (
-                  <span className="ml-auto text-[11px] text-muted-foreground">
-                    active
+                  <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                    {!model.source && (
+                      <DotTag
+                        tone={model.isGguf ? "gguf" : "checkpoint"}
+                        label={model.isGguf ? "GGUF" : "Safetensors"}
+                        className="h-[18px] gap-1 rounded-md px-1.5"
+                        dotClassName="size-[5px]"
+                      />
+                    )}
+                    {value === model.id && (
+                      <DotTag
+                        tone="success"
+                        label="Active"
+                        className="h-[18px] gap-1 rounded-md px-1.5"
+                        dotClassName="size-[5px]"
+                      />
+                    )}
                   </span>
-                )}
-              </button>
-            ))}
+                </button>
+              );
+            })}
 
             {models.length === 0 && (
               <p className="px-3 py-2 text-[12px] text-muted-foreground">
@@ -184,9 +194,9 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
           </>
         )}
 
-        {/* Entering the ball is explicit: picking Listen/Speak options above
-            only configures settings, so you can leave this open and keep
-            reading/using the text chat until you're ready to talk. */}
+        {/* Entering the ball is explicit: picking a voice above only
+            configures it, so you can leave this open and keep reading/using
+            the text chat until you're ready to talk. */}
         {voiceMode === "configuring" && (
           <>
             <div className="my-1 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
