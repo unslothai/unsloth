@@ -3899,35 +3899,41 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  // While voice mode is engaged, the mini orb is the mic control; hide the raw
+  // Dictate / Stop-dictation buttons (the loop drives them internally). They stay
+  // in the DOM (display:none) so the voice loop's programmatic click still works.
+  const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       <VoiceEngine />
       <VoiceControlButton />
-      <ComposerPrimitive.If dictation={false}>
-        <ComposerPrimitive.Dictate asChild={true}>
-          <TooltipIconButton
-            tooltip="Dictate"
-            aria-label="Dictate"
-            variant="ghost"
-            className="size-8 rounded-full text-foreground"
-          >
-            <MicIcon className="size-5" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Dictate>
-      </ComposerPrimitive.If>
-      <ComposerPrimitive.If dictation={true}>
-        <ComposerPrimitive.StopDictation asChild={true}>
-          <TooltipIconButton
-            tooltip="Stop dictation"
-            aria-label="Stop dictation"
-            variant="ghost"
-            className="size-8 rounded-full text-destructive"
-          >
-            <SquareIcon className="size-3 animate-pulse fill-current" />
-          </TooltipIconButton>
-        </ComposerPrimitive.StopDictation>
-      </ComposerPrimitive.If>
+      <div className={cn(voiceEngaged ? "hidden" : "contents")}>
+        <ComposerPrimitive.If dictation={false}>
+          <ComposerPrimitive.Dictate asChild={true}>
+            <TooltipIconButton
+              tooltip="Dictate"
+              aria-label="Dictate"
+              variant="ghost"
+              className="size-8 rounded-full text-foreground"
+            >
+              <MicIcon className="size-5" />
+            </TooltipIconButton>
+          </ComposerPrimitive.Dictate>
+        </ComposerPrimitive.If>
+        <ComposerPrimitive.If dictation={true}>
+          <ComposerPrimitive.StopDictation asChild={true}>
+            <TooltipIconButton
+              tooltip="Stop dictation"
+              aria-label="Stop dictation"
+              variant="ghost"
+              className="size-8 rounded-full text-destructive"
+            >
+              <SquareIcon className="size-3 animate-pulse fill-current" />
+            </TooltipIconButton>
+          </ComposerPrimitive.StopDictation>
+        </ComposerPrimitive.If>
+      </div>
       <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
