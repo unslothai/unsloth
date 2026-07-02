@@ -393,6 +393,36 @@ def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
     assert strip_tool_markup(open_text, final = False) == open_text
 
 
+def test_final_strip_removes_magistral_think_reasoning():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # Magistral emits reasoning as ``[THINK]...[/THINK]`` (bracket form, not the
+    # ``<think>`` the reasoning channel renders). At end-of-turn it must be dropped
+    # so it does not leak as raw content into the display / conversation history.
+    text = "[THINK]The user greeted me, I should say hi.[/THINK]Hello! How can I help?"
+    assert strip_tool_markup(text, final = True) == "Hello! How can I help?"
+    # A ``[TOOL_CALLS]`` living inside the reasoning goes with it.
+    with_call = "[THINK]Maybe I should search.[/THINK][TOOL_CALLS]search{\"q\":\"x\"}"
+    assert strip_tool_markup(with_call, final = True) == ""
+
+
+def test_streaming_strip_keeps_magistral_think_buffered():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # Mid-stream (final=False) the reasoning block is left intact; only the
+    # end-of-turn pass removes it.
+    text = "[THINK]still thinking"
+    assert strip_tool_markup(text, final = False) == text
+
+
+def test_final_strip_leaves_non_magistral_bracket_text_untouched():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # Only a LEADING ``[THINK]`` block is reasoning; unrelated bracketed prose stays.
+    text = "See [THINK about it] later"
+    assert strip_tool_markup(text, final = True) == "See [THINK about it] later"
+
+
 def test_strip_leading_bare_json_call_ignores_nested_name():
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 

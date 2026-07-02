@@ -341,6 +341,12 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
     ``final=True`` also drops trailing unclosed runs and trims."""
+    if final:
+        # End-of-turn only: drop a leading Magistral ``[THINK]...[/THINK]`` block.
+        # Its bracket form is not the ``<think>`` the reasoning channel renders, so
+        # without this the raw reasoning leaks into the safetensors display/history
+        # (GGUF/llama.cpp routes it natively). Streaming (final=False) is untouched.
+        text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
     # Scan-strip the function-XML form first (parser-accurate: a literal
     # ``<function=...>`` inside a value is data, not a call), then the regex arms
