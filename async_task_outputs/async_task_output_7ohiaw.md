@@ -1,0 +1,1 @@
+- User challenged comparison: check `ComfyUI` with `int8 / float8 / NVFP4` and compare BEST ComfyUI with all optimizations on.

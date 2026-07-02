@@ -319,3 +319,39 @@ def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
         b._generate_lock.release()
     assert committed.wait(5)  # only now does the commit run
     assert b._state is not None and b._state.repo_id == "unsloth/Z-Image-Turbo-GGUF"
+
+
+def test_run_load_redacts_paths_in_progress_error(monkeypatch):
+    # A load failure surfaced via load_progress() must run through redact_native_paths, the
+    # same scrub the diffusers load path applies, so a registered native path can't leak.
+    from utils import native_path_leases as npl
+
+    secret_root = "/managed/native/root"
+    npl._remember_native_path_for_redaction(secret_root, "model dir")
+    try:
+        b = SdCppDiffusionBackend(engine = _FakeEngine())
+        fam = detect_family("z-image")
+        monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+        monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+
+        def _boom(*a, **k):
+            raise RuntimeError(f"failed to read {secret_root}/z.gguf")
+
+        monkeypatch.setattr(b, "_fetch_assets", _boom)
+
+        b._load_token = 1
+        b._loading = bk._SdLoading(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = fam.base_repo)
+        b._run_load(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z.gguf",
+            base = fam.base_repo,
+            fam = fam,
+            hf_token = None,
+            _load_token = 1,
+        )
+        err = b.load_progress()["error"]
+        assert err and secret_root not in err and "<native_path>" in err
+    finally:
+        with npl._REDACTION_LOCK:
+            if secret_root in npl._NATIVE_PATH_REDACTIONS:
+                npl._NATIVE_PATH_REDACTIONS.remove(secret_root)

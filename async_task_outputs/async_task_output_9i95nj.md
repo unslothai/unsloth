@@ -1,0 +1,1 @@
+- Studio live; stale install fixed

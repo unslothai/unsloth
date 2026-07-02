@@ -1,0 +1,1 @@
+- GGUF=diffusers+PyTorch; sd.cpp likely fasterCPU

@@ -1,0 +1,27 @@
+Studio diffusion (Phase 6): img2img / inpaint / edit / LoRA / upscale on the native engine
+
+Builds on Phase 4's native stable-diffusion.cpp engine, extending it from
+text-to-image to the wider feature surface, since sd.cpp supports all of these
+through the binary already. Pure command-builder additions plus one engine
+method, so the txt2img path is unchanged.
+
+- sd_cpp_args.py: SdCppGenParams gains image-conditioning fields. init_img +
+  strength make a run img2img, adding mask makes it inpaint, ref_images drives
+  FLUX-Kontext / Qwen-Image-Edit style editing (repeated --ref-image), and
+  lora_dir + the <lora:name:weight> prompt syntax select LoRAs. New
+  SdCppUpscaleParams + build_sd_cpp_upscale_command for the ESRGAN upscale run
+  mode (input image + esrgan model, no prompt / text encoders).
+- sd_cpp_engine.py: the subprocess runner is factored into a shared _run() so
+  generate() (now carrying the conditioning flags) and a new upscale() reuse
+  the same streaming / error / output-check path.
+- scripts/sd_cpp_smoke.py: --task {txt2img,img2img,upscale} with --init-img /
+  --strength / --upscale-model / --upscale-repeats.
+
+Tests: 10 new across the img2img / inpaint / edit / LoRA flag construction, the
+upscale builder and its validation, and the engine's img2img + upscale paths.
+Full diffusion suite 176 passing.
+
+Verified on a B200 box through SdCppEngine: img2img (Z-Image-Turbo Q4_K, the
+init image conditioned at strength 0.6, 4.8s) and ESRGAN upscale
+(512x512 -> 2048x2048 via RealESRGAN_x4plus_anime_6B, 2.7s), both producing
+coherent images. Video and the diffusers-path feature wiring are deferred.
