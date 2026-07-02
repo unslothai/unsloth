@@ -3602,8 +3602,18 @@ def make_fast_generate_wrapper(original_generate):
 
     @functools.wraps(original_generate)
     def _fast_generate_wrapper(*args, **kwargs):
+        def _has_sampling_params(a):
+            # SamplingParams passed directly or inside a positional list/tuple
+            return type(a).__name__ == "SamplingParams" or (
+                isinstance(a, (list, tuple)) and any(type(i).__name__ == "SamplingParams" for i in a)
+            )
+        def _is_vllm_prompt(a):
+            # str prompt, {"prompt"/"multi_modal_data":...} dict, or a list/tuple of those
+            head = a[0] if isinstance(a, (list, tuple)) and len(a) > 0 else a
+            return isinstance(head, str) or (isinstance(head, dict) and ("prompt" in head or "multi_modal_data" in head))
+
         # vLLM-only; also catch SamplingParams passed positionally (fast_generate(prompt, params))
-        if "sampling_params" in kwargs or any(type(a).__name__ == "SamplingParams" for a in args):
+        if "sampling_params" in kwargs or any(_has_sampling_params(a) for a in args):
             raise ValueError(
                 "Unsloth: `sampling_params` is only supported when `fast_inference=True` (vLLM). "
                 "Since `fast_inference=False`, use HuggingFace generate arguments instead:\n"
@@ -3616,33 +3626,19 @@ def make_fast_generate_wrapper(original_generate):
                 "Since `fast_inference=False`, LoRA weights are already merged into the model."
             )
 
-        # A vLLM-style prompt (string, list of strings, or a {"prompt":..., "multi_modal_data":...}
-        # dict) only works under vLLM; tokenize first when fast_inference=False
-        if len(args) > 0:
-            first_arg = args[0]
-            is_vllm_prompt = (
-                isinstance(first_arg, str)
-                or (
-                    isinstance(first_arg, (list, tuple))
-                    and len(first_arg) > 0
-                    and isinstance(first_arg[0], str)
-                )
-                or (
-                    isinstance(first_arg, dict)
-                    and ("prompt" in first_arg or "multi_modal_data" in first_arg)
-                )
+        # A vLLM-style prompt (string, {"prompt":..., "multi_modal_data":...} dict, or a list/tuple
+        # of either) only works under vLLM; tokenize first when fast_inference=False
+        if len(args) > 0 and _is_vllm_prompt(args[0]):
+            raise ValueError(
+                "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
+                "`fast_inference=True` (vLLM). Since `fast_inference=False`, tokenize first:\n\n"
+                "  inputs = tokenizer.apply_chat_template(\n"
+                '      [{"role": "user", "content": "Your prompt here"}],\n'
+                "      tokenize=True, add_generation_prompt=True,\n"
+                '      return_tensors="pt", return_dict=True,\n'
+                "  )\n"
+                "  output = model.fast_generate(**inputs.to('cuda'), max_new_tokens=64, temperature=1.0)"
             )
-            if is_vllm_prompt:
-                raise ValueError(
-                    "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
-                    "`fast_inference=True` (vLLM). Since `fast_inference=False`, tokenize first:\n\n"
-                    "  inputs = tokenizer.apply_chat_template(\n"
-                    '      [{"role": "user", "content": "Your prompt here"}],\n'
-                    "      tokenize=True, add_generation_prompt=True,\n"
-                    '      return_tensors="pt", return_dict=True,\n'
-                    "  )\n"
-                    "  output = model.fast_generate(**inputs.to('cuda'), max_new_tokens=64, temperature=1.0)"
-                )
 
         # Call original generate
         return original_generate(*args, **kwargs)
