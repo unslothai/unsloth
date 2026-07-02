@@ -11230,7 +11230,10 @@ async def generate_diffusion_image(
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"
                             f"{request.controlnet.strength:g}"
-                            if request.controlnet
+                            # strength 0 is treated as disabled and skipped before loading /
+                            # conditioning, so the image is unconditioned; don't claim a
+                            # ControlNet was applied in the recipe/metadata.
+                            if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
                         "created_at": created_at,

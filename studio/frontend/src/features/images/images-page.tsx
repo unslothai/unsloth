@@ -224,6 +224,16 @@ const ASPECT_RATIOS: Record<string, [number, number]> = {
 };
 const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 
+// Friendly labels for ControlNet control types. "canny" traces edges from a source image;
+// every other type is an already-made map (passthrough/depth/pose/...). Unknown types fall
+// back to a capitalized "(map)" label so a new backend type still renders.
+const CONTROL_TYPE_LABELS: Record<string, string> = {
+  passthrough: "Passthrough (already a map)",
+  canny: "Canny (trace edges)",
+  depth: "Depth (map)",
+  pose: "Pose (map)",
+};
+
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
@@ -900,7 +910,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // per loaded family; applied at generate time only when a model + control image are set.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
-  const [controlType, setControlType] = useState<"passthrough" | "canny">("passthrough");
+  // Free-form: a union ControlNet advertises depth/pose/etc alongside the preprocessing
+  // "canny", and the backend maps the exact control_type to the union control_mode. The
+  // picker is built from the selected model's control_types, so it isn't limited to two.
+  const [controlType, setControlType] = useState<string>("passthrough");
   const [controlStrength, setControlStrength] = useState(0.7);
   const [availableControlNets, setAvailableControlNets] = useState<DiffusionControlNetInfo[]>([]);
   // Advanced options live in a right-docked panel (like Chat's settings panel). Closed by
@@ -1026,6 +1039,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       cancelled = true;
     };
   }, [controlnetCapable, status?.family]);
+
+  // The control types offered for the selected ControlNet. A union model advertises
+  // several (canny/depth/pose/passthrough); a plain model advertises its own. Fall back
+  // to the preprocessing pair when nothing is selected.
+  const controlTypeOptions = useMemo(() => {
+    const cn = availableControlNets.find((c) => c.id === controlnetId);
+    const types = cn?.control_types?.length ? cn.control_types : ["passthrough", "canny"];
+    return types;
+  }, [availableControlNets, controlnetId]);
+
+  // Keep controlType valid for the selected model: if the current choice isn't among the
+  // model's advertised types, snap to the first (prefer passthrough when offered).
+  useEffect(() => {
+    if (!controlTypeOptions.includes(controlType)) {
+      setControlType(
+        controlTypeOptions.includes("passthrough") ? "passthrough" : controlTypeOptions[0],
+      );
+    }
+  }, [controlTypeOptions, controlType]);
 
   const selected = useMemo(
     () => images.find((i) => i.id === selectedId) ?? images[0] ?? null,
@@ -2163,16 +2195,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     <ImageDropzone value={controlImage} onChange={setControlImage} />
                     <div className="flex items-center gap-2">
                       <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
-                      <Select
-                        value={controlType}
-                        onValueChange={(v) => setControlType(v as "passthrough" | "canny")}
-                      >
+                      <Select value={controlType} onValueChange={setControlType}>
                         <SelectTrigger className="h-8 flex-1 text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="passthrough">Passthrough (already a map)</SelectItem>
-                          <SelectItem value="canny">Canny (trace edges)</SelectItem>
+                          {controlTypeOptions.map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {CONTROL_TYPE_LABELS[t] ??
+                                `${t.charAt(0).toUpperCase()}${t.slice(1)} (map)`}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>

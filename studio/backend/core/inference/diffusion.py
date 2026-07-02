@@ -1360,6 +1360,13 @@ class DiffusionBackend:
                 # raise on a blank credential instead of falling back, so coerce to None.
                 token = state.hf_token or None,
             )
+            if cancel.is_set():
+                # An unload/eviction raced the blocking download above and may have already
+                # cleared the load. Bail BEFORE any device placement so we don't allocate
+                # several GB onto the GPU after _unload_locked() freed it (which would OOM
+                # or make the unload appear to free memory only to repopulate it).
+                del cn_model
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             # Placement must follow the base model's offload policy. A resident base moves
             # the ControlNet resident too; an offloaded (low-VRAM) base streams it through
             # the device with group offloading instead of forcing the whole module onto the
