@@ -1,0 +1,4 @@
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/...`: sd.cpp timeout/cleanup/tests; `model_kind` backend/API/UI; quant gated to GGUF; sentinel fix.
+- Ran tests/build: 97 backend passed; sd.cpp 19 passed; `tsc=0`; build ok.
+- `reviewer.py` ended `exit 143`; no report.
+- Deployed `https://poster-beer-devel-watts.trycloudflare.com`.

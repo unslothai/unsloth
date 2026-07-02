@@ -335,6 +335,10 @@ function Uninstall-UnslothStudio {
     # with it). A user-set UNSLOTH_LLAMA_CPP_PATH is left alone.
     $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
     $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
+    # Default-mode native diffusion build (install_sd_cpp_prebuilt.default_install_dir()),
+    # a sibling of studio like llama.cpp. No-op in env/custom mode and when absent. A
+    # user-set UNSLOTH_SD_CPP_PATH is left alone.
+    $defaultSdCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "stable-diffusion.cpp" } else { $null }
     $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
     # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
     # default mode. No-op in env/custom mode (nested under the custom root) and absent.
@@ -384,6 +388,7 @@ function Uninstall-UnslothStudio {
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
+    if ($defaultSdCpp) { _RemovePath $defaultSdCpp }
     if ($defaultCache) { _RemovePath $defaultCache }
     # Isolated Node.js runtime (sibling of studio under ~/.unsloth). No-op in env/
     # custom mode (nested under the custom root, removed with it) and when absent.

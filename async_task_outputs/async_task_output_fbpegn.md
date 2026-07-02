@@ -1,0 +1,1 @@
+- `INT8` uses `Qwen/Qwen-Image` torchAO
