@@ -311,8 +311,7 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
 
 
 def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
-    # Stop-without-save interrupted before its complete event: /status must
-    # not keep serving the cleared run's output_dir.
+    # Interrupted stop-without-save: /status must not keep serving the cleared output_dir.
     b = TrainingBackend()
     finalized: dict = {}
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)

@@ -1065,9 +1065,7 @@ class TrainingBackend:
                     db_action = "create_and_finalize"
                 else:
                     db_action = "finalize"
-                # keep_error_status: a stop-and-save that failed to write the
-                # promised resume checkpoint must stay an error in history,
-                # not be laundered into a generic stopped run.
+                # keep_error_status: a failed stop-and-save checkpoint stays an error.
                 db_action_kwargs = {
                     "status": "stopped"
                     if self._should_stop and not event.get("keep_error_status")

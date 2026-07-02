@@ -2059,8 +2059,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         "Failed to save a resumable checkpoint after stop. "
                         "Model files were saved, but this run cannot be resumed."
                     ),
-                    # A user stop normally finalizes as 'stopped'; this failure
-                    # must keep its error status so history explains it.
+                    # Keep the error status so history explains the missing checkpoint.
                     keep_error_status = True,
                     # Older checkpoints are stale; resuming would roll back past this stop.
                     resume_blocked = True,
@@ -3203,10 +3202,7 @@ def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
 
 
 def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
-    """Write a full resume checkpoint for a stopped MLX run.
-
-    Returns True when a checkpoint for the current training step exists.
-    """
+    """Write a stop checkpoint; True when the current step has one on disk."""
     step = int(getattr(trainer, "_global_step", 0) or 0)
     # A periodic save or a resumed run may already cover the current step.
     if _mlx_has_checkpoint_at_step(output_dir, step):

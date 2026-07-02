@@ -35,7 +35,7 @@ def _app():
 
 @pytest.fixture
 def outputs_home(tmp_path, monkeypatch):
-    """UNSLOTH_STUDIO_HOME with a fake resumable checkpoint under outputs/."""
+    # UNSLOTH_STUDIO_HOME with a fake resumable checkpoint under outputs/.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     ckpt = tmp_path / "outputs" / "checkpoint-10"
     ckpt.mkdir(parents = True)
@@ -43,16 +43,10 @@ def outputs_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-# ── option registration ──────────────────────────────────────────────
-
-
 def test_train_exposes_resume_options():
     params = inspect.signature(_train()).parameters
     assert "resume" in params
     assert "resume_from_checkpoint" in params
-
-
-# ── behavior ─────────────────────────────────────────────────────────
 
 
 def test_resume_and_explicit_path_are_mutually_exclusive(outputs_home):

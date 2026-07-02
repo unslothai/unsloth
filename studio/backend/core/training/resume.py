@@ -86,8 +86,7 @@ def can_resume_run(run: dict) -> bool:
 
     status = run.get("status")
     if status == "error":
-        # A save-time crash can report final_step == total_steps with no final
-        # artifacts; checkpoint state alone decides resumability.
+        # A save-time crash can report final_step == total_steps; the checkpoint decides.
         return has_resume_state(run.get("output_dir"))
 
     final_step = run.get("final_step")
