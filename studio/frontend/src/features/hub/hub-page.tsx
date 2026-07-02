@@ -5,6 +5,7 @@ import {
   loadRememberedLoadSettings,
   rememberedLoadSettingsKey,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { hfModelFitsDevice } from "@/components/assistant-ui/model-selector/recommended-fit";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -327,6 +328,9 @@ export function ModelsPage() {
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  // Shared with the chat model selector: list only models sized for this device.
+  const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
 
   useEffect(() => {
     let cancelled = false;
@@ -697,7 +701,12 @@ export function ModelsPage() {
         !isHiddenModelId(row.id) &&
         matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
+        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
+        // Models already on disk stay visible regardless of device fit,
+        // matching the chat model selector.
+        (!fitOnDeviceOnly ||
+          row.isAvailableOnDevice ||
+          hfModelFitsDevice(row.result, gpu)),
     );
   }, [
     discoverRows,
@@ -705,6 +714,8 @@ export function ModelsPage() {
     effectiveDiscoverFormat,
     deferredCapabilityFilter,
     activeChannel,
+    fitOnDeviceOnly,
+    gpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -724,8 +735,21 @@ export function ModelsPage() {
         effectiveLocalRows,
       )
         .filter((row) => !isHiddenModelId(row.id))
-        .filter((row) => matchesFormat(row.result.isGguf, "gguf")),
-    [hubFeed.trending.results, modelDiscoveryInventorySignature],
+        .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        // Same fit filter as the main Discover list, so the feed carousel
+        // honors the toggle too.
+        .filter(
+          (row) =>
+            !fitOnDeviceOnly ||
+            row.isAvailableOnDevice ||
+            hfModelFitsDevice(row.result, gpu),
+        ),
+    [
+      hubFeed.trending.results,
+      modelDiscoveryInventorySignature,
+      fitOnDeviceOnly,
+      gpu,
+    ],
   );
   const feedRows = useMemo(() => {
     if (!isFeedMode) return [];
@@ -1448,6 +1472,8 @@ export function ModelsPage() {
           onFormatFilterChange={setFormatFilter}
           capabilityFilter={capabilityFilter}
           onCapabilityFilterChange={setCapabilityFilter}
+          fitOnDeviceOnly={fitOnDeviceOnly}
+          onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
           onOpenFineTune={() => handleOpenList("finetune")}
         />
