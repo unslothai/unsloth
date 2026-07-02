@@ -306,6 +306,9 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        # A blank token (the Studio default when none is configured) must mean
+        # "anonymous", not an explicit empty credential the Hub rejects with 401.
+        hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
             repo_id, gguf_filename = gguf_filename, family_override = family_override
         )
@@ -416,6 +419,18 @@ class DiffusionBackend:
         fraction = min(downloaded / expected, 1.0) if expected > 0 else 0.0
         return _progress("downloading", downloaded, expected, fraction)
 
+    def loading_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids an in-flight background load is downloading (empty when idle).
+
+        The delete-cached guard needs this: during a load ``status()["loaded"]`` is
+        still False, but deleting the target repo (or its companion base) would yank
+        blobs and snapshot files from under the download/assembly."""
+        with self._lock:
+            loading = self._loading
+            if loading is None or loading.error is not None:
+                return ()
+            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+
     @staticmethod
     def _estimate_download_bytes(
         repo_id: str, gguf_filename: Optional[str], base_repo: str, hf_token: Optional[str]
@@ -483,7 +498,10 @@ class DiffusionBackend:
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
-        # family fails with ValueError even in a no-diffusers runtime.
+        # family fails with ValueError even in a no-diffusers runtime. Sanitize the
+        # token here too (direct callers bypass begin_load): a blank string must
+        # load anonymously, not 401 as an explicit empty credential.
+        hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
             repo_id, gguf_filename = gguf_filename, family_override = family_override
         )

@@ -446,6 +446,16 @@ class SdCppDiffusionBackend:
         fraction = min(downloaded / expected, 1.0) if expected > 0 else 0.0
         return _progress("downloading", downloaded, expected, fraction)
 
+    def loading_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids an in-flight background load is downloading (empty when idle).
+        Mirrors the diffusers backend so the delete-cached guard can query whichever
+        engine is active without caring which one it got."""
+        with self._lock:
+            loading = self._loading
+            if loading is None or loading.error is not None:
+                return ()
+            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+
     # ── Generate ───────────────────────────────────────────────────────────
 
     def generate(
