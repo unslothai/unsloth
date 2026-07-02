@@ -196,6 +196,13 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
     {
         "stabilityai/stable-diffusion-xl-base-1.0",
         "stabilityai/sdxl-turbo",
+        # Official vendor, safetensors-only base repos allowlisted as LoRA TRAINING bases
+        # (diffusion training loads the full pipeline from these). Same rule as above: no
+        # pickled weights, no remote code, exact-match lowercased. FLUX.1-dev is gated on
+        # the Hub (needs the user's token); the other two are open.
+        "black-forest-labs/flux.1-dev",
+        "tongyi-mai/z-image-turbo",
+        "qwen/qwen-image",
     }
 )
 
