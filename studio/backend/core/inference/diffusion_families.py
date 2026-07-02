@@ -258,9 +258,7 @@ def _token_in_needle(token: str, needle: str) -> bool:
     ('qwen-image-edit' in 'qwen-image-edit-2511') while preventing a short token from
     matching inside an unrelated word ('kontext' must not match 'kontextual', 'edit'
     must not match 'edition')."""
-    return re.search(
-        r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle
-    ) is not None
+    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
 
 
 def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
