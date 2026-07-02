@@ -2017,7 +2017,9 @@ class TestResponsesStreamHealing:
         TestResponsesStreamAdapter._install_stream_mock(
             monkeypatch, [{"choices": [{"delta": {"content": content}}]}]
         )
-        payload = ResponsesRequest(input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs)
+        payload = ResponsesRequest(
+            input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
 
         async def run():
@@ -2050,7 +2052,9 @@ class TestResponsesStreamHealing:
     def test_call_before_trailing_text_claims_lower_output_index(self, monkeypatch):
         events = self._run_stream(monkeypatch, f"{self._XML} done.")
         item_added = [
-            (name, payload) for name, payload in events if name == "response.output_item.added"
+            (name, payload)
+            for name, payload in events
+            if name == "response.output_item.added"
         ]
         # The call came first in the model output, so its item is added first
         # and claims the lower output_index; the trailing text's message item
@@ -2063,7 +2067,9 @@ class TestResponsesStreamHealing:
         msg_idx = item_added[1][1]["output_index"]
         assert call_idx < msg_idx
         text = "".join(
-            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+            payload["delta"]
+            for name, payload in events
+            if name == "response.output_text.delta"
         )
         assert "done." in text
         assert "<tool_call>" not in text
@@ -2076,6 +2082,8 @@ class TestResponsesStreamHealing:
             if name == "response.output_item.added"
         )
         text = "".join(
-            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+            payload["delta"]
+            for name, payload in events
+            if name == "response.output_text.delta"
         )
         assert text == self._XML
