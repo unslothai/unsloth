@@ -28,6 +28,13 @@ const MIN_SPEECH_MS = 350;
 // Silence trimmed around the voiced span before sending to Whisper (Whisper
 // hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
+// Faked streaming reveal: Whisper is batch (one transcript per utterance), but
+// once it lands we replay it as growing interim results so the composer types it
+// out char-by-char like the streaming Web Speech engine, instead of the whole
+// line appearing at once. REVEAL_MAX_MS caps the total so long transcripts don't
+// lag the send much.
+const REVEAL_CHAR_MS = 12;
+const REVEAL_MAX_MS = 1000;
 
 type AudioContextCtor = typeof AudioContext;
 
@@ -205,7 +212,22 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         const data = (await response.json()) as { text?: string };
         const transcript = (data.text ?? "").trim();
         if (transcript) {
-          // onSpeech(isFinal) commits the transcript into the composer text;
+          // Fake a streaming reveal: replay the transcript as growing interim
+          // results so the composer types it out char-by-char (like Web Speech),
+          // then commit + send. Bails immediately if the session is superseded.
+          const total = transcript.length;
+          const stepChars = Math.max(
+            1,
+            Math.ceil(total / Math.max(1, REVEAL_MAX_MS / REVEAL_CHAR_MS)),
+          );
+          for (let i = stepChars; i < total; i += stepChars) {
+            if (ended) return;
+            const partial = transcript.slice(0, i);
+            for (const cb of speechCallbacks) cb({ transcript: partial, isFinal: false });
+            await new Promise<void>((r) => setTimeout(r, REVEAL_CHAR_MS));
+          }
+          if (ended) return;
+          // onSpeech(isFinal) commits the full transcript into the composer text;
           // onSpeechEnd (via finish) ends the session. Then, deferred so those
           // state updates land first, submit the turn. requestVoiceSubmit is a
           // no-op outside voice mode, so plain Dictate-button use just fills the
