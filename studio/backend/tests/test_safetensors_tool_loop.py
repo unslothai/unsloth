@@ -139,7 +139,7 @@ class TestParserMultiFormat:
     agentic loop is family-agnostic.
     """
 
-    # ── Llama-3 ────────────────────────────────────────────────────
+    # Llama-3
 
     def test_llama3_python_tag_dot_call(self):
         # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
@@ -193,7 +193,7 @@ class TestParserMultiFormat:
         text = '<|python_tag|>brave_search.call(query="x")'
         assert strip_tool_markup(text, final = True) == ""
 
-    # ── Llama-3.2 bare JSON ``custom_tools`` ─────────────────────
+    # Llama-3.2 bare JSON ``custom_tools``
 
     def test_llama3_2_bare_json_parameters(self):
         # Llama-3.2-Instruct emits bare JSON directly as content; no
@@ -291,7 +291,7 @@ class TestParserMultiFormat:
         ):
             assert parse_tool_calls_from_text(bad) == [], bad
 
-    # ── Mistral pre-v11 ───────────────────────────────────────────
+    # Mistral pre-v11
 
     def test_mistral_pre_v11_array(self):
         import json
@@ -324,7 +324,7 @@ class TestParserMultiFormat:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
 
-    # ── Mistral v11+ ───────────────────────────────────────────────
+    # Mistral v11+
 
     def test_mistral_v11_single(self):
         # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
@@ -358,7 +358,7 @@ class TestParserMultiFormat:
         text = '[TOOL_CALLS]add{"a":1}'
         assert strip_tool_markup(text, final = True) == ""
 
-    # ── Gemma 4 ───────────────────────────────────────────────────
+    # Gemma 4
 
     def test_gemma4_simple_call(self):
         import json
@@ -423,7 +423,7 @@ class TestParserMultiFormat:
         text = "<|tool_call>call:foo{x:1}<tool_call|>"
         assert strip_tool_markup(text, final = True) == ""
 
-    # ── Cross-format sentinels ────────────────────────────────────
+    # Cross-format sentinels
 
     def test_all_markers_in_tool_xml_signals(self):
         # Streaming buffer wakes up on every emission marker.
@@ -1166,9 +1166,7 @@ class TestGptOssNameDetection:
         assert is_gpt_oss_model_name(None) is False
 
 
-# ────────────────────────────────────────────────────────────────────
 # Routes-level python_tag strip (multi-line; stop on next sentinel)
-# ────────────────────────────────────────────────────────────────────
 
 
 class TestRoutesPythonTagStrip:

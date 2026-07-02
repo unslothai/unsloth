@@ -26,8 +26,7 @@ import re
 from typing import Any
 
 
-# Markers that flip the streaming buffer from STREAMING to DRAINING so
-# partial markup never leaks before the parser sees it.
+# Flip the stream buffer to DRAINING so partial markup never leaks.
 TOOL_XML_SIGNALS = (
     "<tool_call>",
     "<function=",
@@ -37,8 +36,7 @@ TOOL_XML_SIGNALS = (
 )
 
 
-# Closed pairs only (mid-stream); _TOOL_ALL_PATS also eats unclosed
-# tails for end-of-turn cleanup.
+# Closed pairs only; _TOOL_ALL_PATS also eats unclosed tails at end-of-turn.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
@@ -102,11 +100,8 @@ _LLAMA3_KV_RE = re.compile(
     re.VERBOSE,
 )
 
-# Mistral ``[TOOL_CALLS]`` trigger. V11+ Tekken chains them, each
-# followed by a bare name plus ``{json}`` (Magistral) or
-# ``[ARGS]{json}`` (V13 Tekken: Devstral, Magistral-Small-2509).
-# V3 tokenizer models (v0.3, Nemo, Small, Ministral-8B-2410,
-# Large-2411) emit the ``[TOOL_CALLS] [...]`` array form instead.
+# Mistral ``[TOOL_CALLS]``: V11+ Tekken chains ``name{json}`` / ``name[ARGS]{json}``
+# (Magistral, Devstral); V3 tokenizer models emit the ``[...]`` array form.
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
