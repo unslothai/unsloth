@@ -74,7 +74,6 @@ def effective_embedding_model() -> str:
     Settings change applies without a restart."""
     try:
         from utils.embedding_model_settings import get_rag_embedding_model
-
         return get_rag_embedding_model()
     except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
         return EMBEDDING_MODEL
@@ -95,6 +94,8 @@ def effective_gguf_repo() -> str:
     if "gguf" in model.lower():
         return model
     return f"{model}-GGUF"
+
+
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
 # tiny model) and exact vs fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")

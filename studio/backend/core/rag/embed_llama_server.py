@@ -150,9 +150,7 @@ class LlamaServerBackend:
                 break
             errors.append(f"{candidate!r}: no .gguf files")
         if not files:
-            raise RuntimeError(
-                "no .gguf embedder found; tried " + "; ".join(errors)
-            )
+            raise RuntimeError("no .gguf embedder found; tried " + "; ".join(errors))
         variant = config.EMBED_GGUF_VARIANT.lower()
         match = [f for f in files if variant in f.lower()] or files
         filename = sorted(match, key = len)[0]

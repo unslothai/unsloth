@@ -33,7 +33,6 @@ def _invalidate_cache() -> None:
 def default_embedding_model() -> str:
     """The env/default model from rag config (``RAG_EMBEDDING_MODEL`` or bge)."""
     from core.rag import config
-
     return config.EMBEDDING_MODEL
 
 
@@ -69,7 +68,6 @@ def get_stored_embedding_model() -> str | None:
         return cached[1]
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(EMBEDDING_MODEL_SETTING_KEY, None)
     except Exception:
         stored = None
