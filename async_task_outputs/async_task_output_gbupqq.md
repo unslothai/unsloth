@@ -1,0 +1,1 @@
+- `Yes do that for all models as well`

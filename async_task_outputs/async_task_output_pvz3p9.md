@@ -1,0 +1,16 @@
+- Decision: use ComfyUI fp8 + `--fast` as the fair “ComfyUI best” baseline because earlier GGUF-only comparisons understated ComfyUI’s optimized path.
+- Decision: compare Z-Image and FLUX.2-klein using bf16 single-file checkpoints loaded through `UNETLoader` with `weight_dtype=fp8_e4m3fn_fast`, because ComfyUI casts to fp8 and this matches its best available dense path.
+- Decision: final product conclusion is GPU `diffusers+opts` plus CPU/Mac `sd.cpp`, because `diffusers+opts` wins GPU across all 4 models while `sd.cpp` wins CPU.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/comfy_bench.py`: added `z-image-fp8` and `flux.2-klein-fp8` workflow support using ComfyUI fp8 casting.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/outputs/FINAL_engine_comparison.md`: updated final comparison with all 4 ComfyUI best fp8 results and final goal scorecard.
+- Ran `python3 -c "...HfApi(...).list_repo_files(...)"` to find single-file checkpoints. Key output: `Comfy-Org/z_image_turbo` had `split_files/diffusion_models/z_image_turbo_bf16.safetensors`; `Comfy-Org/flux2-klein` had `split_files/diffusion_models/flux-2-klein-4b.safetensors`; `Comfy-Org/FLUX.2-klein` returned `RepositoryNotFoundError: 404 Client Error`.
+- Ran download command from `/mnt/disks/unslothai/ubuntu/workspace_81` using `hf_hub_download`; key output: `OK z_image_turbo_bf16.safetensors: 12.31 GB` and `OK flux-2-klein-4b.safetensors: 7.75 GB`.
+- Ran `python -m py_compile scripts/comfy_bench.py && echo "compile OK"`; exit OK with `compile OK`.
+- Launched ComfyUI with `CUDA_VISIBLE_DEVICES=7 ComfyUI/.venv/bin/python ComfyUI/main.py --listen 127.0.0.1 --port 8235 --fast`; background server started, later stopped.
+- Ran benchmark command: `python3 -u scripts/comfy_bench.py --port 8235 --gpu 7 --families z-image-fp8,flux.2-klein-fp8 --tag best2_fp8`; key output: `z-image-fp8` OK `lat=1.51s vram=75.0GB`; `flux.2-klein-fp8` OK `lat=1.00s vram=85.8GB`.
+- Ran server cleanup command using `ps -ef | grep '[C]omfyUI/main.py' | awk '{print $2}' | while read p; do kill "$p"; done`; key output: `comfy procs: 0`.
+- Final complete best-vs-best table: `z-image` our `0.509(int8)` vs ComfyUI fp8 `1.51` = `3.0x`; `flux.2-klein` our `0.269(int8)` vs `1.00` = `3.7x`; `flux.1` our `0.518(fp8)` vs `1.00` = `1.9x`; `qwen-image` our `1.78(int8)` vs `6.01` = `3.4x`.
+- Resolved error: initial repo guess `Comfy-Org/FLUX.2-klein` was missing with `RepositoryNotFoundError: 404 Client Error`; resolved by using `Comfy-Org/flux2-klein`.
+- Completed: all 4 models now have fair ComfyUI best fp8 comparisons against our best results.
+- Completed: final conclusion documented that `diffusers+opts` beats ComfyUI GPU best by `1.9–3.7x`, `sd.cpp` beats CPU ComfyUI/diffusers by about `~1.7x`, and accuracy rule is satisfied with `LPIPS ≤ 0.17`.
+- Pending: none stated in this span.

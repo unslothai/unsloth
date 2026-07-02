@@ -1,0 +1,7 @@
+- User requested adding a dynamic check to distinguish consumer vs non-consumer GPUs, enabling the target behavior only for consumer GPUs.
+- Preserve requirement verbatim: `Add a dynamic check to check if consumer vs non consumer - so enable it only if consumer - see https://developer.nvidia.com/cuda/gpus for example`
+- Reference URL provided: `https://developer.nvidia.com/cuda/gpus`
+- No files edited in this span.
+- No commands run in this span.
+- COMPLETED: captured the new requirement.
+- PENDING: implement and verify the dynamic consumer GPU check.

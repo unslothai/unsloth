@@ -1,0 +1,4 @@
+- Decision: `SAFETENSORS_MODELS` uses full repo ids, so On Device `unsloth/Qwen-Image-2512-FP8` resolves to `single_file`.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/scripts/studio_ondevice_load_verify.py`.
+- Ran E2E: FP8 On Device click loaded `model_kind='single_file'`; unloaded OK.
+- COMPLETED: fixes verified. PENDING: SDXL/#196/#185.
