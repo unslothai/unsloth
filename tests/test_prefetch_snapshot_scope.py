@@ -376,7 +376,9 @@ def test_st_native_loads_map_hf_cache_dir_to_cache_folder():
     # The for_inference branch feeds cache_folder through st_kwargs; it must map cache_dir there too, and
     # both native branches resolve cache_dir -> cache_folder (reformatting-tolerant normalized check).
     normalized = "".join(src.split())
-    assert 'st_kwargs["cache_folder"]=' in normalized, "for_inference must set st_kwargs cache_folder"
+    assert (
+        'st_kwargs["cache_folder"]=' in normalized
+    ), "for_inference must set st_kwargs cache_folder"
     assert (
         normalized.count('kwargs.get("cache_dir")orkwargs.get("cache_folder")') >= 2
     ), "both native ST branches (for_inference, fast-encoder) must map cache_dir -> cache_folder"
