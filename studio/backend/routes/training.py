@@ -7,7 +7,7 @@ Training API routes
 
 import sys
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from typing import Dict, Optional, Any
 import structlog
@@ -58,6 +58,9 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    DiffusionDatasetSummary,
+    DiffusionDatasetUploadResponse,
+    DiffusionTrainingInfoResponse,
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
@@ -1192,3 +1195,139 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
     """Poll the current diffusion training job's status/progress (JSON)."""
     from core.training.diffusion_training_service import get_diffusion_training_service
     return DiffusionTrainingStatusResponse(**get_diffusion_training_service().status())
+
+
+# Extensions accepted into an image-training dataset folder: images the trainer reads,
+# plus its caption sources (per-image sidecars and metadata/captions jsonl).
+_DIFFUSION_DATASET_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+_DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
+
+
+def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
+    images = captions = 0
+    for f in folder.iterdir():
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
+            images += 1
+        elif ext in (".txt", ".caption"):
+            captions += 1
+    return DiffusionDatasetSummary(
+        name = folder.name, path = str(folder), image_count = images, caption_count = captions
+    )
+
+
+@router.get("/diffusion/info", response_model = DiffusionTrainingInfoResponse)
+async def diffusion_training_info(current_subject: str = Depends(get_current_subject)):
+    """Describe where diffusion training reads/writes, and list usable dataset folders.
+
+    A dataset folder is any direct child of the datasets root that contains at least one
+    image. The UI uses this to offer a picker instead of a blind free-text path."""
+    from utils.paths import datasets_root, outputs_root
+
+    def scan() -> DiffusionTrainingInfoResponse:
+        root = datasets_root()
+        found: list[DiffusionDatasetSummary] = []
+        try:
+            children = sorted(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            children = []
+        for child in children:
+            try:
+                summary = _diffusion_dataset_summary(child)
+            except OSError:
+                continue
+            if summary.image_count > 0:
+                found.append(summary)
+        return DiffusionTrainingInfoResponse(
+            datasets_root = str(root), outputs_root = str(outputs_root()), datasets = found
+        )
+
+    return await asyncio.to_thread(scan)
+
+
+_DATASET_NAME_RE = None  # compiled lazily; module keeps its import block torch-free
+
+
+def _clean_diffusion_dataset_name(name: str) -> str:
+    """Validate a dataset folder name: a single path component, no traversal, printable."""
+    import re
+    global _DATASET_NAME_RE
+    if _DATASET_NAME_RE is None:
+        _DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")
+    cleaned = (name or "").strip()
+    if not _DATASET_NAME_RE.fullmatch(cleaned) or ".." in cleaned:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Dataset name must be a plain folder name (letters, numbers, dots, "
+                "dashes, spaces; no slashes), e.g. 'my-style-photos'."
+            ),
+        )
+    return cleaned
+
+
+@router.post("/diffusion/dataset", response_model = DiffusionDatasetUploadResponse)
+async def upload_diffusion_dataset(
+    name: str = Form(...),
+    files: list[UploadFile] = File(...),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Upload training images (and optional caption .txt / metadata.jsonl files) into a
+    named folder under the Studio datasets root, creating it if needed. Repeat uploads
+    into the same name accumulate, so large datasets can arrive in batches. The returned
+    name can be passed directly as ``data_dir`` to /diffusion/start."""
+    from utils.paths import datasets_root
+    from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
+
+    cleaned = _clean_diffusion_dataset_name(name)
+    folder = datasets_root() / cleaned
+    folder.mkdir(parents = True, exist_ok = True)
+
+    limit_bytes = get_upload_limit_bytes()
+    total_bytes = 0
+    uploaded = 0
+    allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
+    for f in files:
+        filename = Path(f.filename or "").name.strip().replace("\x00", "")
+        ext = Path(filename).suffix.lower()
+        if not filename or ext not in allowed:
+            exts = ", ".join(sorted(allowed))
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
+            )
+        dest = folder / filename
+        complete = False
+        try:
+            with open(dest, "wb") as out:
+                while chunk := await f.read(1024 * 1024):
+                    total_bytes += len(chunk)
+                    if total_bytes > limit_bytes:
+                        raise HTTPException(
+                            status_code = 413,
+                            detail = (
+                                "Dataset upload too large. "
+                                f"Maximum is {get_upload_limit_label()} per upload; "
+                                "add the remaining images in another batch."
+                            ),
+                        )
+                    out.write(chunk)
+            complete = True
+        finally:
+            if not complete:
+                try:
+                    dest.unlink(missing_ok = True)
+                except OSError:
+                    pass
+        uploaded += 1
+
+    summary = _diffusion_dataset_summary(folder)
+    return DiffusionDatasetUploadResponse(
+        name = cleaned,
+        path = str(folder),
+        image_count = summary.image_count,
+        caption_count = summary.caption_count,
+        uploaded = uploaded,
+    )

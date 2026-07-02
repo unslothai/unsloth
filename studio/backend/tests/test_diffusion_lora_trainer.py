@@ -193,3 +193,34 @@ def test_config_rejects_nonpositive_learning_rate():
         DiffusionLoraConfig(
             base_model = "b", data_dir = "d", output_dir = "o", learning_rate = 0
         ).normalized()
+
+
+def test_config_rejects_known_non_sdxl_base_models():
+    # Known DiT families and GGUF checkpoints must fail at normalise time (an instant
+    # 400 via the API) instead of minutes later inside from_pretrained.
+    for bad in (
+        "unsloth/FLUX.1-dev-GGUF",
+        "black-forest-labs/FLUX.1-schnell",
+        "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
+        "Tongyi-MAI/Z-Image-Turbo",
+        "stabilityai/stable-diffusion-3-medium",
+        "unsloth/FLUX.1-Kontext-dev",
+        "z-image-turbo-Q4_K_M.gguf",
+    ):
+        with pytest.raises(ValueError, match = "SDXL"):
+            DiffusionLoraConfig(
+                base_model = bad, data_dir = "d", output_dir = "o"
+            ).normalized()
+
+
+def test_config_accepts_sdxl_and_unknown_base_models():
+    # SDXL names and unclassifiable custom names/paths must pass the guard (a wrong
+    # custom pick still fails cleanly in from_pretrained).
+    for ok in (
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        "stabilityai/sdxl-turbo",
+        "/data/checkpoints/my-custom-sdxl",
+        "my-finetune",
+    ):
+        cfg = DiffusionLoraConfig(base_model = ok, data_dir = "d", output_dir = "o").normalized()
+        assert cfg.base_model == ok
