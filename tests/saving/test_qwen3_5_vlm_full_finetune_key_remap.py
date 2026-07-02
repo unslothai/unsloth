@@ -201,20 +201,17 @@ def test_qwen3_5_gguf_save_handles_config_write_failure(tmp_path, monkeypatch):
     }
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index), encoding = "utf-8")
 
-    original_open = Path.open
+    original_dump = json.dump
 
-    def fail_writes(
-        self,
-        mode = "r",
-        *args,
-        **kwargs,
-    ):
-        if "w" in mode and self.name == "config.json":
-            raise OSError("read-only config")
-        return original_open(self, mode, *args, **kwargs)
+    def fail_config_dump(value, file, *args, **kwargs):
+        if Path(file.name).name in {"config.json", ".config.json.tmp"}:
+            file.write("{")
+            raise OSError("disk full")
+        return original_dump(value, file, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_writes)
+    monkeypatch.setattr(json, "dump", fail_config_dump)
 
     helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
 
     assert json.loads((tmp_path / "config.json").read_text(encoding = "utf-8")) == config
+    assert not (tmp_path / ".config.json.tmp").exists()

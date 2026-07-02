@@ -781,11 +781,17 @@ def _ensure_qwen3_5_mtp_config_for_gguf(save_directory):
     if isinstance(config.get("text_config"), dict):
         config["text_config"]["mtp_num_hidden_layers"] = inferred_mtp_layers
 
+    temp_config_path = config_path.with_name(f".{config_path.name}.tmp")
     try:
-        with config_path.open("w", encoding = "utf-8") as file:
+        with temp_config_path.open("w", encoding = "utf-8") as file:
             json.dump(config, file, indent = 2, ensure_ascii = False)
             file.write("\n")
+        temp_config_path.replace(config_path)
     except OSError as error:
+        try:
+            temp_config_path.unlink()
+        except OSError:
+            pass
         logger.warning_once(
             f"Unsloth: Could not write Qwen3.5 MTP metadata to config.json: {error}"
         )
