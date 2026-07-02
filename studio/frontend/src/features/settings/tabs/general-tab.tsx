@@ -48,6 +48,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -80,6 +81,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_load_on_selection",
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
+  "unsloth_models_fit_on_device_only",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -527,6 +529,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+
+      <ModelAutoSwitchSection />
 
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
