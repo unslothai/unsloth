@@ -1271,7 +1271,90 @@ fi
 
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
-if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+# GGUF export's check_llama_cpp() looks for a llama-quantize shim at the root of
+# the install dir, but a source build keeps the binary under build/bin/. Mirror
+# the source-build-reuse step and create the shim when the reused tree has one
+# but no root shim yet. Best-effort: the tree may be read-only (shared/CI cache),
+# and under `set -e` a failed ln would otherwise abort an good reuse.
+_link_local_llama_quantize_shim() {
+    if [ -x "$1/build/bin/llama-quantize" ] && [ ! -e "$1/llama-quantize" ]; then
+        ln -sf build/bin/llama-quantize "$1/llama-quantize" 2>/dev/null || \
+            substep "could not create llama-quantize shim in linked dir (read-only?); GGUF export may be unavailable"
+    fi
+}
+
+# Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
+# never rejects a tree Studio could actually run: a root-level llama-server (a
+# `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
+_has_local_llama_server() {
+    [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+_LOCAL_LLAMA_CPP_LINKED=false
+if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
+    if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
+        exit 1
+    fi
+    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
+    # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
+    # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
+    # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
+    # user pointed the flag at the canonical install itself -- and the rm -rf below
+    # would then wipe the very tree they asked to reuse. Resolve via the parent so
+    # this works whether or not the leaf currently exists.
+    _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
+    _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
+    if [ -d "$_LLAMA_CPP_PARENT" ]; then
+        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+    fi
+    if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
+        # Points at the canonical install location itself: never delete-then-link
+        # it onto itself. If a usable build is already there, reuse it and skip
+        # both the prebuilt download and the source build -- the prebuilt installer
+        # uses os.replace() and would otherwise clobber an existing source build at
+        # this path. If nothing is built there yet, fall through to the normal
+        # install so it gets built in place exactly as it would without the flag.
+        if _has_local_llama_server "$LLAMA_CPP_DIR"; then
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
+            _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _LOCAL_LLAMA_CPP_LINKED=true
+            _NEED_LLAMA_SOURCE_BUILD=false
+            _SKIP_PREBUILT_INSTALL=true
+        else
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install"
+        fi
+    else
+        # Reusing disables BOTH the prebuilt download and the source build, so the
+        # linked tree must already contain a runnable llama-server in one of the
+        # layouts the backend resolves (root-level or build/bin/). Fail clearly
+        # rather than link an unbuilt or wrong-platform checkout and leave Studio
+        # with no usable binary.
+        if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
+            step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
+            exit 1
+        fi
+        # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
+        # content; drop it before the ownership check so re-runs stay idempotent
+        # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
+        # link into the user's dir and reject it as unowned).
+        [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        fi
+        rm -rf "$LLAMA_CPP_DIR"
+        ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
+        _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+        step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
+        _LOCAL_LLAMA_CPP_LINKED=true
+        _NEED_LLAMA_SOURCE_BUILD=false
+        _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
+    : # local directory linked above; skip prebuilt install
+elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
