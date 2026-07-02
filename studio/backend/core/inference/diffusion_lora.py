@@ -25,6 +25,8 @@ from typing import Optional
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import studio_root
 
+from .diffusion_families import DIFFUSION_CANCELLED_MSG
+
 # LoRA file formats we accept. sd-cli probes .safetensors/.gguf/.pt; diffusers loads
 # .safetensors. We expose safetensors + gguf (pt is legacy/pickled -> excluded for safety).
 _NATIVE_EXTS = (".safetensors", ".gguf")
@@ -241,7 +243,10 @@ def resolve_specs(
 
     A stale / unknown id raises FileNotFoundError inside resolve_one; convert it to
     ValueError so the route (which maps only ValueError to a 400) reports bad client
-    input instead of a generic 500."""
+    input instead of a generic 500. A Hub download can also raise
+    ``RuntimeError("Cancelled")`` when the user unloads / starts a superseding load
+    mid-download; convert that to the diffusion cancellation sentinel so the route
+    maps it to a 409 instead of a generic server error toast."""
     out: list[ResolvedLora] = []
     try:
         for spec_id, weight in specs:
@@ -250,6 +255,10 @@ def resolve_specs(
             out.append(resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event))
     except FileNotFoundError as exc:
         raise ValueError(str(exc)) from exc
+    except RuntimeError as exc:
+        if str(exc) == "Cancelled":
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+        raise
     return out
 
 
@@ -297,14 +306,15 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     sd-cli strips these tags before they reach the model, so appending them is safe and
     deterministic. A selected adapter's weight is validated (0-2) and recorded in the
     request/gallery, so the injected tag must WIN over any `<lora:ALIAS:...>` the user
-    typed for that same alias: strip a user tag whose alias matches a selected adapter,
-    then append the validated one. Tags for aliases the user typed that are NOT selected
-    are left untouched (free-form use).
+    typed. Strip ALL user-typed tags first: only the selected adapters are materialized in
+    the managed `--lora-model-dir`, so a tag for an unselected alias can never resolve
+    anyway (sd-cli's extract_and_remove_lora silently removes unresolved tags), and a tag
+    for a selected alias must not override the validated weight. Then append the validated
+    tags for the selected adapters.
     """
-    selected = {r.alias for r in resolved}
-    # Drop any user-typed tag whose alias is one of the selected adapters, so the typed
-    # weight can't override the validated weight (or slip outside the 0-2 bounds).
-    cleaned = _TAG_RE.sub(lambda m: "" if m.group(1) in selected else m.group(0), prompt)
+    # Drop every user-typed tag: unselected ones are dead (not in the managed dir) and
+    # selected ones must not override the validated weight / 0-2 bounds.
+    cleaned = _TAG_RE.sub("", prompt)
     # Collapse whitespace left by stripped tags without disturbing the user's text.
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
@@ -343,12 +353,17 @@ def supports_lora(
     family: Optional[str],
     model_kind: Optional[str],
     transformer_quant: Optional[str],
+    compiled: bool = False,
 ) -> bool:
     """Single gate for whether the current load can apply LoRA (used by status + backends).
 
     Native (sd_cpp): GGUF via sd-cli, for the LoRA-capable families only (Qwen excluded).
     Diffusers: bf16 or bnb-4bit transformers, but NOT the dense torchao fp8/int8 fast path
-    (tensor-subclass weights) and NOT GGUF-via-diffusers.
+    (tensor-subclass weights) and NOT GGUF-via-diffusers. A diffusers transformer that was
+    torch.compile'd at load (Speed=default/max) also can't take a non-hotswap adapter:
+    diffusers requires the adapter to be loaded BEFORE compilation, so applying one to the
+    already-compiled module fails with adapter-key mismatches. ``compiled`` is diffusers-only
+    (the native sd-cli path has no torch compile).
     """
     fam = (family or "").lower()
     if engine == "sd_cpp":
@@ -358,4 +373,6 @@ def supports_lora(
         return False  # GGUF diffusers transformer: use the native engine for LoRA
     if transformer_quant and transformer_quant.lower() in _DIFFUSERS_LORA_BLOCKED_QUANT:
         return False
+    if compiled:
+        return False  # can't load an adapter onto an already-compiled transformer
     return True
