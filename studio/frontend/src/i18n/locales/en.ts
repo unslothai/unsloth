@@ -193,6 +193,20 @@ export const en = {
         maxUploadSize: "Training dataset upload cap",
         maxUploadSizeDescription: "Default is {defaultSize} MB.",
       },
+      rag: {
+        sectionTitle: "Documents & RAG",
+        embeddingModel: "Embedding model",
+        embeddingModelDescription:
+          "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
+        reindexWarning:
+          "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
+        emptyError: "Enter a Hugging Face model id or local path.",
+        loadError: "Failed to load the embedding model setting.",
+        saveError: "Failed to save the embedding model.",
+        saved: "Embedding model saved.",
+        saveAnyway: "Save anyway",
+        resetAction: "Reset to default",
+      },
       storage: {
         sectionTitle: "Storage",
         modelsFolder: "Models folder",
