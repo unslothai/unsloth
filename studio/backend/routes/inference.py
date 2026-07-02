@@ -11199,8 +11199,13 @@ async def generate_diffusion_image(
                     {
                         "prompt": request.prompt,
                         "negative_prompt": request.negative_prompt,
-                        "width": request.width,
-                        "height": request.height,
+                        # Persist the ACTUAL output size, not the request sliders: Transform/
+                        # Inpaint/Edit derive it from the uploaded image, Extend grows the
+                        # canvas, and Upscale resizes it, so request.width/height would record
+                        # (and later restore) the wrong dimensions for those workflows. For
+                        # plain txt2img the image size equals the sliders anyway.
+                        "width": getattr(image, "width", None) or request.width,
+                        "height": getattr(image, "height", None) or request.height,
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,

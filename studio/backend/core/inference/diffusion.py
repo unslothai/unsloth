@@ -488,6 +488,16 @@ class DiffusionBackend:
                     )
             elif path_shaped:
                 raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
+            elif repo_id.upper().endswith("-GGUF"):
+                # A remote "*-GGUF" id is a single-file GGUF repo, not a full diffusers
+                # pipeline: loading it as a pipeline passes the trusted-repo check, evicts
+                # chat, then fails in the background when from_pretrained finds no
+                # model_index.json. Reject the certain case here (no network round-trip)
+                # so the bad pick fails before the GPU handoff, as the route expects.
+                raise ValueError(
+                    f"'{repo_id}' is a single-file GGUF repo; load it with model_kind 'gguf' "
+                    f"and a .gguf filename, not as a full pipeline."
+                )
         return fam
 
     # ── Background load + progress ─────────────────────────────────────────
@@ -1348,7 +1358,14 @@ class DiffusionBackend:
         # reuse the resident modules AT THEIR LOADED dtype, which is the whole point of
         # from_pipe (component reuse, no reload, no extra VRAM).
         pipe = getattr(diffusers, class_name).from_pipe(state.pipe, torch_dtype = None)
-        self._aux_pipes[class_name] = pipe
+        # Only publish to the shared aux cache if THIS load is still current. from_pipe runs
+        # under _generate_lock but NOT _lock, so an unload()/superseding load can clear
+        # _aux_pipes and null _state while it builds; caching unconditionally would re-insert
+        # a wrapper over now-stale modules that a later same-workflow load would reuse (or
+        # keep the old VRAM pinned). This generation still uses the returned pipe.
+        with self._lock:
+            if self._state is state:
+                self._aux_pipes[class_name] = pipe
         return pipe
 
     @staticmethod

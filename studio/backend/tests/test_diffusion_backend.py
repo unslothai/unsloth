@@ -1461,6 +1461,11 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request(
             "unsloth/Qwen-Image-2512-FP8", gguf_filename = "q.gguf", model_kind = "single_file"
         )
+    # A remote "*-GGUF" repo loaded as a full pipeline (no single-file name) is a single-file
+    # GGUF repo, so from_pretrained would find no pipeline manifest and fail after chat is
+    # already evicted; reject it here before the GPU handoff.
+    with pytest.raises(ValueError, match = "GGUF"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", model_kind = "pipeline")
     # A local path with a missing child fails here (before any GPU/network work).
     with pytest.raises(FileNotFoundError):
         backend.validate_load_request(
