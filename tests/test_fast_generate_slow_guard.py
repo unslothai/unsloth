@@ -51,7 +51,7 @@ def _rejects(fn, needle):
     raise AssertionError("expected ValueError")
 
 
-def run():
+def test_fast_generate_slow_guard():
     w, _ = _wrapper()
     # reject every vLLM-only shape
     assert _rejects(lambda: w("hello"), "fast_inference=True")
@@ -75,5 +75,5 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    test_fast_generate_slow_guard()
     print("OK: fast_generate rejects vLLM-style inputs when fast_inference=False")
