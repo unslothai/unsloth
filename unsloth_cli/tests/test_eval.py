@@ -107,6 +107,17 @@ def test_make_jsonl_task_honours_custom_keys(tmp_path):
     assert spec["doc_to_target"] == "{{label}}"
 
 
+def test_make_jsonl_task_uses_raw_lookup_for_non_identifier_keys(tmp_path):
+    data = tmp_path / "weird.jsonl"
+    data.write_text('{"prompt-text": "1+1?", "expected answer": "2"}\n')
+    evalmod.make_jsonl_task(data, "prompt-text", "expected answer", tmp_path / "t")
+
+    spec = yaml.safe_load((tmp_path / "t" / "weird.yaml").read_text())
+    # jinja can't parse these keys; lm-eval resolves raw column names directly
+    assert spec["doc_to_text"] == "prompt-text"
+    assert spec["doc_to_target"] == "expected answer"
+
+
 def test_make_jsonl_task_avoids_reserved_names(tmp_path):
     data = tmp_path / "gsm8k.jsonl"
     data.write_text('{"question": "q", "answer": "a"}\n')
@@ -206,6 +217,32 @@ def test_resolve_tasks_yaml_list_raises(tmp_path):
         evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path)
 
 
+def test_resolve_tasks_group_yaml_uses_group_name(tmp_path):
+    task_file = tmp_path / "suite.yaml"
+    task_file.write_text(yaml.safe_dump({"group": "my_suite", "task": ["task_a", "task_b"]}))
+
+    names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path)
+
+    assert names == ["my_suite"]
+    assert includes == [str(tmp_path.resolve())]
+
+
+def test_resolve_tasks_group_yaml_without_group_raises(tmp_path):
+    task_file = tmp_path / "suite.yaml"
+    task_file.write_text(yaml.safe_dump({"task": ["task_a", "task_b"]}))
+    with pytest.raises(ValueError, match = "no 'group:' name"):
+        evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path)
+
+
+def test_resolve_tasks_yaml_rejects_registered_name(tmp_path):
+    task_file = tmp_path / "clash.yaml"
+    task_file.write_text(yaml.safe_dump({"task": "gsm8k", "output_type": "generate_until"}))
+    with pytest.raises(ValueError, match = "redefines 'gsm8k'"):
+        evalmod.resolve_tasks(
+            str(task_file), "question", "answer", tmp_path, reserved = frozenset({"gsm8k"})
+        )
+
+
 def test_resolve_tasks_yaml_without_task_name_raises(tmp_path):
     task_file = tmp_path / "bad.yaml"
     task_file.write_text(yaml.safe_dump({"output_type": "generate_until"}))
@@ -260,7 +297,16 @@ def fake_eval_env(monkeypatch):
             **kw,
         ):
             calls["model_name"] = model_name
-            return SimpleNamespace(name = model_name), SimpleNamespace(name = "tok")
+            model = SimpleNamespace(
+                name = model_name,
+                get_input_embeddings = lambda: SimpleNamespace(
+                    weight = SimpleNamespace(shape = (32000, 4096))
+                ),
+                resize_token_embeddings = lambda n: calls.setdefault("events", []).append(
+                    ("resize", n)
+                ),
+            )
+            return model, SimpleNamespace(name = "tok")
 
         @classmethod
         def for_inference(cls, model):
@@ -285,12 +331,19 @@ def fake_eval_env(monkeypatch):
             self.all_tasks = ["gsm8k", "mmlu", "hellaswag"]
             self.all_groups = ["mmlu"]
             self.all_tags = []
-            # mirror lm-eval: yaml tasks under include paths get registered
+            # mirror lm-eval: yaml tasks/groups under include paths get
+            # registered under their task or group name
             for directory in include_path or []:
                 for spec_file in sorted(Path(directory).glob("*.yaml")):
                     spec = yaml.safe_load(spec_file.read_text())
-                    if isinstance(spec, dict) and spec.get("task"):
-                        self.all_tasks.append(str(spec["task"]))
+                    if not isinstance(spec, dict):
+                        continue
+                    name = spec.get("task")
+                    if isinstance(name, list):
+                        if spec.get("group"):
+                            self.all_groups.append(str(spec["group"]))
+                    elif name:
+                        self.all_tasks.append(str(name))
 
     def _simple_evaluate(
         model = None,
@@ -518,24 +571,34 @@ def test_eval_hf_local_adapter_uses_adapter_tokenizer(fake_eval_env, tmp_path):
     }
 
 
-def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path, monkeypatch):
+def _make_local_adapter(tmp_path):
     adapter = tmp_path / "adapter"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"})
     )
     (adapter / "tokenizer_config.json").write_text("{}")
+    return adapter
 
+
+def _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len):
     peft_mod = types.ModuleType("peft")
 
     class _FakePeftModel:
         @staticmethod
         def from_pretrained(model, adapter_path):
             fake_eval_env["peft_adapter"] = adapter_path
+            fake_eval_env.setdefault("events", []).append(("peft", adapter_path))
             return model
 
     peft_mod.PeftModel = _FakePeftModel
     monkeypatch.setitem(sys.modules, "peft", peft_mod)
+
+    class _FakeTokenizer:
+        name = "adapter-tok"
+
+        def __len__(self):
+            return tokenizer_len
 
     transformers_mod = types.ModuleType("transformers")
 
@@ -543,10 +606,16 @@ def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path,
         @staticmethod
         def from_pretrained(path, **kwargs):
             fake_eval_env["tokenizer_from"] = path
-            return SimpleNamespace(name = "adapter-tok")
+            return _FakeTokenizer()
 
     transformers_mod.AutoTokenizer = _FakeAutoTokenizer
     monkeypatch.setitem(sys.modules, "transformers", transformers_mod)
+
+
+def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path, monkeypatch):
+    adapter = _make_local_adapter(tmp_path)
+    # same vocab size as the fake base model: no resize expected
+    _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len = 32000)
 
     result = CliRunner().invoke(
         _eval_app(),
@@ -557,6 +626,23 @@ def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path,
     assert fake_eval_env["peft_adapter"] == str(adapter)
     assert fake_eval_env["tokenizer_from"] == str(adapter)
     assert fake_eval_env["hflm_tokenizer"].name == "adapter-tok"
+    assert fake_eval_env["events"] == [("peft", str(adapter))]
+
+
+def test_eval_unsloth_adapter_resizes_embeddings_before_peft(
+    fake_eval_env, tmp_path, monkeypatch
+):
+    adapter = _make_local_adapter(tmp_path)
+    # adapter tokenizer grew past the fake base vocab (32000)
+    _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len = 32005)
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [str(adapter), "--tasks", "gsm8k", "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    # the resize must land before the adapter weights are applied
+    assert fake_eval_env["events"] == [("resize", 32005), ("peft", str(adapter))]
 
 
 def test_eval_hf_honors_base_model_for_remote_adapter(fake_eval_env, tmp_path):
@@ -628,6 +714,59 @@ def test_eval_dataset_shadowing_builtin_is_renamed(fake_eval_env, tmp_path):
     # the built-in gsm8k benchmark must not shadow the user's dataset
     assert fake_eval_env["tasks"] == ["gsm8k_2"]
     assert "as 'gsm8k_2'" in result.output
+
+
+def test_eval_custom_yaml_shadowing_builtin_errors(fake_eval_env, tmp_path):
+    task_file = tmp_path / "clash.yaml"
+    task_file.write_text(yaml.safe_dump({"task": "gsm8k", "output_type": "generate_until"}))
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", str(task_file), "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 2, result.output
+    assert "redefines 'gsm8k'" in result.output
+
+
+def test_eval_group_yaml_runs_under_group_name(fake_eval_env, tmp_path):
+    task_file = tmp_path / "suite.yaml"
+    task_file.write_text(yaml.safe_dump({"group": "my_suite", "task": ["task_a", "task_b"]}))
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", str(task_file), "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["tasks"] == ["my_suite"]
+
+
+def test_eval_unsloth_rejects_multi_process_launch(fake_eval_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "gsm8k", "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 2, result.output
+    assert "multi-process launches" in result.output
+
+
+def test_eval_hf_allows_multi_process_launch(fake_eval_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
 
 
 def test_eval_rejects_unknown_backend(fake_eval_env, tmp_path):

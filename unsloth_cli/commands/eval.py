@@ -139,6 +139,19 @@ def resolve_base_model(model: str) -> Optional[str]:
     return _read_adapter_base(Path(config_path))
 
 
+def _doc_column(key: str) -> str:
+    # a jinja template stringifies the value (needed e.g. for numeric answer
+    # columns in few-shot prompts), but jinja can't parse keys that aren't
+    # plain identifiers ("prompt-text", "expected answer") or that collide
+    # with its keywords/literals — lm-eval treats a raw column name as a
+    # direct lookup, so fall back to that for such keys
+    import keyword
+
+    if key.isidentifier() and not keyword.iskeyword(key) and key not in ("true", "false", "none"):
+        return "{{" + key + "}}"
+    return key
+
+
 def make_jsonl_task(
     data_file: Path,
     input_key: str,
@@ -172,8 +185,8 @@ def make_jsonl_task(
         # version we support (the file has a single split)
         "fewshot_split": "train",
         "output_type": "generate_until",
-        "doc_to_text": "{{" + input_key + "}}",
-        "doc_to_target": "{{" + target_key + "}}",
+        "doc_to_text": _doc_column(input_key),
+        "doc_to_target": _doc_column(target_key),
         "generation_kwargs": {"until": ["\n"]},
         # strip surrounding whitespace so " 2" matches gold "2"
         "filter_list": [
@@ -226,9 +239,24 @@ def resolve_tasks(
             if not isinstance(spec, dict):
                 raise ValueError(f"Custom task file '{entry}' must define a YAML mapping.")
             name = spec.get("task")
+            if isinstance(name, list):
+                # a group file (group: suite, task: [a, b]) is registered
+                # under its group name
+                name = spec.get("group")
+                if not name:
+                    raise ValueError(
+                        f"Custom task file '{entry}' defines a task list but no 'group:' name."
+                    )
             if not name:
                 raise ValueError(f"Custom task file '{entry}' is missing a 'task:' name.")
-            names.append(str(name))
+            name = str(name)
+            if name in reserved:
+                raise ValueError(
+                    f"Custom task file '{entry}' redefines '{name}', which is already a "
+                    "registered lm-eval task — the registered one would silently win. "
+                    "Rename the task in the YAML."
+                )
+            names.append(name)
             _add_include(str(path.resolve().parent))
 
         elif suffix in {".jsonl", ".json", ".csv"}:
@@ -360,12 +388,14 @@ def evaluate(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:
-        # a dataset named after a registered task (gsm8k.jsonl) must not be
-        # shadowed by the built-in benchmark, so collect registry names first
+        # a dataset or custom task named after a registered task (gsm8k.jsonl,
+        # task: gsm8k) must not be shadowed by the built-in benchmark, so
+        # collect registry names first
         base_manager = None
         reserved: frozenset = frozenset()
         if any(
-            Path(e.strip()).suffix.lower() in {".jsonl", ".json", ".csv"} for e in tasks.split(",")
+            Path(e.strip()).suffix.lower() in {".jsonl", ".json", ".csv", ".yaml", ".yml"}
+            for e in tasks.split(",")
         ):
             base_manager = TaskManager()
             reserved = frozenset(_registry_names(base_manager))
@@ -412,6 +442,18 @@ def evaluate(
                     "--backend hf (plain transformers)."
                 )
                 backend = "hf"
+
+        # a pre-loaded model object makes lm-eval single-process (rank 0
+        # everywhere), so under accelerate/torchrun every worker would run
+        # the full task set and write results
+        if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
+            typer.echo(
+                "Error: multi-process launches (accelerate/torchrun) are not "
+                "supported with --backend unsloth. Use --backend hf for "
+                "multi-GPU evaluation.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
 
         typer.echo(f"Running tasks: {', '.join(task_names)} (backend: {backend})")
 
@@ -481,14 +523,19 @@ def evaluate(
                     lmodel, tokenizer = FastLanguageModel.from_pretrained(
                         model_name = effective_base, **load_kwargs
                     )
-                    from peft import PeftModel
-
-                    lmodel = PeftModel.from_pretrained(lmodel, model)
                     # adapters that saved their own tokenizer (added tokens
-                    # etc.) must not be scored with the base tokenizer
+                    # etc.) must not be scored with the base tokenizer, and
+                    # the embeddings must match its vocab before the adapter
+                    # weights are applied or PEFT fails on a size mismatch
                     if _has_tokenizer_files(model):
                         from transformers import AutoTokenizer
                         tokenizer = AutoTokenizer.from_pretrained(model)
+                        embeddings = lmodel.get_input_embeddings()
+                        if embeddings is not None and embeddings.weight.shape[0] != len(tokenizer):
+                            lmodel.resize_token_embeddings(len(tokenizer))
+                    from peft import PeftModel
+
+                    lmodel = PeftModel.from_pretrained(lmodel, model)
             else:
                 typer.echo(f"Loading model: {model}")
                 with _silence():
