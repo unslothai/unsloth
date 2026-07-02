@@ -1,0 +1,4 @@
+- Decision: attributed Z-Image diffusers resident-GPU `default` gains almost entirely to `compile_repeated_blocks`; `channels_last`/`cudnn.benchmark` kept because free no-ops on DiT but useful for UNet.
+- Evidence: `compile_probe.py` compile-only eager `1.83 → 0.79 s` `+56.6%`; `perf_verify.py` full default `1.80 → 0.82 s` `-54.7%`.
+- Not isolated: `inference_mode`, TF32, fused QKV; offered clean ablation on `GPU 6`.
+- Completed: answered attribution and caveats.

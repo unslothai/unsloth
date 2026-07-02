@@ -172,8 +172,8 @@ def test_vision_complete_sends_auth_header(monkeypatch):
         def json(self):
             return {"choices": [{"message": {"content": "ok"}}]}
 
-    def fake_post(url, *, json, timeout, headers):
-        captured.update(url = url, headers = headers)
+    def fake_post(url, *, json, timeout, headers, trust_env):
+        captured.update(url = url, headers = headers, trust_env = trust_env)
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", fake_post)
@@ -182,6 +182,7 @@ def test_vision_complete_sends_auth_header(monkeypatch):
     )
     assert out == "ok"
     assert captured["headers"] == {"Authorization": "Bearer secret"}
+    assert captured["trust_env"] is False
 
 
 def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
@@ -198,13 +199,15 @@ def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
         def json(self):
             return {"choices": [{"message": {"content": "ok"}}]}
 
-    def fake_post(url, *, json, timeout, headers):
+    def fake_post(url, *, json, timeout, headers, trust_env):
         captured["headers"] = headers
+        captured["trust_env"] = trust_env
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", fake_post)
     captioner._vision_complete("http://x", "local", b"i", prompt = "p", timeout = 5.0, max_tokens = 8)
     assert captured["headers"] is None
+    assert captured["trust_env"] is False
 
 
 def test_merge_page_captions_dedups():

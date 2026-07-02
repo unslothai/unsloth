@@ -148,6 +148,17 @@ def run(
             del pipe  # free the resident pipe so a skipped variant doesn't leak VRAM
             torch.cuda.empty_cache()
             return None
+    else:
+        # set_attention_backend pins diffusers' PROCESS-WIDE active backend, and a fresh
+        # transformer's processors (backend None) inherit it. Force native for the no-attn
+        # variants so they aren't silently measured under a prior variant's kernel (e.g.
+        # fbcache running with a leftover sage backend).
+        try:
+            pipe.transformer.set_attention_backend("native")
+        except Exception as exc:  # noqa: BLE001 — best-effort isolation
+            print(
+                f"    [{tag}] attn(native-reset)={type(exc).__name__}:{str(exc)[:60]}", flush = True
+            )
     if fbcache is not None:
         try:
             from diffusers.hooks import FirstBlockCacheConfig, apply_first_block_cache
