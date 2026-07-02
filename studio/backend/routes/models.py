@@ -12,6 +12,7 @@ import sys
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from pydantic import BaseModel
 from typing import List, Optional
 import structlog
 from loggers import get_logger
@@ -22,8 +23,25 @@ import re as _re
 _VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
+class CachedModelRepo(BaseModel):
+    repo_id: str
+    size_bytes: int
+    last_modified: Optional[float] = None
+
+
+class CachedModelsResponse(BaseModel):
+    cached: List[CachedModelRepo]
+
+
 def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
+
+
+def _normalize_hf_token(hf_token) -> Optional[str]:
+    if not isinstance(hf_token, str):
+        return None
+    token = hf_token.strip()
+    return token or None
 
 
 def _safe_is_dir(path) -> bool:
@@ -74,6 +92,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
+from hub.dependencies import get_hf_token
 
 try:
     from utils.models import (
@@ -2594,109 +2613,41 @@ async def get_gguf_variants(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List GGUF quantization variants for a HF repo or local directory.
-
-    Returns all variants with file sizes, vision support, and the
-    recommended default.
-    """
+    """List GGUF quantization variants for a HF repo or local directory."""
     try:
-        from utils.models.model_config import is_local_path, list_local_gguf_variants
+        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
+        from hub.services.models import gguf_variants as hub_gguf_variants
 
-        # Local directory path — scan filesystem.
-        if is_local_path(repo_id):
-            variants, has_vision = list_local_gguf_variants(repo_id)
-
-            filenames = [v.filename for v in variants]
-            best = _pick_best_gguf(filenames)
-            default_variant = _extract_quant_label(best) if best else None
-
-            return GgufVariantsResponse(
-                repo_id = repo_id,
-                variants = [
-                    GgufVariantDetail(
-                        filename = v.filename,
-                        quant = v.quant,
-                        size_bytes = v.size_bytes,
-                        downloaded = True,  # all local variants are downloaded
-                    )
-                    for v in variants
-                ],
-                has_vision = has_vision,
-                default_variant = default_variant,
-                context_length = _read_native_context_length(repo_id, is_local = True),
-            )
-
-        # Remote HuggingFace repo — query HF API.
-        variants, has_vision = list_gguf_variants(repo_id, hf_token = hf_token)
-
-        filenames = [v.filename for v in variants]
-        best = _pick_best_gguf(filenames)
-        default_variant = _extract_quant_label(best) if best else None
-
-        # Per-snapshot so a split GGUF's shards must all sit in one snapshot;
-        # mmproj adapters are excluded so they can't inflate a quant's bytes.
-        cached_bytes_by_quant_per_snapshot: list[dict[str, int]] = []
-        try:
-            from huggingface_hub import constants as hf_constants
-
-            if not _is_valid_repo_id(repo_id):
-                raise ValueError(f"Invalid repo_id format: {repo_id}")
-
-            cache_dir = Path(hf_constants.HF_HUB_CACHE)
-            target = f"models--{repo_id.replace('/', '--')}".lower()
-            for entry in cache_dir.iterdir():
-                if entry.name.lower() == target:
-                    snapshots = entry / "snapshots"
-                    if snapshots.is_dir():
-                        for snap in snapshots.iterdir():
-                            by_quant: dict[str, int] = {}
-                            for f in _iter_gguf_paths(snap):
-                                if _is_mmproj_filename(f.name):
-                                    continue
-                                try:
-                                    size = f.stat().st_size
-                                except OSError:
-                                    continue  # broken symlink / unreadable: skip
-                                rel = f.relative_to(snap).as_posix()
-                                q = _extract_quant_label(rel)
-                                if _is_big_endian_gguf_path(rel, q):
-                                    continue
-                                q = q.lower()
-                                by_quant[q] = by_quant.get(q, 0) + size
-                            if by_quant:
-                                cached_bytes_by_quant_per_snapshot.append(by_quant)
-                    break
-        except Exception:
-            pass
-
-        def _is_fully_downloaded(variant) -> bool:
-            if variant.size_bytes == 0:
-                return False
-            # Complete within one snapshot (tolerance for symlink size jitter).
-            quant = variant.quant.lower()
-            return any(
-                by_quant.get(quant, 0) >= variant.size_bytes * 0.99
-                for by_quant in cached_bytes_by_quant_per_snapshot
-            )
+        response = await hub_gguf_variants.get_gguf_variants_response(
+            repo_id,
+            hf_token = hf_token,
+        )
+        local = is_local_path(repo_id)
 
         return GgufVariantsResponse(
-            repo_id = repo_id,
+            repo_id = response.repo_id,
             variants = [
                 GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,
                     size_bytes = v.size_bytes,
-                    downloaded = _is_fully_downloaded(v),
+                    download_size_bytes = int(
+                        getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
+                    ),
+                    downloaded = bool(v.downloaded),
+                    update_available = bool(getattr(v, "update_available", False)),
                 )
-                for v in variants
+                for v in response.variants
             ],
-            has_vision = has_vision,
-            default_variant = default_variant,
-            context_length = _read_native_context_length(repo_id, is_local = False),
+            has_vision = response.has_vision,
+            default_variant = response.default_variant,
+            context_length = _read_native_context_length(repo_id, is_local = local),
         )
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info = True)
         raise HTTPException(
@@ -3123,10 +3074,14 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
         return {"cached": []}
 
 
-@router.get("/cached-models")
-async def list_cached_models(current_subject: str = Depends(get_current_subject)):
+@router.get("/cached-models", response_model = CachedModelsResponse)
+async def list_cached_models(
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+    hf_token = _normalize_hf_token(hf_token)
 
     try:
         cache_scans = _all_hf_cache_scans()
@@ -3147,20 +3102,16 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     )
                     if total_size == 0:
                         continue
-                    has_weights = any(
-                        f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                    weight_files = [
+                        f
                         for rev in repo_info.revisions
                         for f in rev.files
-                    )
-                    if not has_weights:
+                        if f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                    ]
+                    if not weight_files:
                         continue
                     last_modified = max(
-                        (
-                            _blob_mtime(f)
-                            for rev in repo_info.revisions
-                            for f in rev.files
-                            if f.file_name.endswith(_WEIGHT_EXTENSIONS)
-                        ),
+                        (_blob_mtime(f) for f in weight_files),
                         default = 0.0,
                     )
                     key = repo_id.lower()
@@ -3182,9 +3133,12 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
-        # Newest download first; stable repo_id tie-break for equal/missing mtimes.
+
+        rows = list(seen_lower.values())
+        # Local-only list path: update checks are GGUF-only and happen lazily
+        # when a repo's variants are viewed.
         cached = sorted(
-            seen_lower.values(),
+            rows,
             key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
         )
         return {"cached": cached}
