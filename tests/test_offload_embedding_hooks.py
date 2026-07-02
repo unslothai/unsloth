@@ -89,6 +89,17 @@ def test_live_decoder_over_stale_fallback():
     assert out.device.type == "cuda", out.device
 
 
+def test_meta_lm_head_falls_back():
+    # A disk-offloaded (meta) lm_head must not be used as the return device: moving hidden
+    # states to meta is unrecoverable, so fall back to the captured device. No GPU needed.
+    emb = _emb().to("cpu")
+    lm = _lm_head(CPU)
+    lm.weight = nn.Parameter(lm.weight.to("meta"))
+    install(emb, lm, CPU)
+    out = emb(torch.randint(0, 32, (2, 5)))
+    assert out.device.type == "cpu", out.device
+
+
 def test_cuda_weight_pulled_back_to_gpu():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
@@ -111,6 +122,8 @@ if __name__ == "__main__":
     print("[PASS] cpu input still returns to cuda decoder (P1)")
     test_live_decoder_over_stale_fallback()
     print("[PASS] live decoder device beats stale fallback (P2)")
+    test_meta_lm_head_falls_back()
+    print("[PASS] meta lm_head falls back to captured device (P2)")
     test_cuda_weight_pulled_back_to_gpu()
     print("[PASS] cuda weight-on-gpu no-op")
     print("OK: offloaded embedding output always lands on the live decoder device")

@@ -254,9 +254,9 @@ def _unsloth_generate_accepts_kwarg(model, key):
 
 
 def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_device):
-    # Lookup runs on the weight's current device (CPU when offloaded); the output is returned
-    # to the decoder device read live from output_embeddings (lm_head, untied here) so it tracks
-    # model.to() moves. return_device is a static fallback when lm_head has no weight.
+    # Lookup runs on the weight's current device (CPU when offloaded); the output returns to the
+    # decoder device read live from output_embeddings (lm_head, untied here) so it tracks
+    # model.to() moves. A meta (disk-offloaded) or missing lm_head falls back to return_device.
     if embed_tokens is None:
         return False
     if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
@@ -264,7 +264,9 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
 
     def _decoder_device():
         weight = getattr(output_embeddings, "weight", None)
-        return weight.device if weight is not None else return_device
+        if weight is not None and weight.device.type != "meta":
+            return weight.device
+        return return_device
 
     def _unsloth_offload_pre_hook(module, args):
         if not args:
