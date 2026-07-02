@@ -125,6 +125,13 @@ def _hf_device_error(device: str) -> Optional[str]:
         mps = getattr(torch.backends, "mps", None)
         if not (mps and mps.is_available()):
             return f"--device {device} requested but MPS is not available."
+    elif device != "cpu" and not re.fullmatch(r"(npu|xpu|hpu):\d+", device):
+        # a typo like 'cpuu' or 'cude' would silently fall back to HFLM's
+        # default device
+        return (
+            f"invalid --device '{device}' — use 'cpu', 'cuda[:<index>]', 'mps', "
+            "or '<npu|xpu|hpu>:<index>'."
+        )
     return None
 
 
@@ -449,6 +456,12 @@ def evaluate(
 
     if backend not in ("unsloth", "hf"):
         typer.echo(f"Error: --backend must be 'unsloth' or 'hf', got '{backend}'.", err = True)
+        raise typer.Exit(code = 2)
+
+    if num_fewshot is not None and num_fewshot < 0:
+        # lm-eval treats a negative count as zero-shot while recording the
+        # bogus value in the results metadata
+        typer.echo("Error: --num-fewshot must be >= 0.", err = True)
         raise typer.Exit(code = 2)
 
     if not _lm_eval_available():

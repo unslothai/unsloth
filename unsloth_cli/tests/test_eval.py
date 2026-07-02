@@ -383,6 +383,17 @@ def test_hf_device_error_validates_mps_strings(monkeypatch):
     assert "MPS is not available" in evalmod._hf_device_error("mps")
 
 
+def test_hf_device_error_rejects_unknown_literals():
+    assert evalmod._hf_device_error("cpu") is None
+    # indexed accelerator forms HFLM recognises pass through
+    assert evalmod._hf_device_error("npu:0") is None
+    assert evalmod._hf_device_error("xpu:1") is None
+    assert evalmod._hf_device_error("hpu:0") is None
+    # typos would silently fall back to HFLM's default device
+    for bad in ("cpuu", "cude", "gpu", "xpu", "npu"):
+        assert "invalid --device" in evalmod._hf_device_error(bad), bad
+
+
 def test_resolve_tasks_yaml_without_task_name_raises(tmp_path):
     task_file = tmp_path / "bad.yaml"
     task_file.write_text(yaml.safe_dump({"output_type": "generate_until"}))
@@ -960,6 +971,23 @@ def test_eval_hf_allows_multi_process_launch(fake_eval_env, tmp_path, monkeypatc
         ],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_eval_rejects_negative_num_fewshot(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--num-fewshot",
+            "-1",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--num-fewshot must be >= 0" in result.output
 
 
 def test_eval_rejects_unknown_backend(fake_eval_env, tmp_path):
