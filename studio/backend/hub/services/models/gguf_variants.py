@@ -27,6 +27,7 @@ from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
+    list_empty_gguf_variant_dirs,
     list_gguf_variants,
     list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
@@ -290,6 +291,75 @@ def _partial_transport_for_variant(repo_id: str, variant: str) -> Optional[str]:
     return hf_cache_scan.partial_transport_for("model", repo_id, variant)
 
 
+def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str]]]:
+    """Map quant -> repo-relative expected GGUF filename -> cached blob hashes.
+
+    Shared companions are copied into each main-quant bucket so update checks can
+    detect mmproj/MTP-only upstream changes without a separate remote call.
+    """
+    result: dict[str, dict[str, set[str]]] = {}
+    companion_blobs: dict[str, set[str]] = {}
+    try:
+        from hub.services.models import cache_inventory
+        scans = cache_inventory.all_hf_cache_scans()
+    except Exception as e:
+        logger.warning("Failed to scan local GGUF blobs for %s: %s", repo_id, e)
+        return result
+
+    target_lower = repo_id.lower()
+    for hf_cache in scans:
+        for repo_info in hf_cache.repos:
+            if str(getattr(repo_info, "repo_type", "")) != "model":
+                continue
+            if str(getattr(repo_info, "repo_id", "")).lower() != target_lower:
+                continue
+            for path, hashes in cache_inventory._repo_gguf_blob_map(
+                repo_info,
+                include_companions = True,
+            ).items():
+                normalized = str(path).replace("\\", "/")
+                if not hashes:
+                    continue
+                if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
+                    companion_blobs.setdefault(normalized, set()).update(
+                        str(blob) for blob in hashes if blob
+                    )
+                    continue
+                quant = extract_quant_label(normalized).lower()
+                if is_big_endian_gguf_path(normalized, quant):
+                    continue
+                bucket = result.setdefault(quant, {}).setdefault(normalized, set())
+                bucket.update(str(blob) for blob in hashes if blob)
+    if companion_blobs:
+        for local_blobs in result.values():
+            for path, hashes in companion_blobs.items():
+                local_blobs.setdefault(path, set()).update(hashes)
+    return result
+
+
+def _variant_update_available_from_requirement(
+    local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
+) -> bool:
+    if requirement is None or not local_blobs:
+        return False
+    local_by_posix = {path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()}
+    for expected in requirement.expected_files:
+        path = str(expected.path).replace("\\", "/")
+        if not (
+            is_main_gguf_variant_path(path, variant)
+            or _is_mmproj_filename(path)
+            or _is_mtp_drafter_path(path)
+        ):
+            continue
+        remote_blob = expected.sha256
+        if not remote_blob:
+            continue
+        local_set = local_by_posix.get(path)
+        if not local_set or remote_blob not in local_set:
+            return True
+    return False
+
+
 def delete_variant_incomplete_blobs_result(
     repo_id: str,
     variant: str,
@@ -332,6 +402,32 @@ def delete_variant_incomplete_blobs_result(
                 except OSError as e:
                     logger.warning(f"Failed to unlink {incomplete}: {e}")
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
+
+
+def _mark_empty_dir_cleanables(
+    repo_id: str, response: GgufVariantsResponse
+) -> GgufVariantsResponse:
+    """Surface empty leftover ``<quant>/`` folders (interrupted downloads) as
+    partial so the UI can delete them -- on local/offline paths too, not just a
+    remote listing. A listed quant is flipped to partial; an unlisted one is
+    appended as a zero-byte cleanable entry."""
+    try:
+        empty_labels = list_empty_gguf_variant_dirs(repo_id)
+    except Exception as e:
+        logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
+        return response
+    if not empty_labels:
+        return response
+    empty_by_key = {label.lower(): label for label in empty_labels}
+    variants = list(response.variants)
+    listed = {v.quant.lower() for v in variants}
+    for i, v in enumerate(variants):
+        if v.quant.lower() in empty_by_key and not v.downloaded and not v.partial:
+            variants[i] = v.model_copy(update = {"partial": True})
+    for key, label in sorted(empty_by_key.items()):
+        if key not in listed:
+            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+    return response.model_copy(update = {"variants": variants})
 
 
 async def get_gguf_variants_response(
@@ -630,9 +726,12 @@ async def get_gguf_variants_response(
                         _partial_transport_for_variant(repo_id, variant.quant),
                     )
 
+        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id)
+
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
+            downloaded = _is_fully_downloaded(v) and not is_partial
             return GgufVariantDetail(
                 filename = v.filename,
                 quant = v.quant,
@@ -641,7 +740,13 @@ async def get_gguf_variants_response(
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
                 ),
-                downloaded = _is_fully_downloaded(v) and not is_partial,
+                downloaded = downloaded,
+                update_available = downloaded
+                and _variant_update_available_from_requirement(
+                    local_blobs_by_quant.get(v.quant.lower(), {}),
+                    requirement,
+                    v.quant,
+                ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
             )
@@ -653,8 +758,28 @@ async def get_gguf_variants_response(
             default_variant = default_variant,
         )
 
+    def _compute_with_cleanables() -> GgufVariantsResponse:
+        skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        try:
+            response = _compute()
+        except Exception:
+            # Offline / metadata fetch failed with only an empty leftover
+            # <quant>/ folder cached: still surface it so the UI can delete it,
+            # otherwise re-raise the original error.
+            if skip:
+                raise
+            enriched = _mark_empty_dir_cleanables(
+                repo_id, GgufVariantsResponse(repo_id = repo_id, variants = [])
+            )
+            if enriched.variants:
+                return enriched
+            raise
+        if skip:
+            return response
+        return _mark_empty_dir_cleanables(repo_id, response)
+
     try:
-        return await asyncio.to_thread(_compute)
+        return await asyncio.to_thread(_compute_with_cleanables)
     except HTTPException:
         raise
     except Exception as e:

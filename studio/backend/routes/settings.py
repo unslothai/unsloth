@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
+from auth.storage import rotate_preview_link_secret
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -30,6 +31,21 @@ from utils.helper_precache_settings import (
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.openai_auto_switch_settings import (
+    DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
+    DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
+    get_auto_unload_idle_seconds,
+    get_model_overrides,
+    get_openai_auto_switch_enabled,
+    get_stored_auto_unload_idle_seconds,
+    set_model_override,
+    set_openai_auto_switch,
+)
+from utils.preview_sharing_settings import (
+    DEFAULT_PREVIEW_SHARING_ENABLED,
+    get_preview_sharing_enabled,
+    set_preview_sharing_enabled,
 )
 
 router = APIRouter()
@@ -58,6 +74,33 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class OpenAIAutoSwitchPayload(BaseModel):
+    enabled: bool
+    auto_unload_idle_seconds: int = Field(default = DEFAULT_AUTO_UNLOAD_IDLE_SECONDS, ge = 0)
+
+
+class OpenAIAutoSwitchResponse(BaseModel):
+    enabled: bool
+    auto_unload_idle_seconds: int
+    default_enabled: bool = DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
+    # True when the idle-unload loop will actually unload (effective TTL > 0). With
+    # UNSLOTH_MODEL_IDLE_TTL set and nothing stored, this is true even while enabled
+    # is false, so the UI can show idle-unload as active instead of "needs enable".
+    idle_unload_active: bool = False
+
+
+class ModelOverridePayload(BaseModel):
+    model_id: str = Field(..., min_length = 1)
+    llama_extra_args: list[str] = Field(default_factory = list)
+    # ge=1: 0 is not a valid sequence length, and the setter drops a falsy value,
+    # so reject it at the boundary instead of accepting then silently discarding it.
+    max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
+
+
+class ModelOverridesResponse(BaseModel):
+    overrides: dict[str, dict]
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -120,6 +163,119 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
+def get_openai_auto_switch(
+    current_subject: str = Depends(get_current_subject),
+) -> OpenAIAutoSwitchResponse:
+    return OpenAIAutoSwitchResponse(
+        enabled = get_openai_auto_switch_enabled(),
+        auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
+        idle_unload_active = get_auto_unload_idle_seconds() > 0,
+    )
+
+
+@router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
+def update_openai_auto_switch(
+    payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
+) -> OpenAIAutoSwitchResponse:
+    try:
+        enabled, idle_seconds = set_openai_auto_switch(
+            payload.enabled, payload.auto_unload_idle_seconds
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid OpenAI auto-switch setting."),
+            event = "settings.update_openai_auto_switch_failed",
+            log = logger,
+        ) from exc
+    return OpenAIAutoSwitchResponse(
+        enabled = enabled,
+        auto_unload_idle_seconds = idle_seconds,
+        idle_unload_active = get_auto_unload_idle_seconds() > 0,
+    )
+
+
+@router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+def get_openai_auto_switch_overrides(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelOverridesResponse:
+    return ModelOverridesResponse(overrides = get_model_overrides())
+
+
+@router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+def update_openai_auto_switch_override(
+    payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
+) -> ModelOverridesResponse:
+    from core.inference.llama_server_args import validate_extra_args
+    try:
+        extra_args = validate_extra_args(payload.llama_extra_args)
+        set_model_override(
+            payload.model_id,
+            llama_extra_args = extra_args,
+            max_seq_length = payload.max_seq_length,
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid model launch override."),
+            event = "settings.update_model_override_failed",
+            log = logger,
+        ) from exc
+    return ModelOverridesResponse(overrides = get_model_overrides())
+
+
+class PreviewLinkRotateResponse(BaseModel):
+    rotated: bool = True
+
+
+@router.post("/preview-links/rotate", response_model = PreviewLinkRotateResponse)
+def rotate_preview_links(
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewLinkRotateResponse:
+    """Rotate the preview-link signing secret, revoking every previously shared `/p` link."""
+    rotate_preview_link_secret()
+    logger.info("settings.preview_links_rotated subject=%s", current_subject)
+    return PreviewLinkRotateResponse(rotated = True)
+
+
+class PreviewSharingPayload(BaseModel):
+    enabled: bool
+
+
+class PreviewSharingResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+@router.get("/preview-sharing", response_model = PreviewSharingResponse)
+def get_preview_sharing(
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewSharingResponse:
+    return PreviewSharingResponse(enabled = get_preview_sharing_enabled())
+
+
+@router.put("/preview-sharing", response_model = PreviewSharingResponse)
+def update_preview_sharing(
+    payload: PreviewSharingPayload, current_subject: str = Depends(get_current_subject)
+) -> PreviewSharingResponse:
+    """Enable/disable the public `/p` preview surface. When off, links 404 even with a token."""
+    try:
+        enabled = set_preview_sharing_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid preview sharing setting."),
+            event = "settings.update_preview_sharing_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
+    return PreviewSharingResponse(enabled = enabled)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

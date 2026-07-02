@@ -3543,9 +3543,12 @@ class UnslothTrainer:
 
                     # ── Safety net: check if all samples were filtered out ──
                     # train_on_responses_only masks non-response tokens with -100;
-                    # if max_seq_length is too short the response is truncated away,
-                    # every sample becomes all -100, and Unsloth drops them, leaving
-                    # 0 usable samples. Skip this len()-based check for streaming.
+                    # a row becomes all -100 (and Unsloth drops it) when the response
+                    # template is not found in the formatted text. That is usually a
+                    # dataset/template mismatch (already-formatted data, or 'Train on
+                    # completions' applied to data that doesn't match the model's chat
+                    # template), and only sometimes max_seq_length truncating the
+                    # response away. Skip this len()-based check for streaming.
                     if detect_streaming_dataset(self.trainer.train_dataset):
                         logger.info("Skipping post-filter length check for streaming dataset\n")
                     else:
@@ -3560,13 +3563,18 @@ class UnslothTrainer:
                         if filtered_len == 0 or drop_pct > 30:
                             max_seq = training_args.get("max_seq_length", 2048)
                             error_msg = (
-                                f"{dropped}/{original_len} samples ({drop_pct}%) "
-                                f"were dropped after applying 'train on responses "
-                                f"only' — only {filtered_len} remain. This usually "
-                                f"means max_seq_length ({max_seq}) is too short "
-                                f"and the response portion is being truncated "
-                                f"away. Try increasing max_seq_length (e.g. 8192) "
-                                f"or disabling 'Train on completions'."
+                                f"{dropped}/{original_len} samples ({drop_pct}%) were "
+                                f"dropped after applying 'Train on completions': after "
+                                f"masking, those rows had no trainable response tokens "
+                                f"left. The usual cause is that this model's response "
+                                f"template was not found in the formatted samples, so "
+                                f"every token was masked out. That typically means the "
+                                f"dataset is already formatted, or its structure does "
+                                f"not match the model's chat template, so 'Train on "
+                                f"completions' should be turned off for this dataset. "
+                                f"Less commonly, a max_seq_length ({max_seq}) shorter "
+                                f"than the prompt can truncate the response away; only "
+                                f"raise it if your samples are actually longer than that."
                             )
                             logger.error(error_msg)
                             self._update_progress(error = error_msg, is_training = False)
@@ -3664,7 +3672,7 @@ class UnslothTrainer:
             return
 
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
 
             # Determine training method
@@ -3678,7 +3686,7 @@ class UnslothTrainer:
             config["unsloth_training_method"] = method
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding = "utf-8") as f:
                 json.dump(config, f, indent = 2)
 
         except Exception as e:

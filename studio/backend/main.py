@@ -24,6 +24,18 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # process is covered before its heavy ML imports.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Windows terminals default to the active system code page. Reconfigure
+# stdout/stderr before the startup banner so non-ASCII output cannot crash the
+# backend process.
+if sys.platform == "win32":
+    for _win_stream in (sys.stdout, sys.stderr):
+        if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
+            try:
+                _win_stream.reconfigure(encoding = "utf-8", errors = "replace")
+            except Exception:
+                pass
+    del _win_stream
+
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
@@ -282,6 +294,7 @@ from routes import (
     training_router,
 )
 from routes.llama import router as llama_router
+from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
@@ -440,9 +453,30 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
+def _warm_rag_embedder() -> None:
+    """Warm RAG embeddings without blocking backend readiness."""
+    try:
+        from storage import rag_db
+
+        if not rag_db.RAG_AVAILABLE:
+            return
+        from core.rag import embeddings
+
+        embeddings.warm()
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
+
+    import time as _time
+
+    _lifespan_started = _time.perf_counter()
+    import structlog as _structlog
+
+    _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
@@ -452,6 +486,11 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets the DEVICE global used everywhere.
     detect_hardware()
+
+    _lifespan_log.info(
+        "lifespan hardware detection completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
     # Reinstall mlx by name on a background thread (off the critical path) and
@@ -464,7 +503,13 @@ async def lifespan(app: FastAPI):
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
-    # Reap download workers orphaned by a previous crash before new downloads start.
+    # Reap workers/runs orphaned by a previous crash before new work starts.
+    try:
+        from storage.studio_db import cleanup_orphaned_runs
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
     reap_hub_orphan_workers()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
@@ -478,35 +523,28 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
 
-    from storage.studio_db import cleanup_orphaned_runs
-
     try:
-        cleanup_orphaned_runs()
+        from storage.rag_db import reconcile_orphaned_ingestion_jobs
+        reconcile_orphaned_ingestion_jobs()
     except Exception as exc:
-        import structlog
-        structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
+        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
+    threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
-    # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
-    def _warm_rag_embedder():
-        try:
-            from storage import rag_db
+    # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
+    from core.inference.llama_keepwarm import idle_unload_loop
 
-            if not rag_db.RAG_AVAILABLE:
-                return
-            from core.rag import embeddings
+    app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
-            embeddings.warm()
-        except Exception:
-            pass
-
-    threading.Thread(target = _warm_rag_embedder, daemon = True).start()
-
-    # Initialize RSA key pair for API key encryption (external providers)
+    # Initialize RSA key pair for API key encryption (external providers).
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+    _lifespan_log.info(
+        "lifespan pre-auth setup completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
 
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
@@ -521,7 +559,20 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    _lifespan_log.info(
+        "lifespan startup completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
     yield
+
+    _idle_task = getattr(app.state, "idle_unload_task", None)
+    if _idle_task is not None:
+        _idle_task.cancel()
+        try:
+            await _idle_task
+        except asyncio.CancelledError:
+            pass
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -672,6 +723,7 @@ from utils.upload_limits import (  # noqa: E402
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
+    "/p/",
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
@@ -844,6 +896,11 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
 
+# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
+
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
@@ -885,6 +942,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
@@ -904,6 +962,21 @@ install_api_error_handlers(app)
 
 
 # ============ Health and System Endpoints ============
+
+
+@app.get("/api/liveness")
+async def liveness_check():
+    """Cheap process liveness for desktop port validation."""
+    return {
+        "status": "alive",
+        "service": "Unsloth UI Backend",
+        "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
+        "supports_desktop_auth": True,
+        "supports_desktop_backend_ownership": True,
+        "studio_root_id": _studio_root_id(),
+        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
+    }
 
 
 @app.get("/api/health")

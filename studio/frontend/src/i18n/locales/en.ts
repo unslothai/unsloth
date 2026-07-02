@@ -106,6 +106,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      tokenSaved: "Token saved",
       password: "Password",
       passwordDescription: "Change the password for this Studio account.",
       passwordDialog: {
@@ -141,6 +142,41 @@ export const en = {
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
       },
+      modelAutoSwitch: {
+        sectionTitle: "Model auto-switch (OpenAI API)",
+        enable: "Switch model by request",
+        enableDescription:
+          "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
+        idleUnload: "Idle auto-unload",
+        idleUnloadDescription:
+          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded.",
+        idleNeedsEnable:
+          "Turn on Switch model by request so an unloaded model reloads on next use.",
+        idleActiveViaEnv:
+          "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
+        loadError: "Failed to load model auto-switch settings.",
+        saveError: "Failed to save model auto-switch settings.",
+        idleError: "Enter a whole number of seconds (0 or more).",
+      },
+      previewSharing: {
+        sectionTitle: "Preview sharing",
+        enableLabel: "Public preview links",
+        enableDescription:
+          "Let anyone with a signed link chat with a finished model, no login required. Turn off to take the public preview surface offline; shared links stop working.",
+        loadError: "Failed to load preview sharing settings.",
+        saveError: "Failed to save preview sharing settings.",
+        revokeLabel: "Revoke all preview links",
+        revokeDescription:
+          "Rotate the signing secret so every link you've shared stops working. Newly copied links keep working.",
+        revokeAction: "Revoke links",
+        revoking: "Revoking...",
+        revokeConfirmTitle: "Revoke all preview links?",
+        revokeConfirmDescription:
+          "Every preview link you've shared will stop working immediately. This can't be undone.",
+        revokeConfirmAction: "Revoke all links",
+        revoked: "All preview links revoked",
+        revokeError: "Couldn't revoke preview links",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
@@ -160,8 +196,7 @@ export const en = {
       storage: {
         sectionTitle: "Storage",
         modelsFolder: "Models folder",
-        modelsFolderDescription:
-          "Where downloaded models are stored.",
+        modelsFolderDescription: "Where downloaded models are stored.",
         openAction: "Open",
         copyAction: "Copy path",
         copied: "Path copied",
@@ -590,6 +625,10 @@ export const en = {
     params: {
       title: "Parameters",
       description: "Configure training hyperparameters",
+      projectName: "Project Name",
+      optional: "Optional",
+      projectNameDescription:
+        "Used in training output folder names, export defaults, and history.",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",
@@ -762,6 +801,9 @@ export const en = {
         running: "Training in progress",
         errored: "Training errored",
       },
+      copyPreviewLink: "Copy preview link",
+      previewLinkCopied: "Preview link copied",
+      previewLinkCopyFailed: "Couldn't copy the link",
     },
     charts: {
       settings: "Chart Settings",
@@ -828,6 +870,7 @@ export const en = {
       loss: "Loss",
       lr: "LR",
       gradNorm: "Grad Norm",
+      project: "Project",
       model: "Model",
       method: "Method",
       elapsed: "Elapsed: {value}",
