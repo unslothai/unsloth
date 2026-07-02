@@ -377,3 +377,85 @@ def test_stale_pump_events_cannot_corrupt_new_job():
     # The current job's events still apply.
     svc._apply_event({"type": "progress", "step": 9}, proc = current)
     assert svc.status()["step"] == 9
+
+
+# ── /diffusion/info + /diffusion/dataset (dataset discovery + upload) ─────────
+@pytest.fixture
+def dataset_roots(client, monkeypatch, tmp_path):
+    # The endpoints import these lazily per-request, so patching the package attr works.
+    import utils.paths as up
+
+    ds_root = tmp_path / "assets" / "datasets"
+    out_root = tmp_path / "outputs"
+    ds_root.mkdir(parents = True)
+    out_root.mkdir(parents = True)
+    monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
+    monkeypatch.setattr(up, "outputs_root", lambda: out_root)
+    return ds_root, out_root
+
+
+def test_diffusion_info_lists_image_dataset_folders(client, dataset_roots):
+    ds_root, out_root = dataset_roots
+    good = ds_root / "cat-photos"
+    good.mkdir()
+    (good / "a.png").write_bytes(b"x")
+    (good / "b.jpg").write_bytes(b"x")
+    (good / "a.txt").write_text("a cat")
+    (ds_root / "empty-dir").mkdir()  # no images -> not a dataset
+    (ds_root / "stray.txt").write_text("not a folder")
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["datasets_root"] == str(ds_root)
+    assert body["outputs_root"] == str(out_root)
+    assert [d["name"] for d in body["datasets"]] == ["cat-photos"]
+    assert body["datasets"][0]["image_count"] == 2
+    assert body["datasets"][0]["caption_count"] == 1
+
+
+def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
+    ds_root, _ = dataset_roots
+    files = [
+        ("files", ("a.png", b"png-bytes", "image/png")),
+        ("files", ("b.JPG", b"jpg-bytes", "image/jpeg")),
+        ("files", ("a.txt", b"a caption", "text/plain")),
+    ]
+    r = client.post("/api/train/diffusion/dataset", data = {"name": "my style"}, files = files)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "my style"
+    assert body["uploaded"] == 3
+    assert body["image_count"] == 2
+    assert body["caption_count"] == 1
+    assert (ds_root / "my style" / "a.png").read_bytes() == b"png-bytes"
+
+    # A second batch into the same name accumulates (large sets arrive in chunks).
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "my style"},
+        files = [("files", ("c.webp", b"w", "image/webp"))],
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["uploaded"] == 1
+    assert r.json()["image_count"] == 3
+
+
+def test_diffusion_dataset_upload_rejects_traversal_names(client, dataset_roots):
+    for bad in ("../evil", "a/b", ".hidden", " "):
+        r = client.post(
+            "/api/train/diffusion/dataset",
+            data = {"name": bad},
+            files = [("files", ("a.png", b"x", "image/png"))],
+        )
+        assert r.status_code == 400, f"{bad!r}: {r.status_code}"
+
+
+def test_diffusion_dataset_upload_rejects_unsupported_files(client, dataset_roots):
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "ok-name"},
+        files = [("files", ("weights.exe", b"mz", "application/octet-stream"))],
+    )
+    assert r.status_code == 400
+    assert "Unsupported file" in r.json()["detail"]

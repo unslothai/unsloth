@@ -738,3 +738,34 @@ class DiffusionTrainingStatusResponse(BaseModel):
     lora_path: Optional[str] = None
     started_at: Optional[float] = None
     updated_at: Optional[float] = None
+
+
+class DiffusionDatasetSummary(BaseModel):
+    """One image-dataset folder under the Studio datasets root."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+
+
+class DiffusionTrainingInfoResponse(BaseModel):
+    """Where diffusion training reads/writes on this Studio, plus usable datasets.
+
+    Lets the UI show real on-disk locations and offer existing dataset folders,
+    instead of asking users to know the Studio home layout."""
+
+    datasets_root: str
+    outputs_root: str
+    datasets: List[DiffusionDatasetSummary]
+
+
+class DiffusionDatasetUploadResponse(BaseModel):
+    """Result of uploading images/captions into a named dataset folder. Counts are
+    for the whole folder after the upload, so repeat uploads show the running total."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+    uploaded: int
