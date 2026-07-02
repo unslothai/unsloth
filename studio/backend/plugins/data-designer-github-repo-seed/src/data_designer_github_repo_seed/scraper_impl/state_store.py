@@ -25,7 +25,11 @@ class StateStore:
             except Exception:
                 self._data = {}
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(
+        self,
+        key: str,
+        default: Any = None,
+    ) -> Any:
         with self._lock:
             return self._data.get(key, default)
 
@@ -61,7 +65,7 @@ class JsonlWriter:
         self._lock = threading.Lock()
         self._fh = self.path.open("a", buffering = 1)
         self._count_seen_keys: set[str] = set()
-        # Preload seen keys if file exists (for dedup across resumes)
+        # Preload seen keys for dedup across resumes
         if self.path.exists() and self.path.stat().st_size > 0:
             try:
                 with self.path.open() as f:

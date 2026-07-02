@@ -15,9 +15,7 @@ INSTALLER_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 
 
 def load_installer_module():
-    spec = importlib.util.spec_from_file_location(
-        "studio_install_llama_prebuilt", INSTALLER_PATH
-    )
+    spec = importlib.util.spec_from_file_location("studio_install_llama_prebuilt", INSTALLER_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"unable to load installer module from {INSTALLER_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -112,17 +110,13 @@ def main() -> int:
             published_release_tag = args.published_release_tag,
         )
         print(f"[smoke] PASS install_dir={install_dir}")
-        print(
-            "[smoke] note=This was a real prebuilt install into an isolated temp directory."
-        )
+        print("[smoke] note=This was a real prebuilt install into an isolated temp directory.")
         return installer.EXIT_SUCCESS
     except SystemExit as exc:
         code = int(exc.code) if isinstance(exc.code, int) else installer.EXIT_ERROR
         if code == installer.EXIT_FALLBACK:
             print(f"[smoke] FALLBACK install_dir={install_dir}")
-            print(
-                "[smoke] note=Prebuilt path failed and would fall back to source build in setup."
-            )
+            print("[smoke] note=Prebuilt path failed and would fall back to source build in setup.")
             print(installer.collect_system_report(host, choice, install_dir))
         else:
             print(f"[smoke] ERROR exit_code={code} install_dir={install_dir}")

@@ -5,6 +5,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
+@import "./features/hub/hub.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
@@ -13,6 +14,99 @@
 @source "../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
+
+@layer components {
+	/* Sidebar scroll area (Gemini-style). The BOTTOM edge always fades so the
+	   last rows dissolve into the profile footer (no divider line). Once
+	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
+	   pinned New Chat / Search header. */
+	/* Top edge: when scrolled, rows dissolve as they pass under the pinned
+	   New Chat / Search header (mask — fades content to transparent). */
+	.sidebar-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge: Gemini-style sticky gradient OVERLAY painted in the sidebar
+	   background colour, so the last rows wash into the profile footer. Uses a
+	   zero-height sticky anchor with an absolutely-positioned gradient so it
+	   never takes layout space. */
+	.sidebar-bottom-fade {
+		position: sticky;
+		bottom: 0;
+		height: 0;
+		z-index: 1;
+		pointer-events: none;
+	}
+	.sidebar-bottom-fade::after {
+		content: "";
+		position: absolute;
+		inset-inline: 0;
+		bottom: 0;
+		height: 40px;
+		/* Fade to sidebar colour at 0 alpha, not `transparent` (transparent
+		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
+		background: linear-gradient(
+			to top,
+			var(--sidebar),
+			rgb(from var(--sidebar) r g b / 0)
+		);
+	}
+	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
+	   they pass under the pinned search / tab bar. */
+	.model-list-scroll.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge fades while more rows sit below the fold. */
+	.model-list-scroll.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+	/* Both edges fade when scrolled with rows above and below. */
+	.model-list-scroll.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+	}
+	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
+	   the scroll fold (JS-toggled). */
+	.rag-docs-bottom-fade {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+}
+
+@layer base {
+	h1,
+	h2,
+	h3,
+	[data-slot="dialog-title"],
+	[data-slot="alert-dialog-title"] {
+		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans) !important;
+		font-weight: 500 !important;
+	}
+}
+
+
 
 @font-face {
 	font-family: "Hellix";
@@ -57,7 +151,8 @@
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
-	--background: oklch(1 0 0);
+	/* Slightly warm off white; every page (and the chat surface) shares it. */
+	--background: #fefefd;
 	--foreground: oklch(0.2686 0 0);
 	--card: oklch(1 0 0);
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
@@ -72,6 +167,8 @@
 	--accent: oklch(0.9596 0.0275 167.8295);
 	--accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
+	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
 	--ring: #17b88b;
@@ -81,13 +178,15 @@
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
 	--radius: 1.1rem;
-	--sidebar: #f9faf9;
+	/* White sidebar against the warm off-white page; the tone difference is
+	   the separator now that the right-edge divider is gone. */
+	--sidebar: #ffffff;
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-	--sidebar-border: oklch(0.945 0.0101 164.8536);
+	--sidebar-border: #f2f2f2;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -120,7 +219,7 @@
 	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
 	/*    0px 8px 10px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-	--tracking-normal: -0.01em;
+	--tracking-normal: 0em;
 
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
 	--nav-fg: #383835;
@@ -175,7 +274,8 @@
 	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
 	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
 	   drifted ~3% darker and shifted the neutral hue. */
-	--background: #1f2023;
+	/* Slightly darker than --sidebar so the sidebar reads as its own surface. */
+	--background: #1a1b1e;
 	--foreground: #ececee;
 	--card: #2d2e32;
 	--card-foreground: #ececee;
@@ -187,9 +287,12 @@
 	--secondary-foreground: #ececee;
 	--muted: #2e3035;
 	--muted-foreground: #999999;
-	--accent: #2e3035;
+	/* One step lighter than --popover so menu item hover reads clearly. */
+	--accent: #3a3d43;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
+	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
@@ -201,16 +304,18 @@
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	--sidebar: #18181a;
+	/* A step lighter than --background; the tone difference is the separator. */
+	--sidebar: #1f2023;
 	--sidebar-foreground: #ececee;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2f2f31;
+	--sidebar-accent: #2e3035;
 	--sidebar-accent-foreground: #ececee;
-	--sidebar-border: #2d2d2f;
+	--sidebar-border: #2d2e32;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
-	--radius: 0.625rem;
+	/* Match light's radius so every rounded-* element is the same in both themes. */
+	--radius: 1.1rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -233,7 +338,7 @@
 
 	--nav-fg: #c7c7c4;
 	--nav-fg-muted: #96979b;
-	--nav-surface-hover: #2e2e30;
+	--nav-surface-hover: #2e3035;
 	--nav-icon-idle: #5c5c5c;
 	--nav-beta-border: #3a3c3f;
 	--panel-surface-hover: #3a3c42;
@@ -245,7 +350,7 @@
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
 	--panel-input-surface: #2a2b2e;
-	--panel-input-surface-hover: #2e3033;
+	--panel-input-surface-hover: #34373c;
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
 	--panel-surface-fg-muted: #ababab;
@@ -281,6 +386,7 @@
 	--color-input: var(--input);
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
+	--color-bypass: var(--bypass);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -305,8 +411,8 @@
 	--font-mono: JetBrains Mono, monospace;
 	--font-serif: Source Serif 4, serif;
 	--radius: 1.1rem;
-	--tracking-tighter: calc(var(--tracking-normal) - 0.05em);
-	--tracking-tight: calc(var(--tracking-normal) - 0.025em);
+	--tracking-tighter: 0em;
+	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
 	--tracking-wider: calc(var(--tracking-normal) + 0.05em);
 	--tracking-widest: calc(var(--tracking-normal) + 0.1em);
@@ -438,7 +544,7 @@
 	h5,
 	h6 {
 		font-family: var(--font-sans);
-		letter-spacing: -0.02em;
+		letter-spacing: 0;
 	}
 }
 
@@ -450,19 +556,18 @@
 	   on global antialiased font-smoothing to neutralize the bloom. */
 	.font-heading {
 		font-family: var(--font-heading);
-		letter-spacing: -0.01em;
+		letter-spacing: 0;
 	}
 
-	/* Dark mode loosens tracking to offset optical bloom on dark surfaces. */
 	.tracking-nav {
-		letter-spacing: 0.015em;
+		letter-spacing: 0;
 	}
 	.dark .tracking-nav {
-		letter-spacing: 0.03em;
+		letter-spacing: 0;
 	}
 
 	.nav-icon-btn {
-		@apply inline-flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		@apply inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
 	}
 
 	/* Standard icon size — drives every nav/menu/action-bar icon
@@ -482,46 +587,58 @@
 	.sidebar-nav-btn {
 		color: var(--nav-fg);
 	}
+	/* Gemini-style: hovering or opening the row action (3 dots) shows only
+	   the action's circle; the row highlights only when hovering the row
+	   itself. */
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
-	.group\/recent-item:hover .sidebar-nav-btn,
-	.group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.group\/run-item:hover .sidebar-nav-btn,
-	.group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
 		color: #000 !important;
 	}
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
-	.dark .group\/recent-item:hover .sidebar-nav-btn,
-	.dark .group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
-	.dark .group\/run-item:hover .sidebar-nav-btn,
-	.dark .group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
 	}
 
 	.sidebar-row-action {
-		@apply absolute top-0 bottom-0 right-0 inline-flex items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
 	}
 	.sidebar-row-action-glyph {
-		@apply inline-flex size-6 items-center justify-center rounded-[10px] text-sidebar-foreground/55;
+		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
+	}
+	/* Secondary row action (the pinned-chat unpin button) sits just left of
+	   the primary "…" options button. */
+	.sidebar-row-action.is-unpin-action {
+		right: 1.875rem;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
-	   (size-8, rounded-[10px]). Height + radius match for visual
+	   (size-8, rounded-full). Height + radius match for visual
 	   alignment, but width is tighter so the small chevron glyph reads
 	   as a compact control rather than a full-size icon button. */
 	.aui-branch-chevron-btn {
-		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
-		@apply bg-nav-surface-hover text-nav-fg;
+		@apply text-nav-fg;
+		/* A step darker than the row hover so the circle reads on top of it. */
+		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
 	}
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -529,19 +646,29 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply sticky top-0 z-20 rounded-none bg-sidebar pt-0 pb-1.5 pl-[18px] pr-4 text-[13px]! font-medium normal-case tracking-[0.04em] text-nav-fg-muted focus-visible:ring-0! focus-visible:outline-none shadow-[0_-8px_0_0_var(--sidebar)] transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
+		   Lightened from #5f6368 so the label reads as a header, clearly
+		   lighter than the near-black nav items. */
+		color: #80868b;
+		letter-spacing: 0;
 	}
-	.sidebar-sticky-label.is-scrolled {
-		@apply shadow-[0_-8px_0_0_var(--sidebar),0_0.5px_0_0_var(--sidebar-border)];
+	.sidebar-sticky-label-following {
+		@apply pt-[21px];
 	}
-
+	.dark .sidebar-sticky-label {
+		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
+		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
+		color: #9aa0a6;
+		letter-spacing: 0;
+	}
 	/* Neutral panel input surface — sidesteps the green cast on
 	   `--input` / `--border` (both have a small chroma at hue ~165 in
 	   light mode). Same value drives the preset input pill, the system
 	   prompt button, and the chat-template textarea so all three read
 	   as one quiet gray family, matching the focused-edit-number tint. */
 	.panel-input-group {
-		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[10px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
 		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
@@ -637,13 +764,12 @@
 	/* Inline numeric input — used for slider values and Context Length.
 	   Designed to read as *editable text* rather than a pill button so
 	   it doesn't mirror the Select/dropdown components on the panel.
-	   Default: transparent box, no border, no ring, sized by the
-	   `size` HTML attribute (each consumer picks 6 / 8 / etc. chars).
-	   Hover/focus: very light bg fade-in to signal editability — just
-	   enough to read as interactive, not enough to compete with the
-	   slider row's quiet aesthetic. */
+	   Default: transparent box, no border, no ring; the component sets
+	   an inline width that hugs the value. Hover/focus: very light bg
+	   fade-in, just enough to read as interactive without competing
+	   with the slider row's quiet aesthetic. */
 	.panel-number-input {
-		@apply h-7 rounded-md border-0 bg-transparent px-1.5 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
+		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
@@ -665,15 +791,14 @@
 		background-color: #ffffff !important;
 	}
 
-	/* Compact tooltip — small black pill with white text. Used for short
-	   hover labels on chat-area icon buttons (Copy, Edit, Delete,
-	   Refresh, More, code-block actions) and the panel's info-icon
-	   hints. Corner radius is fixed at 8px so it tracks with the
-	   underlying icon button corners (also 8px) — keeps the tooltip
-	   visually anchored to its trigger rather than reading as a much
-	   larger floating pill. */
 	.tooltip-compact {
-		@apply rounded-[10px] border-transparent bg-black px-2 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+	}
+
+	/* Dialog popups: borderless; chatbox shadow in light, flat card
+	   surface in dark. */
+	.dialog-soft-surface {
+		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
 	}
 
 	/* Rich tooltip — used for the context-usage and token-counter
@@ -697,36 +822,50 @@
 		border-color: rgb(255 255 255 / 0.12) !important;
 	}
 
-	.app-user-menu [data-slot="dropdown-menu-item"] {
-		height: 32px;
-		padding: 0 0.625rem !important;
-		gap: 8.5px !important;
-		border-radius: 10px;
+	.app-user-menu [data-slot="dropdown-menu-item"],
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
+		height: 36px;
+		padding: 0 0.75rem !important;
+		gap: 9.5px !important;
+		border-radius: 12px;
 		font-weight: 500;
-		font-size: 14.5px;
-		line-height: 19px;
-		letter-spacing: 0.015em;
+		font-size: 15px;
+		line-height: 20px;
+		letter-spacing: 0;
 		color: var(--nav-fg);
 	}
-	.dark .app-user-menu [data-slot="dropdown-menu-item"] {
-		letter-spacing: 0.03em;
+	.dark .app-user-menu [data-slot="dropdown-menu-item"],
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
+		letter-spacing: 0;
 	}
-	.app-user-menu [data-slot="dropdown-menu-item"] svg {
+	.app-user-menu [data-slot="dropdown-menu-item"] svg,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] svg {
 		width: 19px !important;
 		height: 19px !important;
 		flex-shrink: 0;
 	}
-	.app-user-menu [data-slot="dropdown-menu-item"]:focus {
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
 		background-color: var(--nav-surface-hover);
 		color: #000;
 	}
-	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus {
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
+		/* --nav-surface-hover is tuned for the page bg; on the lighter menu
+		   surface it is invisible, so use the menu hover token instead. */
+		background-color: var(--accent);
 		color: #fff;
 	}
-	.app-user-menu [data-slot="dropdown-menu-item"]:focus * {
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
 		color: #000 !important;
 	}
-	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus * {
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
 		color: #fff !important;
 	}
 
@@ -749,64 +888,314 @@
 
 	/* Elevated surface shadow (use ring-* for borders) */
 	.shadow-border {
-		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-		--tw-shadow-colored: 0 4px 16px var(--tw-shadow-color);
+		/* Chatbox shadow; dark mode drops it. */
+		--tw-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		--tw-shadow-colored: 0 2px 8px -2px var(--tw-shadow-color);
 		box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
 			var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 	}
 
 	.dark .shadow-border {
-		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+		box-shadow: none;
+	}
+
+	/* Settings dialog: no shadow in dark mode. */
+	.dark .settings-surface.shadow-border {
+		box-shadow: none;
+	}
+
+	/* Lift the dialog off the page bg; halfway to --card keeps the inner
+	   bg-muted / bg-background fills readable. */
+	.dark .settings-surface {
+		background-color: color-mix(in srgb, var(--background) 50%, var(--card));
+	}
+
+	/* App-wide: every clickable control shows the hand cursor. Disabled ones
+	   (native :disabled, aria-disabled, Radix data-disabled) keep the default. */
+	button:not(:disabled):not([aria-disabled="true"]),
+	summary,
+	label[for],
+	select:not(:disabled),
+	a[href],
+	:is(
+		[role="button"],
+		[role="tab"],
+		[role="switch"],
+		[role="radio"],
+		[role="checkbox"],
+		[role="menuitem"],
+		[role="menuitemcheckbox"],
+		[role="menuitemradio"],
+		[role="option"],
+		[role="combobox"],
+		[role="link"]
+	):not([aria-disabled="true"]):not([data-disabled]):not(:disabled) {
+		cursor: pointer;
+	}
+
+	/* Model selector: pointer cursor on every clickable element. */
+	.unsloth-model-selector-trigger,
+	.unsloth-model-selector-menu button {
+		cursor: pointer;
+	}
+
+	.unsloth-model-selector-trigger:disabled,
+	.unsloth-model-selector-menu button:disabled {
+		cursor: not-allowed;
+	}
+
+	/* Chat search box: borderless, soft Gemini-style elevation. */
+	.chat-search-surface {
+		border: none;
+		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
+		--radius: 0.625rem;
+		/* Prominent, wide ChatGPT-style elevation. */
+		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
+			0 8px 24px -12px rgba(0, 0, 0, 0.18);
+	}
+
+	/* Dark: page-bg shadow so the dialog does not merge into same-color
+	   content behind it (same convention as the dropdowns). */
+	.dark .chat-search-surface {
+		box-shadow: 0 4px 14px var(--background);
 	}
 
 	.menu-soft-surface,
 	.menu-soft-surface-up {
+		/* Light: chatbox shadow geometry. */
 		--menu-soft-edge: rgba(0, 0, 0, 0.14);
-		--menu-soft-shadow: rgba(0, 0, 0, 0.18);
-		--menu-soft-offset-y: 8px;
-		--menu-soft-blur: 28px;
-		--menu-soft-spread: -6px;
+		--menu-soft-shadow: rgba(0, 0, 0, 0.16);
+		--menu-soft-offset-y: 2px;
+		--menu-soft-blur: 8px;
+		--menu-soft-spread: -2px;
 		@apply bg-popover text-popover-foreground;
 		box-shadow:
 			inset 0 0 0 1px var(--menu-soft-edge),
 			0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 				var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
-	.menu-soft-surface-up {
-		--menu-soft-offset-y: -6px;
-		--menu-soft-spread: -8px;
-	}
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: rgba(255, 255, 255, 0.07);
 		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
+		--menu-soft-offset-y: 8px;
+		--menu-soft-blur: 28px;
+		--menu-soft-spread: -6px;
+	}
+	.dark .menu-soft-surface-up {
+		--menu-soft-offset-y: -6px;
+		--menu-soft-spread: -8px;
+	}
+
+	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
+	   Pin --radius to the light value so the corners match in both themes. */
+	.unsloth-model-selector-menu.menu-soft-surface {
+		--radius: 1.25rem;
+		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
+	.dark .unsloth-model-selector-menu.menu-soft-surface {
+		/* Match the left sidebar background. */
+		background-color: var(--sidebar);
+		box-shadow: none;
+	}
+
+	/* List menus: one radius in both themes, slightly tighter than --radius-lg
+	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"] {
+		border-radius: 14px !important;
+	}
+
+	/* Account menu: a touch rounder than standard list menus. */
+	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
+		border-radius: 18px !important;
+	}
+
+	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
+	   none in dark. !important so it also overrides the bespoke menu shadows. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"],
+	[data-slot="popover-content"] {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	}
+	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
+	   same-color surface (e.g. a menu overlapping the composer). */
+	.dark [data-slot="dropdown-menu-content"],
+	.dark [data-slot="dropdown-menu-sub-content"],
+	.dark [data-slot="select-content"],
+	.dark [data-slot="combobox-content"],
+	.dark [data-slot="popover-content"] {
+		box-shadow: 0 4px 14px var(--background) !important;
+	}
+
+	/* Model selector: shadow in the page-bg color so it lifts off the
+	   composer it overlaps (chatbox geometry). Account menu stays flat. */
+	.dark .unsloth-model-selector-menu {
+		box-shadow: 0 2px 8px -2px var(--background) !important;
+	}
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: none !important;
+	}
+
+	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
+	.app-user-menu.menu-soft-surface {
+		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
+	/* Account menu: drop the inset edge ring and use the composer's soft shadow. */
+	.app-user-menu.menu-soft-surface-up {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
 	}
 
 	.chat-composer-surface {
-		@apply relative flex w-full flex-col rounded-[24px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
-		border: 1px solid oklch(0.93 0 0 / 1);
 		background-clip: padding-box;
-		box-shadow:
-			0 1px 2px oklch(0 0 0 / 0.04),
-			0 6px 14px oklch(0 0 0 / 0.05),
-			0 18px 40px oklch(0 0 0 / 0.05);
+		background-color: #ffffff;
+		/* Gemini-style composer shadow. */
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		transition: box-shadow 0.1s;
 	}
 
 	.dark .chat-composer-surface {
-		border-color: #34363a;
-		box-shadow: 0 -6px 36px -14px rgba(0, 0, 0, 0.15);
+		background-color: var(--card);
+		box-shadow: none;
 	}
 
 	.composer-pill-btn {
-		@apply flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 	}
+
+	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
+	   trailing padding is tightened to keep the hover pill balanced. */
+	.composer-pill-btn:has(.composer-pill-caret) {
+		@apply pr-1.5;
+	}
+
+	/* Icon-only (compact) pills drop their label, so make the button a square
+	   and center the glyph; the rounded-full hover highlight then reads as a
+	   circle around the icon rather than a wide rounded rectangle. */
+	[data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]) {
+		@apply size-8 justify-center px-0;
+	}
+
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Bypass permissions badge: bright yellow text, no resting fill; the
+	   rounded hover pill picks up the yellow accent like other toggles. */
+	.composer-pill-btn[data-variant="danger"] {
+		background-color: transparent;
+		color: var(--bypass);
+	}
+	.composer-pill-btn[data-variant="danger"]:hover {
+		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
+	}
+	/* Match the hover-X circle to the yellow accent instead of the green primary. */
+	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
+		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
+	}
+
+	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
+	   Compare keeps its label via data-keep-label. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		> span:not(.composer-pill-glyph) {
+		display: none;
+	}
+
+	/* Drop the MCP dropdown caret when collapsed so the icon is not squished. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		.composer-pill-caret {
+		display: none;
+	}
+
+	/* Fixed-width icon slot so every pill's icon occupies the same space and
+	   the labels line up on an even rhythm, regardless of icon size. */
+	.composer-pill-glyph {
+		@apply relative inline-flex w-[19px] shrink-0 items-center justify-center transition-opacity;
+	}
+
+	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
+	   filling the icon slot so every pill's X is identical and centered. */
+	.composer-pill-x {
+		@apply pointer-events-none absolute inset-0 m-auto size-[19px] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+	}
+
+	/* Icon-only (compact) pills are too small for the circle, so show a bare x. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		.composer-pill-x {
+		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
+	}
+
+	/* Compact pills hide their labels, so surface the name as a hover
+	   tooltip styled like .tooltip-compact. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label] {
+		position: relative;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
+		content: attr(data-pill-label);
+		/* Always one nowrap line, so always a full pill. */
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+	}
+
+	/* Compact caret pills (RAG, MCP) open their menu on click instead of
+	   toggling off, so keep the icon and skip the X swap. No data-active
+	   requirement: the off-switch glyph rules below hide the icon on hover
+	   even for inactive pills, which left a blank slot in compact mode. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret):hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		opacity: 1;
+	}
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)
+		.composer-pill-x {
+		display: none;
+	}
+
+	/* Hovering an active pill swaps the icon for an X (click to turn off). */
+	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x),
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
+		@apply opacity-0;
+	}
+
+	.composer-pill-btn[data-active="true"]:hover .composer-pill-x,
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-x {
+		@apply opacity-100;
+	}
+
+	/* Pills whose icon is an off switch (RAG, MCP) only render while the
+	   feature is on, so reveal the X on hover even when the pill is not in
+	   its active look (MCP with no servers enabled, RAG without a model). */
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
+		.composer-pill-glyph
+		> :not(.composer-pill-x) {
+		@apply opacity-0;
+	}
+
+	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover
+		.composer-pill-x {
+		@apply opacity-100;
+	}
 
 	.composer-input {
-		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.composer-action-wrapper {
@@ -814,17 +1203,459 @@
 	}
 
 	.composer-footer-note {
-		@apply mt-1.5 text-center text-[11px] tracking-[0.04em] text-muted-foreground;
+		@apply mt-1.5 text-center text-[11px] tracking-[0em] text-muted-foreground;
 		font-family: var(--font-sans);
+	}
+
+	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
+	.unsloth-composer-surface {
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		font-family: var(--font-sans);
+		background-clip: padding-box;
+		background-color: #ffffff;
+		/* Gemini-style composer shadow. */
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		transition: box-shadow 0.1s;
+	}
+
+	.unsloth-composer-surface:focus-within {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+
+	.dark .unsloth-composer-surface {
+		background-color: var(--card);
+		box-shadow: none;
+	}
+
+	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
+	   the reduced-motion blanket rule) makes getComputedStyle().width lag a
+	   frame, so autosize measures the stale width and leaves a stray blank row. */
+	.unsloth-composer-line,
+	.unsloth-composer-line .unsloth-composer-input,
+	.unsloth-composer-left {
+		transition-property: none !important;
+	}
+
+	/* Composer row: one centered line when empty; two rows (input over controls)
+	   when filled, so the textarea never remounts. */
+	.unsloth-composer-line {
+		@apply flex w-full flex-wrap items-center gap-0.5 px-1;
+	}
+
+	.unsloth-composer-left {
+		@apply flex shrink-0 items-center gap-0.5;
+		order: 1;
+		/* Pull the plus button closer to the composer edge. */
+		margin-left: -0.25rem;
+	}
+
+	.unsloth-composer-line .unsloth-composer-input {
+		order: 2;
+	}
+
+	.unsloth-composer-line .aui-composer-action-wrapper {
+		order: 3;
+		margin-left: auto;
+		/* Inset the send circle from the edge, Gemini-style. */
+		margin-right: -0.125rem;
+	}
+
+	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+		order: 1;
+		flex-basis: 100%;
+		width: 100%;
+		/* Sits close to the left edge, near the plus. */
+		padding-left: 0.375rem;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
+	}
+
+	/* Two-row gap between text and controls. On the line, not the input, so
+	   the placeholder max-height clamp never crops it like padding would. */
+	.unsloth-composer-line[data-expanded="true"] {
+		row-gap: 0.75rem;
+	}
+
+	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
+		order: 2;
+	}
+
+	/* Empty (placeholder shown): clamp back to one row. max-height beats the
+	   autosize textarea's inline !important height, so a cleared message leaves
+	   no stale tall box or stray scrollbar. */
+	.unsloth-composer-input:placeholder-shown {
+		max-height: 40px !important;
+		overflow-y: hidden !important;
+	}
+
+	.unsloth-composer-input {
+		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-[15px] font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	.unsloth-composer-plus {
+		@apply flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	.unsloth-composer-plus[data-state="open"] {
+		@apply bg-muted-foreground/15;
+		/* Radix's modal menu sets body pointer-events:none; re-enable on the open
+		   trigger so the cursor and click-to-close work. */
+		pointer-events: auto;
+		cursor: pointer;
+	}
+
+	/* Open menu rotates the plus 45deg into an x. Ease-in-out for a smooth
+	   spin; keep it at 45deg so it never passes back through a "+". */
+	.unsloth-composer-plus svg {
+		transition: transform 250ms cubic-bezier(0.65, 0, 0.35, 1);
+		will-change: transform;
+	}
+
+	.unsloth-composer-plus[data-state="open"] svg {
+		transform: rotate(45deg);
+	}
+
+	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
+	   mouse clicks (no :focus-visible) stay ring-free. */
+	.composer-pill-btn:focus-visible,
+	.unsloth-thinking-pill:focus-visible,
+	.unsloth-composer-plus:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+	}
+
+	/* Clickable controls never show the browser's blue outline (Radix re-focuses
+	   triggers on menu close, which lights them up). Mouse focus also drops the
+	   Tailwind ring; keyboard focus (:focus-visible) keeps custom rings so the
+	   focused control stays visible. Inputs keep their own focus styles. Zeroing
+	   the ring vars leaves decorative shadow-* utilities intact. */
+	button:focus,
+	a:focus,
+	summary:focus,
+	[role="button"]:focus {
+		outline: none !important;
+	}
+	button:focus:not(:focus-visible),
+	a:focus:not(:focus-visible),
+	summary:focus:not(:focus-visible),
+	[role="button"]:focus:not(:focus-visible) {
+		--tw-ring-shadow: 0 0 #0000 !important;
+		--tw-ring-offset-shadow: 0 0 #0000 !important;
+	}
+
+	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
+	.unsloth-welcome-title {
+		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
+		font-weight: 500;
+	}
+
+	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
+	   pills so the hover X is not pushed in too far. */
+	.unsloth-thinking-pill {
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		/* Reserve a text line so the icon-only (inactive) pill matches the
+		   text pills' height instead of collapsing to the icon. */
+		min-height: calc(1lh + 0.75rem);
+	}
+
+	.unsloth-thinking-pill[data-active="true"] {
+		color: var(--primary);
+	}
+
+	.unsloth-thinking-pill[data-state="open"] {
+		@apply bg-muted-foreground/10;
+		/* See .unsloth-composer-plus: re-enable pointer-events on the open trigger. */
+		pointer-events: auto;
+		cursor: pointer;
+	}
+
+	/* Smaller tick for selected Thinking options. */
+	.unsloth-tick {
+		width: 0.8rem !important;
+		height: 0.8rem !important;
+	}
+
+	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
+	.unsloth-plus-menu[data-slot] {
+		/* Concentric with the item hover boxes: container radius =
+		   item radius (12px) + side gutter (9px), so the curves run parallel.
+		   !important beats the global 14px dropdown radius. */
+		border-radius: 21px !important;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
+		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
+		   sits evenly inset on all four sides. */
+		padding-left: 9px;
+		padding-right: 9px;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+
+	/* Width does not change the concentric radius; the MCP menu uses the same
+	   item radius + gutter, so it keeps the same container radius. */
+	.unsloth-plus-menu.mcp-menu[data-slot] {
+		border-radius: 22px !important;
+	}
+
+	/* One-line menus keep the standard menu shape (same radius as multi-line),
+	   so a lone row doesn't balloon into a fully rounded pill. */
+
+	.dark .unsloth-plus-menu[data-slot] {
+		background-color: var(--card);
+		/* Shadow tinted to the page bg so it blends, not a dark halo. */
+		box-shadow: 0 4px 14px var(--background);
+	}
+
+	/* Compact items; also applied to portaled sub-content. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply gap-3 pl-3 pr-3 py-2 text-[14px];
+		cursor: pointer;
+		/* Pin hover-box radius so dark matches light (container radius minus the
+		   side gutter keeps the curves concentric). */
+		border-radius: 12px;
+	}
+
+	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
+		@apply pl-3 pr-3 py-1.5 text-[12px];
+	}
+
+	/* Active (green) items keep their primary text and icon color on hover. */
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
+		color: var(--primary) !important;
+	}
+
+	/* Light hover: neutral grey, not the green accent. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgba(0, 0, 0, 0.06) !important;
+	}
+
+	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
+	.dark .unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgba(255, 255, 255, 0.1) !important;
+	}
+
+	/* Hover tints only the background; the item and every descendant (text, icons,
+	   labels) keep their resting color, overriding Radix's focus:**:text-accent-
+	   foreground. The active green rule above still wins via higher specificity. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]),
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) * {
+		color: inherit !important;
+	}
+
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		)
+		svg {
+		width: 1.15rem;
+		height: 1.15rem;
+	}
+
+	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"] * {
+		color: var(--destructive) !important;
+	}
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
+	}
+
+	/* Thinking menu: tighter gap; nowrap keeps "Preserve thinking" on one line
+	   so the menu sizes to its content. */
+	.unsloth-thinking-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		) {
+		@apply gap-1.5 pl-2.5 pr-2.5;
+		white-space: nowrap;
+	}
+	.artifact-panel-shell {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	}
+
+	.dark .artifact-panel-shell {
+		box-shadow: none;
+	}
+
+	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+		transition:
+			flex-basis 260ms var(--ease-out-cubic),
+			flex-grow 260ms var(--ease-out-cubic),
+			flex-shrink 260ms var(--ease-out-cubic);
+		will-change: flex-basis, flex-grow;
+	}
+
+	.chat-artifact-pop-surface {
+		pointer-events: none;
+		opacity: 0;
+		transform: scale(0.965) translateY(8px);
+		transform-origin: center center;
+		transition:
+			opacity 180ms var(--ease-out-cubic),
+			transform 220ms var(--ease-out-cubic);
+		will-change: opacity, transform;
+	}
+
+	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
+		pointer-events: auto;
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.chat-artifact-pop-surface {
+			transition: none;
+			transform: none;
+		}
+	}
+
+	.artifact-card-shimmer {
+		background: linear-gradient(
+			105deg,
+			transparent 0%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 40%,
+			color-mix(in oklch, var(--muted-foreground) 8%, transparent) 50%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 60%,
+			transparent 100%
+		);
+		transform: translateX(-120%);
+		animation: artifact-card-shimmer 1.55s var(--ease-out-cubic) infinite;
+	}
+
+	.artifact-loading-line {
+		width: 48%;
+		background: color-mix(in oklch, var(--primary) 88%, transparent);
+		transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		transform-origin: center center;
+		animation: artifact-loading-line 1.7s linear infinite;
+	}
+
+	.artifact-panel-shell::before,
+	.artifact-panel-shell::after {
+		content: "";
+		position: absolute;
+		z-index: 20;
+		pointer-events: none;
+		transition:
+			border-color 150ms var(--ease-out-cubic),
+			background-color 150ms var(--ease-out-cubic),
+			box-shadow 150ms var(--ease-out-cubic),
+			transform 150ms var(--ease-out-cubic);
+	}
+
+	.artifact-panel-shell::before {
+		inset: 0;
+		border: 2px solid transparent;
+		border-radius: inherit;
+		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+	}
+
+	.artifact-panel-shell::after {
+		top: 50%;
+		left: -2px;
+		height: 28px;
+		width: 4px;
+		border-radius: 999px;
+		background: transparent;
+		transform: translateY(-50%);
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before {
+		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after {
+		background: color-mix(in oklch, var(--primary) 58%, var(--border));
+		box-shadow: none;
+		transform: translateY(-50%) scaleY(1.06);
+	}
+
+	@keyframes artifact-card-shimmer {
+		to {
+			transform: translateX(120%);
+		}
+	}
+
+	/* Indeterminate loading bar: a 1/3-width segment sweeping the track. */
+	.loading-bar-slide {
+		animation: loading-bar-slide 1.3s ease-in-out infinite;
+	}
+
+	@keyframes loading-bar-slide {
+		from {
+			transform: translateX(-110%);
+		}
+		to {
+			transform: translateX(420%);
+		}
+	}
+
+	@keyframes artifact-loading-line {
+		0% {
+			transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		}
+		35% {
+			transform: translate3d(-18%, 0, 0) scaleX(0.96);
+		}
+		62% {
+			transform: translate3d(72%, 0, 0) scaleX(1.12);
+		}
+		82% {
+			transform: translate3d(132%, 0, 0) scaleX(1.26);
+		}
+		94% {
+			transform: translate3d(188%, 0, 0) scaleX(1.36);
+		}
+		100% {
+			transform: translate3d(220%, 0, 0) scaleX(1.42);
+		}
 	}
 
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
 	.min-h-studio-config-column {
-		@apply md:min-h-[470px];
+		@apply md:min-h-[520px];
 	}
 
 	.h-studio-config-column {
-		@apply md:h-[470px];
+		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {
@@ -851,6 +1682,11 @@
 		border-radius: 0 !important;
 		background: transparent !important;
 		padding: 0 !important;
+	}
+
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		/* Keep overlay scrollbars below one-line code. */
+		padding-bottom: 0.625rem !important;
 	}
 
 	[data-streamdown="code-block"] {
@@ -996,15 +1832,56 @@
 	}
 }
 
-/* Lighter shadow + tighter vertical padding than Sonner's defaults; !important because Sonner injects its base rules at runtime. */
+/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+   !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: 10px 16px !important;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+	padding: 12px 18px !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
-/* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
+[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
+	padding-right: 48px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
+	padding-right: 88px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast,
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
+	padding-top: 14px !important;
+	padding-bottom: 14px !important;
+}
+
+/* Downloading state shows a progress bar as the last row; give it a little
+   extra breathing room below the bar. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
+	padding-bottom: 18px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not(:has([data-cancel])) [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
+	position: absolute !important;
+	right: 36px !important;
+	top: 50% !important;
+	transform: translateY(-50%) !important;
+	margin: 0 !important;
+}
+
+/* Dark toasts share the chatbox surface color (.chat-composer-surface
+   uses var(--card) in dark); the composer shadow lifts them off the page. */
 .dark [data-sonner-toast][data-styled='true'] {
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+	background-color: var(--card) !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -1090,6 +1967,86 @@
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* Composer textarea: keep the scroll thumb faint until the user hovers or
+   drags the thumb itself, so a tall draft never shows a heavy dark rail. */
+.composer-input,
+.unsloth-composer-input {
+	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+}
+
+.composer-input::-webkit-scrollbar-thumb,
+.unsloth-composer-input::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.16);
+}
+
+.composer-input::-webkit-scrollbar-thumb:hover,
+.unsloth-composer-input::-webkit-scrollbar-thumb:hover,
+.composer-input::-webkit-scrollbar-thumb:active,
+.unsloth-composer-input::-webkit-scrollbar-thumb:active {
+	background: oklch(0.5 0 0 / 0.45);
+}
+
+.dark .composer-input,
+.dark .unsloth-composer-input {
+	scrollbar-color: oklch(0.72 0 0 / 0.18) transparent;
+}
+
+.dark .composer-input::-webkit-scrollbar-thumb,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.18);
+}
+
+.dark .composer-input::-webkit-scrollbar-thumb:hover,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb:hover,
+.dark .composer-input::-webkit-scrollbar-thumb:active,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb:active {
+	background: oklch(0.72 0 0 / 0.5);
+}
+
+/* Sidebars, settings and search: hide the scroll thumb at rest and reveal it
+   only while the area is hovered, so the rail never sits visible over content. */
+.sidebar-scroll-fade,
+.run-settings-scroll,
+.hover-scrollbar {
+	scrollbar-color: transparent transparent;
+}
+
+.sidebar-scroll-fade::-webkit-scrollbar-thumb,
+.run-settings-scroll::-webkit-scrollbar-thumb,
+.hover-scrollbar::-webkit-scrollbar-thumb {
+	background: transparent;
+}
+
+.sidebar-scroll-fade:hover,
+.run-settings-scroll:hover,
+.hover-scrollbar:hover {
+	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
+}
+
+.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
+.run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .sidebar-scroll-fade:hover,
+.dark .run-settings-scroll:hover,
+.dark .hover-scrollbar:hover {
+	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
+}
+
+.dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
+.dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* Run settings: always reserve the scrollbar gutter so the header close
+   button keeps its position whether or not the scrollbar is showing. */
+.run-settings-scroll {
+	scrollbar-gutter: stable;
+}
+
 /* Chat viewport: solid track matching sidebar so the scrollbar reads as a
    full-height rail flush to the right edge, without a separate decorative strip. */
 .aui-thread-viewport {
@@ -1134,24 +2091,16 @@
 	background: #23252a;
 }
 
-[data-sidebar="content"] {
-	scrollbar-color: oklch(0.5 0 0 / 0.22) var(--sidebar);
-}
 
-.dark [data-sidebar="content"] {
-	scrollbar-color: oklch(0.72 0 0 / 0.25) var(--sidebar);
+/* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */
+.cmd-native-scrollbar {
+	scrollbar-width: thin;
+	-ms-overflow-style: auto;
 }
-
-[data-sidebar="content"]::-webkit-scrollbar-track {
-	background: var(--sidebar);
-}
-
-[data-sidebar="content"]::-webkit-scrollbar-thumb {
-	background: oklch(0.5 0 0 / 0.22);
-}
-
-.dark [data-sidebar="content"]::-webkit-scrollbar-thumb {
-	background: oklch(0.72 0 0 / 0.25);
+.cmd-native-scrollbar::-webkit-scrollbar {
+	display: block;
+	width: 8px;
+	height: 8px;
 }
 
 /*---break---*/
@@ -1172,20 +2121,74 @@
 	mix-blend-mode: normal;
 }
 
-/* Override sonner top: 0 and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
+/* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
 	top: 8px !important;
+	transform: none !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
-	border-color: var(--border) !important;
+	border-color: transparent !important;
 }
+
+/* Keep the (borderless) close button blended with the dark toast surface. */
+.dark [data-sonner-toast][data-styled="true"] [data-close-button] {
+	background: var(--card) !important;
+}
+
 [data-sonner-toast][data-styled="true"] [data-close-button] svg {
 	stroke-width: 2.25;
 }
 [data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
 	background: var(--muted) !important;
 	color: var(--popover-foreground) !important;
-	border-color: var(--border) !important;
+	border-color: transparent !important;
+}
+
+.generated-image-loading-card {
+	position: relative;
+	overflow: hidden;
+	contain: paint;
+}
+
+.generated-image-loading-wave {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 14px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
+}
+
+.generated-image-loading-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 9999px;
+	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	opacity: 0.12;
+	transform: translate3d(0, 4px, 0) scale(0.72);
+	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
+	animation-delay: calc((var(--dot-row) * 72ms) + (var(--dot-col) * 72ms));
+	will-change: transform, opacity;
+}
+
+@keyframes generated-image-dot-wave {
+	0%,
+	22%,
+	100% {
+		opacity: 0.1;
+		transform: translate3d(0, 4px, 0) scale(0.72);
+	}
+
+	46% {
+		opacity: 0.46;
+		transform: translate3d(0, -3px, 0) scale(0.96);
+	}
+
+	66% {
+		opacity: 0.2;
+		transform: translate3d(0, 0, 0) scale(0.82);
+	}
 }
 
 /*
@@ -1197,11 +2200,11 @@
  * end state. Hover colour changes become instant rather than fading, which is
  * the documented WCAG outcome (motion is "minimised, not removed").
  *
- * .animate-spin is the exception: loading spinners are essential progress
+ * .animate-spin and generated image loading dots are the exceptions: loading
  * indicators across Studio (tool execution loaders, sonner toasts, Tauri
- * startup / update screens, the <Spinner /> primitive). Freezing them
- * removes the only visual signal that work is in flight, so they keep
- * animating but at a slower, less aggressive 1.5s cadence.
+ * startup / update screens, the <Spinner /> primitive, and image generation
+ * cards). Freezing them removes the only visual signal that work is in flight,
+ * so they keep animating.
  */
 @media (prefers-reduced-motion: reduce) {
 	*,
@@ -1217,4 +2220,38 @@
 		animation-duration: 1.5s !important;
 		animation-iteration-count: infinite !important;
 	}
+
+	.generated-image-loading-dot {
+		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.loading-bar-slide {
+		animation-duration: 1.3s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	/* Keep the plus/x morph animating under reduced motion (small rotation,
+	   like the spinners above). */
+	.unsloth-composer-plus svg {
+		transition-duration: 250ms !important;
+	}
+}
+
+/*
+ * Tool-call chevron visibility:
+ *  - A solo tool call (not wrapped in a multi-tool group) always shows its
+ *    collapsible chevron.
+ *  - When the tool call is part of a multi-tool group (.aui-tool-group-root),
+ *    the chevron stays hidden and only reveals on hover / keyboard focus.
+ */
+.aui-tool-fallback-trigger-chevron {
+  opacity: 1;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger-chevron {
+  opacity: 0;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger:hover .aui-tool-fallback-trigger-chevron,
+.aui-tool-group-root .aui-tool-fallback-trigger:focus-visible .aui-tool-fallback-trigger-chevron {
+  opacity: 1;
 }

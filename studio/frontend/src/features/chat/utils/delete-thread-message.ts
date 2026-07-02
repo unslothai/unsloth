@@ -2,16 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * assistant-ui does not expose a public `deleteMessage` on `ThreadRuntime` / `MessageRuntime`
- * in our version, but it already implements branch-safe deletion inside `MessageRepository`.
- * We import that helper from `@assistant-ui/core/internal`, the package's exported internal
- * surface. Avoid importing the deeper `runtime/utils/message-repository` path directly: newer
- * `@assistant-ui/core` releases no longer export arbitrary deep paths.
+ * assistant-ui exposes no public `deleteMessage` in our version, but
+ * `MessageRepository` already does branch-safe deletion. We import it from
+ * `@assistant-ui/core/internal` (the exported internal surface); avoid the
+ * deeper `runtime/utils/message-repository` path since newer releases no
+ * longer export arbitrary deep paths.
  *
- * **Maintainability:** treat this file as the only place that imports `MessageRepository` from
- * `@assistant-ui/core`. When bumping `@assistant-ui/react` / `@assistant-ui/core`, re-run chat
- * delete + reload smoke tests; the path or API may change without a semver signal on “public”
- * surface area.
+ * Keep this file the only importer of `MessageRepository`. When bumping
+ * `@assistant-ui/react` / `core`, re-run chat delete + reload smoke tests;
+ * the path or API may change without a semver signal.
  */
 import { MessageRepository } from "@assistant-ui/core/internal";
 import type {
@@ -113,7 +112,26 @@ export async function deleteThreadMessage(args: {
   const exported = thread.export();
   const repo = new MessageRepository();
   repo.import(exported);
+
+  const target = exported.messages.find(
+    ({ message }) => message.id === messageId,
+  );
+  const assistantReplyIds =
+    target?.message.role === "user"
+      ? exported.messages
+          .filter(
+            ({ parentId, message }) =>
+              parentId === messageId && message.role === "assistant",
+          )
+          .map(({ message }) => message.id)
+      : [];
+
+  // Delete the prompt first; that relinks its replies up to the prompt's parent
   repo.deleteMessage(messageId);
+  for (const replyId of assistantReplyIds) {
+    repo.deleteMessage(replyId);
+  }
+
   const next = repo.export();
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {

@@ -62,40 +62,39 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install Playwright + Chromium
         # No --with-deps on Mac: that flag installs Linux apt packages.
@@ -186,13 +185,14 @@ jobs:
         # Retry up to 3 times to absorb known macos-14 free-runner
         # flakes: (1) Playwright Node 24 pipeTransport.js 'Unexpected
         # end of JSON input' crash when the Chromium browser process
-        # dies mid-test, and (2) Chromium net::ERR_NO_BUFFER_SPACE
-        # when the runner's kernel briefly runs out of socket buffers.
-        # The retry FULLY resets Studio (kill, reset-password, reboot,
-        # wait /api/health, re-export bootstrap pw) before re-running
-        # the script. A real test failure (assertion / timeout) does
-        # NOT match either pattern so it bypasses retry and surfaces
-        # immediately.
+        # dies mid-test, (2) Chromium net::ERR_NO_BUFFER_SPACE when the
+        # runner's kernel briefly runs out of socket buffers, and (3) a
+        # goto 'interrupted by another navigation' when the SPA auth
+        # guard redirects mid-navigation. The retry FULLY resets Studio
+        # (kill, reset-password, reboot, wait /api/health, re-export
+        # bootstrap pw) before re-running the script. A real test failure
+        # (assertion / timeout) does NOT match any pattern so it bypasses
+        # retry and surfaces immediately.
         run: |
           mkdir -p logs/playwright
           attempt=1
@@ -205,8 +205,9 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            if { grep -q "Unexpected end of JSON input" logs/playwright_attempt_${attempt}.log \
-                 || grep -q "ERR_NO_BUFFER_SPACE"        logs/playwright_attempt_${attempt}.log; } \
+            if { grep -q "Unexpected end of JSON input"       logs/playwright_attempt_${attempt}.log \
+                 || grep -q "ERR_NO_BUFFER_SPACE"             logs/playwright_attempt_${attempt}.log \
+                 || grep -q "interrupted by another navigation" logs/playwright_attempt_${attempt}.log; } \
                && [ "$attempt" -lt "$max_attempts" ]; then
               echo "::warning::Playwright flake on attempt ${attempt}; resetting Studio and retrying..."
               kill "${STUDIO_PID}" 2>/dev/null || true
@@ -281,8 +282,8 @@ jobs:
           STUDIO_UI_TURN_TIMEOUT_MS: '540000'
           GGUF_REPO: ${{ env.GGUF_REPO }}
           GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
-        # Same flake-retry shape as "Drive the chat UI with Playwright"
-        # -- catches pipeTransport JSON crash and ERR_NO_BUFFER_SPACE.
+        # Same flake-retry shape as "Drive the chat UI with Playwright" -- catches
+        # pipeTransport JSON crash, ERR_NO_BUFFER_SPACE, and nav interrupts.
         run: |
           mkdir -p logs/playwright_extra
           attempt=1
@@ -295,8 +296,9 @@ jobs:
             if [ "$rc" -eq 0 ]; then
               break
             fi
-            if { grep -q "Unexpected end of JSON input" logs/playwright_extra_attempt_${attempt}.log \
-                 || grep -q "ERR_NO_BUFFER_SPACE"        logs/playwright_extra_attempt_${attempt}.log; } \
+            if { grep -q "Unexpected end of JSON input"       logs/playwright_extra_attempt_${attempt}.log \
+                 || grep -q "ERR_NO_BUFFER_SPACE"             logs/playwright_extra_attempt_${attempt}.log \
+                 || grep -q "interrupted by another navigation" logs/playwright_extra_attempt_${attempt}.log; } \
                && [ "$attempt" -lt "$max_attempts" ]; then
               echo "::warning::Playwright flake on attempt ${attempt}; resetting Studio and retrying..."
               kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true

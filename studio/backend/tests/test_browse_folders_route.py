@@ -9,8 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-# Keep this test runnable in lightweight environments where optional logging
-# deps are not installed.
+# Keep runnable in lightweight environments lacking optional logging deps.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:

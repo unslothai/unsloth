@@ -168,15 +168,14 @@ export async function authFetch(
     });
   } catch (err) {
     if (err instanceof TypeError) {
-      // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
-      // it's always backend-down; in the web build distinguish offline
-      // so the user gets the right recovery path.
+      // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always
+      // backend-down; the web build distinguishes offline for the right message.
       if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
         throw new Error(
           "You appear to be offline. Check your network connection and try again.",
         );
       }
-      throw new Error("Studio isn't running -- please relaunch it.");
+      throw new Error("Unsloth isn't running -- please relaunch it.");
     }
     throw err;
   }
@@ -227,10 +226,9 @@ async function postLogout(accessToken: string | null): Promise<Response | null> 
 }
 
 export async function logout(): Promise<void> {
-  // Server-side revoke. If the access token is expired the 401 fires
-  // BEFORE revoke runs; rotate via the refresh token and retry so the
-  // refresh family is actually revoked. Generation bump in finally
-  // invalidates any in-flight refresh from before this call.
+  // Server-side revoke. If the access token is expired, the 401 fires before
+  // revoke runs; rotate via the refresh token and retry so the refresh family
+  // is revoked. The finally generation bump invalidates in-flight refreshes.
   try {
     let response = await postLogout(getAuthToken());
     if (response && response.status === 401 && getRefreshToken()) {

@@ -10,7 +10,6 @@ type ModelLoadDescriptionProps = {
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
-  onStop?: () => void;
 };
 
 function clampProgress(value: number): number {
@@ -18,15 +17,10 @@ function clampProgress(value: number): number {
 }
 
 /**
- * Split a composed progress label like
- *   "22.8 of 122.3 GB • 330.1 MB/s • 5m 9s left"
- * into a primary chunk ("22.8 of 122.3 GB") that can sit next to the
- * percent, and a secondary chunk ("330.1 MB/s • 5m 9s left") that can
- * live on its own row. This keeps either line from overflowing into a
- * ragged wrap when the rate/ETA part shows up mid-download.
- *
- * Labels without " • " (e.g. "22.8 GB downloaded") are returned
- * primary-only, so the secondary row simply doesn't render.
+ * Split a composed progress label like "22.8 of 122.3 GB • 330.1 MB/s • 5m 9s
+ * left" into a primary chunk (next to the percent) and a secondary chunk (its
+ * own row), so neither line wraps raggedly once rate/ETA appears mid-download.
+ * Labels without " • " return primary-only, so the secondary row doesn't render.
  */
 function splitProgressLabel(
   label: string | null | undefined,
@@ -45,11 +39,9 @@ export function ModelLoadDescription({
   message,
   progressPercent,
   progressLabel,
-  onStop,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
-  // Split once at the top of the render so the JSX below stays flat --
-  // no IIFE required. splitProgressLabel is a trivial string op.
+  // Split once at the top so the JSX below stays flat (no IIFE).
   const { primary: labelPrimary, secondary: labelSecondary } =
     splitProgressLabel(progressLabel);
 
@@ -58,8 +50,8 @@ export function ModelLoadDescription({
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>
-      <div className="min-w-0 flex-1 pr-5">
-        {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
             <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
@@ -82,18 +74,6 @@ export function ModelLoadDescription({
           <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{message}</p>
         ) : null}
       </div>
-      {onStop ? (
-        <Button
-          type="button"
-          size="xs"
-          variant="ghost"
-          aria-label="Stop model loading"
-          className="h-auto self-stretch shrink-0 !rounded-none !border-0 bg-transparent px-1 text-[10px] text-muted-foreground hover:bg-transparent hover:text-destructive focus-visible:text-destructive"
-          onClick={onStop}
-        >
-          Cancel
-        </Button>
-      ) : null}
     </div>
   );
 }
@@ -130,9 +110,8 @@ export function ModelLoadInlineStatus({
             className="flex shrink-0 items-center gap-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80"
             title={progressLabel ?? undefined}
           >
-            {/* Inline layout is horizontal and tight -- show only the
-                primary (bytes) chunk; the full label (with rate/ETA)
-                stays available via the tooltip. */}
+            {/* Tight inline layout: show only the primary (bytes) chunk;
+                full label (rate/ETA) stays in the tooltip. */}
             <span>{splitProgressLabel(progressLabel).primary}</span>
             <span className="tabular-nums">
               {Math.round(clampProgress(progressPercent))}%

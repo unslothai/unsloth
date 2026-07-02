@@ -1,14 +1,4 @@
-"""
-Tests for the current llama.cpp wrapper policy in setup.sh / setup.ps1.
-
-Tests cover:
-  - Bash subprocess: PR_FORCE promotion, user-override, zero/empty/invalid ignored
-  - Bash subprocess: source remains pinned to ggml-org even if env source is set
-  - Static source checks: mainline repo/source are hardcoded for now
-  - PowerShell subprocess: PR_FORCE promotion and fixed-source parity
-
-Run: pytest tests/studio/install/test_llama_pr_force_and_source.py -v
-"""
+"""Tests for the llama.cpp wrapper policy (PR_FORCE promotion, fixed ggml-org source) in setup.sh / setup.ps1."""
 
 import os
 import shlex
@@ -18,9 +8,6 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -31,15 +18,13 @@ PWSH_AVAILABLE = os.path.isfile(PWSH) and os.access(PWSH, os.X_OK)
 requires_pwsh = pytest.mark.skipif(not PWSH_AVAILABLE, reason = "pwsh not available")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 def run_bash(
-    script: str, *, timeout: int = 60, env: dict | None = None
+    script: str,
+    *,
+    timeout: int = 60,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a bash script fragment and return the CompletedProcess.
-    60s default tolerates slow shell startup on heavily-loaded CI
-    runners; the scripts themselves run in well under a second."""
+    """Run a bash fragment. 60s default tolerates slow CI shell startup."""
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
@@ -53,12 +38,12 @@ def run_bash(
 
 
 def run_pwsh(
-    script: str, *, timeout: int = 60, env: dict | None = None
+    script: str,
+    *,
+    timeout: int = 60,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a PowerShell script fragment and return the CompletedProcess.
-    60s default tolerates slow pwsh startup on heavily-loaded CI
-    runners; the scripts themselves run in well under a second.
-    A 10s budget previously surfaced as a flaky TimeoutExpired."""
+    """Run a PowerShell fragment. 60s default tolerates slow CI pwsh startup (10s was flaky)."""
     run_env = os.environ.copy()
     run_env["NO_COLOR"] = "1"
     if env:
@@ -72,9 +57,7 @@ def run_pwsh(
     )
 
 
-# ---------------------------------------------------------------------------
-# Shared bash stubs
-# ---------------------------------------------------------------------------
+# Shared bash stubs.
 BASH_STUBS = textwrap.dedent("""\
     step()    { echo "step:$1:$2"; }
     substep() { :; }
@@ -113,9 +96,7 @@ def make_mock_git(tmp_path: Path, *, fail_on: str = "") -> tuple[Path, Path]:
     return mock_bin, log_file
 
 
-# =========================================================================
-# Bash fragment that exercises PR_FORCE and fixed _LLAMA_SOURCE resolution
-# =========================================================================
+# Bash fragment exercising PR_FORCE and fixed _LLAMA_SOURCE resolution.
 def _bash_resolution_fragment(
     llama_pr: str = "",
     llama_pr_force: str = "",
@@ -156,9 +137,6 @@ def _bash_resolution_fragment(
     """)
 
 
-# =========================================================================
-# TEST GROUP A: Bash PR_FORCE promotion (subprocess)
-# =========================================================================
 class TestBashPrForcePromotion:
     """PR_FORCE promotes to _LLAMA_PR when user hasn't set one."""
 
@@ -230,9 +208,6 @@ class TestBashPrForcePromotion:
         assert "LLAMA_PR=" in r.stdout
 
 
-# =========================================================================
-# TEST GROUP B: Bash fixed mainline source (subprocess)
-# =========================================================================
 class TestBashFixedMainlineSource:
     """Source remains pinned to ggml-org while the temporary policy is active."""
 
@@ -263,9 +238,6 @@ class TestBashFixedMainlineSource:
         assert "LLAMA_SOURCE=https://github.com/ggml-org/llama.cpp" in r.stdout
 
 
-# =========================================================================
-# TEST GROUP C: Bash clone URL parameterization (subprocess with mock git)
-# =========================================================================
 class TestBashCloneUrlParameterized:
     """Verify git clone uses _LLAMA_SOURCE instead of hardcoded URL."""
 
@@ -369,9 +341,6 @@ class TestBashCloneUrlParameterized:
         assert "ggml-org/llama.cpp.git" in log
 
 
-# =========================================================================
-# TEST GROUP D: Static source patterns -- setup.sh
-# =========================================================================
 class TestSourcePatternsSh:
     """Verify setup.sh keeps the temporary mainline-only llama.cpp policy."""
 
@@ -383,10 +352,7 @@ class TestSourcePatternsSh:
         assert '_DEFAULT_LLAMA_PR_FORCE=""' in self.content
 
     def test_has_default_source(self):
-        assert (
-            '_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"'
-            in self.content
-        )
+        assert '_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"' in self.content
 
     def test_has_pr_force_env_read(self):
         assert "UNSLOTH_LLAMA_PR_FORCE" in self.content
@@ -416,8 +382,7 @@ class TestSourcePatternsSh:
     def test_clone_urls_parameterized_pr_path(self):
         """PR clone path uses ${_LLAMA_SOURCE}.git, not hardcoded URL."""
         pr_clone_idx = self.content.index(
-            'if [ -n "$_LLAMA_PR" ]; then\n'
-            '            run_quiet_no_exit "clone llama.cpp"'
+            'if [ -n "$_LLAMA_PR" ]; then\n            run_quiet_no_exit "clone llama.cpp"'
         )
         else_idx = self.content.index("else\n", pr_clone_idx)
         pr_block = self.content[pr_clone_idx:else_idx]
@@ -426,7 +391,6 @@ class TestSourcePatternsSh:
 
     def test_clone_urls_parameterized_tag_path(self):
         """Non-PR clone path uses the resolved source URL, not a hardcoded URL."""
-        # Find the non-PR clone line (after _CLONE_ARGS)
         idx = self.content.index("_CLONE_ARGS=(git clone --depth 1)")
         block = self.content[idx : idx + 400]
         assert '"${_RESOLVED_SOURCE_URL}.git"' in block
@@ -437,14 +401,9 @@ class TestSourcePatternsSh:
         lines = self.content.splitlines()
         for i, line in enumerate(lines, 1):
             if "git clone" in line and "ggml-org/llama.cpp.git" in line:
-                pytest.fail(
-                    f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}"
-                )
+                pytest.fail(f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}")
 
 
-# =========================================================================
-# TEST GROUP E: Static source patterns -- setup.ps1
-# =========================================================================
 class TestSourcePatternsPs1:
     """Verify setup.ps1 keeps the temporary mainline-only llama.cpp policy."""
 
@@ -456,10 +415,7 @@ class TestSourcePatternsPs1:
         assert '$DefaultLlamaPrForce = ""' in self.content
 
     def test_has_default_source(self):
-        assert (
-            '$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"'
-            in self.content
-        )
+        assert '$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"' in self.content
 
     def test_has_pr_force_env_read(self):
         assert "$env:UNSLOTH_LLAMA_PR_FORCE" in self.content
@@ -469,11 +425,12 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
+        # Repo chosen by GPU detection (GPU -> fork, CPU -> ggml-org), no env override.
+        assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
         assert (
-            "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)"
-            not in self.content
+            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) "
+            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }' in self.content
         )
-        assert '$HelperReleaseRepo = "ggml-org/llama.cpp"' in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content
@@ -491,9 +448,7 @@ class TestSourcePatternsPs1:
 
     def test_clone_urls_parameterized_pr_path(self):
         """PR clone path uses $LlamaSource.git, not hardcoded URL."""
-        pr_idx = self.content.index(
-            "if ($LlamaPr) {\n", self.content.index("Cloning llama.cpp")
-        )
+        pr_idx = self.content.index("if ($LlamaPr) {\n", self.content.index("Cloning llama.cpp"))
         else_idx = self.content.index("} else {", pr_idx)
         pr_block = self.content[pr_idx:else_idx]
         assert '"$LlamaSource.git"' in pr_block
@@ -511,14 +466,9 @@ class TestSourcePatternsPs1:
         lines = self.content.splitlines()
         for i, line in enumerate(lines, 1):
             if "git clone" in line and "ggml-org/llama.cpp.git" in line:
-                pytest.fail(
-                    f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}"
-                )
+                pytest.fail(f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}")
 
 
-# =========================================================================
-# TEST GROUP F: PowerShell PR_FORCE promotion (subprocess)
-# =========================================================================
 @requires_pwsh
 class TestPwshPrForcePromotion:
     """PR_FORCE promotion and fixed-source logic via pwsh subprocess."""
@@ -568,7 +518,7 @@ class TestPwshPrForcePromotion:
             default_source,
         )
         run_env = {}
-        # Ensure env vars are unset by default
+        # Unset env vars by default.
         run_env["UNSLOTH_LLAMA_PR"] = ""
         run_env["UNSLOTH_LLAMA_PR_FORCE"] = ""
         if env:

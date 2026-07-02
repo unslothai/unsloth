@@ -48,16 +48,14 @@ function Tooltip({
   }, []);
 
   return (
-    <TooltipProvider>
-      <TooltipToggleCtx.Provider value={toggle}>
-        <TooltipPrimitive.Root
-          data-slot="tooltip"
-          open={isControlled ? controlledOpen : clickOpen || undefined}
-          onOpenChange={onOpenChange}
-          {...props}
-        />
-      </TooltipToggleCtx.Provider>
-    </TooltipProvider>
+    <TooltipToggleCtx.Provider value={toggle}>
+      <TooltipPrimitive.Root
+        data-slot="tooltip"
+        open={isControlled ? controlledOpen : clickOpen || undefined}
+        onOpenChange={onOpenChange}
+        {...props}
+      />
+    </TooltipToggleCtx.Provider>
   );
 }
 
@@ -100,9 +98,27 @@ function TooltipContent({
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
+  // Single-line compact tooltips render as a full pill; wrapped ones keep
+  // the squarer corners so tall pills do not look like capsules. A ref
+  // callback measures on mount: Radix mounts the portal content without
+  // re-rendering this wrapper, so an effect here would never see the node.
+  const measureRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el || variant !== "default") return;
+      const cs = getComputedStyle(el);
+      const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
+      const innerHeight =
+        el.clientHeight -
+        Number.parseFloat(cs.paddingTop) -
+        Number.parseFloat(cs.paddingBottom);
+      el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
+    },
+    [variant],
+  );
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
+        ref={measureRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(

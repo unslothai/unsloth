@@ -49,12 +49,9 @@ from typing import Any, Iterable, Iterator
 
 
 def _atomic_write_bytes(path: pathlib.Path, data: bytes) -> None:
-    """Atomic write helper. See `scripts/scan_packages.py::update_req_file`.
-
-    A crash between `mkstemp` and `os.replace` leaves the prior file
-    untouched, so a half-downloaded PyPI metadata cache file cannot
-    poison subsequent runs of the validator.
-    """
+    """Atomic write (see scripts/scan_packages.py::update_req_file). A crash
+    between mkstemp and os.replace leaves the prior file intact, so a
+    half-downloaded cache file can't poison later runs."""
     path.parent.mkdir(parents = True, exist_ok = True)
     dirpath = str(path.parent) or "."
     fd, tmp_path = tempfile.mkstemp(prefix = ".nb_val.", dir = dirpath)
@@ -81,20 +78,16 @@ COLAB_PIP_FREEZE_URL = (
 )
 COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 
-# Oracle files we snapshot from googlecolab/backend-info. The diff
-# subcommand fetches each, compares against the committed snapshot,
-# and surfaces NEW / REMOVED / CHANGED entries so upstream Colab base
-# image rotations land in CI within ~24h instead of when a notebook
-# breaks. Every rule in this validator that resolves against the
-# Colab preinstall (R-INST-002/003/004/005) gets earlier signal.
+# Oracle files snapshotted from googlecolab/backend-info. The colab-diff
+# subcommand surfaces NEW/REMOVED/CHANGED entries so upstream Colab base
+# image rotations land in CI within ~24h, giving R-INST-002/003/004/005
+# earlier signal.
 COLAB_ORACLE_FILES: dict[str, str] = {
     "pip-freeze.gpu.txt": "colab_pip_freeze.gpu.txt",
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-COLAB_ORACLE_BASE_URL = (
-    "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
-)
+COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 
 # ----- Compat tables. PRs add rows as new releases land. ----- #
 
@@ -147,9 +140,8 @@ class Finding:
 def iter_notebooks(
     notebooks_dir: pathlib.Path, include_templates: bool = False
 ) -> Iterator[pathlib.Path]:
-    """Yield user-facing .ipynb files under nb/ and kaggle/. Pass
-    include_templates=True to also walk original_template/ (used by the
-    convert subcommand which doesn't lint install cells)."""
+    """Yield user-facing .ipynb files under nb/ and kaggle/.
+    include_templates=True also walks original_template/ (for convert)."""
     subs = ("nb", "kaggle")
     if include_templates:
         subs = ("nb", "kaggle", "original_template")
@@ -195,18 +187,13 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
         if first and first[0].strip().startswith("%%capture"):
             out.append((i, src))
             continue
-        if re.search(
-            r"^[ \t]*!\s*(uv\s+)?pip\s+(install|uninstall)\b", src, re.MULTILINE
-        ):
+        if re.search(r"^[ \t]*!\s*(uv\s+)?pip\s+(install|uninstall)\b", src, re.MULTILINE):
             out.append((i, src))
     return out
 
 
-# Notebook target environment. The Colab oracle (pip-freeze.gpu.txt) only
-# applies to notebooks that actually run on Colab; AMD-Dev-Cloud,
-# Kaggle, HuggingFace-Course, and DGX-Spark notebooks have their own
-# preinstalled environments and the Colab-vs-cell rules are not
-# applicable to them.
+# Colab oracle only applies to notebooks that run on Colab; AMD, Kaggle,
+# DGX-Spark have their own preinstalls and the Colab-vs-cell rules don't apply.
 def target_environment(notebook_name: str) -> str:
     parts = pathlib.PurePath(notebook_name).parts
     base = parts[-1] if parts else notebook_name
@@ -331,9 +318,7 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
         if t in ("install", "uninstall"):
             continue
         packages.append(t)
-    return PipInvocation(
-        tool = tool, flags = flags, packages = packages, raw = line, line_no = line_no
-    )
+    return PipInvocation(tool = tool, flags = flags, packages = packages, raw = line, line_no = line_no)
 
 
 def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
@@ -418,9 +403,7 @@ def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
     return data
 
 
-def transitive_constraint(
-    name: str, version: str, target: str
-) -> tuple[str | None, list[str]]:
+def transitive_constraint(name: str, version: str, target: str) -> tuple[str | None, list[str]]:
     """Return (raw_specifier_string_or_None, list_of_(op,version) tuples)
     for the constraint that `name==version` places on `target`.
     """
@@ -474,19 +457,12 @@ def constraint_satisfied(version: str, ops: list[tuple[str, str]]) -> bool:
 
 
 def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
-    """Merge install-cell explicit constraints with Colab pip-freeze. Cell
-    wins.
+    """Merge install-cell constraints with Colab pip-freeze (cell wins).
 
-    Resolution order per package, when more than one form is present:
-      1. Exact `==V` pin in any install line  (definitive).
-      2. Upper-bound `<=V` constraint         (pip picks the highest
-                                                allowed; that's V).
-      3. Colab pip-freeze fallback.
-
-    The lower-bound `>=V` is intentionally NOT reflected here — a `>=V`
-    by itself doesn't change the resolved version when a higher
-    Colab-preinstalled version is already in scope. (R-INST-003 calls
-    `_install_cell_lower_bound` separately to model that case.)
+    Resolution order per package: (1) exact `==V` pin, (2) upper-bound `<=V`
+    (pip picks the highest allowed = V), (3) Colab fallback. Lower-bound `>=V`
+    is intentionally NOT reflected (it doesn't lower an already-higher Colab
+    version); R-INST-003 models that via `_install_cell_lower_bound`.
     """
     out = dict(colab)
     pinned: set[str] = set()
@@ -501,10 +477,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
                     out[sp.name] = ver
                     pinned.add(sp.name)
                 elif op == "<=" and sp.name not in pinned:
-                    if (
-                        sp.name not in upper_bounds
-                        or cmp_versions(ver, upper_bounds[sp.name]) < 0
-                    ):
+                    if sp.name not in upper_bounds or cmp_versions(ver, upper_bounds[sp.name]) < 0:
                         upper_bounds[sp.name] = ver
     # Apply upper bounds where Colab's preinstall violates them.
     for name, ub in upper_bounds.items():
@@ -519,9 +492,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 # ----- Rules ----- #
 
 
-def rule_inst_001_git_plus(
-    install_cell: str, file: str, cell_idx: int
-) -> list[Finding]:
+def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
     findings: list[Finding] = []
     for inv in iter_pip_invocations(install_cell):
         if any("git+" in p for p in inv.packages) or "git+" in inv.raw:
@@ -556,8 +527,7 @@ def rule_inst_002_no_deps_transitive(
             v = explicit_pin(sp)
             if v is None:
                 continue
-            # Check transitive constraints on a curated short list of pkgs we
-            # care about (transformers/peft/trl/accelerate/torchao/torchcodec).
+            # Check transitive constraints on a curated short list of pkgs.
             for target in (
                 "tokenizers",
                 "torchao",
@@ -588,10 +558,9 @@ def rule_inst_002_no_deps_transitive(
 
 
 def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
-    """Return the highest LOWER bound that any install line places on `target`,
-    or None if no constraint is present. Treats `==V` as both lower and upper.
-    Used by R-INST-003: a `pip install torchao>=0.16.0` line is enough to
-    satisfy a `torchao>=0.16.0` floor even though it's not a `==` pin."""
+    """Return the highest lower bound any install line places on `target`
+    (treating `==V` as both bounds), or None. Used by R-INST-003 so a
+    `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
     for inv in iter_pip_invocations(install_cell):
         for raw in inv.packages:
@@ -665,20 +634,17 @@ def rule_inst_004_torchcodec_torch(
 def rule_inst_005_transformers_tokenizers(
     install_cell: str, colab: dict[str, str], file: str, cell_idx: int
 ) -> list[Finding]:
-    """Fires only when transformers is installed with `--no-deps`. Without
-    `--no-deps`, pip resolves the correct tokenizers transitively, so the
-    rule would be a false positive (this is the case for older notebooks
-    that pin `transformers==4.51.3` but rely on pip's transitive resolver).
-    The rule targets the exact pattern PR #261b / #264 fixed:
-    `pip install --no-deps transformers==X` next to a Colab preinstall
-    `tokenizers` outside transformers's window."""
+    """Fires only when transformers is installed with `--no-deps` (otherwise
+    pip resolves tokenizers transitively and flagging would be a false
+    positive). Targets the PR #261b/#264 pattern: `--no-deps transformers==X`
+    next to a Colab `tokenizers` outside transformers's window."""
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
     tf = res.get("transformers")
     tok = res.get("tokenizers")
     if not tf or tok is None:
         return findings
-    # Find the install line that pins transformers and check for --no-deps.
+    # Find the transformers pin and check for --no-deps.
     transformers_line_no_deps = False
     for inv in iter_pip_invocations(install_cell):
         for raw in inv.packages:
@@ -714,9 +680,7 @@ def rule_inst_005_transformers_tokenizers(
 _RE_DOUBLE_BANG = re.compile(r"^[ \t]*!{2,}\s*pip\b", re.MULTILINE)
 
 
-def rule_inst_006_double_bang(
-    install_cell: str, file: str, cell_idx: int
-) -> list[Finding]:
+def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
     findings: list[Finding] = []
     for m in _RE_DOUBLE_BANG.finditer(install_cell):
         line_no = install_cell.count("\n", 0, m.start()) + 1
@@ -739,11 +703,9 @@ def rule_inst_006_double_bang(
 
 class _APIScanner(ast.NodeVisitor):
     """Scan user-facing code cells for known deprecated patterns. R-API-001
-    (`for_training`/`for_inference`) is intentionally absent: those helpers
-    are still part of the live unsloth surface as of 2026-05; PR #221 removed
-    the calls cosmetically from Vision notebooks but did not deprecate the
-    methods. R-API-004 (live API surface diff) catches actual removals
-    dynamically without us hand-coding them."""
+    (`for_training`/`for_inference`) is intentionally absent: those helpers are
+    still live as of 2026-05 (PR #221 removed them cosmetically, not as a
+    deprecation). R-API-004 catches actual removals dynamically."""
 
     def __init__(self, file: str, cell_idx: int):
         self.file = file
@@ -751,14 +713,10 @@ class _APIScanner(ast.NodeVisitor):
         self.findings: list[Finding] = []
 
     def visit_Call(self, node: ast.Call) -> None:
-        # SFTConfig with suboptimal optim  (R-API-003).
-        # NOTE: PR #221 also stripped `gradient_checkpointing` /
-        # `gradient_checkpointing_kwargs` from a handful of vision notebooks,
-        # but those kwargs are still accepted by live TRL (verified against
-        # trl==0.25.1 in the unsloth workspace) so removing them was
-        # cosmetic, not a deprecation. We do NOT flag them. R-API-004 (live
-        # API surface diff in the api subcommand) is the right way to catch
-        # actual TRL signature drift.
+        # SFTConfig with suboptimal optim (R-API-003).
+        # NOTE: PR #221 also stripped gradient_checkpointing kwargs from some
+        # vision notebooks, but they're still accepted by live TRL (trl==0.25.1)
+        # so that was cosmetic. We don't flag them; R-API-004 catches real drift.
         if isinstance(node.func, ast.Name) and node.func.id == "SFTConfig":
             for kw in node.keywords:
                 if (
@@ -813,16 +771,10 @@ POLICY_CLAUSES_DEFAULT = [
 ]
 
 
-def extract_policy_clauses(
-    update_script: pathlib.Path,
-) -> list[tuple[str, re.Pattern[str], Any]]:
-    """Best-effort: scan update_all_notebooks.py for canonical phrases used by
-    multiple templates. Falls back to POLICY_CLAUSES_DEFAULT.
-
-    Today we use POLICY_CLAUSES_DEFAULT directly; the regex form is
-    intentionally permissive so a template-side reword (e.g. comment changes)
-    doesn't cause false positives. New clauses become 1-line PRs to this list.
-    """
+def extract_policy_clauses(update_script: pathlib.Path) -> list[tuple[str, re.Pattern[str], Any]]:
+    """Best-effort scan of update_all_notebooks.py for canonical phrases;
+    falls back to POLICY_CLAUSES_DEFAULT (which we use directly today). The
+    permissive regexes avoid false positives on template rewords."""
     return list(POLICY_CLAUSES_DEFAULT)
 
 
@@ -879,24 +831,15 @@ def cmd_drift(args: argparse.Namespace) -> int:
         print(f"FAIL: {update_script} not found", file = sys.stderr)
         return 2
     # Stash any pre-existing dirty state, run the updater, diff, restore.
-    head = (
-        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd = nbdir)
-        .decode()
-        .strip()
-    )
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd = nbdir).decode().strip()
     subprocess.run(
         ["git", "-C", str(nbdir), "stash", "--include-untracked"],
         check = False,
         capture_output = True,
     )
-    # SF3: the restore MUST run even on SystemExit / KeyboardInterrupt /
-    # segfault-propagated exception, otherwise the user's working tree
-    # silently stays rolled back into the stash. A bare try/finally
-    # (NOT try/except/finally) preserves the original exception and
-    # still runs the cleanup. The pre-existing try/except around
-    # `subprocess.run` of the updater is folded inside the new outer
-    # try so its early returns still happen, but the stash pop is
-    # protected.
+    # The restore MUST run even on SystemExit/KeyboardInterrupt, else the
+    # working tree stays rolled back into the stash. A bare try/finally keeps
+    # the original exception while still running the cleanup (stash pop).
     findings: list[Finding] = []
     rc: int
     try:
@@ -941,8 +884,7 @@ def cmd_drift(args: argparse.Namespace) -> int:
                         )
                 rc = 0 if not findings else 1
     finally:
-        # Restore the working tree. Both commands MUST run regardless of
-        # how the try block exited (including SystemExit/KeyboardInterrupt).
+        # Restore the working tree (both commands run regardless of exit path).
         subprocess.run(
             ["git", "-C", str(nbdir), "checkout", "."],
             check = False,
@@ -990,9 +932,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
                         hint = proc.stderr[-200:].strip(),
                     )
                 )
-    print(
-        f"converted {len(notebooks) - len(failed)}/{len(notebooks)} notebooks to {out}"
-    )
+    print(f"converted {len(notebooks) - len(failed)}/{len(notebooks)} notebooks to {out}")
     _emit(failed)
     return 0 if not failed else 1
 
@@ -1002,11 +942,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
 def cmd_lint(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
-    colab_path = (
-        pathlib.Path(args.colab_pin).resolve()
-        if args.colab_pin
-        else COLAB_FALLBACK_FILE
-    )
+    colab_path = pathlib.Path(args.colab_pin).resolve() if args.colab_pin else COLAB_FALLBACK_FILE
     colab = parse_pip_freeze(colab_path)
     if not colab:
         print(
@@ -1031,31 +967,24 @@ def cmd_lint(args: argparse.Namespace) -> int:
             continue
         rel = str(path.relative_to(nbdir))
         env = target_environment(rel)
-        # The Colab oracle is the source of truth ONLY for Colab notebooks.
-        # Other targets (amd / kaggle / dgx_spark) have their own runtime
-        # preinstall sets that aren't tracked here yet, so we apply the
-        # environment-agnostic rules and skip the Colab-specific ones.
+        # Colab oracle applies only to Colab notebooks; other targets get the
+        # environment-agnostic rules only (their preinstalls aren't tracked).
         oracle = colab if env == "colab" else {}
         cells = install_cells(nb)
-        # Per-cell rules: forbid-pattern checks scoped to a single line.
+        # Per-cell forbid-pattern checks.
         for idx, cell in cells:
             findings += rule_inst_001_git_plus(cell, rel, idx)
             findings += rule_inst_006_double_bang(cell, rel, idx)
-        # Whole-notebook rules: a notebook's install steps are sometimes split
-        # across multiple cells (initial install + post-install bumps). Merge
-        # all install cells before resolving compat against Colab.
+        # Whole-notebook rules: install steps may span multiple cells, so merge
+        # before resolving compat against Colab.
         merged = "\n".join(c for _, c in cells)
         if env == "colab" and merged:
             first_cell = cells[0][0] if cells else None
             findings += rule_inst_003_peft_torchao(merged, oracle, rel, first_cell)
             findings += rule_inst_004_torchcodec_torch(merged, oracle, rel, first_cell)
-            findings += rule_inst_005_transformers_tokenizers(
-                merged, oracle, rel, first_cell
-            )
+            findings += rule_inst_005_transformers_tokenizers(merged, oracle, rel, first_cell)
             if not args.no_pypi:
-                findings += rule_inst_002_no_deps_transitive(
-                    merged, oracle, rel, first_cell
-                )
+                findings += rule_inst_002_no_deps_transitive(merged, oracle, rel, first_cell)
         findings += scan_user_cells(nb, rel)
     _emit(findings)
     return 0 if not any(f.severity == "error" for f in findings) else 1
@@ -1178,8 +1107,7 @@ def _parse_apt_lines(text: str) -> dict[str, str]:
 
 
 def _parse_os_lines(text: str) -> dict[str, str]:
-    """Free-form `<tool> <version>` lines. Skip comments. The key is the
-    first token lower-cased; the value is the rest of the line."""
+    """Free-form `<tool> <version>` lines -> {tool_lower: rest}."""
     out: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -1216,10 +1144,9 @@ def _diff_oracle(
 
 
 def cmd_colab_diff(args: argparse.Namespace) -> int:
-    """Fetch every Colab oracle file in COLAB_ORACLE_FILES, diff against
-    the committed snapshot, and print NEW / REMOVED / CHANGED. Advisory
-    by default (rc=0); --strict promotes any diff to rc=1 so the daily
-    cron can fail loudly when upstream rotates."""
+    """Diff each Colab oracle file against its committed snapshot and print
+    NEW/REMOVED/CHANGED. Advisory (rc=0) by default; --strict makes any diff
+    rc=1 so the daily cron fails loudly on upstream rotation."""
     snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
     any_diff = False
     for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
@@ -1232,9 +1159,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print(f"::warning::colab-diff: could not fetch {url}: {e}")
             continue
         if not snap_path.exists():
-            print(
-                f"::warning::colab-diff: no committed snapshot at {snap_path}; skipping"
-            )
+            print(f"::warning::colab-diff: no committed snapshot at {snap_path}; skipping")
             continue
         snapshot_text = snap_path.read_text(encoding = "utf-8", errors = "replace")
         parser = _COLAB_ORACLE_PARSERS[upstream_name]

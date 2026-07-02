@@ -33,7 +33,11 @@ class _Tok:
     eos_token_id = 99
     bos_token_id = None
 
-    def __call__(self, t, add_special_tokens = False):
+    def __call__(
+        self,
+        t,
+        add_special_tokens = False,
+    ):
         return {"input_ids": [10]}
 
 
@@ -46,7 +50,12 @@ class _Capture:
         self.last_text = None
         self.last_images = "__sentinel__"
 
-    def __call__(self, images = None, text = None, add_special_tokens = False):
+    def __call__(
+        self,
+        images = None,
+        text = None,
+        add_special_tokens = False,
+    ):
         self.last_text = text
         self.last_images = images
         out = {"input_ids": [[1, 2]]}

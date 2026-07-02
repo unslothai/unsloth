@@ -4,39 +4,68 @@
 import {
   buildBackendChatExport,
   clearBackendChats,
+  deleteChatProject,
   deleteChatThreads,
+  getChatProject,
   getChatMessage,
   getChatThread,
   batchListChatMessages,
+  listChatProjects,
   listChatImportLedger,
   listChatMessages,
   listChatThreads,
   notifyChatHistoryUpdated,
   recordChatImportLedger,
+  saveChatProject,
   saveChatMessage,
   saveChatThread,
   syncChatMessages,
+  updateChatProject,
   updateChatThread,
 } from "../api/chat-api";
 import { db, DEXIE_DB_NAME } from "../db";
-import type { MessageRecord, ModelType, ThreadRecord } from "../types";
+import type {
+  MessageRecord,
+  ModelType,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
 import {
   isChatThreadDeleted,
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 
+// Thread ids that belong to a temporary/incognito session. A thread is
+// tagged once, at creation (ensureThreadRecord, when the toggle is on), and
+// stays tagged for its whole lifetime -- the readers and writers below
+// consult this set, never the live toggle. That decoupling is what makes
+// mid-stream toggling safe: flipping the toggle can neither leak an
+// in-flight incognito run into history nor drop a normal thread's writes.
+// Per-thread reads short-circuit too (nothing is stored to fetch); only the
+// thread list stays ungated, so real history still loads next to a
+// temporary chat.
+const incognitoThreadIds = new Set<string>();
+
+export function markThreadIncognito(threadId: string): void {
+  incognitoThreadIds.add(threadId);
+}
+
+function isThreadIncognito(threadId: string): boolean {
+  return incognitoThreadIds.has(threadId);
+}
+
 type ThreadListArgs = {
   modelType?: ModelType;
   pairId?: string;
+  projectId?: string | null;
   includeArchived?: boolean;
 };
 
 // localStorage perf-hint that the Dexie -> studio.db import already
-// finished in a previous session. NOT consulted by the import gate
-// itself -- the server-side ledger (chat_legacy_imports) is the source
-// of truth so a studio.db wipe stays recoverable. The hint only short-
-// circuits the listing paths' "should I also surface Dexie threads?"
-// branches once the ledger has covered everything.
+// finished. NOT the import gate -- the server-side ledger
+// (chat_legacy_imports) is the source of truth so a studio.db wipe stays
+// recoverable. The hint only short-circuits the listing paths' "also
+// surface Dexie threads?" branches once the ledger has covered everything.
 const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
 
 let legacyChatImportPromise: Promise<void> | null = null;
@@ -45,6 +74,7 @@ interface ExportedChat {
   exportedAt: string;
   version: 1;
   threadCount: number;
+  projects?: unknown[];
   threads: unknown[];
   messages: unknown[];
 }
@@ -82,6 +112,8 @@ function matchesThreadListArgs(
   return (
     !isChatThreadDeleted(thread.id) &&
     (!args.pairId || thread.pairId === args.pairId) &&
+    (args.projectId === undefined ||
+      (thread.projectId ?? null) === args.projectId) &&
     (!args.modelType || thread.modelType === args.modelType) &&
     (args.includeArchived !== false || !thread.archived)
   );
@@ -121,7 +153,7 @@ export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
     (error.message === "Invalid or expired token" ||
       error.message === "Not authenticated" ||
       error.message === "Request failed (401)" ||
-      error.message === "Studio isn't running -- please relaunch it.")
+      error.message === "Unsloth isn't running -- please relaunch it.")
   );
 }
 
@@ -251,9 +283,9 @@ async function backfillLegacyThreadFields(
   }
 }
 
-// Fast-path: ask IndexedDB whether the "unsloth-chat" database exists
-// without opening it. Modern Chromium / Firefox / Safari support this;
-// older browsers return undefined and we fall through to the next probe.
+// Fast-path: check whether the "unsloth-chat" DB exists without opening
+// it. Supported on modern Chromium/Firefox/Safari; older browsers return
+// undefined and we fall through to the next probe.
 async function dexieDbAbsent(): Promise<boolean> {
   if (typeof indexedDB === "undefined") return true;
   const dbs = (indexedDB as IDBFactory).databases;
@@ -277,24 +309,22 @@ async function dexieIsEmpty(): Promise<boolean> {
     ]);
     return threadCount === 0 && messageCount === 0;
   } catch {
-    // Dexie threw (corrupted DB / version mismatch / quota). Returning
-    // false forces the slow path, which uses the same Dexie under the
-    // hood; that path will throw too and the import promise gets reset
-    // so the next caller can retry rather than silently doing nothing.
+    // Dexie threw (corrupt DB / version mismatch / quota). Returning
+    // false forces the slow path (same Dexie underneath); it'll throw
+    // too and reset the import promise so the next caller can retry.
     return false;
   }
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
-  // Session-level cache: same tab, repeated sidebar mounts share one
-  // import. localStorage is NOT consulted here -- the server-side ledger
-  // is the source of truth so a studio.db wipe still re-triggers the
-  // import even if the browser kept its old hint.
+  // Session-level cache: repeated sidebar mounts in the same tab share
+  // one import. localStorage is NOT consulted -- the server-side ledger
+  // is the source of truth, so a studio.db wipe re-triggers the import
+  // even if the browser kept its old hint.
   if (legacyChatImportPromise) return legacyChatImportPromise;
 
   legacyChatImportPromise = (async () => {
-    // Fast-path: no Dexie database at all. New user, never had the
-    // browser-only Studio. ~0.1 ms, zero network.
+    // Fast-path: no Dexie DB -- new user, never had browser-only Studio.
     if (await dexieDbAbsent()) {
       markLegacyChatImportDone();
       return;
@@ -322,10 +352,9 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     const unimportedIds: string[] = [];
     const unimportedThreads: ThreadRecord[] = [];
 
-    // "Unimported" = missing from the ledger. We also include threads
-    // already present in the backend (without a ledger row) so the ledger
-    // gets backfilled for old-FE-then-new-FE users -- otherwise the next
-    // launch would redo the diff for the same threads forever.
+    // "Unimported" = missing from the ledger. Include threads already in
+    // the backend (without a ledger row) so the ledger gets backfilled
+    // for old-FE-then-new-FE users; else the next launch re-diffs forever.
     for (const thread of legacyThreads) {
       if (isChatThreadDeleted(thread.id)) continue;
       if (importedThreadIds.has(thread.id)) continue;
@@ -392,14 +421,12 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
       result = await recordChatImportLedger(newlyImportedIds);
     } catch {
       // Network error: leave the perf hint alone so the next launch
-      // retries. The import itself is idempotent via UPSERT, no
-      // duplicates.
+      // retries. Import is idempotent via UPSERT, so no duplicates.
       return;
     }
-    // Only flip the localStorage hint when the backend actually has the
-    // ledger. On older deployments (404/405/501) the hint would lie:
-    // "import done" while the ledger stays empty, defeating recovery
-    // when studio.db gets wiped later.
+    // Only flip the hint when the backend actually has the ledger. On
+    // older deployments (404/405/501) it would lie ("import done" with an
+    // empty ledger), defeating recovery after a studio.db wipe.
     if (result.supported) {
       markLegacyChatImportDone();
     }
@@ -416,6 +443,9 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
 export async function getStoredChatThread(
   threadId: string,
 ): Promise<ThreadRecord | undefined> {
+  // Incognito threads are never stored, so the lookup can only come back
+  // empty -- short-circuit it instead of doing a Dexie read + backend GET.
+  if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
   const legacyThread = await db.threads.get(threadId);
   let backendThread: ThreadRecord | null;
@@ -438,6 +468,10 @@ export async function ensureStoredChatThread(
   threadId: string,
   fallback?: ThreadRecord,
 ): Promise<ThreadRecord | undefined> {
+  // An incognito thread is never persisted, so there's genuinely nothing
+  // to ensure -- skip the backend round-trips this would otherwise make
+  // on every autosave (runStart/runEnd) and message append.
+  if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
@@ -459,6 +493,7 @@ export async function ensureStoredChatThread(
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
+  if (isThreadIncognito(threadId)) return [];
   if (isChatThreadDeleted(threadId)) return [];
   const legacyMessages = await db.messages
     .where("threadId")
@@ -502,6 +537,7 @@ export async function getStoredChatMessage(
   threadId: string,
   messageId: string,
 ): Promise<MessageRecord | undefined> {
+  if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
   const legacyMessage = await db.messages.get(messageId);
   const matchingLegacyMessage =
@@ -562,8 +598,8 @@ export async function listStoredChatThreadsWithMessages(
 ): Promise<ThreadRecord[]> {
   const threads = await listStoredChatThreads(args);
   if (threads.length === 0) return [];
-  // One batched HTTP call instead of N. Per-thread legacy Dexie
-  // fallback only fires when the batch result is empty.
+  // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
+  // only fires when the batch result is empty.
   const threadIds = threads.map((t) => t.id);
   let backendByThread: Map<string, MessageRecord[]>;
   try {
@@ -584,9 +620,76 @@ export async function listStoredChatThreadsWithMessages(
   return entries.filter((e) => e.hasContent).map((e) => e.thread);
 }
 
+export async function listStoredChatProjects(
+  args: { includeArchived?: boolean } = {},
+): Promise<ProjectRecord[]> {
+  return listChatProjects(args);
+}
+
+export async function getStoredChatProject(
+  projectId: string,
+): Promise<ProjectRecord | null> {
+  return getChatProject(projectId);
+}
+
+export async function createStoredChatProject(
+  name: string,
+): Promise<ProjectRecord> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("Project name is required.");
+  }
+  const now = Date.now();
+  return saveChatProject({
+    id: crypto.randomUUID(),
+    name: trimmed,
+    instructions: "",
+    archived: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+export async function updateStoredChatProject(
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord> {
+  return updateChatProject(projectId, {
+    ...patch,
+    updatedAt: patch.updatedAt ?? Date.now(),
+  });
+}
+
+export async function deleteStoredChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  await deleteChatProject(projectId, args);
+}
+
+export async function moveStoredChatItemToProject(
+  item: { type: "single" | "compare"; id: string },
+  projectId: string | null,
+): Promise<void> {
+  const threadIds =
+    item.type === "single"
+      ? [item.id]
+      : (await listStoredChatThreads({
+          pairId: item.id,
+          includeArchived: true,
+        })).map((thread) => thread.id);
+
+  await Promise.all(
+    Array.from(new Set(threadIds)).map((threadId) =>
+      updateStoredChatThread(threadId, { projectId }),
+    ),
+  );
+}
+
 export async function saveStoredChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {
+  if (isThreadIncognito(message.threadId)) return message;
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
@@ -599,6 +702,7 @@ export async function syncStoredChatMessages(
   messages: MessageRecord[],
   options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
+  if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
   await ensureStoredChatThread(threadId);
   return syncChatMessages(threadId, messages, options);
@@ -607,6 +711,7 @@ export async function syncStoredChatMessages(
 export async function saveStoredChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
+  if (isThreadIncognito(thread.id)) return thread;
   if (isChatThreadDeleted(thread.id)) {
     throw new Error(`Thread ${thread.id} was deleted`);
   }
@@ -617,6 +722,7 @@ export async function updateStoredChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
 ): Promise<ThreadRecord | undefined> {
+  if (isThreadIncognito(threadId)) return undefined;
   const thread = await ensureStoredChatThread(threadId);
   if (!thread) return undefined;
   return updateChatThread(threadId, patch);
@@ -625,15 +731,19 @@ export async function updateStoredChatThread(
 export async function deleteStoredChatThreads(
   idsToDelete: string[],
 ): Promise<void> {
-  if (idsToDelete.length === 0) return;
-  await deleteChatThreads(idsToDelete);
+  // Incognito threads were never stored, so there's nothing to delete --
+  // drop them to skip the no-op backend DELETE (and the history-refresh
+  // event it would fire) when the active temporary chat is closed.
+  const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
+  if (ids.length === 0) return;
+  await deleteChatThreads(ids);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
-      await db.messages.where("threadId").anyOf(idsToDelete).delete();
-      await db.threads.bulkDelete(idsToDelete);
+      await db.messages.where("threadId").anyOf(ids).delete();
+      await db.threads.bulkDelete(ids);
     })
     .catch(() => undefined);
-  markChatThreadsDeleted(idsToDelete);
+  markChatThreadsDeleted(ids);
 }
 
 export async function countStoredChats(): Promise<number> {
@@ -648,8 +758,8 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
-  // Clear both sides independently and report each outcome so the
-  // toast can distinguish full vs partial success.
+  // Clear both sides independently and report each outcome so the toast
+  // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
     listChatThreads()
       .then((threads) => ({ ok: true as const, threads }))
@@ -672,8 +782,8 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     failedThreadIds: [],
   };
   try {
-    // Defer the history refresh until Dexie clear and tombstone state are
-    // finalized, so listeners never observe the composite clear mid-flight.
+    // Defer the history refresh until Dexie clear and tombstones finalize,
+    // so listeners never observe the composite clear mid-flight.
     await clearBackendChats({ notify: false });
     result.backend = "cleared";
   } catch (error) {
@@ -767,6 +877,7 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     exportedAt: new Date().toISOString(),
     version: 1,
     threadCount: threads.length,
+    projects: backend?.projects ?? [],
     threads,
     messages,
   };

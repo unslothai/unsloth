@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for external LLM provider configurations.
+"""SQLite storage for external LLM provider configurations.
 
-Follows the same pattern as studio_db.py — module-level functions,
-raw sqlite3, WAL mode, per-function connections.
-
-NOTE: API keys are NOT stored here. They live only in the browser
-(localStorage) and are sent encrypted per-request.
+Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
+per-function connections). API keys are NOT stored here: they live only in
+the browser (localStorage) and are sent encrypted per-request.
 """
 
 import logging
@@ -26,7 +23,7 @@ _schema_ready = False
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the llm_providers table if it doesn't exist. Called once per process."""
+    """Create the llm_providers table if absent. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -62,12 +59,7 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def create_provider(
-    id: str,
-    provider_type: str,
-    display_name: str,
-    base_url: str,
-) -> None:
+def create_provider(id: str, provider_type: str, display_name: str, base_url: str) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -145,9 +137,7 @@ def list_providers() -> list[dict]:
     """List all provider configurations, ordered by creation time."""
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM llm_providers ORDER BY created_at"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM llm_providers ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()

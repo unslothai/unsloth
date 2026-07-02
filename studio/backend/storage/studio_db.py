@@ -1,28 +1,38 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for training run history and metrics.
+"""SQLite storage for training run history and metrics.
 
-Follows the same pattern as auth/storage.py — module-level functions,
-raw sqlite3, per-function connections. Enhancements over auth:
-  - WAL mode for concurrent read/write access
-  - PRAGMA foreign_keys = ON for CASCADE deletes
+Like auth/storage.py (module-level functions, raw sqlite3, per-function
+connections) plus WAL mode and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
 import json
 import logging
 import os
 import platform
+import re
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
-from utils.paths import studio_db_path, ensure_dir
+from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.training_runs import extract_project_name
+
+
+def _extract_project_name_from_config_json(config_json: Optional[str]) -> Optional[str]:
+    if not config_json:
+        return None
+    try:
+        return extract_project_name(json.loads(config_json))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -31,8 +41,7 @@ def _denied_path_prefixes() -> list[str]:
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        # realpath() resolves /etc -> /private/etc, /tmp -> /private/tmp on macOS,
-        # so include the /private variants to avoid bypasses.
+        # macOS realpath() resolves /etc -> /private/etc etc; include /private variants.
         return [
             "/System",
             "/Library",
@@ -55,6 +64,75 @@ def _denied_path_prefixes() -> list[str]:
 _schema_lock = threading.Lock()
 _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900
+_PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
+
+
+def _project_slug(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip(".-_")
+    return slug[:48] or "project"
+
+
+def _default_project_root(project: dict) -> str:
+    project_id = str(project["id"])
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    folder_name = f"{_project_slug(str(project.get('name') or 'Project'))}-{suffix}"
+    return str(project_workspaces_root() / folder_name)
+
+
+def _ensure_project_workspace(root_path: str) -> str:
+    root = Path(root_path).expanduser()
+    root_resolved = ensure_dir(root).resolve()
+    for subdir in _PROJECT_WORKSPACE_SUBDIRS:
+        ensure_dir(root_resolved / subdir)
+    return str(root_resolved)
+
+
+def _delete_project_workspace(project: dict) -> None:
+    root_path = project.get("rootPath")
+    if not root_path:
+        return
+    root = Path(root_path).expanduser()
+    try:
+        root_resolved = root.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("Skipping project workspace delete for invalid path %r", root_path)
+        return
+
+    project_id = str(project["id"])
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    if not root_resolved.name.endswith(f"-{suffix}"):
+        logger.warning(
+            "Skipping project workspace delete for unexpected project path %s",
+            root_resolved,
+        )
+        return
+    if root_resolved.parent == root_resolved or root_resolved == Path.home().resolve():
+        logger.warning(
+            "Skipping project workspace delete for unsafe project path %s",
+            root_resolved,
+        )
+        return
+    check = (
+        os.path.normcase(str(root_resolved))
+        if platform.system() == "Windows"
+        else str(root_resolved)
+    )
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            logger.warning(
+                "Skipping project workspace delete under denied path %s",
+                root_resolved,
+            )
+            return
+    if not root_resolved.exists():
+        return
+    if root_resolved.is_symlink() or not root_resolved.is_dir():
+        logger.warning(
+            "Skipping project workspace delete for non-directory path %s",
+            root_resolved,
+        )
+        return
+    shutil.rmtree(root_resolved)
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -81,9 +159,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    existing_cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()
-    }
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()}
     if "display_name" not in existing_cols:
         conn.execute("ALTER TABLE training_runs ADD COLUMN display_name TEXT")
     conn.execute(
@@ -103,12 +179,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
-    )
-    # Use COLLATE NOCASE on Windows so C:\Models and c:\models dedup via the
-    # UNIQUE constraint.  On Linux/macOS (case-sensitive FS) keep the default
-    # BINARY collation so /Models and /models remain distinct.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    # Windows: COLLATE NOCASE so C:\Models and c:\models dedup. Elsewhere keep
+    # case-sensitive BINARY so /Models and /models stay distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
         f"""
@@ -121,30 +194,57 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS chat_projects (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            instructions TEXT,
+            root_path TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    chat_project_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_projects)").fetchall()
+    }
+    if "root_path" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_threads (
             id TEXT NOT NULL PRIMARY KEY,
             title TEXT NOT NULL,
             model_type TEXT NOT NULL,
             model_id TEXT,
             pair_id TEXT,
+            project_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             openai_code_exec_container_id TEXT,
-            anthropic_code_exec_container_id TEXT
+            anthropic_code_exec_container_id TEXT,
+            forked_from_thread_id TEXT,
+            forked_from_message_id TEXT,
+            FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
     )
     chat_thread_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
     }
+    if "project_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
-        conn.execute(
-            "ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT"
-        )
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT")
     if "anthropic_code_exec_container_id" not in chat_thread_cols:
-        conn.execute(
-            "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
-        )
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT")
+    if "forked_from_thread_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
+    if "forked_from_message_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -162,8 +262,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)")
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)"
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
@@ -171,6 +272,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_settings (
+            key TEXT NOT NULL PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT NOT NULL PRIMARY KEY,
             value_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -188,15 +298,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Server-side import ledger so a studio.db wipe correctly re-triggers
-    # the legacy Dexie import. The previous boolean localStorage sentinel
-    # (`unsloth_chat_legacy_imported_to_studio_db`) is non-recoverable:
-    # if studio.db is recreated while the browser keeps the flag, legacy
-    # Dexie threads are silently hidden from the sidebar. The ledger
-    # lives inside studio.db so it disappears together with the data it
-    # is supposed to track, which is the recovery the boolean lacked.
-    # Keyed by legacy thread id; per-thread is sufficient because Dexie
-    # is read-only after this PR (a thread's message set does not grow).
+    # Import ledger inside studio.db (vs. a localStorage boolean) so a db wipe
+    # re-triggers the legacy Dexie import instead of silently hiding threads.
+    # Keyed by legacy thread id; Dexie is read-only so per-thread suffices.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_legacy_imports (
@@ -205,6 +309,195 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_entries (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_entries_created_at ON prompt_entries(created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_lists (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            items_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
+    )
+
+
+def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "text": row["text"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_prompt_entries() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM prompt_entries ORDER BY created_at DESC").fetchall()
+        return [_prompt_entry_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_prompt_entry(entry: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO prompt_entries (id, name, text, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                text = excluded.text,
+                updated_at = excluded.updated_at
+            """,
+            (
+                entry["id"],
+                entry["name"],
+                entry["text"],
+                entry["createdAt"],
+                entry["updatedAt"],
+            ),
+        )
+        conn.commit()
+        return entry
+    finally:
+        conn.close()
+
+
+def delete_prompt_entry(entry_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM prompt_entries WHERE id = ?", (entry_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bulk_upsert_prompt_entries(entries: list[dict]) -> int:
+    if not entries:
+        return 0
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO prompt_entries (id, name, text, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                text = excluded.text,
+                updated_at = excluded.updated_at
+            """,
+            [(e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"]) for e in entries],
+        )
+        conn.commit()
+        return len(entries)
+    finally:
+        conn.close()
+
+
+def _prompt_list_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "items": json.loads(row["items_json"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_prompt_lists_db() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM prompt_lists ORDER BY created_at DESC").fetchall()
+        return [_prompt_list_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_prompt_list(lst: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO prompt_lists (id, name, items_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                items_json = excluded.items_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                lst["id"],
+                lst["name"],
+                json.dumps(lst["items"]),
+                lst["createdAt"],
+                lst["updatedAt"],
+            ),
+        )
+        conn.commit()
+        return lst
+    finally:
+        conn.close()
+
+
+def delete_prompt_list_db(list_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM prompt_lists WHERE id = ?", (list_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
+    if not lists:
+        return 0
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO prompt_lists (id, name, items_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                items_json = excluded.items_json,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (
+                    lst["id"],
+                    lst["name"],
+                    json.dumps(lst["items"]),
+                    lst["createdAt"],
+                    lst["updatedAt"],
+                )
+                for lst in lists
+            ],
+        )
+        conn.commit()
+        return len(lists)
+    finally:
+        conn.close()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -214,7 +507,7 @@ def get_connection() -> sqlite3.Connection:
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    # foreign_keys is session-scoped, must be set per connection
+    # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
     if not _schema_ready:
         with _schema_lock:
@@ -375,7 +668,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
             SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
                    r.ended_at, r.total_steps, r.final_step, r.final_loss,
                    r.output_dir, r.duration_seconds, r.error_message,
-                   r.loss_sparkline, r.display_name,
+                   r.loss_sparkline, r.display_name, r.config_json,
                    CASE
                        WHEN r.status = 'stopped'
                             AND r.output_dir IS NOT NULL
@@ -397,14 +690,13 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
+            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
                     run["loss_sparkline"] = json.loads(sparkline)
                 except (json.JSONDecodeError, TypeError):
-                    logger.debug(
-                        "Failed to parse loss_sparkline for run %s", run.get("id")
-                    )
+                    logger.debug("Failed to parse loss_sparkline for run %s", run.get("id"))
                     run["loss_sparkline"] = None
             runs.append(run)
         return {"runs": runs, "total": total}
@@ -438,6 +730,7 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
+        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
@@ -480,9 +773,7 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
             try:
                 run["loss_sparkline"] = json.loads(sparkline)
             except (json.JSONDecodeError, TypeError):
-                logger.debug(
-                    "Failed to parse loss_sparkline for output_dir %s", output_dir
-                )
+                logger.debug("Failed to parse loss_sparkline for output_dir %s", output_dir)
                 run["loss_sparkline"] = None
         return run
     finally:
@@ -606,9 +897,8 @@ def add_scan_folder(path: str) -> dict:
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
 
-    # On Windows, use normcase for denylist comparison but store the
-    # original-cased path so downstream consumers see the native
-    # drive-letter casing the user expects (e.g. C:\Models, not c:\models).
+    # Windows: normcase for the denylist check but store original casing
+    # so consumers see the native drive-letter casing (e.g. C:\Models).
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
@@ -618,8 +908,7 @@ def add_scan_folder(path: str) -> dict:
     conn = get_connection()
     try:
         now = datetime.now(timezone.utc).isoformat()
-        # On Windows, use case-insensitive lookup so C:\Models and c:\models
-        # dedup correctly while preserving the originally-stored casing.
+        # Windows: case-insensitive lookup so C:\Models and c:\models dedup.
         if is_win:
             existing = conn.execute(
                 "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
@@ -639,9 +928,8 @@ def add_scan_folder(path: str) -> dict:
             )
             conn.commit()
         except sqlite3.IntegrityError:
-            pass  # duplicate -- fall through to SELECT
-        # Use the same collation as the pre-check so we find the row even
-        # when a concurrent writer stored it with different casing (Windows).
+            pass  # duplicate; fall through to SELECT
+        # Same collation as the pre-check to catch concurrent writes (Windows).
         fallback_sql = (
             "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
@@ -681,10 +969,28 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "modelType": data["model_type"],
         "modelId": data.get("model_id") or "",
         "pairId": data.get("pair_id") or None,
+        "projectId": data.get("project_id") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
         "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
+        "forkedFromThreadId": data.get("forked_from_thread_id"),
+        "forkedFromMessageId": data.get("forked_from_message_id"),
+    }
+
+
+def _chat_project_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    root_path = data.get("root_path")
+    return {
+        "id": data["id"],
+        "name": data["name"],
+        "instructions": data.get("instructions") or "",
+        "rootPath": root_path or None,
+        "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "archived": bool(data["archived"]),
+        "createdAt": data["created_at"],
+        "updatedAt": data["updated_at"],
     }
 
 
@@ -713,17 +1019,20 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
                 model_id = excluded.model_id,
                 pair_id = excluded.pair_id,
+                project_id = excluded.project_id,
                 archived = excluded.archived,
                 created_at = excluded.created_at,
                 openai_code_exec_container_id = excluded.openai_code_exec_container_id,
-                anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id
+                anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
+                forked_from_thread_id = excluded.forked_from_thread_id,
+                forked_from_message_id = excluded.forked_from_message_id
             """,
             (
                 thread["id"],
@@ -731,10 +1040,13 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread["modelType"],
                 thread.get("modelId") or "",
                 thread.get("pairId"),
+                thread.get("projectId"),
                 1 if thread.get("archived") else 0,
                 int(thread["createdAt"]),
                 thread.get("openaiCodeExecContainerId"),
                 thread.get("anthropicCodeExecContainerId"),
+                thread.get("forkedFromThreadId"),
+                thread.get("forkedFromMessageId"),
             ),
         )
         conn.commit()
@@ -749,6 +1061,7 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
         "modelType": ("model_type", patch.get("modelType")),
         "modelId": ("model_id", patch.get("modelId")),
         "pairId": ("pair_id", patch.get("pairId")),
+        "projectId": ("project_id", patch.get("projectId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
         "openaiCodeExecContainerId": (
@@ -758,6 +1071,14 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
         "anthropicCodeExecContainerId": (
             "anthropic_code_exec_container_id",
             patch.get("anthropicCodeExecContainerId"),
+        ),
+        "forkedFromThreadId": (
+            "forked_from_thread_id",
+            patch.get("forkedFromThreadId"),
+        ),
+        "forkedFromMessageId": (
+            "forked_from_message_id",
+            patch.get("forkedFromMessageId"),
         ),
     }
     assignments = []
@@ -794,6 +1115,7 @@ def get_chat_thread(id: str) -> Optional[dict]:
 def list_chat_threads(
     model_type: str | None = None,
     pair_id: str | None = None,
+    project_id: str | None = None,
     include_archived: bool = True,
 ) -> list[dict]:
     clauses = []
@@ -804,6 +1126,9 @@ def list_chat_threads(
     if pair_id is not None:
         clauses.append("pair_id = ?")
         values.append(pair_id)
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        values.append(project_id)
     if not include_archived:
         clauses.append("archived = 0")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -846,6 +1171,136 @@ def count_chat_threads() -> int:
         conn.close()
 
 
+def upsert_chat_project(project: dict) -> dict:
+    existing = get_chat_project(project["id"])
+    root_path = existing.get("rootPath") if existing else None
+    if not root_path:
+        root_path = _default_project_root(project)
+    root_path = _ensure_project_workspace(root_path)
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO chat_projects
+                (id, name, instructions, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                instructions = excluded.instructions,
+                root_path = COALESCE(chat_projects.root_path, excluded.root_path),
+                archived = excluded.archived,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                project["id"],
+                project["name"],
+                project.get("instructions") or "",
+                root_path,
+                1 if project.get("archived") else 0,
+                int(project["createdAt"]),
+                int(project["updatedAt"]),
+            ),
+        )
+        conn.commit()
+        return get_chat_project(project["id"]) or project
+    finally:
+        conn.close()
+
+
+def update_chat_project(id: str, patch: dict) -> Optional[dict]:
+    allowed = {
+        "name": ("name", patch.get("name")),
+        "instructions": ("instructions", patch.get("instructions")),
+        "archived": ("archived", 1 if patch.get("archived") else 0),
+        "createdAt": ("created_at", patch.get("createdAt")),
+        "updatedAt": ("updated_at", patch.get("updatedAt")),
+    }
+    assignments = []
+    values = []
+    for key, (column, value) in allowed.items():
+        if key in patch:
+            assignments.append(f"{column} = ?")
+            values.append(value)
+    if not assignments:
+        return get_chat_project(id)
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"UPDATE chat_projects SET {', '.join(assignments)} WHERE id = ?",
+            (*values, id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def ensure_chat_project_workspace(id: str) -> Optional[dict]:
+    project = get_chat_project(id)
+    if project is None:
+        return None
+    root_path = project.get("rootPath") or _default_project_root(project)
+    root_path = _ensure_project_workspace(root_path)
+    if project.get("rootPath") == root_path:
+        return project
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = ? WHERE id = ?",
+            (root_path, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_chat_project(id)
+
+
+def get_chat_project(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_chat_projects(include_archived: bool = False) -> list[dict]:
+    conn = get_connection()
+    try:
+        where = "" if include_archived else "WHERE archived = 0"
+        rows = conn.execute(
+            f"SELECT * FROM chat_projects {where} ORDER BY updated_at DESC"
+        ).fetchall()
+        return [_chat_project_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        project = _chat_project_from_row(row)
+        conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
+        conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
+        conn.commit()
+        if delete_files:
+            _delete_project_workspace(project)
+        return project
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 class ChatMessageConflictError(RuntimeError):
     """Raised when a chat message id already belongs to another thread."""
 
@@ -866,9 +1321,7 @@ def _parse_chat_setting_json(key: str, value_json: str) -> tuple[bool, Any]:
         return False, None
 
 
-def _load_chat_settings_for_merge(
-    conn: sqlite3.Connection,
-) -> tuple[dict[str, Any], set[str]]:
+def _load_chat_settings_for_merge(conn: sqlite3.Connection) -> tuple[dict[str, Any], set[str]]:
     rows = conn.execute("SELECT key, value_json FROM chat_settings").fetchall()
     current: dict[str, Any] = {}
     corrupt: set[str] = set()
@@ -895,9 +1348,7 @@ def _load_chat_settings_for_merge(
 
 
 def _raise_if_chat_message_thread_conflicts(
-    conn: sqlite3.Connection,
-    thread_id: str,
-    message_ids: list[str],
+    conn: sqlite3.Connection, thread_id: str, message_ids: list[str]
 ) -> None:
     unique_ids = list(dict.fromkeys(message_ids))
     if not unique_ids:
@@ -1006,12 +1457,8 @@ def sync_chat_messages(
                     m.get("parentId"),
                     m["role"],
                     json.dumps(m.get("content", [])),
-                    json.dumps(m.get("attachments"))
-                    if m.get("attachments") is not None
-                    else None,
-                    json.dumps(m.get("metadata"))
-                    if m.get("metadata") is not None
-                    else None,
+                    json.dumps(m.get("attachments")) if m.get("attachments") is not None else None,
+                    json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
                     int(m["createdAt"]),
                 )
                 for m in messages
@@ -1026,6 +1473,126 @@ def sync_chat_messages(
         logger.exception("Failed to sync chat messages for thread %s", thread_id)
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def fork_chat_thread(
+    source_thread_id: str,
+    branch_message_id: str,
+    new_thread_id: str,
+    new_title: str,
+    created_at: int,
+    id_factory,
+) -> Optional[dict]:
+    """Atomically clone thread + ancestor msgs `[root..branch_message_id]`
+    into a new thread. Returns the new thread dict (with messages copied)
+    or None if source missing.
+
+    Reset both code-exec container ids -- per-provider snapshot is handled
+    by the route layer (best-effort, OpenAI only).
+
+    `id_factory()` produces fresh message uuids; injected for testability.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        src = conn.execute(
+            "SELECT * FROM chat_threads WHERE id = ?", (source_thread_id,)
+        ).fetchone()
+        if src is None:
+            conn.rollback()
+            return None
+        # Verify branch msg belongs to source thread.
+        branch_row = conn.execute(
+            "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (source_thread_id, branch_message_id),
+        ).fetchone()
+        if branch_row is None:
+            conn.rollback()
+            return None
+        # Walk ancestry from branch msg back to root via parent_id chain.
+        ancestry: list[sqlite3.Row] = []
+        cursor_row = branch_row
+        seen: set[str] = set()
+        while cursor_row is not None and cursor_row["id"] not in seen:
+            ancestry.append(cursor_row)
+            seen.add(cursor_row["id"])
+            parent = cursor_row["parent_id"]
+            if not parent:
+                break
+            cursor_row = conn.execute(
+                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
+                (source_thread_id, parent),
+            ).fetchone()
+        ancestry.reverse()  # root .. branch msg
+        # Map old msg id -> new msg id for parent_id rewriting.
+        id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
+        src_dict = dict(src)
+        conn.execute(
+            """
+            INSERT INTO chat_threads
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at,
+                 openai_code_exec_container_id, anthropic_code_exec_container_id,
+                 forked_from_thread_id, forked_from_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                new_thread_id,
+                new_title,
+                src_dict["model_type"],
+                src_dict.get("model_id") or "",
+                None,  # pairId: forks always standalone (compare-mode disabled v1)
+                src_dict.get("project_id"),
+                int(created_at),
+                source_thread_id,
+                branch_message_id,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO chat_messages
+                (id, thread_id, parent_id, role, content_json, attachments_json,
+                 metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    id_map[row["id"]],
+                    new_thread_id,
+                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    row["role"],
+                    row["content_json"],
+                    row["attachments_json"],
+                    row["metadata_json"],
+                    int(row["created_at"]),
+                )
+                for row in ancestry
+            ],
+        )
+        conn.commit()
+        thread_row = conn.execute(
+            "SELECT * FROM chat_threads WHERE id = ?", (new_thread_id,)
+        ).fetchone()
+        return _chat_thread_from_row(thread_row) if thread_row is not None else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def count_forks_for_message(thread_id: str, message_id: str) -> int:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM chat_threads
+            WHERE forked_from_thread_id = ? AND forked_from_message_id = ?
+            """,
+            (thread_id, message_id),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
     finally:
         conn.close()
 
@@ -1088,12 +1655,81 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
         conn.close()
 
 
+def get_app_setting(key: str, fallback = None):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return fallback
+        return _json_loads(row["value_json"], fallback)
+    finally:
+        conn.close()
+
+
+def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not settings:
+        return {}
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in settings.items()],
+        )
+        conn.commit()
+        rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def upsert_app_setting_map_entry(
+    key: str, entry_key: str, entry_value: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
+    app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
+    sub-entries cannot drop each other's updates."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], {}) if row else {}
+        if not isinstance(current, dict):
+            current = {}
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(current), now),
+        )
+        conn.commit()
+        return current
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def list_chat_settings() -> dict[str, Any]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT key, value_json FROM chat_settings ORDER BY key"
-        ).fetchall()
+        rows = conn.execute("SELECT key, value_json FROM chat_settings ORDER BY key").fetchall()
         settings: dict[str, Any] = {}
         for row in rows:
             settings[row["key"]] = _json_loads(row["value_json"], None)
@@ -1124,9 +1760,7 @@ def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-def _deep_merge_settings(
-    current: dict[str, Any], updates: dict[str, Any]
-) -> dict[str, Any]:
+def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current)
     for key, value in updates.items():
         current_value = merged.get(key)
@@ -1138,8 +1772,8 @@ def _deep_merge_settings(
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
-    """Atomic read-merge-write under BEGIN IMMEDIATE so two concurrent writers
-    cannot drop one another's updates."""
+    """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
+    cannot drop each other's updates."""
     if not updates:
         return list_chat_settings()
     conn = get_connection()
@@ -1147,9 +1781,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
         unsafe_partial_keys = [
-            key
-            for key, value in updates.items()
-            if key in corrupt and isinstance(value, dict)
+            key for key, value in updates.items() if key in corrupt and isinstance(value, dict)
         ]
         if unsafe_partial_keys:
             conn.commit()
@@ -1187,16 +1819,10 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_chat_legacy_imports() -> list[str]:
-    """Return the legacy_thread_id of every thread already imported.
-
-    Cheap: scans a single small PK-only table. The frontend stuffs the
-    result into a Set before walking Dexie, so the diff is O(|Dexie|).
-    """
+    """Return the legacy_thread_id of every thread already imported."""
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT legacy_thread_id FROM chat_legacy_imports"
-        ).fetchall()
+        rows = conn.execute("SELECT legacy_thread_id FROM chat_legacy_imports").fetchall()
         return [row[0] for row in rows]
     finally:
         conn.close()
@@ -1205,13 +1831,8 @@ def list_chat_legacy_imports() -> list[str]:
 def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
     """Mark each given legacy thread id as imported. Idempotent.
 
-    Returns (accepted, inserted):
-      - accepted: number of non-empty deduped input ids
-      - inserted: number of rows that were actually new (not already in ledger)
-
-    ON CONFLICT DO NOTHING keeps the existing imported_at when an id is
-    recorded twice. INSERT...RETURNING reports only the rows that were
-    actually inserted, so callers can distinguish first-time imports
+    Returns (accepted, inserted): count of deduped non-empty input ids, and
+    count of rows actually new. RETURNING lets callers tell first-time imports
     from idempotent re-runs without an extra SELECT.
     """
     ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))

@@ -4,11 +4,11 @@
 """Unit tests for the /v1/containers CRUD client methods.
 
 Covers:
-- All three calls (list / create / delete) send
-  ``OpenAI-Beta: containers=v1``. Without it, OpenAI silently no-ops
-  the DELETE while still returning 200 ``{"deleted": true}``.
-- ``delete_openai_container`` raises when the response body does not
-  report ``{"deleted": true}``, even on a 2xx response.
+- list / create / delete all send ``OpenAI-Beta: containers=v1``. Without
+  it, OpenAI silently no-ops the DELETE but still returns 200
+  ``{"deleted": true}``.
+- ``delete_openai_container`` raises when the body omits
+  ``{"deleted": true}``, even on a 2xx response.
 """
 
 from __future__ import annotations
@@ -28,11 +28,10 @@ def _drive(coro):
 
 
 def _mock_http_client(monkeypatch, handler):
-    """Wire `handler` for both the shared `_http_client` AND any
-    per-call `httpx.AsyncClient(...)` instances. delete_openai_container
-    intentionally creates a fresh AsyncClient (see comment in
-    external_provider.delete_openai_container) so the test must
-    also intercept that constructor."""
+    """Wire `handler` for the shared `_http_client` AND any per-call
+    `httpx.AsyncClient(...)`. delete_openai_container creates a fresh
+    AsyncClient (see external_provider.delete_openai_container), so we
+    must also intercept that constructor."""
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
     real_async_client = httpx.AsyncClient
@@ -80,17 +79,12 @@ def test_create_sends_openai_beta_header(monkeypatch):
         return httpx.Response(200, json = {"id": "cntr_new", "name": "analysis"})
 
     _mock_http_client(monkeypatch, handler)
-    result = _drive(
-        _make_client().create_openai_container(name = "analysis", ttl_minutes = 30)
-    )
+    result = _drive(_make_client().create_openai_container(name = "analysis", ttl_minutes = 30))
 
     assert result == {"id": "cntr_new", "name": "analysis"}
     assert seen["headers"].get("openai-beta") == "containers=v1"
     assert seen["body"]["name"] == "analysis"
-    assert seen["body"]["expires_after"] == {
-        "anchor": "last_active_at",
-        "minutes": 30,
-    }
+    assert seen["body"]["expires_after"] == {"anchor": "last_active_at", "minutes": 30}
 
 
 def test_delete_sends_openai_beta_header_and_accepts_confirmation(monkeypatch):
@@ -115,13 +109,12 @@ def test_delete_sends_openai_beta_header_and_accepts_confirmation(monkeypatch):
 
 def test_delete_raises_when_response_lacks_deleted_true(monkeypatch):
     """OpenAI returns 200 ``{"deleted": true}`` even when the request is
-    silently rejected (e.g. before we started sending OpenAI-Beta).
-    Defensive guard: when the body omits ``deleted: true``, surface it
-    as an error so the UI can report the failure instead of falsely
-    reporting success."""
+    silently rejected (e.g. before we sent OpenAI-Beta). Guard: when the
+    body omits ``deleted: true``, surface an error so the UI reports the
+    failure instead of false success."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # 200 but no deleted flag — simulate an unexpected payload shape.
+        # 200 but no deleted flag — unexpected payload shape.
         return httpx.Response(200, json = {"id": "cntr_x", "object": "container"})
 
     _mock_http_client(monkeypatch, handler)
@@ -164,10 +157,9 @@ def test_delete_propagates_openai_4xx(monkeypatch):
 
 
 def test_list_route_filters_expired_containers(monkeypatch):
-    """OpenAI keeps containers in /v1/containers indefinitely with
-    status="expired" after their idle TTL passes — they can't be
-    used but still show up. The list route must drop them so the
-    picker only surfaces usable containers."""
+    """OpenAI keeps containers in /v1/containers with status="expired"
+    after their idle TTL passes — unusable but still listed. The list
+    route must drop them so the picker shows only usable containers."""
     from routes import inference as inf_mod
     from models.inference import OpenAIContainerRequest
 

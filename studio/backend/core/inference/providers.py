@@ -5,7 +5,7 @@
 Static registry of supported external LLM providers.
 
 All providers expose OpenAI-compatible /v1/chat/completions endpoints
-with Bearer token authentication and SSE streaming support.
+with Bearer token auth and SSE streaming.
 """
 
 import re
@@ -26,11 +26,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Keep the model picker scoped to the current generation. The remote
-        # /v1/models listing returns dozens of historical snapshots, fine-tunes
-        # and non-chat models (embeddings, TTS, image, moderation) that we
-        # never want to surface in the chat UI. Filtering here so backend
-        # is the single source of truth.
+        # Scope the picker to the current generation. /v1/models returns many
+        # historical snapshots, fine-tunes, and non-chat models we don't want.
         "model_id_allowlist": re.compile(r"^(gpt-5\.[345]|gpt-4\.5|o3)(?:[-.]|$)"),
         # Hide dated snapshots and the retired plain gpt-5.3 id.
         "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
@@ -46,11 +43,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "claude-sonnet-4-5",
             "claude-haiku-4-5",
         ],
-        # Anthropic /v1/models returns dated snapshot ids alongside the
-        # canonical names (e.g. claude-3-5-sonnet-20241022). Hide the
-        # YYYYMMDD-suffixed variants from the picker — same intent as the
-        # OpenAI denylist, just a different date format (no dashes between
-        # year/month/day).
+        # Hide YYYYMMDD-suffixed snapshot ids (e.g. claude-3-5-sonnet-20241022).
         "model_id_denylist": re.compile(r"-\d{8}$"),
         "supports_streaming": True,
         "supports_vision": True,
@@ -65,28 +58,61 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "gemini": {
         "display_name": "Google Gemini",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        # Curated lineup — Google's /v1beta/openai/models returns dozens
-        # of historical / experimental / embedding ids. Cap to the current
-        # 3.x family plus the rolling `*-latest` aliases.
+        # Native Gemini REST endpoint -- does NOT speak OpenAI Chat Completions;
+        # translated in `_stream_gemini` (external_provider.py).
+        # https://ai.google.dev/gemini-api/docs
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        # Curated lineup (ListModels returns many historical/experimental ids).
+        # Excluded on purpose:
+        #   - `gemini-2.0-flash*` (retired 2026-06-01; 404 on use)
+        #   - `gemini-3-pro-preview` (shut down 2026-03-09; auto-redirects to
+        #     `gemini-3.1-pro-preview`, so we surface 3.1 directly).
         "default_models": [
             "gemini-3.1-pro-preview",
+            "gemini-3.5-flash",
             "gemini-3.1-flash-lite",
             "gemini-3-flash-preview",
             "gemini-pro-latest",
             "gemini-flash-latest",
             "gemini-flash-lite-latest",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-3-pro-image-preview",
+            "gemini-3.1-flash-image-preview",
+            "gemini-2.5-flash-image",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible endpoint. API key from https://aistudio.google.com/apikey.",
+        # Native API takes the bare key on `x-goog-api-key`.
+        "auth_header": "x-goog-api-key",
+        "auth_prefix": "",
+        "openai_compatible": False,
+        "notes": (
+            "Native Gemini API. Translation lives in _stream_gemini. "
+            "API key from https://aistudio.google.com/apikey. "
+            "See https://ai.google.dev/gemini-api/docs for endpoint shapes."
+        ),
+        # gemini-3-pro-preview was shut down 2026-03-09 and auto-aliased to
+        # gemini-3.1-pro-preview; drop it so users see one canonical card.
+        "model_id_deny_exact": ("gemini-3-pro-preview",),
+        # Chat-capable 3.5 / 3.1 / 3 / 2.5 families plus rolling *-latest
+        # aliases. Image-tier ids flow through the Nano Banana
+        # `responseModalities` path in `_stream_gemini`. Retired 2.0 ids
+        # excluded (they 404 on use).
         "model_id_allowlist": re.compile(
-            r"^(gemini-3\.1-flash-lite|gemini-3-flash-preview|"
-            r"gemini-3\.1-pro-preview|gemini-pro-latest|"
-            r"gemini-flash-latest|gemini-flash-lite-latest)$"
+            r"^("
+            r"gemini-3\.5-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3\.1-(?:flash|pro|flash-lite)(?:-preview)?(?:-customtools)?|"
+            r"gemini-3\.1-flash-image-preview|"
+            r"gemini-3-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3-pro-image-preview|"
+            r"nano-banana-pro-preview|"
+            r"gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
+            r"gemini-2\.5-flash-image|"
+            r"gemini-pro-latest|gemini-flash-latest|gemini-flash-lite-latest"
+            r")$"
         ),
     },
     "deepseek": {
@@ -135,14 +161,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "kimi": {
         "display_name": "Kimi",
         "base_url": "https://api.moonshot.ai/v1",
-        # Current Kimi model lineup per the official docs:
-        #   https://platform.kimi.ai/docs/models
-        # Listing/overview endpoints used to enumerate them:
-        #   https://platform.kimi.ai/docs/api/list-models
-        #   https://platform.kimi.ai/docs/api/overview
-        # kimi-k2.6 and kimi-k2.5 are the two SoTA multimodal models we
-        # surface in the picker; everything else (moonshot-v1-*, dated
-        # k2 previews) is filtered out by model_id_allowlist below.
+        # Surface only the two SoTA multimodal models (kimi-k2.6/k2.5);
+        # moonshot-v1-* and dated k2 previews are filtered by the allowlist.
+        # Docs: https://platform.kimi.ai/docs/models
+        # Listing/overview: https://platform.kimi.ai/docs/api/list-models
+        #                   https://platform.kimi.ai/docs/api/overview
         "default_models": [
             "kimi-k2.6",
             "kimi-k2.5",
@@ -154,10 +177,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k2\.[56]$"),
-        # Both k2.6 and k2.5 are reasoning-class. The API rejects custom
-        # sampling: "invalid temperature: only 1 is allowed for this model"
-        # (and the same shape for top_p). Strip both fields from the
-        # outbound body so the server falls back to its required defaults.
+        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
+        # is allowed"). Strip both so the server uses its required defaults.
         "body_omit": ("temperature", "top_p"),
     },
     "qwen": {
@@ -179,9 +200,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",
-        # Seed the picker with a few popular ids so something is selectable
-        # before the live /v1/models call resolves. The remote listing is
-        # the source of truth — see model_list_mode below.
+        # Seed the picker before the live /v1/models call resolves; the remote
+        # listing (see model_list_mode) is the source of truth.
         "default_models": [
             "openai/gpt-oss-120b",
             "deepseek-ai/DeepSeek-V3",
@@ -199,29 +219,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "returns the cross-provider chat catalog. See "
             "https://huggingface.co/docs/inference-providers/index."
         ),
-        # /v1/models works on the HF router and returns the full chat-model
-        # catalog (state.org/model[:policy] ids). Switch to remote so users
-        # see live availability — the picker has a search box, and
-        # loadModels() merges defaults so default_models entries remain
-        # visible if the remote call fails.
+        # Remote so users see live availability; loadModels() merges defaults
+        # so they stay visible if the remote call fails.
         "model_list_mode": "remote",
-        # Scope the catalog to first-party org repos we trust as primary
-        # sources. The HF /v1/models response is otherwise hundreds of
-        # ids long (community fine-tunes, mirrors, fp8 variants, etc.).
+        # Scope to trusted first-party org repos (the response is otherwise
+        # hundreds of community fine-tunes, mirrors, fp8 variants).
         "model_id_allowlist": re.compile(
-            r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|"
-            r"mistralai|zai-org)/"
+            r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|mistralai|zai-org)/"
         ),
-        # Cap the post-filter list. /v1/models has no server-side limit
-        # or popularity sort, so this is just "first N matches" — pair it
-        # with the default_models seed so the most useful flagship ids
-        # are always among the top regardless of the API's order.
+        # Cap the post-filter list to first N matches (no server-side sort);
+        # default_models keeps flagship ids near the top.
         "model_id_limit": 15,
     },
     "vllm": {
         "display_name": "vLLM",
-        # User-supplied via provider_base_url; the route layer already falls
-        # back to the payload's base_url when the registry entry has none.
+        # User-supplied via provider_base_url; the route falls back to the
+        # payload's base_url when the registry entry has none.
         "base_url": "",
         "default_models": [],
         "supports_streaming": True,
@@ -229,15 +242,28 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # Force /v1/chat/completions in stream_chat_completion — vLLM's
-        # /v1/responses rebuilds messages and runs them through the loaded
-        # model's chat template, which 400s on strict-alternation templates
-        # (Gemma 3 raises "Conversation roles must alternate user/assistant
-        # /user/assistant/..."). The chat-completions path takes messages
-        # verbatim and avoids that template gauntlet.
+        # Force /v1/chat/completions -- vLLM's /v1/responses rebuilds messages
+        # through the chat template, 400ing on strict-alternation templates
+        # (Gemma 3). The chat-completions path takes messages verbatim.
         "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
-        # Surfaced through the frontend's CUSTOM_PROVIDER_PRESETS, not the
-        # /api/providers/registry dropdown — see list_available_providers.
+        # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
+        "hidden": True,
+    },
+    "custom": {
+        "display_name": "Custom",
+        # User-supplied via provider_base_url.
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": (
+            "User-supplied OpenAI-compatible server. Routed to "
+            "/v1/chat/completions; /models is optional."
+        ),
+        # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
     },
     "ollama": {
@@ -273,7 +299,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
-        # Curated list for Studio's picker (explicitly locked, not live /models).
+        # Curated picker list (locked, not live /models).
         "default_models": [
             "openrouter/free",
             "openai/gpt-4o",
@@ -323,10 +349,8 @@ def get_base_url(provider_type: str) -> str | None:
 def list_available_providers() -> list[dict[str, Any]]:
     """Return all registered providers (for the /registry endpoint).
 
-    Hidden entries (``"hidden": True``) are filtered out — they exist in the
-    registry only for backend lookups (e.g. ``supports_vision`` for vLLM) and
-    are surfaced in the frontend via ``CUSTOM_PROVIDER_PRESETS`` instead of
-    the cloud-provider dropdown.
+    Hidden entries are filtered out: they exist only for backend lookups and
+    are surfaced via ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():

@@ -75,7 +75,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Seed Dataset", "LLM Text", "Prompting"],
     surfaceClassName:
-      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/30 dark:via-green-400/14 dark:to-emerald-950/16",
+      "from-emerald-500/15 via-green-500/5 to-transparent dark:from-emerald-400/20 dark:via-green-400/10 dark:to-emerald-950/16",
     shineColor: [
       "rgb(16 185 129 / 0.45)",
       "rgb(34 197 94 / 0.4)",
@@ -91,7 +91,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Easy",
     learningBadges: ["Unstructured", "LLM Text"],
     surfaceClassName:
-      "from-violet-500/15 via-fuchsia-500/5 to-transparent dark:from-violet-400/30 dark:via-fuchsia-400/14 dark:to-violet-950/16",
+      "from-violet-500/15 via-fuchsia-500/5 to-transparent dark:from-violet-400/20 dark:via-fuchsia-400/10 dark:to-violet-950/16",
     shineColor: [
       "rgb(139 92 246 / 0.45)",
       "rgb(217 70 239 / 0.4)",
@@ -107,7 +107,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Starter",
     learningBadges: ["Vision", "LLM Text", "Image Context"],
     surfaceClassName:
-      "from-lime-500/15 via-emerald-500/5 to-transparent dark:from-lime-400/30 dark:via-emerald-400/14 dark:to-lime-950/16",
+      "from-lime-500/15 via-emerald-500/5 to-transparent dark:from-lime-400/20 dark:via-emerald-400/10 dark:to-lime-950/16",
     shineColor: [
       "rgb(132 204 22 / 0.45)",
       "rgb(16 185 129 / 0.4)",
@@ -123,7 +123,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["LLM Judge", "LLM Code", "Subcategory", "Category"],
     surfaceClassName:
-      "from-amber-500/15 via-orange-500/5 to-transparent dark:from-amber-400/30 dark:via-orange-400/14 dark:to-amber-950/16",
+      "from-amber-500/15 via-orange-500/5 to-transparent dark:from-amber-400/20 dark:via-orange-400/10 dark:to-amber-950/16",
     shineColor: [
       "rgb(245 158 11 / 0.45)",
       "rgb(249 115 22 / 0.4)",
@@ -139,7 +139,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["LLM Code", "Prompting", "Drop Columns"],
     surfaceClassName:
-      "from-blue-500/15 via-indigo-500/5 to-transparent dark:from-blue-400/30 dark:via-indigo-400/14 dark:to-blue-950/16",
+      "from-blue-500/15 via-indigo-500/5 to-transparent dark:from-blue-400/20 dark:via-indigo-400/10 dark:to-blue-950/16",
     shineColor: [
       "rgb(59 130 246 / 0.45)",
       "rgb(99 102 241 / 0.4)",
@@ -155,7 +155,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Advanced",
     learningBadges: ["Structured LLM", "Expression", "Jinja"],
     surfaceClassName:
-      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/30 dark:via-sky-400/14 dark:to-cyan-950/16",
+      "from-cyan-500/15 via-sky-500/5 to-transparent dark:from-cyan-400/20 dark:via-sky-400/10 dark:to-cyan-950/16",
     shineColor: [
       "rgb(6 182 212 / 0.45)",
       "rgb(56 189 248 / 0.4)",
@@ -171,7 +171,7 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     difficulty: "Intermediate",
     learningBadges: ["GitHub", "LLM Text", "Structured LLM"],
     surfaceClassName:
-      "from-slate-500/15 via-zinc-500/5 to-transparent dark:from-slate-400/30 dark:via-zinc-400/14 dark:to-slate-950/16",
+      "from-slate-500/15 via-zinc-500/5 to-transparent dark:from-slate-400/20 dark:via-zinc-400/10 dark:to-slate-950/16",
     shineColor: [
       "rgb(71 85 105 / 0.45)",
       "rgb(100 116 139 / 0.4)",
@@ -241,7 +241,7 @@ function LearningRecipeCards({
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
@@ -267,7 +267,7 @@ function LearningRecipeCards({
                 <p className="line-clamp-2 text-sm font-semibold leading-tight text-foreground">
                   {template.title}
                 </p>
-                <p className="line-clamp-2 text-xs text-muted-foreground">
+                <p className="line-clamp-2 text-xs text-muted-foreground dark:text-zinc-300">
                   {template.description}
                 </p>
               </div>
@@ -280,7 +280,7 @@ function LearningRecipeCards({
                       <Badge
                         key={`${template.title}-${badge}`}
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
                       >
                         {badge}
                       </Badge>
@@ -288,7 +288,7 @@ function LearningRecipeCards({
                     {extraLearningBadgeCount > 0 ? (
                       <Badge
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
                       >
                         +{extraLearningBadgeCount}
                       </Badge>
@@ -296,7 +296,7 @@ function LearningRecipeCards({
                     {isReady ? null : (
                       <Badge
                         variant="secondary"
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
                       >
                         Soon
                       </Badge>
@@ -400,10 +400,10 @@ export function DataRecipesPage(): ReactElement {
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto w-full max-w-7xl px-6 py-8">
+      <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
+            <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
               Data Recipes
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -449,7 +449,7 @@ export function DataRecipesPage(): ReactElement {
             </p>
           </div>
         ) : recipes.length === 0 ? (
-          <Empty className="mt-8 border border-dashed border-border/70">
+          <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <HugeiconsIcon icon={CookBookIcon} className="size-5" />

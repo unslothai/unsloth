@@ -3,18 +3,10 @@
 """
 🦥 Starter Script for Fine-Tuning FastLanguageModel with Unsloth
 
-This script is designed as a starting point for fine-tuning your models using unsloth.
-It includes configurable options for model loading, PEFT parameters, training arguments, 
-and model saving/pushing functionalities.
+Configurable options for model loading, PEFT, training, and saving/pushing.
+Customize the dataset loading/preprocessing and the save/push config for your case.
 
-You will likely want to customize this script to suit your specific use case 
-and requirements.
-
-Here are a few suggestions for customization:
-    - Modify the dataset loading and preprocessing steps to match your data.
-    - Customize the model saving and pushing configurations.
-
-Usage: (most of the options have valid default values this is an extended example for demonstration purposes)
+Usage (most options have sensible defaults; this is an extended example):
     python unsloth-cli.py --model_name "unsloth/llama-3-8b" --max_seq_length 8192 --dtype None --load_in_4bit \
     --r 64 --lora_alpha 32 --lora_dropout 0.1 --bias "none" --use_gradient_checkpointing "unsloth" \
     --random_state 3407 --use_rslora --per_device_train_batch_size 4 --gradient_accumulation_steps 8 \
@@ -23,10 +15,7 @@ Usage: (most of the options have valid default values this is an extended exampl
     --report_to "tensorboard" --save_model --save_path "model" --quantization_method "f16" \
     --push_model --hub_path "hf/model" --hub_token "your_hf_token"
 
-To see a full list of configurable options, use:
-    python unsloth-cli.py --help
-
-Happy fine-tuning!
+Run `python unsloth-cli.py --help` for the full list of options.
 """
 
 import argparse
@@ -102,9 +91,7 @@ def run(args):
 
     def load_dataset_smart(args):
         from transformers.utils import strtobool
-
         if args.raw_text_file:
-            # Use raw text loader
             loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
             dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
@@ -112,19 +99,14 @@ def run(args):
             loader = RawTextDataLoader(tokenizer)
             dataset = loader.load_from_file(args.dataset)
         else:
-            # Check for modelscope usage
-            use_modelscope = strtobool(
-                os.environ.get("UNSLOTH_USE_MODELSCOPE", "False")
-            )
+            use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
             if use_modelscope:
                 from modelscope import MsDataset
-
                 dataset = MsDataset.load(args.dataset, split = "train")
             else:
-                # Existing HuggingFace dataset logic
                 dataset = load_dataset(args.dataset, split = "train")
 
-            # Apply formatting for structured datasets
+            # Format structured datasets
             dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
 
@@ -167,49 +149,57 @@ def run(args):
 
     # Save model
     if args.save_model:
-        # if args.quantization_method is a list, we will save the model for each quantization method
-        if args.save_gguf:
+        # If args.quantization is a list, save once per quantization method
+        # Enter the GGUF branch when saving *or* pushing GGUF, so --push_gguf
+        # works even when --save_gguf is omitted (the local save is guarded
+        # separately below).
+        if args.save_gguf or args.push_gguf:
+            # Push-only GGUF (no --save_gguf) skips the local save; warn so it is not silent.
+            if not args.save_gguf:
+                print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
             if isinstance(args.quantization, list):
                 for quantization_method in args.quantization:
-                    print(
-                        f"Saving model with quantization method: {quantization_method}"
-                    )
+                    if args.save_gguf:
+                        print(f"Saving model with quantization method: {quantization_method}")
+                        model.save_pretrained_gguf(
+                            args.save_path,
+                            tokenizer,
+                            quantization_method = quantization_method,
+                        )
+                    if args.push_model or args.push_gguf:
+                        model.push_to_hub_gguf(
+                            args.hub_path,
+                            tokenizer,
+                            quantization_method = quantization_method,
+                            token = args.hub_token,
+                        )
+            else:
+                if args.save_gguf:
+                    print(f"Saving model with quantization method: {args.quantization}")
                     model.save_pretrained_gguf(
                         args.save_path,
                         tokenizer,
-                        quantization_method = quantization_method,
-                    )
-                    if args.push_model:
-                        model.push_to_hub_gguf(
-                            hub_path = args.hub_path,
-                            hub_token = args.hub_token,
-                            quantization_method = quantization_method,
-                        )
-            else:
-                print(f"Saving model with quantization method: {args.quantization}")
-                model.save_pretrained_gguf(
-                    args.save_path,
-                    tokenizer,
-                    quantization_method = args.quantization,
-                )
-                if args.push_model:
-                    model.push_to_hub_gguf(
-                        hub_path = args.hub_path,
-                        hub_token = args.hub_token,
                         quantization_method = args.quantization,
+                    )
+                if args.push_model or args.push_gguf:
+                    model.push_to_hub_gguf(
+                        args.hub_path,
+                        tokenizer,
+                        quantization_method = args.quantization,
+                        token = args.hub_token,
                     )
         else:
             model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
             if args.push_model:
-                model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
+                model.push_to_hub_merged(
+                    args.hub_path, tokenizer, args.save_method, token = args.hub_token
+                )
     else:
         print("Warning: The model is not saved!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description = "🦥 Fine-tune your llm faster using unsloth!"
-    )
+    parser = argparse.ArgumentParser(description = "🦥 Fine-tune your llm faster using unsloth!")
 
     model_group = parser.add_argument_group("🤖 Model Options")
     model_group.add_argument(
@@ -459,15 +449,11 @@ if __name__ == "__main__":
         help = "Token for pushing the model to Hugging Face hub",
     )
 
-    parser.add_argument(
-        "--raw_text_file", type = str, help = "Path to raw text file for training"
-    )
+    parser.add_argument("--raw_text_file", type = str, help = "Path to raw text file for training")
     parser.add_argument(
         "--chunk_size", type = int, default = 2048, help = "Size of text chunks for training"
     )
-    parser.add_argument(
-        "--stride", type = int, default = 512, help = "Overlap between chunks"
-    )
+    parser.add_argument("--stride", type = int, default = 512, help = "Overlap between chunks")
 
     args = parser.parse_args()
     run(args)

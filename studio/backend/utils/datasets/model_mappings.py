@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Model and template mappings for dataset processing.
+"""Model and template mappings for dataset processing.
 
-This module contains the mapping dictionaries that associate model names
-with their corresponding chat templates and response markers.
+Maps model names to their chat templates and response markers.
 """
 
 TEMPLATE_TO_MODEL_MAPPER = {
@@ -436,7 +434,7 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value] = key
 
-    # Get lowercased
+    # Also map lowercased names.
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
@@ -445,8 +443,8 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
 def is_gpt_oss_model_name(name: str) -> bool:
     """Name-based check for gpt-oss / harmony models.
 
-    Used by both the in-process backend and the parent-process
-    orchestrator to detect harmony models without an IPC round-trip.
+    Used by the in-process backend and the parent orchestrator to detect
+    harmony models without an IPC round-trip.
     """
     name = (name or "").lower()
     if not name:

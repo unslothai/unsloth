@@ -78,16 +78,15 @@ const EDGE_TYPES: EdgeTypes = {
 const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
 const TAB_SWITCH_FIT_DELAY_MS = 110;
 /**
- * Maximum RAF iterations to wait for React Flow's ResizeObserver to populate
- * `node.measured` dimensions before calling fitView. ~20 frames ≈ 333 ms at
- * 60 fps — more than enough for the render → layout → ResizeObserver cycle.
+ * Max RAF iterations to wait for React Flow's ResizeObserver to populate
+ * `node.measured` before calling fitView. ~20 frames ≈ 333 ms at 60 fps,
+ * ample for the render → layout → ResizeObserver cycle.
  */
 const MAX_FIT_VIEW_RETRIES = 20;
 /**
- * After all target nodes appear measured, wait this many extra stable frames
- * before firing fitView. This absorbs `updateNodeInternals` calls from
- * InternalsSync and individual node mount effects that can transiently reset
- * measurements.
+ * Extra stable frames to wait after target nodes appear measured before
+ * firing fitView, absorbing `updateNodeInternals` calls from InternalsSync
+ * and node mount effects that can transiently reset measurements.
  */
 const FIT_VIEW_STABLE_FRAMES = 3;
 
@@ -227,10 +226,10 @@ export function RecipeStudioPage({
     },
     [viewModeStorageKey],
   );
-  // Easy mode has no canvas overlay/progress island, so once a run starts the
-  // user sees the Run button stuck on "Running..." with nothing else changing.
-  // Flip to the Runs pane so they land where progress is actually rendered.
-  // Advanced (editor) keeps its island and stays put.
+  // Easy mode has no canvas overlay/progress island, so a started run would
+  // leave the Run button stuck on "Running..." with nothing else changing.
+  // Flip to the Runs pane where progress is rendered. Advanced (editor) keeps
+  // its island and stays put.
   const handleExecutionStart = useCallback(() => {
     setActiveView((currentView) =>
       currentView === "easy" ? "executions" : currentView,
@@ -396,10 +395,9 @@ export function RecipeStudioPage({
   const runBusy = previewLoading || fullLoading || executionLocked;
   const islandExecution = activeExecution ?? recentCompletedExecution;
 
-  // Easy mode runs a full run (artifact persisted, tracked in Runs pane)
-  // using runFull. runFull requires a non-empty fullRunName but the Easy form
-  // has no run-name input, so seed a default here as soon as Easy is active.
-  // User can still rename it from Advanced/Runs dialogs before clicking Run.
+  // Easy mode uses runFull (artifact persisted, tracked in Runs pane), which
+  // requires a non-empty fullRunName. The Easy form has no run-name input, so
+  // seed a default once Easy is active; user can rename from Advanced/Runs.
   useEffect(() => {
     if (!supportsEasyMode) return;
     if (activeView !== "easy") return;
@@ -527,22 +525,21 @@ export function RecipeStudioPage({
           return;
         }
         if (retries >= MAX_FIT_VIEW_RETRIES) {
-          // Timed out waiting — fit with whatever we have (graceful fallback).
+          // Timed out: fit with whatever we have (graceful fallback).
           doFit();
           return;
         }
         const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
         if (allTargetsMeasured(targets)) {
           stableCount++;
-          // Wait a few extra frames after measurements appear to let
-          // updateNodeInternals (InternalsSync, node mount effects) settle.
+          // Extra frames after measurements appear let updateNodeInternals
+          // (InternalsSync, node mount effects) settle.
           if (stableCount >= FIT_VIEW_STABLE_FRAMES) {
             doFit();
             return;
           }
         } else {
-          // Measurements were reset (e.g. by updateNodeInternals) — restart
-          // the stability counter.
+          // Measurements reset (e.g. by updateNodeInternals): restart counter.
           stableCount = 0;
         }
         retries++;
@@ -808,10 +805,9 @@ export function RecipeStudioPage({
                 updateConfig={updateConfig}
                 onRun={() => {
                   // Easy mode is a full run (artifact persisted, tracked in
-                  // the Runs pane) capped at the user's row count. runFull
-                  // requires a non-empty fullRunName; the effect below
-                  // populates one on mount so the closure in runFull is
-                  // already up to date by the time the user clicks Run.
+                  // Runs) capped at the user's row count. runFull requires a
+                  // non-empty fullRunName; the effect above populates one on
+                  // mount so runFull's closure is current by click time.
                   void runFull();
                 }}
                 runLoading={fullLoading || executionLocked}

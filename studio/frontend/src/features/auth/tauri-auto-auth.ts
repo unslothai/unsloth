@@ -20,13 +20,13 @@ type TauriAutoAuthOptions = {
   force?: boolean;
 };
 
-// Concurrency guard: multiple route guards can call tauriAutoAuth simultaneously.
-// Without this, the first-launch password-change could race with itself.
+// Concurrency guard: multiple route guards can call tauriAutoAuth at once;
+// without this the first-launch password-change could race with itself.
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 
 const TAURI_AUTH_FAILURE_FALLBACK =
-  "Desktop authentication failed. Update or repair the managed Studio install, then restart Studio.";
+  "Desktop authentication failed. Update or repair the managed Unsloth install, then restart Unsloth.";
 const BACKEND_NOT_READY_MESSAGE = "Backend is not ready";
 
 function authFailureMessage(error: unknown): string {
@@ -61,7 +61,7 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     return true;
   }
 
-  // Try refreshing existing session
+  // Try refreshing an existing session.
   if (!options.force && hasRefreshToken()) {
     const refreshed = await refreshSession();
     if (refreshed && hasAuthToken() && !mustChangePassword()) {

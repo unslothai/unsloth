@@ -4,37 +4,19 @@
 
 """Refuse dangerous GitHub Actions trigger patterns at PR time.
 
-Two patterns are banned outright, both of which powered the TanStack
-GHSA-g7cv-rxg3-hmpx supply-chain compromise:
+Bans patterns behind the TanStack GHSA-g7cv-rxg3-hmpx compromise:
 
-1.  `pull_request_target` -- runs a fork's workflow YAML against the
-    BASE repository's secrets and permissions. The fork can inject
-    arbitrary code into the base context. The TanStack worm used this
-    to land base-context execution from a fork PR. There is essentially
-    no safe use of this trigger for a public open-source project;
-    `pull_request` is the safe alternative.
+1.  `pull_request_target` -- runs a fork's workflow against the base
+    repo's secrets/permissions; use `pull_request` instead.
+2.  `workflow_run` chained to a PR-triggered workflow -- same trust
+    boundary problem one hop later (poisoned artifacts/caches run with
+    elevated permissions).
+3.  Cache keys shared between PR-triggered and publish/release/push
+    workflows -- a fork PR could poison a cache the publish workflow
+    restores. Partition the key namespaces.
 
-2.  `workflow_run` chained to a PR-triggered workflow -- carries the
-    same trust boundary problem one hop later. If a PR-triggered
-    workflow can poison artifacts/caches and a `workflow_run` trigger
-    fires off the result with elevated permissions, the attacker still
-    reaches the trusted context.
-
-3.  Shared cache keys between PR-triggered workflows and publish /
-    release / push-triggered workflows. The TanStack worm poisoned the
-    Actions cache from a fork PR and the legitimate release workflow
-    then restored the poisoned cache. Cache keys must be partitioned
-    so that nothing a PR can write is ever read by a workflow that
-    holds secrets.
-
-Exit codes
-==========
-
-  0   no findings
-  1   one or more findings; stderr lists each with file path
-
-Run from repo root:
-    python3 scripts/lint_workflow_triggers.py
+Exit codes: 0 = no findings, 1 = findings (listed on stderr).
+Run from repo root: python3 scripts/lint_workflow_triggers.py
 """
 
 from __future__ import annotations
@@ -47,9 +29,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print(
-        "ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr
-    )
+    print("ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr)
     sys.exit(2)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -153,9 +133,7 @@ def main() -> int:
                 )
 
     if findings:
-        print(
-            "Workflow trigger lint failed with the following issues:", file = sys.stderr
-        )
+        print("Workflow trigger lint failed with the following issues:", file = sys.stderr)
         for f in findings:
             print(f"  - {f}", file = sys.stderr)
         return 1

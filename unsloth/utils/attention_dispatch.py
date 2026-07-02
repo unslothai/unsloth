@@ -48,9 +48,7 @@ XFORMERS = "xformers"
 SDPA = "sdpa"
 
 
-XFORMERS_BLOCK_DIAG_CLS = (
-    xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
-)
+XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
 @dataclass
@@ -58,11 +56,9 @@ class AttentionConfig:
     """
     Per-layer attention metadata.
 
-    NOTE(djsaunde): I had originally intended this to be populated once per layer, but
-        we're currently constructing it on every forward pass since it can possibly be
-        invalid from one forward pass to the next (e.g., switching from training to
-        inference). For now, I'm keeping separate from AttentionContext for the sake of
-        better grouping of params.
+    NOTE(djsaunde): Constructed on every forward pass (not once per layer) since
+        it can be invalid across passes (e.g. switching training/inference). Kept
+        separate from AttentionContext to group params.
     """
 
     backend: str
@@ -104,35 +100,23 @@ def select_attention_backend(use_varlen: bool = False) -> str:
 
 
 def run_attention(
-    *,
-    config: AttentionConfig,
-    context: AttentionContext,
-    Q: Tensor,
-    K: Tensor,
-    V: Tensor,
+    *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
     """
     Run attention using config / context info.
 
-    Backend choice is prioritized for speed: FlashAttention when installed
-    (`flash_varlen` for packed/variable-length inputs with `seq_info`, otherwise dense
-    flash), then xFormers if flash is unavailable, with PyTorch SDPA as the final
-    fallback (e.g., CPU or no fused kernels).
-
-    Varlen flash is preferred when packing metadata is present because it avoids padding
-    and keeps peak memory low. xFormers and SDPA can also handle packed batches (we
-    pass a block-diagonal mask into each).
+    Backend priority (speed): FlashAttention if installed (varlen for packed
+    inputs with `seq_info`, else dense), then xFormers, then SDPA as fallback.
+    Varlen flash is preferred for packed batches as it avoids padding; xFormers
+    and SDPA handle packing via a block-diagonal mask.
     """
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
 
-    # [TODO] Flash attention does not support arbitrary attention masks (only
-    # causal via flag). When a padding mask is present (e.g. left-padded
-    # batched generation), fall back to SDPA which consumes attn_mask.
-    # xFormers also does not thread context.attention_mask through, so the
-    # same fallback applies.
+    # [TODO] Flash/xFormers don't support arbitrary attn masks; with a padding
+    # mask present (e.g. left-padded generation), fall back to SDPA.
     if context.attention_mask is not None and backend in (
         FLASH_DENSE,
         FLASH_VARLEN,
@@ -152,6 +136,25 @@ def run_attention(
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
+
+    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects, so
+    # downcast any fp32 Q/K/V to a flash-supported dtype (#1013).
+    if backend in (FLASH_DENSE, FLASH_VARLEN) and torch.float32 in (
+        Q.dtype,
+        K.dtype,
+        V.dtype,
+    ):
+        # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
+        if torch.is_autocast_enabled():
+            try:
+                flash_dtype = torch.get_autocast_dtype("cuda")
+            except (AttributeError, TypeError):
+                flash_dtype = torch.get_autocast_gpu_dtype()
+        else:
+            flash_dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
+        if flash_dtype not in (torch.float16, torch.bfloat16):
+            flash_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        Q, K, V = Q.to(flash_dtype), K.to(flash_dtype), V.to(flash_dtype)
 
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
@@ -193,20 +196,14 @@ def run_attention(
         if config.n_groups != 1:
             K_mod = K_t.view(bsz, kv_seq_len, config.n_kv_heads, 1, head_dim)
             V_mod = V_t.view(bsz, kv_seq_len, config.n_kv_heads, 1, head_dim)
-            K_mod = K_mod.expand(
-                bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
-            )
-            V_mod = V_mod.expand(
-                bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
-            )
+            K_mod = K_mod.expand(bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim)
+            V_mod = V_mod.expand(bsz, kv_seq_len, config.n_kv_heads, config.n_groups, head_dim)
 
             if requires_grad:
                 K_mod = K_mod.reshape(bsz, kv_seq_len, n_heads, head_dim)
                 V_mod = V_mod.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
-                Q_mod = Q_t.view(
-                    bsz, q_len, config.n_kv_heads, config.n_groups, head_dim
-                )
+                Q_mod = Q_t.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
 
         has_block = XFORMERS_BLOCK_DIAG_CLS is not None and isinstance(
             attn_bias, XFORMERS_BLOCK_DIAG_CLS
@@ -214,9 +211,7 @@ def run_attention(
 
         if config.n_groups != 1 and has_block:
             if not requires_grad:
-                Q_mod = Q_mod.view(
-                    1, bsz * q_len, config.n_kv_heads, config.n_groups, head_dim
-                )
+                Q_mod = Q_mod.view(1, bsz * q_len, config.n_kv_heads, config.n_groups, head_dim)
                 K_mod = K_mod.view(
                     1, bsz * kv_seq_len, config.n_kv_heads, config.n_groups, head_dim
                 )
@@ -267,26 +262,16 @@ def run_attention(
                         # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
-                    past_len = (
-                        k_len_local - q_len_local
-                    )  # works for prefill (0) and decode
-                    q_pos = torch.arange(
-                        past_len, past_len + q_len_local, device = Q.device
-                    )
+                    past_len = k_len_local - q_len_local  # works for prefill (0) and decode
+                    q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
-                    causal_keep = (
-                        k_pos[None, :] <= q_pos[:, None]
-                    )  # True = allowed (SDPA)
+                    causal_keep = k_pos[None, :] <= q_pos[:, None]  # True = allowed (SDPA)
                     if sliding_window is not None:
-                        causal_keep &= k_pos[None, :] >= (
-                            q_pos[:, None] - (sliding_window - 1)
-                        )
+                        causal_keep &= k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
 
                     # (bsz, 1, q_len, k_len) boolean keep mask
-                    local_mask = (
-                        causal_keep[None, None, :, :] & key_keep[:, None, None, :]
-                    )
+                    local_mask = causal_keep[None, None, :, :] & key_keep[:, None, None, :]
 
                 elif local_mask.dim() == 3:
                     # (bsz, q_len, k_len) -> (bsz, 1, q_len, k_len)
@@ -297,15 +282,11 @@ def run_attention(
                         # Use boolean keep masks for better SDPA stability.
                         local_mask = local_mask.eq(0)
                 else:
-                    raise ValueError(
-                        f"Unsupported SDPA attention_mask rank: {local_mask.dim()}"
-                    )
+                    raise ValueError(f"Unsupported SDPA attention_mask rank: {local_mask.dim()}")
 
                 # Avoid NaNs from fully-masked rows (common with left padding).
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(
-                        dim = -1, keepdim = True
-                    )  # (bsz,1,q_len,1)
+                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
             is_causal_local = local_mask is None and q_len_local == k_len_local

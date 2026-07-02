@@ -4,14 +4,13 @@
 """Unit tests for OpenAI Responses API context_management wiring.
 
 OpenAI's Responses API supports server-side compaction via
-``context_management: [{type:"compaction", compact_threshold:N}]``.
-There is no beta header and no dated version pin; the threshold is
-silently accepted and the API runs the compaction step when the
-rendered prompt crosses it.
+``context_management: [{type:"compaction", compact_threshold:N}]``. No
+beta header, no dated version pin; the threshold is silently accepted and
+compaction runs when the rendered prompt crosses it.
 
-These tests pin: the body shape when threshold is set on cloud OpenAI,
-the silent no-op when the base URL is non-cloud, and the
-omitted-threshold pass-through.
+These pin: the body shape when threshold is set on cloud OpenAI, the
+silent no-op on non-cloud base URLs, and the omitted-threshold
+pass-through.
 """
 
 import asyncio
@@ -32,8 +31,7 @@ def _capture(monkeypatch, *, base_url: str, threshold) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
-        # Send an empty Responses-shaped SSE stream so the helper exits
-        # cleanly.
+        # Empty Responses-shaped SSE stream so the helper exits cleanly.
         return httpx.Response(
             200,
             content = (
@@ -88,8 +86,8 @@ def test_cloud_openai_sets_compaction_block(monkeypatch):
 
 
 def test_cloud_openai_below_default_threshold_passes_through(monkeypatch):
-    # Studio doesn't clamp the OpenAI side -- the API accepts whatever
-    # the caller sends, so a small probe like 60k still goes through.
+    # Studio doesn't clamp the OpenAI side -- the API accepts whatever the
+    # caller sends, so a small probe like 60k still goes through.
     captured = _capture(
         monkeypatch,
         base_url = "https://api.openai.com/v1",
@@ -105,8 +103,8 @@ def test_cloud_openai_below_default_threshold_passes_through(monkeypatch):
 
 def test_non_cloud_base_silently_drops_compaction(monkeypatch):
     # ollama / llama.cpp / "custom" presets collapse to provider="openai"
-    # but don't implement context_management. Sending the field would
-    # 400 those servers, so it must NOT appear on the wire.
+    # but lack context_management. Sending the field would 400 them, so it
+    # must NOT appear on the wire.
     captured = _capture(
         monkeypatch,
         base_url = "http://127.0.0.1:11434/v1",
@@ -120,9 +118,9 @@ def test_non_cloud_base_silently_drops_compaction(monkeypatch):
 
 def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
     # Azure OpenAI Foundry exposes the same /v1/responses extensions
-    # (context_management, prompt_cache_retention, container shell)
-    # under a *.openai.azure.com base URL. Treat it as cloud so the
-    # compaction field actually reaches the API.
+    # (context_management, prompt_cache_retention, container shell) under
+    # a *.openai.azure.com base URL. Treat it as cloud so the compaction
+    # field reaches the API.
     captured = _capture(
         monkeypatch,
         base_url = "https://my-resource.openai.azure.com/openai/v1",
@@ -132,14 +130,14 @@ def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
         {"type": "compaction", "compact_threshold": 200_000}
     ]
     # Sibling Azure-cloud extension: prompt_cache_retention should also
-    # be set so caching works the same way on Azure deployments.
+    # be set so caching works the same on Azure deployments.
     assert captured["body"].get("prompt_cache_retention") == "24h"
 
 
 def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
-    # The match is case-insensitive so URLs copy-pasted from the Azure
-    # portal (which sometimes capitalise the resource name) still get
-    # the cloud-only fields.
+    # Case-insensitive match so URLs copy-pasted from the Azure portal
+    # (which sometimes capitalise the resource name) still get the
+    # cloud-only fields.
     captured = _capture(
         monkeypatch,
         base_url = "https://My-Resource.OpenAI.Azure.Com/openai/v1",
@@ -151,12 +149,11 @@ def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
 
 
 def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
-    # CodeQL py/incomplete-url-substring-sanitization: an attacker who
-    # controls the configured base_url could embed `api.openai.com` or
-    # `.openai.azure.com` as part of a path or a subdomain on an
-    # arbitrary host to slip the cloud-only request body fields to a
-    # server they control. The hostname-anchored helper must reject
-    # both shapes.
+    # CodeQL py/incomplete-url-substring-sanitization: an attacker
+    # controlling base_url could embed `api.openai.com` or
+    # `.openai.azure.com` in a path or subdomain on an arbitrary host to
+    # slip cloud-only body fields to their own server. The
+    # hostname-anchored helper must reject both shapes.
     for evil in [
         "https://evil.com/api.openai.com/v1",
         "https://api.openai.com.attacker.com/v1",
@@ -188,19 +185,17 @@ def test_omitted_threshold_no_body_field(monkeypatch):
 
 
 def test_chat_completion_request_accepts_any_positive_compaction_threshold():
-    # Codex follow-up: the field is documented as a no-op for non-cloud
-    # OpenAI bases and every non-OpenAI provider, so a cross-provider
-    # schema floor would 422 perfectly valid Anthropic / ollama /
-    # llama.cpp requests that happen to carry the field. Keep schema
-    # floor at ge=1 (any positive int) and rely on per-provider
-    # helpers (_stream_openai_responses / _stream_anthropic) to
-    # enforce or clamp the real floor.
+    # Codex follow-up: the field is a no-op for non-cloud OpenAI bases and
+    # every non-OpenAI provider, so a cross-provider schema floor would
+    # 422 valid Anthropic / ollama / llama.cpp requests carrying it. Keep
+    # the schema floor at ge=1 (any positive int) and let per-provider
+    # helpers (_stream_openai_responses / _stream_anthropic) enforce or
+    # clamp the real floor.
     import pytest as _pytest
 
     from models.inference import ChatCompletionRequest
 
-    # Non-positive values still rejected so blank-string posts don't
-    # sneak through.
+    # Non-positive values rejected so blank-string posts don't sneak in.
     with _pytest.raises(Exception):
         ChatCompletionRequest.model_validate(
             {
@@ -211,10 +206,10 @@ def test_chat_completion_request_accepts_any_positive_compaction_threshold():
         )
 
     # Any positive int passes schema validation, including values that
-    # would be no-ops on the OpenAI cloud path. This is intentional --
-    # the OpenAI helper drops the field on non-cloud bases and
-    # forwards-as-is on cloud bases; if the value is below the model's
-    # effective floor, the upstream API surfaces the error.
+    # are no-ops on the OpenAI cloud path. Intentional -- the OpenAI
+    # helper drops the field on non-cloud bases and forwards as-is on
+    # cloud bases; if it's below the model's effective floor, the upstream
+    # API surfaces the error.
     for v in (1, 5_000, 9_999, 10_000, 200_000):
         req = ChatCompletionRequest.model_validate(
             {

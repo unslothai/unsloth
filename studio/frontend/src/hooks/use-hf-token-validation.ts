@@ -18,9 +18,8 @@ const INITIAL: HfTokenValidationState = {
 };
 
 /**
- * Validates the Hugging Face token by calling the whoami-v2 API.
- * Debounces the token to avoid excessive requests while typing.
- * Returns validation state: isValid (null = not checked), error message, and isChecking.
+ * Validates the HF token via the whoami-v2 API, debounced to avoid excessive
+ * requests while typing. isValid is null until checked.
  */
 export function useHfTokenValidation(token: string): HfTokenValidationState {
   const debouncedToken = useDebouncedValue(

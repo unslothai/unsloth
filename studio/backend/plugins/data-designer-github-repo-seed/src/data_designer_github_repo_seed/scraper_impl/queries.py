@@ -3,11 +3,11 @@
 
 """GraphQL queries for GitHub data scraping.
 
-GitHub's GraphQL rejects queries that define unused fragments, so each query
-only includes the fragments it actually references.
+GitHub's GraphQL rejects queries with unused fragments, so each query includes
+only the fragments it references.
 """
 
-# ---- Fragments (kept as raw strings, composed per query) ----
+# ---- Fragments (raw strings, composed per query) ----
 F_ACTOR = """
 fragment ActorFields on Actor {
   __typename

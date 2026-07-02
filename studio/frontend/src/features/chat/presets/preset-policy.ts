@@ -23,6 +23,7 @@ export type PresetOwnedParams = Pick<
   | "presencePenalty"
   | "maxTokens"
   | "systemPrompt"
+  | "systemVariables"
 >;
 
 export const BUILTIN_PRESETS: Preset[] = [
@@ -104,7 +105,8 @@ export function getPresetOwnedParams(
     repetitionPenalty: params.repetitionPenalty,
     presencePenalty: params.presencePenalty,
     maxTokens: params.maxTokens,
-    systemPrompt: params.systemPrompt,
+    systemPrompt: params.systemPrompt ?? "",
+    systemVariables: params.systemVariables ?? "",
   };
 }
 
@@ -122,7 +124,8 @@ export function isSamePresetConfig(
     left.repetitionPenalty === right.repetitionPenalty &&
     left.presencePenalty === right.presencePenalty &&
     left.maxTokens === right.maxTokens &&
-    left.systemPrompt === right.systemPrompt
+    left.systemPrompt === right.systemPrompt &&
+    left.systemVariables === right.systemVariables
   );
 }
 
@@ -248,7 +251,7 @@ interface BackendInferenceDefaults {
 export interface BackendInferenceEnvelope {
   is_gguf?: boolean;
   context_length?: number | null;
-  inference?: BackendInferenceDefaults;
+  inference?: BackendInferenceDefaults | null;
 }
 
 export function mergeBackendRecommendedInference({
@@ -297,6 +300,7 @@ export function mergeBackendRecommendedInference({
 export function resolveLoadMaxSeqLength({
   modelId,
   ggufVariant,
+  isGguf,
   customContextLength,
   ggufContextLength,
   currentCheckpoint,
@@ -306,6 +310,7 @@ export function resolveLoadMaxSeqLength({
 }: {
   modelId: string;
   ggufVariant?: string | null;
+  isGguf?: boolean | null;
   customContextLength: number | null;
   ggufContextLength: number | null;
   currentCheckpoint: string;
@@ -314,7 +319,7 @@ export function resolveLoadMaxSeqLength({
   presetSource: ChatPresetSource;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
-  const isGgufLoad = ggufVariant != null || isDirectGgufFile;
+  const isGgufLoad = isGguf === true || ggufVariant != null || isDirectGgufFile;
   const isReloadingCurrentGguf =
     isGgufLoad &&
     currentCheckpoint === modelId &&

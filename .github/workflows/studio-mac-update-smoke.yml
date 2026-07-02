@@ -62,30 +62,21 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          # Mac install must take the prebuilt path. Source-build
-          # fallback here is an Unsloth bug.
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
-          if ! grep -qE "prebuilt installed and validated|prebuilt up to date and validated|bin-macos-arm64" logs/install.log; then
-            echo "::error::no Mac prebuilt llama.cpp marker in install.log."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
-          echo "install.sh installed the Mac prebuilt llama.cpp"
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: First update should be a no-op (prebuilt already validated)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update.log
@@ -104,6 +95,8 @@ jobs:
       - name: Second update must also be a no-op
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update2.log

@@ -4,13 +4,9 @@
 /**
  * Pure, framework-free math behind {@link useTransferStats}.
  *
- * Split out so it can be unit-tested without a DOM/React renderer, and
- * so the training-start overlay, the chat download toast, and the
- * model-load phase UI all share the exact same rate/ETA semantics.
- *
- * No React, no `useRef`/`useState`, no timers -- the caller owns the
- * sample buffer and clock. This is the "what is the rate right now
- * given these samples" question, nothing more.
+ * Split out for unit-testing without React, and so the training-start overlay,
+ * chat download toast, and model-load UI share identical rate/ETA semantics.
+ * No React/timers -- the caller owns the sample buffer and clock.
  */
 
 export type TransferSample = { t: number; b: number };
@@ -19,10 +15,9 @@ export type TransferStats = {
   rateBytesPerSecond: number;
   etaSeconds: number;
   /**
-   * False until the window has at least {@link MIN_SAMPLES} samples
-   * spanning ≥ {@link MIN_WINDOW_SECONDS} with strictly forward progress.
-   * Consumers should hide rate/ETA while this is false so the UI doesn't
-   * flicker "123 GB/s" during the first tick.
+   * False until the window has ≥ {@link MIN_SAMPLES} samples spanning ≥
+   * {@link MIN_WINDOW_SECONDS} with forward progress. Hide rate/ETA while false
+   * so the UI doesn't flicker "123 GB/s" during the first tick.
    */
   stable: boolean;
 };
@@ -32,11 +27,9 @@ export const MIN_WINDOW_SECONDS = 3;
 export const MAX_WINDOW_SECONDS = 15;
 
 /**
- * Mutate ``samples`` in place: append the new sample, drop any that
- * fell out of the rolling window, and clear the buffer if the counter
- * went backwards (user cancelled + restarted a download, etc.).
- *
- * Returns the same array for chain-ability.
+ * Mutate ``samples`` in place: append the sample, drop any out of the rolling
+ * window, and clear the buffer if the counter went backwards (cancel + restart).
+ * Returns the same array for chaining.
  */
 export function appendSample(
   samples: TransferSample[],
@@ -56,13 +49,11 @@ export function appendSample(
 }
 
 /**
- * Derive {@link TransferStats} from a window of cumulative-byte samples
- * plus the known total.
- *
+ * Derive {@link TransferStats} from a window of cumulative-byte samples plus the
+ * known total.
  *   * Needs ≥ {@link MIN_SAMPLES} samples spanning ≥ {@link MIN_WINDOW_SECONDS}
- *     seconds before it will report ``stable: true``.
- *   * ETA is clamped to 0 when: no progress, no total known, or the
- *     counter already hit the total.
+ *     seconds before reporting ``stable: true``.
+ *   * ETA clamps to 0 when there's no progress, no total, or total is hit.
  */
 export function computeTransferStats(
   samples: readonly TransferSample[],

@@ -6,17 +6,16 @@ Regression test for the /recommended-folders (and /browse-folders) 500
 caused by an unreadable model directory, e.g. a stock root-owned
 ``ollama`` install at ``/usr/share/ollama/.ollama/models``.
 
-Root cause: the folder-scan helpers in ``routes.models`` probed candidate
-paths with a bare ``Path(p).is_dir()``. On Python <= 3.11 that returned
-``False`` for an unreadable path; on Python >= 3.12 ``is_dir()`` propagates
+Root cause: ``routes.models`` folder-scan helpers probed candidates with a
+bare ``Path(p).is_dir()``. On Python <= 3.11 that returned ``False`` for an
+unreadable path; on Python >= 3.12 ``is_dir()`` propagates
 ``PermissionError`` (EACCES), so the endpoint 500-ed through the whole
-middleware stack instead of just skipping the directory. The probes now go
-through the module-level ``_safe_is_dir`` helper.
+middleware stack instead of skipping the directory. Probes now go through
+the module-level ``_safe_is_dir`` helper.
 
-``routes.models`` pulls the full backend dependency tree (fastapi,
-structlog, the models package, ...), so rather than stand up the app we
-extract the real ``_safe_is_dir`` definition from the source file and
-exercise that exact function in isolation. The test therefore stays
+``routes.models`` pulls the full backend dep tree (fastapi, structlog, the
+models package, ...), so rather than stand up the app we extract the real
+``_safe_is_dir`` from the source file and exercise it in isolation —
 dependency-free while still running the shipped code.
 
 Run:
@@ -36,7 +35,7 @@ _models_src = _backend_root / "routes" / "models.py"
 
 def _load_safe_is_dir():
     """Return the real ``_safe_is_dir`` from routes/models.py without
-    importing the (heavily dependency-laden) module."""
+    importing the dependency-laden module."""
     tree = ast.parse(_models_src.read_text())
     fn = next(
         node
@@ -51,8 +50,8 @@ def _load_safe_is_dir():
 
 safe_is_dir = _load_safe_is_dir()
 
-# Permission bits are bypassed for the superuser, so the chmod-000 setup
-# below would not actually deny access when running as root.
+# The superuser bypasses permission bits, so the chmod-000 setup below
+# would not deny access when running as root.
 _skip_as_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason = "root bypasses filesystem permission bits",
@@ -60,8 +59,7 @@ _skip_as_root = pytest.mark.skipif(
 
 
 def test_helper_exists_in_source():
-    # Guards against a refactor silently dropping the helper the fix
-    # depends on (the extractor would then raise StopIteration).
+    # Guard against a refactor silently dropping the helper the fix needs.
     assert callable(safe_is_dir)
 
 
@@ -83,8 +81,8 @@ def test_file_is_false(tmp_path):
 def test_mode000_dir_itself_is_still_a_dir(tmp_path):
     """A mode-000 directory is still stat-able via its (traversable)
     parent, so _safe_is_dir reports True without raising. Filtering out
-    dirs we cannot actually *read* is the caller's separate
-    os.access(R_OK|X_OK) check, not this helper's job."""
+    dirs we can't *read* is the caller's separate os.access(R_OK|X_OK)
+    check, not this helper's job."""
     locked = tmp_path / "locked"
     locked.mkdir()
     os.chmod(locked, 0o000)
@@ -96,8 +94,8 @@ def test_mode000_dir_itself_is_still_a_dir(tmp_path):
 
 @_skip_as_root
 def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
-    """The exact production scenario: stat()-ing a child of a mode-700
-    system directory, e.g. ``/usr/share/ollama/.ollama/models``."""
+    """The production scenario: stat()-ing a child of a mode-700 system
+    directory, e.g. ``/usr/share/ollama/.ollama/models``."""
     parent = tmp_path / "ollama"
     parent.mkdir()
     os.chmod(parent, 0o000)
@@ -113,8 +111,8 @@ def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
     reason = "is_dir() only propagates PermissionError on Python >= 3.12",
 )
 def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
-    """Documents *why* _safe_is_dir exists: the old bare pattern raises
-    on the interpreters Studio ships on (3.12+)."""
+    """Documents *why* _safe_is_dir exists: the old bare pattern raises on
+    the interpreters Studio ships on (3.12+)."""
     parent = tmp_path / "ollama"
     parent.mkdir()
     os.chmod(parent, 0o000)

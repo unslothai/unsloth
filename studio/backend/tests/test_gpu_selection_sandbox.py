@@ -2,9 +2,9 @@
 """
 Sandbox test for multi-GPU selection logic.
 
-Tests the core GPU selection, memory estimation, and device_map logic
-in an isolated environment. Can be run on Linux, macOS, and Windows
-without requiring actual GPUs -- all hardware calls are mocked.
+Tests GPU selection, memory estimation, and device_map logic in
+isolation. Runs on Linux, macOS, and Windows without real GPUs -- all
+hardware calls are mocked.
 
 Usage:
     python -m pytest studio/backend/tests/test_gpu_selection_sandbox.py -v
@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Ensure backend is on sys.path
+# Ensure backend is on sys.path.
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
@@ -33,9 +33,8 @@ def _make_fake_config(
     num_key_value_heads = 8,
     tie_word_embeddings = False,
 ):
-    """Create a fake HF config-like object for estimation tests."""
+    """Fake HF config-like object for estimation tests."""
     from types import SimpleNamespace
-
     return SimpleNamespace(
         vocab_size = vocab_size,
         hidden_size = hidden_size,
@@ -48,7 +47,7 @@ def _make_fake_config(
 
 
 class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
-    """Test the config-based model size estimation."""
+    """Config-based model size estimation."""
 
     def test_llama_8b_size_reasonable(self):
         from utils.hardware.hardware import _estimate_fp16_model_size_bytes_from_config
@@ -91,7 +90,7 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         from utils.hardware.hardware import _estimate_fp16_model_size_bytes_from_config
         from types import SimpleNamespace
 
-        config = SimpleNamespace(vocab_size = 32000)  # Missing most fields
+        config = SimpleNamespace(vocab_size = 32000)  # most fields missing
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNone(size)
 
@@ -118,11 +117,10 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
 
 
 class TestEstimateRequiredModelMemory(unittest.TestCase):
-    """Test memory requirement estimation."""
+    """Memory requirement estimation."""
 
     def test_inference_fp16_uses_1_3x(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
-
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (10 * (1024**3), "config"),  # 10GB model
@@ -138,7 +136,6 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
     def test_inference_4bit_uses_reduced_estimate(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
-
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (30 * (1024**3), "config"),  # 30GB fp16 model
@@ -154,7 +151,6 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
     def test_4bit_training_reduces_base(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
-
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (30 * (1024**3), "config"),  # 30GB fp16 model
@@ -170,7 +166,6 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
     def test_full_finetune_uses_3_5x(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
-
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (10 * (1024**3), "config"),  # 10GB model
@@ -185,7 +180,6 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
     def test_returns_none_when_unavailable(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
-
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (None, "unavailable"),
@@ -195,10 +189,10 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
 
 class TestAutoSelectGpuIds(unittest.TestCase):
-    """Test automatic GPU selection based on model size and free memory."""
+    """Automatic GPU selection by model size and free memory."""
 
     def _make_utilization(self, devices):
-        """Create a fake utilization response."""
+        """Fake utilization response."""
         return {
             "available": True,
             "devices": [
@@ -214,7 +208,6 @@ class TestAutoSelectGpuIds(unittest.TestCase):
     def test_single_gpu_sufficient(self):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
-
         with (
             patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA),
             patch.object(
@@ -261,7 +254,6 @@ class TestAutoSelectGpuIds(unittest.TestCase):
     def test_two_gpus_needed(self):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
-
         with (
             patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA),
             patch.object(
@@ -305,7 +297,6 @@ class TestAutoSelectGpuIds(unittest.TestCase):
     def test_non_cuda_returns_none(self):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
-
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CPU):
             selected, meta = auto_select_gpu_ids("test/model")
             self.assertIsNone(selected)
@@ -313,12 +304,11 @@ class TestAutoSelectGpuIds(unittest.TestCase):
 
 
 class TestGetDeviceMap(unittest.TestCase):
-    """Test device_map string generation."""
+    """device_map string generation."""
 
     def test_single_gpu_returns_sequential(self):
         from utils.hardware.hardware import get_device_map
         import utils.hardware.hardware as hw
-
         with (
             patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA),
             patch.object(
@@ -338,7 +328,6 @@ class TestGetDeviceMap(unittest.TestCase):
     def test_multi_gpu_returns_balanced(self):
         from utils.hardware.hardware import get_device_map
         import utils.hardware.hardware as hw
-
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA):
             dm = get_device_map(gpu_ids = [0, 1])
             self.assertEqual(dm, "balanced")
@@ -346,18 +335,16 @@ class TestGetDeviceMap(unittest.TestCase):
     def test_cpu_returns_sequential(self):
         from utils.hardware.hardware import get_device_map
         import utils.hardware.hardware as hw
-
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CPU):
             dm = get_device_map(gpu_ids = None)
             self.assertEqual(dm, "sequential")
 
 
 class TestResolveRequestedGpuIds(unittest.TestCase):
-    """Test GPU ID validation."""
+    """GPU ID validation."""
 
     def test_none_returns_parent_visible(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
-
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "2,3"}, clear = False),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
@@ -367,7 +354,6 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
 
     def test_empty_list_returns_parent_visible(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
-
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "2,3"}, clear = False),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
@@ -377,7 +363,6 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
 
     def test_duplicates_rejected(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
-
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,1,2"}, clear = False),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
@@ -387,7 +372,6 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
 
     def test_out_of_range_rejected(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
-
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,1"}, clear = False),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 4),
@@ -397,11 +381,8 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
 
     def test_uuid_env_var_rejects_explicit_ids(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
-
         with (
-            patch.dict(
-                os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-abc,GPU-def"}, clear = False
-            ),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-abc,GPU-def"}, clear = False),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             with self.assertRaises(ValueError):
@@ -409,11 +390,10 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
 
 
 class TestApplyGpuIds(unittest.TestCase):
-    """Test CUDA_VISIBLE_DEVICES environment variable setting."""
+    """CUDA_VISIBLE_DEVICES environment variable setting."""
 
     def test_apply_list(self):
         from utils.hardware.hardware import apply_gpu_ids
-
         with patch.dict(os.environ, {}, clear = False):
             apply_gpu_ids([3, 5])
             self.assertEqual(os.environ.get("CUDA_VISIBLE_DEVICES"), "3,5")
@@ -427,10 +407,10 @@ class TestApplyGpuIds(unittest.TestCase):
 
 
 class TestMultiGpuOverheadAccounting(unittest.TestCase):
-    """Test that multi-GPU overhead is applied correctly.
+    """Multi-GPU overhead is applied correctly.
 
-    The first GPU should keep its full free memory, and only
-    additional GPUs should have the overhead factor applied.
+    The first GPU keeps its full free memory; the overhead factor applies
+    only to additional GPUs.
     """
 
     def _make_utilization(self, devices):

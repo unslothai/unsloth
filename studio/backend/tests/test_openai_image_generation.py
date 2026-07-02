@@ -3,18 +3,11 @@
 
 """Unit tests for OpenAI Responses API image_generation tool wiring.
 
-The image_generation tool is a server-side Responses-API tool:
-``{type: "image_generation"}`` in the request's tools array, and the
-result comes back as an ``image_generation_call`` output item carrying
-the base64 image on ``result``. Studio translates the output item
-into ``_toolEvent`` chunks (``tool_start`` with `kind:"image"`,
-``tool_end`` with ``image_b64`` + ``image_mime``) so the chat adapter
-can render the image inline.
-
-These tests pin: the tool is added to the outbound body only when the
-caller asks for it on a cloud OpenAI base; the SSE output_item.done
-for ``image_generation_call`` produces the expected _toolEvent chunks;
-non-cloud bases drop the tool silently.
+The tool is a server-side Responses-API tool (``{type: "image_generation"}``);
+the result comes back as an ``image_generation_call`` output item, which Studio
+translates into ``_toolEvent`` chunks so the chat adapter renders it inline.
+Tests pin: the tool is added to the body only on a cloud OpenAI base when asked
+for, the done event produces the expected chunks, and non-cloud bases drop it.
 """
 
 import asyncio
@@ -75,8 +68,8 @@ def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
 
 
 def _collect_tool_events(monkeypatch) -> list[dict]:
-    """Drive a Responses stream that emits one image_generation_call done
-    event and return the parsed _toolEvent chunks."""
+    """Drive a Responses stream with one image_generation_call done event and
+    return the parsed _toolEvent chunks."""
 
     sse = (
         b"event: response.output_item.done\n"
@@ -207,9 +200,13 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events
     assert len(ends) == 1, image_events
+    # `_server_tool: True` marks this as a provider-side synthetic tool card
+    # for the frontend's history serializer.
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
+        "_server_tool": True,
+        "openai_image_generation_call_id": "img_abc",
     }
     assert ends[0]["image_b64"] == "AAAA"
     assert ends[0]["image_mime"] == "image/png"

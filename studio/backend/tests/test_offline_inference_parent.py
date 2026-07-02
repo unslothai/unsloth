@@ -103,10 +103,7 @@ class TestEnvOffline:
 
 class TestTransformersVersionOfflineShortCircuits:
     def test_tokenizer_config_skips_urllib_when_offline(
-        self,
-        monkeypatch,
-        clean_offline_env,
-        tmp_path,
+        self, monkeypatch, clean_offline_env, tmp_path
     ):
         # No local config + offline env -> must NOT call urlopen.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -118,12 +115,7 @@ class TestTransformersVersionOfflineShortCircuits:
         with patch("urllib.request.urlopen", boom):
             assert _check_tokenizer_config_needs_v5(unique) is False
 
-    def test_config_550_skips_urllib_when_offline(
-        self,
-        monkeypatch,
-        clean_offline_env,
-        tmp_path,
-    ):
+    def test_config_550_skips_urllib_when_offline(self, monkeypatch, clean_offline_env, tmp_path):
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         unique = f"unsloth/never-cached-{tmp_path.name}-cfg"
 
@@ -139,9 +131,7 @@ class TestLoraDetectOffline:
     OfflineModeIsEnabled; cached adapter_config.json wins."""
 
     def test_hf_model_info_short_circuits_with_OfflineModeIsEnabled(
-        self,
-        monkeypatch,
-        clean_offline_env,
+        self, monkeypatch, clean_offline_env
     ):
         from unittest.mock import MagicMock
 
@@ -150,7 +140,7 @@ class TestLoraDetectOffline:
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
         # Studio catches Exception broadly; pin that the call still happens
-        # (so cached LoRAs aren't missed) and returns fast via mock.
+        # (so cached LoRAs aren't missed) and returns fast via the mock.
         class _OfflineModeIsEnabled(Exception):
             pass
 
@@ -171,10 +161,7 @@ class TestLoraDetectOffline:
         )
 
     def test_cached_lora_detected_when_api_unreachable(
-        self,
-        monkeypatch,
-        clean_offline_env,
-        tmp_path,
+        self, monkeypatch, clean_offline_env, tmp_path
     ):
         """A cached adapter_config.json must still mark the repo as a
         LoRA when the HF API is unreachable."""

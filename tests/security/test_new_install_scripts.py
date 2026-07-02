@@ -1,10 +1,7 @@
 """Regression tests for `scripts/check_new_install_scripts.py`.
 
-The fixture lockfiles are tiny dicts written to `tmp_path` so the
-tests stay self-contained. The session-wide `network_blocker` fixture
-in conftest.py refuses any real-world socket connect; the scanner
-treats that block as "registry unreachable, emit finding anyway",
-which is the offline-safe path under test.
+Lockfiles are tiny dicts in tmp_path; the network_blocker fixture forces the
+scanner's offline path (registry unreachable -> emit finding anyway).
 """
 
 from __future__ import annotations
@@ -18,7 +15,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_new_install_scripts.py"
 
 
-def _run(base: Path, head: Path, *, timeout: int = 30) -> subprocess.CompletedProcess:
+def _run(
+    base: Path,
+    head: Path,
+    *,
+    timeout: int = 30,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -39,11 +41,7 @@ def _write(path: Path, content: dict) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# Lockfile fixtures.
-# ---------------------------------------------------------------------------
-
-
+# Lockfile fixtures
 def _v3_lockfile(packages: dict) -> dict:
     return {
         "name": "unsloth-theme",
@@ -65,11 +63,7 @@ def _v2_lockfile(packages: dict, dependencies: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Tests.
-# ---------------------------------------------------------------------------
-
-
+# Tests
 def test_no_new_install_scripts_exit_0(tmp_path: Path):
     """If base == head, nothing new can have been added."""
     same = _v3_lockfile(
@@ -103,9 +97,7 @@ def test_new_dep_with_postinstall_exits_1(tmp_path: Path):
     head_pkgs = dict(base_pkgs)
     head_pkgs["node_modules/evil-postinstall"] = {
         "version": "1.0.0",
-        "resolved": (
-            "https://registry.npmjs.org/evil-postinstall/-/evil-postinstall-1.0.0.tgz"
-        ),
+        "resolved": ("https://registry.npmjs.org/evil-postinstall/-/evil-postinstall-1.0.0.tgz"),
         "integrity": "sha512-fake",
         "hasInstallScript": True,
     }
@@ -138,7 +130,7 @@ def test_existing_dep_with_postinstall_ignored(tmp_path: Path):
         },
     }
     head_pkgs = dict(base_pkgs)
-    # An ENTIRELY UNRELATED non-install-script dep is added in head.
+    # Add an unrelated non-install-script dep in head.
     head_pkgs["node_modules/lodash"] = {
         "version": "4.17.21",
         "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
@@ -166,8 +158,7 @@ def test_v2_v3_lockfile_format_support(tmp_path: Path):
         "node_modules/v2-postinstall-dep": {
             "version": "2.0.0",
             "resolved": (
-                "https://registry.npmjs.org/v2-postinstall-dep/-/"
-                "v2-postinstall-dep-2.0.0.tgz"
+                "https://registry.npmjs.org/v2-postinstall-dep/-/v2-postinstall-dep-2.0.0.tgz"
             ),
             "integrity": "sha512-fake",
             "hasInstallScript": True,
@@ -177,8 +168,7 @@ def test_v2_v3_lockfile_format_support(tmp_path: Path):
         "v2-postinstall-dep": {
             "version": "2.0.0",
             "resolved": (
-                "https://registry.npmjs.org/v2-postinstall-dep/-/"
-                "v2-postinstall-dep-2.0.0.tgz"
+                "https://registry.npmjs.org/v2-postinstall-dep/-/v2-postinstall-dep-2.0.0.tgz"
             ),
             "integrity": "sha512-fake",
         },
@@ -187,13 +177,11 @@ def test_v2_v3_lockfile_format_support(tmp_path: Path):
     head = _write(tmp_path / "head.json", _v2_lockfile(head_pkgs, head_deps))
     result = _run(base, head)
     assert result.returncode == 1, (
-        f"expected exit 1 for v2 lockfile, got {result.returncode}; "
-        f"stderr:\n{result.stderr}"
+        f"expected exit 1 for v2 lockfile, got {result.returncode}; " f"stderr:\n{result.stderr}"
     )
     assert "v2-postinstall-dep" in result.stderr
 
-    # And again: same packages dict but lockfileVersion 3 -- should
-    # produce the same finding shape.
+    # Same packages as lockfileVersion 3 must give the same finding.
     base_v3 = _write(tmp_path / "base_v3.json", _v3_lockfile(base_pkgs))
     head_v3 = _write(tmp_path / "head_v3.json", _v3_lockfile(head_pkgs))
     result_v3 = _run(base_v3, head_v3)

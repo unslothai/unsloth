@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic response schemas for endpoints that previously returned raw dicts.
-These are small response models for training and model management routes.
-"""
+"""Pydantic response models for training and model management routes
+(previously returned as raw dicts)."""
 
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -23,16 +21,10 @@ class TrainingStopResponse(BaseModel):
 class TrainingMetricsResponse(BaseModel):
     """Response for training metrics history"""
 
-    loss_history: List[float] = Field(
-        default_factory = list, description = "Loss values per step"
-    )
-    lr_history: List[float] = Field(
-        default_factory = list, description = "Learning rate per step"
-    )
+    loss_history: List[float] = Field(default_factory = list, description = "Loss values per step")
+    lr_history: List[float] = Field(default_factory = list, description = "Learning rate per step")
     step_history: List[int] = Field(default_factory = list, description = "Step numbers")
-    grad_norm_history: List[float] = Field(
-        default_factory = list, description = "Gradient norm values"
-    )
+    grad_norm_history: List[float] = Field(default_factory = list, description = "Gradient norm values")
     grad_norm_step_history: List[int] = Field(
         default_factory = list, description = "Step numbers for gradient norm values"
     )

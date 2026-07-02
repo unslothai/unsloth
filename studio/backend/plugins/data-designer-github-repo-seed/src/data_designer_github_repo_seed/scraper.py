@@ -3,11 +3,10 @@
 
 """Multi-repo GitHub scraper for the Studio seed plugin.
 
-Drives the GraphQL-based scraper in `scraper_impl/` per repo. Each repo is
-scraped with a trial_limits cap so we stop at `limit` items per resource.
-After scraping, we read the per-resource JSONL shards and flatten them into
-a single unified JSONL with stable columns (`item_type`, `repo`, `number`,
-`title`, `body`, ...).
+Drives the GraphQL scraper in `scraper_impl/` per repo, capped via trial_limits
+to stop at `limit` items per resource. Then reads the per-resource JSONL shards
+and flattens them into one unified JSONL with stable columns (`item_type`,
+`repo`, `number`, `title`, `body`, ...).
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-# Defer scraper_impl imports until `scrape()` runs with a resolved token.
+# Defer scraper_impl imports until scrape() has a resolved token.
 _IMPL_DIR = Path(__file__).parent / "scraper_impl"
 
 
@@ -91,18 +90,13 @@ def _read_jsonl(path: Path, max_rows: int | None = None):
 
 
 def _flatten_issue_row(r: dict, repo: str, include_comments: bool, max_c: int) -> dict:
-    labels = [
-        l.get("name")
-        for l in (r.get("labels", {}) or {}).get("nodes", [])
-        if l.get("name")
-    ]
+    labels = [l.get("name") for l in (r.get("labels", {}) or {}).get("nodes", []) if l.get("name")]
     comments_nodes = (r.get("comments") or {}).get("nodes") or []
     comments_text = ""
     if include_comments and comments_nodes:
         kept = comments_nodes[:max_c]
         comments_text = "\n\n".join(
-            f"[{(c.get('author') or {}).get('login', '?')}]: {c.get('body') or ''}"
-            for c in kept
+            f"[{(c.get('author') or {}).get('login', '?')}]: {c.get('body') or ''}" for c in kept
         )
     return {
         "item_type": "issue",
@@ -121,18 +115,13 @@ def _flatten_issue_row(r: dict, repo: str, include_comments: bool, max_c: int) -
 
 
 def _flatten_pr_row(r: dict, repo: str, include_comments: bool, max_c: int) -> dict:
-    labels = [
-        l.get("name")
-        for l in (r.get("labels", {}) or {}).get("nodes", [])
-        if l.get("name")
-    ]
+    labels = [l.get("name") for l in (r.get("labels", {}) or {}).get("nodes", []) if l.get("name")]
     comments_nodes = (r.get("comments") or {}).get("nodes") or []
     comments_text = ""
     if include_comments and comments_nodes:
         kept = comments_nodes[:max_c]
         comments_text = "\n\n".join(
-            f"[{(c.get('author') or {}).get('login', '?')}]: {c.get('body') or ''}"
-            for c in kept
+            f"[{(c.get('author') or {}).get('login', '?')}]: {c.get('body') or ''}" for c in kept
         )
     return {
         "item_type": "pull",
@@ -176,7 +165,7 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
     client = GitHubClient(token = token.value, token_source = token.source)
     base_dir.mkdir(parents = True, exist_ok = True)
 
-    # Per-resource trial limits. limit <= 0 means "all": use a very large cap.
+    # Per-resource limits; limit <= 0 means "all" (large cap).
     effective_limit = cfg.limit if cfg.limit and cfg.limit > 0 else 1_000_000
     trial_limits: dict[str, int] = {}
     if "issues" in cfg.item_types:
@@ -205,14 +194,8 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
                 scraper.scrape_prs()
             if "commits" in cfg.item_types:
                 default_ref = repo_meta.get("defaultBranchRef") or {}
-                default_branch = (
-                    default_ref.get("name") if isinstance(default_ref, dict) else None
-                )
-                branch = (
-                    f"refs/heads/{default_branch}"
-                    if default_branch
-                    else "refs/heads/main"
-                )
+                default_branch = default_ref.get("name") if isinstance(default_ref, dict) else None
+                branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
                 scraper.scrape_commits(branch = branch)
         finally:
             scraper.close()
@@ -222,16 +205,12 @@ def scrape(cfg: ScrapeConfig, base_dir: Path):
         if "issues" in cfg.item_types:
             for row in _read_jsonl(repo_dir / "issues.jsonl", read_cap):
                 all_rows.append(
-                    _flatten_issue_row(
-                        row, repo, cfg.include_comments, cfg.max_comments_per_item
-                    )
+                    _flatten_issue_row(row, repo, cfg.include_comments, cfg.max_comments_per_item)
                 )
         if "pulls" in cfg.item_types:
             for row in _read_jsonl(repo_dir / "pull_requests.jsonl", read_cap):
                 all_rows.append(
-                    _flatten_pr_row(
-                        row, repo, cfg.include_comments, cfg.max_comments_per_item
-                    )
+                    _flatten_pr_row(row, repo, cfg.include_comments, cfg.max_comments_per_item)
                 )
         if "commits" in cfg.item_types:
             for row in _read_jsonl(repo_dir / "commits.jsonl", read_cap):

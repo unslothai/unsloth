@@ -49,7 +49,7 @@ DEFAULT_MODELS_STANDARD = [
 
 
 def get_default_models() -> list[str]:
-    hw.get_device()  # ensure detect_hardware() has run
+    hw.get_device()  # ensures detect_hardware() has run
     if hw.CHAT_ONLY:
         return list(DEFAULT_MODELS_GGUF)
     return list(DEFAULT_MODELS_STANDARD)

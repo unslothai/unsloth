@@ -24,6 +24,7 @@ const initialState: TrainingRuntimeState = {
   startError: null,
   startModelName: null,
   startDatasetName: null,
+  startProjectName: null,
   startFromResume: false,
   sseConnected: false,
   firstStepReceived: false,
@@ -46,6 +47,7 @@ const initialState: TrainingRuntimeState = {
   resetGeneration: 0,
   stopRequested: false,
   selectedHistoryRunId: null,
+  currentRunViewActive: false,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -124,8 +126,12 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   setHasHydrated: (value) => set({ hasHydrated: value }),
   setStarting: (value) => set({ isStarting: value }),
   setStartError: (value) => set({ startError: value }),
-  setStartResources: (startModelName, startDatasetName, startFromResume = false) =>
-    set({ startModelName, startDatasetName, startFromResume }),
+  setStartResources: (
+    startModelName,
+    startDatasetName,
+    startFromResume = false,
+    startProjectName = null,
+  ) => set({ startModelName, startDatasetName, startProjectName, startFromResume }),
   setSseConnected: (value) => set({ sseConnected: value }),
   setLastEventId: (value) => set({ lastEventId: value }),
 
@@ -182,6 +188,9 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   setSelectedHistoryRunId: (selectedHistoryRunId) =>
     set({ selectedHistoryRunId }),
 
+  setCurrentRunViewActive: (currentRunViewActive) =>
+    set({ currentRunViewActive }),
+
   applyStatus: (payload) =>
     set((state) => {
       const metricHistory = applyMetricHistoryFromStatus(payload);
@@ -205,8 +214,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         currentStep:
           typeof detailStep === "number" ? Math.max(detailStep, 0) : state.currentStep,
         totalSteps:
-          typeof detailTotal === "number"
-            ? Math.max(detailTotal, 0)
+          typeof detailTotal === "number" && detailTotal > 0
+            ? detailTotal
             : state.totalSteps,
         currentLoss:
           typeof detailLoss === "number" ? detailLoss : state.currentLoss,
@@ -269,8 +278,14 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         ...state,
         jobId: payload.job_id || state.jobId,
         currentStep: step,
-        totalSteps: Math.max(payload.total_steps, state.totalSteps),
-        currentLoss: currentLoss ?? state.currentLoss,
+        totalSteps:
+          typeof payload.total_steps === "number" && payload.total_steps > 0
+            ? payload.total_steps
+            : state.totalSteps,
+        // A null loss at a new step means the backend reported a non-finite
+        // loss; clear the display instead of keeping the stale value.
+        currentLoss:
+          currentLoss ?? (step > state.currentStep ? null : state.currentLoss),
         currentLearningRate: currentLearningRate ?? state.currentLearningRate,
         progressPercent: payload.progress_percent,
         currentEpoch: payload.epoch ?? state.currentEpoch,

@@ -30,7 +30,17 @@ except ImportError:
     normalize_unstructured_text = None
     resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
+from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
+from utils.utils import log_and_http_error
+from utils.upload_limits import (
+    LOCAL_SEED_UPLOAD_MAX_BYTES,
+    LOCAL_SEED_UPLOAD_MAX_LABEL,
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL,
+    UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES,
+    UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
+)
 
 from models.data_recipe import (
     SeedInspectRequest,
@@ -39,6 +49,7 @@ from models.data_recipe import (
     UnstructuredFileUploadResponse,
 )
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
@@ -47,17 +58,12 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-MAX_TOTAL_SIZE = 100 * 1024 * 1024  # 100MB
-
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def _validate_safe_id(value: str, label: str) -> str:
     if not value or not _SAFE_ID_RE.match(value):
-        raise HTTPException(
-            400, f"Invalid {label}: must be alphanumeric/dash/underscore only"
-        )
+        raise HTTPException(400, f"Invalid {label}: must be alphanumeric/dash/underscore only")
     return value
 
 
@@ -67,8 +73,7 @@ def _serialize_preview_value(value: Any) -> Any:
 
 def _serialize_preview_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {str(key): _serialize_preview_value(value) for key, value in row.items()}
-        for row in rows
+        {str(key): _serialize_preview_value(value) for key, value in row.items()} for row in rows
     ]
 
 
@@ -116,7 +121,9 @@ def _select_best_file(data_files: list[str], split: str = DEFAULT_SPLIT) -> str 
 
 
 def _resolve_seed_hf_path(
-    dataset_name: str, data_files: list[str], split: str = DEFAULT_SPLIT
+    dataset_name: str,
+    data_files: list[str],
+    split: str = DEFAULT_SPLIT,
 ) -> str | None:
     selected = _select_best_file(data_files, split)
     if not selected:
@@ -156,10 +163,7 @@ def _build_stream_load_kwargs(
 
 
 def _load_preview_rows(
-    *,
-    load_dataset_fn,
-    load_kwargs: dict[str, Any],
-    preview_size: int,
+    *, load_dataset_fn, load_kwargs: dict[str, Any], preview_size: int
 ) -> list[dict[str, Any]]:
     streamed_ds = load_dataset_fn(**load_kwargs)
     return [row for row in islice(streamed_ds, preview_size)]
@@ -190,14 +194,16 @@ def _decode_base64_payload(content_base64: str) -> bytes:
         raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
 
 
-def _read_preview_rows_from_local_file(
-    path: Path, preview_size: int
-) -> list[dict[str, Any]]:
+def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
     try:
         import pandas as pd
     except ImportError as exc:
-        raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
         ) from exc
 
     ext = path.suffix.lower()
@@ -226,8 +232,12 @@ def _read_preview_rows_from_local_file(
     except HTTPException:
         raise
     except (ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+        raise log_and_http_error(
+            exc,
+            422,
+            "seed inspect failed",
+            event = "data_recipe.seed.local_preview_failed",
+            log = logger,
         ) from exc
 
     rows = df.to_dict(orient = "records")
@@ -235,11 +245,7 @@ def _read_preview_rows_from_local_file(
 
 
 def _read_preview_rows_from_unstructured_file(
-    *,
-    path: Path,
-    preview_size: int,
-    chunk_size: int | None,
-    chunk_overlap: int | None,
+    *, path: Path, preview_size: int, chunk_size: int | None, chunk_overlap: int | None
 ) -> list[dict[str, Any]]:
     if resolve_chunking is None or build_unstructured_preview_rows is None:
         raise HTTPException(
@@ -255,8 +261,12 @@ def _read_preview_rows_from_unstructured_file(
             chunk_overlap = overlap,
         )
     except (FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+        raise log_and_http_error(
+            exc,
+            422,
+            "seed inspect failed",
+            event = "data_recipe.seed.unstructured_preview_failed",
+            log = logger,
         ) from exc
     return _serialize_preview_rows(rows)
 
@@ -282,9 +292,7 @@ def _read_preview_rows_from_multi_files(
     for fid, fname in zip(file_ids, file_names):
         extracted = block_dir / f"{fid}.extracted.txt"
         if not extracted.exists():
-            raise HTTPException(
-                404, f"Extracted text not found for file: {fname} (id: {fid})"
-            )
+            raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
         file_entries.append((extracted, fname))
 
     return build_multi_file_preview_rows(
@@ -307,8 +315,12 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     try:
         from datasets import load_dataset
     except ImportError as exc:
-        raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
         ) from exc
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
@@ -351,14 +363,16 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
                 preview_size = preview_size,
             )
         except (ValueError, OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code = 422, detail = f"seed inspect failed: {exc}"
+            raise log_and_http_error(
+                exc,
+                422,
+                "seed inspect failed",
+                event = "data_recipe.seed.hf_preview_failed",
+                log = logger,
             ) from exc
 
     if not preview_rows:
-        raise HTTPException(
-            status_code = 422, detail = "dataset appears empty or unreadable"
-        )
+        raise HTTPException(status_code = 422, detail = "dataset appears empty or unreadable")
     preview_rows = _serialize_preview_rows(preview_rows)
     columns = _extract_columns(preview_rows)
 
@@ -367,9 +381,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     else:
         resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
         if not resolved_path:
-            raise HTTPException(
-                status_code = 422, detail = "unable to resolve seed dataset path"
-            )
+            raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
 
     return SeedInspectResponse(
         dataset_name = dataset_name,
@@ -382,18 +394,16 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
 
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
-    """Extract text from uploaded file based on extension, converting to markdown where possible."""
+    """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
     elif ext == ".pdf":
         import pymupdf4llm
-
         raw = pymupdf4llm.to_markdown(
             str(file_path), write_images = False, show_progress = False, use_ocr = False
         )
     elif ext == ".docx":
         import mammoth
-
         with open(str(file_path), "rb") as f:
             result = mammoth.convert_to_markdown(f)
             raw = result.value
@@ -405,32 +415,25 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     return normalize_unstructured_text(raw)
 
 
-def _get_block_total_size(block_dir: Path, file_ids: list[str]) -> int:
-    """Sum raw upload sizes for tracked file IDs only."""
-    if not block_dir.exists() or not file_ids:
+def _get_block_total_size(block_dir: Path) -> int:
+    """Sum raw upload sizes for the whole block from server-owned files."""
+    if not block_dir.exists():
         return 0
-    id_set = set(file_ids)
     total = 0
     for f in block_dir.iterdir():
         if not f.is_file():
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
             continue
-        stem = f.name.split(".")[0]
-        if stem in id_set:
-            total += f.stat().st_size
+        total += f.stat().st_size
     return total
 
 
 @router.post("/seed/upload-unstructured-file")
 async def upload_unstructured_file(
-    file: UploadFile = FastAPIFile(...),
-    block_id: str = Form(...),
-    existing_file_ids: str = Form(""),
+    file: UploadFile = FastAPIFile(...), block_id: str = Form(...)
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
-
-    tracked_ids = [fid.strip() for fid in existing_file_ids.split(",") if fid.strip()]
 
     original_filename = file.filename or "upload"
     ext = Path(original_filename).suffix.lower()
@@ -446,17 +449,19 @@ async def upload_unstructured_file(
     if size_bytes == 0:
         raise HTTPException(400, "Empty file not allowed")
 
-    if size_bytes > MAX_FILE_SIZE:
+    if size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES:
         raise HTTPException(
-            413, f"File too large ({size_bytes} bytes). Maximum is 50MB."
+            413,
+            f"File too large ({size_bytes} bytes). Maximum is {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}.",
         )
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
-    if current_total + size_bytes > MAX_TOTAL_SIZE:
+    current_total = _get_block_total_size(block_dir)
+    if current_total + size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES:
         raise HTTPException(
-            413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
+            413,
+            f"Total upload limit ({UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}) exceeded",
         )
 
     file_id = uuid4().hex
@@ -476,23 +481,57 @@ async def upload_unstructured_file(
                 error = "No extractable text found in file",
             )
         extracted_path.write_text(extracted_text, encoding = "utf-8")
-    except Exception as e:
+    except ImportError as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
+        missing = getattr(e, "name", None)
+        expected_missing = {".pdf": "pymupdf4llm", ".docx": "mammoth"}.get(ext)
+        if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
+            logger.error(
+                "data_recipe.seed.text_extraction_dependency_missing",
+                error = str(e),
+                missing = missing,
+                exc_info = True,
+            )
+            return UnstructuredFileUploadResponse(
+                file_id = file_id,
+                filename = original_filename,
+                size_bytes = size_bytes,
+                status = "error",
+                error = f"Cannot read {ext} files: the '{missing}' package is not installed.",
+            )
+        logger.error(
+            "data_recipe.seed.text_extraction_failed",
+            error = str(e),
+            exc_info = True,
+        )
         return UnstructuredFileUploadResponse(
             file_id = file_id,
             filename = original_filename,
             size_bytes = size_bytes,
             status = "error",
-            error = f"Text extraction failed: {type(e).__name__}: {e}",
+            error = "Text extraction failed.",
+        )
+    except Exception as e:
+        raw_path.unlink(missing_ok = True)
+        extracted_path.unlink(missing_ok = True)
+        logger.error(
+            "data_recipe.seed.text_extraction_failed",
+            error = str(e),
+            exc_info = True,
+        )
+        return UnstructuredFileUploadResponse(
+            file_id = file_id,
+            filename = original_filename,
+            size_bytes = size_bytes,
+            status = "error",
+            error = "Text extraction failed.",
         )
 
     try:
         meta_path = block_dir / f"{file_id}.meta.json"
         meta_path.write_text(
-            json.dumps(
-                {"original_filename": original_filename, "size_bytes": size_bytes}
-            ),
+            json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
             encoding = "utf-8",
         )
     except OSError:
@@ -573,8 +612,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
-    # Legacy single-file unstructured path only supports .txt/.md
-    # PDF/DOCX extraction uses the multi-file upload endpoint instead
+    # Legacy single-file path is .txt/.md only; PDF/DOCX use multi-file upload
     _LEGACY_UNSTRUCTURED_EXTS = {".txt", ".md"}
     if seed_source_type == "unstructured":
         if ext not in _LEGACY_UNSTRUCTURED_EXTS:
@@ -594,8 +632,11 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code = 413, detail = "file too large (max 50MB)")
+    if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code = 413,
+            detail = f"file too large (max {LOCAL_SEED_UPLOAD_MAX_LABEL})",
+        )
 
     ensure_dir(SEED_UPLOAD_DIR)
     stored_name = f"{uuid4().hex}_{filename}"
@@ -615,9 +656,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             int(payload.preview_size),
         )
     if not preview_rows:
-        raise HTTPException(
-            status_code = 422, detail = "dataset appears empty or unreadable"
-        )
+        raise HTTPException(status_code = 422, detail = "dataset appears empty or unreadable")
     columns = _extract_columns(preview_rows)
 
     return SeedInspectResponse(

@@ -263,7 +263,7 @@ jobs:
           # unsloth_zoo.vision_utils imports PIL at module top, and the
           # easiest way to get a torch-compatible PIL on a CPU runner is
           # to let torchvision pull the right Pillow version.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
                       'torch>=2.8,<2.11' 'torchvision<0.26'
           # Pin to the same versions update_all_notebooks.py installs in
           # generated notebooks. Keep these in lockstep with PIN_TRL /
@@ -285,7 +285,15 @@ jobs:
           # The PR-time CI must validate the code in this PR; PyPI unsloth
           # may lag the in-repo CPU-torch fallback in unsloth/kernels/utils.py
           # (lines 162-170) that handles missing torch._C._cuda_getCurrentRawStream.
-          pip install --no-deps unsloth_zoo
+          # unsloth_zoo from git main mirrors every other CI (Core / MLX /
+          # install.sh) so PR-time validation sees the same zoo HEAD.
+          for attempt in 1 2 3; do
+            if pip install --no-deps "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+              break
+            fi
+            [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
+            sleep $((5 * attempt))
+          done
           pip install --no-deps -e ./unsloth
 
       - name: Convert notebooks for AST scan

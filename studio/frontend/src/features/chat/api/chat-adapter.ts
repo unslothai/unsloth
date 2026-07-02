@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth/session";
+import { getAuthToken } from "@/features/auth";
+import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
+import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
@@ -19,30 +21,49 @@ import {
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
+  reasoningCapsFromLoad,
+  tryAdoptServerActiveModel,
+} from "../lib/apply-inference-status-to-store";
+import {
   clampReasoningEffortToLevels,
+  getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  isGeminiCustomOpenAICompatBase,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "../provider-capabilities";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  type PendingImageEditReference,
+  type RagAutoInject,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
+  resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
+  GgufVariantDetail,
   OpenAIChatCompletionsRequest,
+  OpenAIChatMessage,
   OpenAIMessageContent,
+  OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   getStoredChatThread,
+  getStoredChatProject,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -65,11 +86,30 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 
+// Small models (<=9B) answer from memory instead of calling search, so "auto"
+// forces retrieval for them and leaves it to larger ones.
+const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  const size = parseParamCountB(checkpoint);
+  // Unknown size -> enable.
+  return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
+}
+
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // External prompt-cache fields (see _build_usage_chunk in
+  // external_provider.py); cache_creation is Anthropic-only.
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 /** Server-side timing data from llama-server's timings object. */
@@ -83,32 +123,234 @@ interface ServerTimings {
   predicted_ms: number;
   predicted_per_token_ms: number;
   predicted_per_second: number;
+  // DiffusionGemma-only extras (present when serving a diffusion model; ignored otherwise).
+  diffusion?: boolean;
+  diffusion_blocks?: number;
+  diffusion_steps?: number;
+  diffusion_canvas?: number;
+  diffusion_prompt_n?: number;
+  diffusion_prompt_prepare_ms?: number;
+  diffusion_decode_ms?: number;
+  diffusion_wall_ms?: number;
+  // Honest throughput, matching the standalone diffusion CLI:
+  //   effective = canvas*blocks/wall, parallel = canvas/per_step, output = answer tokens/wall.
+  diffusion_effective_tok_s?: number;
+  diffusion_parallel_tok_s?: number;
+  diffusion_output_tok_s?: number;
+  diffusion_steps_per_second?: number;
 }
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
+type OpenAIStreamAdapterOptions = {
+  modelType?: ModelType;
+  pairId?: string;
+};
+
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
+// Synthetic provider-side tool names; backend stamps args._server_tool so
+// user functions with the same name aren't dropped. Mirror of backend
+// _SERVER_SIDE_BUILTIN_TOOL_NAMES.
+const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
+  "web_search",
+  "web_fetch",
+  "code_execution",
+  "image_generation",
+]);
+
 /**
- * Match error messages that indicate the request filled or would fill
- * the KV cache, so the UI can show a dedicated toast pointing at the
- * ``Context Length`` setting.
+ * Whether a persisted tool-call part is provider-side synthetic and should
+ * be stripped from outbound history. Matches on the args._server_tool marker
+ * or a Gemini native_part payload (no shape heuristic, since user functions
+ * can legitimately share a name).
+ */
+function isServerSideBuiltinToolPart(
+  toolNameLower: string,
+  _argsObj: Record<string, unknown> | null,
+  hasServerToolMarker: boolean,
+  hasNativePart: boolean,
+): boolean {
+  if (!SERVER_SIDE_BUILTIN_TOOL_NAMES.has(toolNameLower)) return false;
+  if (hasServerToolMarker) return true;
+  return hasNativePart;
+}
+
+const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
+
+type ThreadAutosaveHandle = {
+  registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
+  awaitFirstSave(threadId: string | undefined): Promise<void>;
+};
+
+const pendingFirstThreadSaves = new Map<string, Promise<void>>();
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSystemVariablesMap(raw: string): Record<string, unknown> {
+  if (!raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Invalid JSON: keep unresolved placeholders in output prompt.
+  }
+  return {};
+}
+
+function hasOwn(object: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function getNestedValue(
+  values: Record<string, unknown>,
+  path: string,
+): unknown | undefined {
+  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  let current: unknown = values;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    if (!hasOwn(current, part)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalDate(now: Date): string {
+  return [
+    now.getFullYear(),
+    padDatePart(now.getMonth() + 1),
+    padDatePart(now.getDate()),
+  ].join("-");
+}
+
+function formatLocalTime(now: Date): string {
+  return [
+    padDatePart(now.getHours()),
+    padDatePart(now.getMinutes()),
+    padDatePart(now.getSeconds()),
+  ].join(":");
+}
+
+function formatTimezoneOffset(now: Date): string {
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  return `${sign}${padDatePart(hours)}:${padDatePart(minutes)}`;
+}
+
+function stringifyTemplateValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function resolveSystemPromptVariables(
+  prompt: string,
+  customVariablesRaw: string,
+): string {
+  if (!prompt) {
+    return prompt;
+  }
+  const now = new Date();
+  const localDate = formatLocalDate(now);
+  const localTime = formatLocalTime(now);
+  const systemVariables: Record<string, string> = {
+    $date: localDate,
+    $time: localTime,
+    $now: `${localDate}T${localTime}${formatTimezoneOffset(now)}`,
+  };
+  const customVariables = parseSystemVariablesMap(customVariablesRaw);
+  return prompt.replaceAll(
+    /{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}/g,
+    (full, keyRaw) => {
+      const key = String(keyRaw).trim();
+      if (hasOwn(systemVariables, key)) {
+        return systemVariables[key] ?? full;
+      }
+      const resolved = getNestedValue(customVariables, key);
+      if (resolved === undefined) {
+        return full;
+      }
+      return stringifyTemplateValue(resolved);
+    },
+  );
+}
+
+export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
+  registerFirstSave(threadId, promise) {
+    const trackedPromise = promise.catch(() => {});
+    const cleanupPromise = trackedPromise.finally(() => {
+      if (pendingFirstThreadSaves.get(threadId) === cleanupPromise) {
+        pendingFirstThreadSaves.delete(threadId);
+      }
+    });
+    pendingFirstThreadSaves.set(threadId, cleanupPromise);
+    return cleanupPromise;
+  },
+
+  async awaitFirstSave(threadId) {
+    if (!threadId) {
+      return;
+    }
+    const pending = pendingFirstThreadSaves.get(threadId);
+    if (!pending) {
+      return;
+    }
+    await Promise.race([pending, wait(FIRST_THREAD_SAVE_TIMEOUT_MS)]);
+  },
+};
+
+export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
+  return ThreadAutosaveHandle;
+}
+
+/**
+ * Match error messages indicating the request filled (or would fill) the KV
+ * cache, so the UI can toast a pointer at the ``Context Length`` setting.
  *
  * Two wordings reach the client and both must hit:
- *
- *   1. The raw llama-server text when ``--no-context-shift`` trips --
+ *   1. Raw llama-server text when ``--no-context-shift`` trips:
  *      "the request exceeds the available context size (N tokens)".
- *   2. The rewritten friendly text emitted by
- *      ``backend/routes/inference.py::_friendly_error`` -- "Message too
- *      long: X tokens exceeds the Y-token context window. Try
- *      increasing the Context Length ..." This is the one most users
- *      see on the streaming GGUF path.
+ *   2. The friendly rewrite from
+ *      ``backend/routes/inference.py::_friendly_error``: "Message too long:
+ *      ... context window. Try increasing the Context Length ..." (the one
+ *      most users see on the streaming GGUF path).
  *
- * We match on substrings rather than full regexes because both layers
- * have drifted across versions (llama.cpp master has tweaked the
- * phrasing; ``_friendly_error`` has gone through several copy edits).
+ * Match substrings, not full regexes: both layers have drifted across
+ * versions (llama.cpp phrasing and _friendly_error copy edits).
  */
 export function isContextLimitError(message: string): boolean {
   if (!message) return false;
@@ -126,10 +368,6 @@ export function isContextLimitError(message: string): boolean {
   );
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function updateStoredChatThreadEventually(
   threadId: string,
   patch: Parameters<typeof updateStoredChatThread>[1],
@@ -141,6 +379,87 @@ async function updateStoredChatThreadEventually(
     if (updated) return;
     await wait(50);
   }
+}
+
+/**
+ * Return ``raw`` when it is a safe-to-navigate http(s) URL, else "".
+ * Rejects non-string input, CR/LF (header injection), and non-http(s)
+ * schemes (``javascript:`` / ``data:`` / ``vbscript:``) so provider/tool-
+ * controlled strings cannot land in an <a href>.
+ */
+function isSafeNavigableSourceUrl(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const value = raw.trim();
+  if (!value || /[\r\n]/.test(value)) return "";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // Fall through.
+  }
+  return "";
+}
+
+/** Convert an Anthropic document citation dict into a Sources-panel source. */
+function documentCitationToSource(
+  cit: Record<string, unknown>,
+  fallbackIdx: number,
+): {
+  type: "source";
+  sourceType: "url";
+  id: string;
+  url: string;
+  title: string;
+  metadata?: { description: string };
+} | null {
+  const source = typeof cit.source === "string" && cit.source ? cit.source : "";
+  const docTitle =
+    (typeof cit.document_title === "string" && cit.document_title) ||
+    (typeof cit.title === "string" && cit.title) ||
+    "";
+  const docIndex =
+    typeof cit.document_index === "number" ? cit.document_index : undefined;
+  // Only treat ``source`` as navigable when it is real http(s);
+  // search_result_location can carry a free-form id (e.g. ``kb-doc-42``)
+  // or a hostile scheme. Fall back to a stable doc anchor otherwise.
+  const url =
+    isSafeNavigableSourceUrl(source) ||
+    `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+  const title = docTitle || source || `Document ${fallbackIdx + 1}`;
+  const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
+  // Trim the cited snippet so the Sources panel stays scannable.
+  const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
+  // Anthropic numbers inline [N] per citation, not per source URL.
+  // Fold citation type + position-bearing fields into the id so distinct
+  // citations on the same source keep separate Sources entries.
+  const citationType =
+    typeof cit.type === "string" ? String(cit.type) : "";
+  const positionParts = [
+    cit.search_result_index,
+    cit.start_char_index,
+    cit.end_char_index,
+    cit.start_page_number,
+    cit.end_page_number,
+    cit.start_block_index,
+    cit.end_block_index,
+  ]
+    .filter((v) => typeof v === "number")
+    .map((v) => String(v))
+    .join(":");
+  const idAnchor = positionParts
+    ? `${citationType}:${positionParts}`
+    : `${citationType}:${fallbackIdx}`;
+  const id = `${url}#${idAnchor}`;
+  return {
+    type: "source" as const,
+    sourceType: "url" as const,
+    id,
+    url,
+    title,
+    ...(description ? { metadata: { description } } : {}),
+  };
 }
 
 /** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
@@ -167,7 +486,11 @@ function parseSourcesFromResult(raw: string): {
     const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
-      const url = urlMatch[1].trim();
+      // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
+      // output is attacker-controllable, so a hostile scheme must not
+      // reach the Sources panel <a href>.
+      const url = isSafeNavigableSourceUrl(urlMatch[1]);
+      if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();
       sources.push({
         type: "source" as const,
@@ -194,21 +517,18 @@ function estimateTokenCount(text: string): number | undefined {
  * Normalize a streamed `delta.content` to a plain text string.
  *
  * OpenAI Chat Completions originally typed `delta.content` as a string, but
- * a number of providers now emit it as an array of structured content parts.
- * Concatenating that with `cumulativeText += delta` would stringify each
- * part as `[object Object]` — this function is the guard against that.
+ * some providers now emit an array of structured content parts; concatenating
+ * those directly would stringify each as `[object Object]`. This guards that.
  *
  * Handled part shapes:
  *   { type: "text" | "output_text", text | content: "..." }   → text body
  *   { type: "thinking" | "reasoning", thinking | text: "..." } → wrapped as
- *       inline `<think>...</think>` so the downstream parser
- *       (`parseAssistantContent`) lifts it into a reasoning part the same way
- *       it does for providers that emit thinking inline. Without this wrap,
- *       Mistral magistral and similar reasoning-part providers would lose
- *       their thinking panel.
+ *       inline `<think>...</think>` so `parseAssistantContent` lifts it into
+ *       a reasoning part (else Mistral magistral and similar reasoning-part
+ *       providers lose their thinking panel).
  *
- * Unknown part types are skipped — better to drop a stray field than to
- * stringify an object and pollute the rendered chat with `[object Object]`.
+ * Unknown part types are skipped — better to drop a stray field than
+ * stringify an object into the rendered chat.
  */
 function extractDeltaText(delta: unknown): string {
   const extractReasoningText = (payload: unknown): string => {
@@ -302,37 +622,30 @@ function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+  const pushImagePart = (part: { type: string }) => {
+    if (part.type !== "image" || !("image" in part)) {
+      return;
+    }
+    const src = (part as { image: string }).image;
+    if (!src) {
+      return;
+    }
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+      },
+    });
+  };
 
   for (const part of message.content ?? []) {
-    if (part.type === "image" && "image" in part) {
-      const src = (part as { image: string }).image;
-      if (src) {
-        parts.push({
-          type: "image_url",
-          image_url: {
-            url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
-          },
-        });
-      }
-    }
+    pushImagePart(part);
   }
 
   if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
     for (const attachment of message.attachments ?? []) {
       for (const part of attachment.content ?? []) {
-        if (part.type === "image" && "image" in part) {
-          const src = (part as { image: string }).image;
-          if (src) {
-            parts.push({
-              type: "image_url",
-              image_url: {
-                url: src.startsWith("data:")
-                  ? src
-                  : `data:image/png;base64,${src}`,
-              },
-            });
-          }
-        }
+        pushImagePart(part);
       }
     }
   }
@@ -340,37 +653,440 @@ function collectImageParts(
   return parts;
 }
 
-function toOpenAIMessage(message: RunMessage): {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
-} | null {
+function normalizeOpenAIReasoningItem(
+  value: unknown,
+): OpenAIReasoningContentPart | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  if (item.type !== "reasoning" || typeof item.id !== "string" || !item.id) {
+    return null;
+  }
+  const summary = Array.isArray(item.summary)
+    ? item.summary.flatMap((part) => {
+        if (!part || typeof part !== "object") {
+          return [];
+        }
+        const summaryPart = part as Record<string, unknown>;
+        return summaryPart.type === "summary_text" &&
+          typeof summaryPart.text === "string"
+          ? [{ type: "summary_text" as const, text: summaryPart.text }]
+          : [];
+      })
+    : [];
+  const normalized: OpenAIReasoningContentPart = {
+    type: "reasoning",
+    id: item.id,
+    summary,
+  };
+  if (
+    item.status === "in_progress" ||
+    item.status === "completed" ||
+    item.status === "incomplete"
+  ) {
+    normalized.status = item.status;
+  }
+  return normalized;
+}
+
+function toOpenAIImageEditReferenceMessage(
+  reference: PendingImageEditReference,
+): OpenAIChatMessage | null {
+  if (!reference.openaiImageGenerationCallId) {
+    return null;
+  }
+  const content: Exclude<OpenAIMessageContent, string> = [];
+  const reasoningItem = normalizeOpenAIReasoningItem(
+    reference.openaiReasoningItem,
+  );
+  if (reasoningItem) {
+    content.push(reasoningItem);
+  }
+  content.push({
+    type: "image_generation_call",
+    id: reference.openaiImageGenerationCallId,
+    ...(reference.openaiResponseId
+      ? { response_id: reference.openaiResponseId }
+      : {}),
+  });
+  return { role: "assistant", content };
+}
+
+// Refusal flag stamped on assistant metadata when the backend emits the
+// `anthropic_refusal` _toolEvent. We drop the refused pair from the next
+// request body (Anthropic: leaving refusals in context keeps refusing).
+// Using metadata, not text, prevents content from spoofing a reset.
+function isAnthropicRefusalMessage(message: RunMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const metadata = (message as { metadata?: unknown }).metadata as
+    | { custom?: Record<string, unknown> }
+    | undefined;
+  return metadata?.custom?.anthropicRefusal === true;
+}
+
+type SerializedMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: OpenAIMessageContent | null;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+    extra_content?: unknown;
+  }>;
+  tool_call_id?: string;
+  name?: string;
+  /**
+   * Gemini text-part thoughtSignature stashed during streaming on the
+   * last text MessagePart. Backend reads
+   * `extra_content.google.thought_signature` and attaches it to the
+   * matching Gemini text part on the outbound turn.
+   */
+  extra_content?: unknown;
+};
+
+type SerializedToolCall = NonNullable<SerializedMessage["tool_calls"]>[number];
+type SerializedToolResult = {
+  role: "tool";
+  content: string;
+  tool_call_id: string;
+  name?: string;
+};
+
+type ToolPartReplayMetadata = {
+  argsObj: Record<string, unknown> | null;
+  argsGoogle: Record<string, unknown> | null;
+  hasNativePart: boolean;
+  isServerSideBuiltin: boolean;
+};
+
+function getToolPartReplayMetadata(
+  tc: ToolCallMessagePart,
+): ToolPartReplayMetadata {
+  const toolNameLower = (tc.toolName ?? "").toLowerCase();
+  const argsObj =
+    tc.args && typeof tc.args === "object"
+      ? (tc.args as Record<string, unknown>)
+      : null;
+  const argsGoogle =
+    argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+      ? (argsObj.google as Record<string, unknown>)
+      : null;
+  const hasNativePart = Boolean(
+    argsGoogle &&
+      typeof argsGoogle.native_part === "object" &&
+      argsGoogle.native_part !== null,
+  );
+  const hasServerToolMarker = Boolean(
+    argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
+  );
+  return {
+    argsObj,
+    argsGoogle,
+    hasNativePart,
+    isServerSideBuiltin: isServerSideBuiltinToolPart(
+      toolNameLower,
+      argsObj,
+      hasServerToolMarker,
+      hasNativePart,
+    ),
+  };
+}
+
+type ToolReplayProvenance = {
+  source?: string;
+  [key: string]: unknown;
+};
+
+function getToolReplayProvenance(
+  part: ToolCallMessagePart,
+): ToolReplayProvenance | null {
+  const provenance = (part as { provenance?: unknown }).provenance;
+  if (
+    !provenance ||
+    typeof provenance !== "object" ||
+    Array.isArray(provenance)
+  ) {
+    return null;
+  }
+  return provenance as ToolReplayProvenance;
+}
+
+function hasToolReplayResult(part: ToolCallMessagePart): boolean {
+  const result = (part as { result?: unknown }).result;
+  return result !== undefined && result !== null;
+}
+
+function shouldFlushCompletedLocalToolPair(part: ToolCallMessagePart): boolean {
+  const provenance = getToolReplayProvenance(part);
+  if (provenance?.source !== "local") {
+    return false;
+  }
+  if (getToolPartReplayMetadata(part).isServerSideBuiltin) {
+    return false;
+  }
+  return hasToolReplayResult(part);
+}
+
+function serializeAssistantToolCallPart(
+  part: ToolCallMessagePart,
+): SerializedToolCall | null {
+  const tc = part as ToolCallMessagePart & {
+    argsText?: string;
+    extra_content?: unknown;
+  };
+  const { argsGoogle, hasNativePart, isServerSideBuiltin } =
+    getToolPartReplayMetadata(tc);
+
+  if (isServerSideBuiltin && !hasNativePart) {
+    return null;
+  }
+
+  const argumentsStr =
+    typeof tc.argsText === "string" && tc.argsText.length > 0
+      ? tc.argsText
+      : JSON.stringify(tc.args ?? {});
+  const entry: SerializedToolCall = {
+    id: tc.toolCallId,
+    type: "function" as const,
+    function: {
+      name: tc.toolName ?? "",
+      arguments: argumentsStr,
+    },
+  };
+  // Promote args.google to extra_content.google so the backend
+  // native_part replay branch can find it. The backend only inspects
+  // extra_content, not function.arguments.
+  if (tc.extra_content !== undefined) {
+    entry.extra_content = tc.extra_content;
+  } else if (argsGoogle) {
+    entry.extra_content = { google: argsGoogle };
+  }
+  return entry;
+}
+
+function serializeToolResultPart(
+  part: ToolCallMessagePart,
+): SerializedToolResult | null {
+  const tc = part as ToolCallMessagePart;
+  const result = (tc as { result?: unknown }).result;
+  const { isServerSideBuiltin } = getToolPartReplayMetadata(tc);
+
+  // Skip provider-side builtins; see isServerSideBuiltinToolPart.
+  if (isServerSideBuiltin) {
+    return null;
+  }
+  if (result === undefined || result === null) return null;
+
+  let content: string;
+  if (typeof result === "string") {
+    // Backend ChatMessage validator rejects role="tool" with empty
+    // content; serialise a sentinel JSON so legitimately empty tool
+    // outputs still round-trip the follow-up turn to the provider.
+    content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else {
+    try {
+      content = JSON.stringify(result);
+    } catch {
+      content = String(result);
+    }
+  }
+
+  return {
+    role: "tool" as const,
+    content,
+    tool_call_id: tc.toolCallId,
+    ...(tc.toolName ? { name: tc.toolName } : {}),
+  };
+}
+
+function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
+  // Gemini/OpenAI provider-native builtin cards replay through
+  // extra_content/native parts and intentionally do not produce role="tool"
+  // messages. Local/user tool calls must have a concrete tool result before
+  // they are replayed ahead of later assistant text.
+  return getToolPartReplayMetadata(part).isServerSideBuiltin;
+}
+
+function sanitizeAssistantReplayText(text: string): string {
+  return text.replace(
+    /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+    "[audio]",
+  );
+}
+
+function buildReplayContent(
+  textContent: string,
+  imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
+): OpenAIMessageContent {
+  return imageParts.length > 0
+    ? [{ type: "text", text: textContent }, ...imageParts]
+    : textContent;
+}
+
+function collectAssistantTextThoughtSignature(
+  message: RunMessage,
+): string | undefined {
+  if (!Array.isArray(message.content)) return undefined;
+  for (let i = message.content.length - 1; i >= 0; i -= 1) {
+    const part = message.content[i] as { type?: string } & Record<
+      string,
+      unknown
+    >;
+    if (part?.type !== "text") continue;
+    const sig = part._google_thought_signature;
+    if (typeof sig === "string" && sig) return sig;
+  }
+  return undefined;
+}
+
+function attachAssistantThoughtSignature(
+  messages: SerializedMessage[],
+  thoughtSignature: string | undefined,
+): void {
+  if (!thoughtSignature) return;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const extra =
+      message.extra_content &&
+      typeof message.extra_content === "object" &&
+      !Array.isArray(message.extra_content)
+        ? (message.extra_content as Record<string, unknown>)
+        : {};
+    const google =
+      extra.google &&
+      typeof extra.google === "object" &&
+      !Array.isArray(extra.google)
+        ? (extra.google as Record<string, unknown>)
+        : {};
+    message.extra_content = {
+      ...extra,
+      google: { ...google, thought_signature: thoughtSignature },
+    };
+    return;
+  }
+}
+
+function serializeAssistantReplayMessages(
+  message: RunMessage,
+): SerializedMessage[] {
+  if (isAnthropicRefusalMessage(message)) {
+    // Prune refused assistant turn from outbound history; the
+    // rendered transcript still shows the user-visible notice.
+    return [];
+  }
+
+  const imageParts = collectImageParts(message);
+  const messages: SerializedMessage[] = [];
+  const pendingTextParts: string[] = [];
+  let pendingToolCalls: SerializedToolCall[] = [];
+  let pendingToolResults: SerializedToolResult[] = [];
+  let imagePartsPending = imageParts.length > 0;
+
+  const flushAssistantAndToolResults = (force = false): void => {
+    const textContent = sanitizeAssistantReplayText(
+      pendingTextParts.join("\n"),
+    );
+    const includeImageParts = imagePartsPending ? imageParts : [];
+    const hasContent = textContent.length > 0 || includeImageParts.length > 0;
+    const hasToolCalls = pendingToolCalls.length > 0;
+
+    if (!force && !hasContent && !hasToolCalls) {
+      return;
+    }
+
+    const assistantMessage: SerializedMessage = {
+      role: "assistant",
+      content: hasContent
+        ? buildReplayContent(textContent, includeImageParts)
+        : "",
+    };
+    if (hasToolCalls) {
+      assistantMessage.tool_calls = pendingToolCalls;
+      // OpenAI requires content === null on assistant turns whose
+      // payload is entirely tool_calls (matches the wire shape Gemini
+      // expects for the next functionCall replay).
+      if (!hasContent) {
+        assistantMessage.content = null;
+      }
+    }
+
+    messages.push(assistantMessage);
+    if (pendingToolResults.length > 0) {
+      messages.push(...pendingToolResults);
+    }
+
+    pendingTextParts.length = 0;
+    pendingToolCalls = [];
+    pendingToolResults = [];
+    imagePartsPending = false;
+  };
+
+  for (const part of message.content ?? []) {
+    if (part.type === "text") {
+      if (pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+      pendingTextParts.push(part.text);
+      continue;
+    }
+
+    if (part.type === "tool-call") {
+      const toolPart = part as ToolCallMessagePart;
+      const toolCall = serializeAssistantToolCallPart(toolPart);
+      if (!toolCall) continue;
+
+      const toolResult = serializeToolResultPart(toolPart);
+      if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
+        continue;
+      }
+
+      const flushLocalPair = shouldFlushCompletedLocalToolPair(toolPart);
+      if (flushLocalPair && pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+
+      pendingToolCalls.push(toolCall);
+      if (toolResult) {
+        pendingToolResults.push(toolResult);
+      }
+
+      if (flushLocalPair) {
+        flushAssistantAndToolResults();
+      }
+    }
+  }
+
+  flushAssistantAndToolResults(messages.length === 0);
+  attachAssistantThoughtSignature(
+    messages,
+    collectAssistantTextThoughtSignature(message),
+  );
+  return messages;
+}
+
+function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   if (
     message.role !== "system" &&
     message.role !== "user" &&
     message.role !== "assistant"
   ) {
-    return null;
+    return [];
   }
 
-  let textContent = collectTextParts(message).join("\n");
-  // Strip inline audio base64 from prior assistant messages to avoid
-  // inflating token counts (e.g. audio-player responses with embedded WAV).
   if (message.role === "assistant") {
-    textContent = textContent.replace(
-      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
-      "[audio]",
-    );
+    return serializeAssistantReplayMessages(message);
   }
 
+  const textContent = collectTextParts(message).join("\n");
   const imageParts = collectImageParts(message);
-  if (imageParts.length > 0) {
-    return {
+  return [
+    {
       role: message.role,
-      content: [{ type: "text", text: textContent }, ...imageParts],
-    };
-  }
-
-  return { role: message.role, content: textContent };
+      content: buildReplayContent(textContent, imageParts),
+    },
+  ];
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -391,7 +1107,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       continue;
     }
 
-    // Image in message.content (e.g. compare view appends content with image parts)
+    // Image in message.content (e.g. compare view).
     for (const part of message.content ?? []) {
       if (part.type === "image" && "image" in part) {
         const encoded = extractImageBase64(part.image);
@@ -399,7 +1115,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       }
     }
 
-    // Image in message.attachments (e.g. chat composer)
+    // Image in message.attachments (e.g. chat composer).
     if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
@@ -418,34 +1134,71 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
-function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Check message content parts (from compare view's CompareMessagePart with type: "audio")
+function extractAudioPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "audio" || !("audio" in part)) return undefined;
+  const audioPart = (
+    part as unknown as {
+      type: "audio";
+      audio: string | { data: string; format: string };
+    }
+  ).audio;
+  const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+  if (!raw) return undefined;
+  return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+}
+
+// Exported for tests.
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
+    // Message content parts (from compare view's CompareMessagePart with type: "audio")
     for (const part of message.content ?? []) {
-      if (part.type === "audio" && "audio" in part) {
-        const audioPart = (
-          part as unknown as {
-            type: "audio";
-            audio: string | { data: string; format: string };
-          }
-        ).audio;
-        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
-        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+      const base64 = extractAudioPartBase64(part);
+      if (base64) return base64;
+    }
+
+    // Attachment content parts (from AudioAttachmentAdapter)
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractAudioPartBase64(part);
+          if (base64) return base64;
+        }
       }
     }
+
+    // Only the newest user message counts. audio_base64 switches the
+    // backend onto the audio generation path, so replaying audio from an
+    // older turn would hijack text follow-ups (Whisper would retranscribe
+    // the stale clip). Matches the consumed-on-send semantics of the
+    // legacy pendingAudio path.
+    break;
   }
 
-  // Check the runtime store (from main composer's audio upload)
+  // Runtime store (main composer's audio upload).
   const pendingAudio = useChatRuntimeStore.getState().pendingAudioBase64;
   return pendingAudio ?? undefined;
 }
 
 async function resolveUseAdapter(
   threadId: string | undefined,
+  options: OpenAIStreamAdapterOptions = {},
 ): Promise<boolean | undefined> {
+  if (options.modelType === "model1" || options.modelType === "model2") {
+    return undefined;
+  }
+  if (
+    options.pairId &&
+    (options.modelType === "base" || options.modelType === "lora")
+  ) {
+    return options.modelType === "lora";
+  }
   if (!threadId) {
     return undefined;
   }
@@ -454,8 +1207,8 @@ async function resolveUseAdapter(
     if (!thread?.pairId) {
       return undefined;
     }
-    // model1/model2 threads don't use the adapter toggle — each side
-    // loads its own model via /api/inference/load before generation.
+    // model1/model2 threads skip the adapter toggle — each side loads
+    // its own model via /api/inference/load before generation.
     if (thread.modelType === "model1" || thread.modelType === "model2") {
       return undefined;
     }
@@ -463,6 +1216,42 @@ async function resolveUseAdapter(
   } catch {
     return undefined;
   }
+}
+
+async function resolveProjectInstructions(
+  threadId: string | undefined,
+): Promise<string> {
+  const projectId = await resolveProjectId(threadId);
+  if (!projectId) {
+    return "";
+  }
+
+  const project = await getStoredChatProject(projectId).catch(() => null);
+  if (!project || project.archived) {
+    return "";
+  }
+  return project.instructions?.trim() ?? "";
+}
+
+async function resolveProjectId(
+  threadId: string | undefined,
+): Promise<string | null> {
+  if (threadId) {
+    const thread = await getStoredChatThread(threadId).catch(() => null);
+    return thread?.projectId ?? null;
+  }
+  const projectId = useChatRuntimeStore.getState().activeProjectId;
+  if (!projectId) {
+    return null;
+  }
+  return projectId;
+}
+
+async function resolveSandboxSessionId(
+  threadId: string | undefined,
+): Promise<string | undefined> {
+  const projectId = await resolveProjectId(threadId);
+  return projectId ? `project-${projectId}` : threadId;
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -484,20 +1273,64 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Auto-load the smallest downloaded model when the user tries to chat
- * without selecting one. Prefers GGUF (picks smallest cached variant),
- * falls back to smallest cached safetensors model.
+ * Auto-load the smallest downloaded model when the user chats without
+ * selecting one. Prefers GGUF (smallest cached variant), then smallest
+ * cached safetensors model.
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
+const GGUF_KNOWN_QUANT_RE =
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
+
+function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+  const normalized = filename.replace(/\\/g, "/").toLowerCase();
+  const separatorIndex = normalized.lastIndexOf("/");
+  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
+  const stem = basename.replace(/\.[^.]*$/, "");
+  const quantKey = quant?.trim().toLowerCase() || "";
+  const quantIndex = quantKey ? stem.indexOf(quantKey) : -1;
+  const quantInParentOnly =
+    !!parent &&
+    quantIndex < 0 &&
+    ((!!quantKey && parent.includes(quantKey)) ||
+      (!quantKey && GGUF_KNOWN_QUANT_RE.test(parent)));
+  for (const match of stem.matchAll(BIG_ENDIAN_GGUF_FILENAME_RE)) {
+    if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
+      return true;
+    }
+    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
+      return !quantInParentOnly;
+    }
+  }
+  return false;
+}
+
+function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
+  if (!variant?.filename) {
+    return false;
+  }
+  const filename = variant.filename.trim().toLowerCase();
+  if (!filename) {
+    return false;
+  }
+  return !hasBigEndianGgufMarker(filename, variant.quant);
+}
 
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  if (await tryAdoptServerActiveModel()) {
+    return { loaded: true, blockedByTrustRemoteCode: false };
+  }
+
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
+  const specSettings = resolveSpeculativeSettingsForLoad();
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
@@ -519,7 +1352,12 @@ async function autoLoadSmallestModel(): Promise<{
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
     });
-    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+    // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
+    // files on its own; both are deferred to the explicit consent dialog instead.
+    if (
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    ) {
       blockedByTrustRemoteCode = true;
       return false;
     }
@@ -531,8 +1369,7 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
 
-    // Try GGUF first: pick the repo with the smallest total size,
-    // then pick its smallest downloaded variant.
+    // GGUF first: smallest-total-size repo, then its smallest variant.
     if (ggufRepos.length > 0) {
       const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
@@ -540,7 +1377,7 @@ async function autoLoadSmallestModel(): Promise<{
         try {
           const variants = await listGgufVariants(repo.repo_id);
           const downloaded = variants.variants
-            .filter((v) => v.downloaded)
+            .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
@@ -563,7 +1400,10 @@ async function autoLoadSmallestModel(): Promise<{
               is_lora: false,
               gguf_variant: variant.quant,
               trust_remote_code: trustRemoteCode,
+              speculative_type: specSettings.speculativeType,
+              spec_draft_n_max: specSettings.specDraftNMax,
             });
+            saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
               .getState()
               .setCheckpoint(repo.repo_id, variant.quant);
@@ -575,7 +1415,7 @@ async function autoLoadSmallestModel(): Promise<{
               ...store.params,
               maxTokens: loadResp.context_length ?? 131072,
             });
-            // Add model to store so the selector shows the name
+            // Add to store so the selector shows the name.
             const autoModel: ChatModelSummary = {
               id: repo.repo_id,
               name: loadResp.display_name ?? repo.repo_id,
@@ -599,18 +1439,20 @@ async function autoLoadSmallestModel(): Promise<{
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
-              reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+              ...reasoningCapsFromLoad(loadResp),
               supportsPreserveThinking:
                 loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
-              toolsEnabled: loadResp.supports_tools ?? false,
-              codeToolsEnabled: loadResp.supports_tools ?? false,
+              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
               kvCacheDtype: loadResp.cache_type_kv ?? null,
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+              tensorParallel: loadResp.tensor_parallel ?? false,
+              loadedTensorParallel: loadResp.tensor_parallel ?? false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
               loadedIsMultimodal: isMultimodalResponse(loadResp),
+              ...resolveLoadedSpeculativeSettings(loadResp),
             });
             toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
               id: toastId,
@@ -624,7 +1466,7 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
-    // Fall back to safetensors models
+    // Fall back to safetensors models.
     if (modelRepos.length > 0) {
       const sorted = [...modelRepos].sort(
         (a, b) => a.size_bytes - b.size_bytes,
@@ -651,7 +1493,10 @@ async function autoLoadSmallestModel(): Promise<{
             is_lora: false,
             gguf_variant: null,
             trust_remote_code: trustRemoteCode,
+            speculative_type: specSettings.speculativeType,
+            spec_draft_n_max: specSettings.specDraftNMax,
           });
+          saveSpeculativeType(specSettings.speculativeType);
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
           const store = useChatRuntimeStore.getState();
           store.setModelRequiresTrustRemoteCode(
@@ -662,16 +1507,16 @@ async function autoLoadSmallestModel(): Promise<{
             supportsReasoning: sfLoadResp.supports_reasoning ?? false,
             reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
             reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
-            reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
+            ...reasoningCapsFromLoad(sfLoadResp),
             supportsPreserveThinking:
               sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
             // Parity with the GGUF branch above.
-            toolsEnabled: sfLoadResp.supports_tools ?? false,
-            codeToolsEnabled: sfLoadResp.supports_tools ?? false,
+            ...resolveToolsEnabledOnLoad(sfLoadResp.supports_tools ?? false),
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
             chatTemplateOverride: null,
             loadedChatTemplateOverride: null,
+            ...resolveLoadedSpeculativeSettings(sfLoadResp),
           });
           const sfModel: ChatModelSummary = {
             id: repo.repo_id,
@@ -695,7 +1540,7 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
-    // Cap also gates the default download so the total /api/inference/load
+    // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       toast.dismiss(toastId);
@@ -706,17 +1551,17 @@ async function autoLoadSmallestModel(): Promise<{
       };
     }
 
-    // No cached models found — try downloading a small default GGUF
+    // No cached models — try downloading a small default GGUF.
     toast("Downloading a small model…", {
       id: toastId,
       description:
-        "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
+        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/gemma-4-E2B-it-GGUF",
+          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
@@ -727,17 +1572,20 @@ async function autoLoadSmallestModel(): Promise<{
       }
       loadAttempts += 1;
       const loadResp = await loadModel({
-        model_path: "unsloth/gemma-4-E2B-it-GGUF",
+        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
+        speculative_type: specSettings.speculativeType,
+        spec_draft_n_max: specSettings.specDraftNMax,
       });
+      saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore
         .getState()
-        .setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
+        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
@@ -747,13 +1595,13 @@ async function autoLoadSmallestModel(): Promise<{
         maxTokens: loadResp.context_length ?? 131072,
       });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/gemma-4-E2B-it-GGUF",
-        name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
+        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/gemma-4-E2B-it-GGUF")) {
+      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -763,18 +1611,20 @@ async function autoLoadSmallestModel(): Promise<{
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
-        reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+        ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
-        toolsEnabled: loadResp.supports_tools ?? false,
-        codeToolsEnabled: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        ...resolveLoadedSpeculativeSettings(loadResp),
       });
-      toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
+      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -795,45 +1645,112 @@ async function autoLoadSmallestModel(): Promise<{
   }
 }
 
-export function createOpenAIStreamAdapter(): ChatModelAdapter {
+export function createOpenAIStreamAdapter(
+  options: OpenAIStreamAdapterOptions = {},
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
-      // Capture the thread ID once at the start so it stays stable even if
-      // the user switches chats while waiting for model load / auto-load.
+      // Capture the thread ID once so it stays stable even if the user
+      // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
+      const toolConfirmationIdsByBackendId = new Map<string, string>();
+      const resolvedThreadKey = resolvedThreadId ?? null;
+      const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
+      const selectedImageEditReference =
+        (pendingImageEditReferenceForRun?.threadId ?? null) ===
+        resolvedThreadKey
+          ? pendingImageEditReferenceForRun
+          : null;
+      const clearSelectedImageEditReference = () => {
+        if (!selectedImageEditReference) {
+          return;
+        }
+        const store = useChatRuntimeStore.getState();
+        const pending = store.pendingImageEditReference;
+        if (
+          pending?.openaiImageGenerationCallId ===
+            selectedImageEditReference.openaiImageGenerationCallId &&
+          pending.openaiResponseId ===
+            selectedImageEditReference.openaiResponseId &&
+          (pending.threadId ?? null) ===
+            (selectedImageEditReference.threadId ?? null)
+        ) {
+          store.clearPendingImageEditReference();
+        }
+      };
 
-      // Wait for in-progress model load to finish before inferring
+      // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
-        await waitForModelReady(abortSignal);
+        try {
+          await waitForModelReady(abortSignal);
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
+        }
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
-        // Auto-load the smallest downloaded model
-        const { loaded, blockedByTrustRemoteCode } =
-          await autoLoadSmallestModel();
+        // Prefer a model already loaded by the CLI/API before auto-loading.
+        let loaded: boolean;
+        let blockedByTrustRemoteCode: boolean;
+        try {
+          ({ loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel());
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
+        }
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
-              ? "Enable custom code to auto-load this model"
+              ? "This model needs custom code approval"
               : "No model loaded",
             {
               description: blockedByTrustRemoteCode
-                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                ? "Select it from the top bar to review and approve its custom code, or pick another model."
                 : "Pick a model in the top bar, then retry.",
             },
           );
+          clearSelectedImageEditReference();
           throw new Error("Load a model first.");
         }
       }
 
-      // Re-read store after potential auto-load / model ready wait
+      // Re-read store after auto-load / model-ready wait.
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
-      const { supportsTools, toolsEnabled, codeToolsEnabled, imageToolsEnabled } = runtime;
+      const {
+        supportsTools,
+        toolsEnabled,
+        codeToolsEnabled,
+        imageToolsEnabled,
+        artifactsEnabled,
+        mcpEnabledForChat,
+        confirmToolCalls,
+        bypassPermissions,
+        webFetchToolsEnabled,
+        ragEnabled,
+        ragSource,
+        ragMode,
+        ragTopK,
+        ragAutoInject,
+        ragAutoInjectMinScore,
+      } = runtime;
+      // Project sources auto-scope: a chat inside a project retrieves from the
+      // project's indexed sources even when the Docs pill is off. The probe is
+      // cached, so this is one round trip per project every ~30s at most.
+      const ragProjectId = await resolveProjectId(resolvedThreadId);
+      const projectRagEnabled = ragProjectId
+        ? await projectHasSources(ragProjectId)
+        : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
       if (
@@ -844,6 +1761,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           description:
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -859,54 +1777,33 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toast.error("Connection not found.", {
           description: "Open Settings → Connections and add it again.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Connection not found.");
       }
-      // Local providers (llama.cpp / vLLM / Ollama) allow an empty key — only block hosted providers.
+      // Local providers and custom Gemini bases allow an empty key.
       const externalProviderIsCustom = externalProvider
         ? isCustomProviderType(externalProvider.providerType)
         : false;
-      if (isExternalRequest && !externalApiKey && !externalProviderIsCustom) {
+      const externalProviderIsGeminiCustomBase = Boolean(
+        externalProvider &&
+          externalProvider.providerType === "gemini" &&
+          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
+      );
+      if (
+        isExternalRequest &&
+        !externalApiKey &&
+        !externalProviderIsCustom &&
+        !externalProviderIsGeminiCustomBase
+      ) {
         toast.error("Missing API key for selected connection.", {
           description: "Open Settings → Connections and set the API key again.",
         });
+        clearSelectedImageEditReference();
         throw new Error("Missing connection API key.");
       }
 
-      const webSearchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebSearch(externalProvider.providerType),
-        );
-      const codeExecEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            externalSelection &&
-            codeToolsEnabled &&
-            providerSupportsBuiltinCodeExecution(
-              externalProvider.providerType,
-              externalSelection.modelId,
-              externalProvider.baseUrl,
-            ),
-        );
-      // web_fetch shares the Search pill with web_search (no separate
-      // UI toggle), so it follows toolsEnabled. Anthropic is the only
-      // provider that ships it today; on others providerSupportsBuiltinWebFetch
-      // returns false and this stays inert.
-      const webFetchEnabledForThisTurn =
-        Boolean(
-          externalProvider &&
-            toolsEnabled &&
-            providerSupportsBuiltinWebFetch(externalProvider.providerType),
-        );
-      const providerShipsWebFetch = Boolean(
-        externalProvider &&
-          providerSupportsBuiltinWebFetch(externalProvider.providerType),
-      );
-      // OpenAI Responses-API image_generation server tool. Pill is
-      // gated on OpenAI cloud + a Responses-API model id; the backend
-      // additionally re-checks is_openai_cloud before appending
-      // {type:"image_generation"} to the request tools array.
+      // Image-generation flag (OpenAI cloud + Responses-capable model);
+      // computed first so Gemini image mode can suppress Search/Code.
       const imageGenerationEnabledForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
@@ -917,19 +1814,128 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             externalProvider.baseUrl,
           ),
       );
+      // Per-model Search/Code allowances live in
+      // providerSupportsBuiltin*; this flag just signals image-mode.
+      const geminiImageModeForThisTurn =
+        externalProvider?.providerType === "gemini" &&
+        imageGenerationEnabledForThisTurn;
+      const webSearchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          toolsEnabled &&
+          providerSupportsBuiltinWebSearch(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
+      const codeExecEnabledForThisTurn = Boolean(
+        externalProvider &&
+          externalSelection &&
+          codeToolsEnabled &&
+          !geminiImageModeForThisTurn &&
+          providerSupportsBuiltinCodeExecution(
+            externalProvider.providerType,
+            externalSelection.modelId,
+            externalProvider.baseUrl,
+          ),
+      );
+      // Fetch pill is independent of Search (Anthropic bills web_fetch
+      // separately). Sourced from `webFetchToolsEnabled`; on providers
+      // without web_fetch the toggle is forced off in chat-page setState.
+      const webFetchEnabledForThisTurn = Boolean(
+        externalProvider &&
+          webFetchToolsEnabled &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
+      const providerShipsWebFetch = Boolean(
+        externalProvider &&
+          providerSupportsBuiltinWebFetch(externalProvider.providerType),
+      );
 
-      const outboundMessages = messages
-        .map(toOpenAIMessage)
+      if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
+        clearSelectedImageEditReference();
+        toast.error("Image editing is unavailable", {
+          description:
+            "Select an OpenAI image-generation model, then retry the edit.",
+        });
+        throw new Error("Image generation edit unavailable.");
+      }
+
+      // Drop refused assistant turns + their triggering user prompt;
+      // otherwise context re-triggers the classifier.
+      const survivingMessages: RunMessage[] = [];
+      for (const message of messages) {
+        if (isAnthropicRefusalMessage(message)) {
+          const last = survivingMessages.at(-1);
+          if (last && last.role === "user") {
+            survivingMessages.pop();
+          }
+          continue;
+        }
+        survivingMessages.push(message);
+      }
+
+      // toOpenAIMessages emits assistant tool_calls + role="tool"
+      // follow-ups; the backend Gemini translator rebuilds the
+      // functionCall / functionResponse parts (with thoughtSignature).
+      const outboundMessages = survivingMessages
+        .flatMap(toOpenAIMessages)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
+      if (selectedImageEditReference) {
+        const referenceMessage = toOpenAIImageEditReferenceMessage(
+          selectedImageEditReference,
+        );
+        if (!referenceMessage) {
+          clearSelectedImageEditReference();
+          toast.error("This generated image cannot be edited", {
+            description:
+              "The original image reference is missing. Generate the image again, then retry the edit.",
+          });
+          throw new Error("Generated image edit reference missing.");
+        }
+        let insertAt = outboundMessages.length;
+        for (let i = outboundMessages.length - 1; i >= 0; i -= 1) {
+          if (outboundMessages[i]?.role === "user") {
+            insertAt = i;
+            break;
+          }
+        }
+        // OpenAIChatMessage is a structural superset of SerializedMessage
+        // on the role/content axis; cast through unknown since
+        // referenceMessage carries no tool_calls (plain assistant turn).
+        outboundMessages.splice(
+          insertAt,
+          0,
+          referenceMessage as unknown as SerializedMessage,
+        );
+      }
 
       const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+        typeof params.systemPrompt === "string"
+          ? resolveSystemPromptVariables(
+              params.systemPrompt,
+              typeof params.systemVariables === "string"
+                ? params.systemVariables
+                : "",
+            )
+          : "";
+      const projectInstructions =
+        await resolveProjectInstructions(resolvedThreadId);
+      const combinedSystemPrompt = [
+        projectInstructions
+          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+          : "",
+        safeSystemPrompt.trim(),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: combinedSystemPrompt,
         });
       }
       let disabledToolGuard: string | null = null;
@@ -941,60 +1947,115 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        if (!webSearchEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+        // Treat search and fetch as one "any web tool" axis so the guard
+        // only warns when neither pill is on; checking webSearch alone
+        // mis-fired when only Fetch was on and suppressed web_fetch.
+        const anyWebEnabledForThisTurn =
+          webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
+        if (
+          !anyWebEnabledForThisTurn &&
+          !codeExecEnabledForThisTurn &&
+          !imageGenerationEnabledForThisTurn
+        ) {
           disabledToolGuard =
-            `You do not have ${webLabel} or code execution tools in this conversation. ` +
+            `You do not have ${webLabel}, code execution, or image generation tools in this conversation. ` +
             "Answer from your own knowledge. " +
-            "If a request genuinely requires tool use, live data fetch or running code, " +
+            "If a request genuinely requires tool use, live data fetch, running code, or image generation, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
-        } else if (!webSearchEnabledForThisTurn) {
+        } else if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+          disabledToolGuard =
+            `You do not have ${webLabel} or code execution tools in this conversation. ` +
+            "You may still use image generation tools when they are available and useful. " +
+            "If a request genuinely requires live data fetch or running code, " +
+            "inform the user that you do not have access to these capabilities. " +
+            "Do not return tool-call syntax inside your response.";
+        } else if (!anyWebEnabledForThisTurn) {
+          const availableTools = [
+            codeExecEnabledForThisTurn ? "code execution" : null,
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
-            "You may still use code execution tools when they are available and useful. " +
+            (availableTools.length > 0
+              ? `You may still use ${availableTools.join(" and ")} tools when they are available and useful. `
+              : "") +
             "If a request genuinely requires live data fetch or web search tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         } else if (!codeExecEnabledForThisTurn) {
+          const availableTools = [
+            webLabel,
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
-            `You may still use ${webLabel} tools when they are available and useful. ` +
+            `You may still use ${availableTools.join(" and ")} tools when they are available and useful. ` +
             "If a request genuinely requires running code or code execution tool use, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         }
       }
-      if (disabledToolGuard) {
-        const firstMessage = outboundMessages[0];
+      type OutboundMessage = (typeof outboundMessages)[number];
+      function addSystemInstruction(
+        targetMessages: OutboundMessage[],
+        text: string | null,
+      ): void {
+        if (!text) return;
+        const firstMessage = targetMessages[0];
         if (firstMessage?.role === "system") {
           if (typeof firstMessage.content === "string") {
-            outboundMessages[0] = {
+            targetMessages[0] = {
               ...firstMessage,
-              content: `${firstMessage.content}\n\n${disabledToolGuard}`,
+              content: `${firstMessage.content}\n\n${text}`,
             };
           } else {
-            outboundMessages[0] = {
+            targetMessages[0] = {
               ...firstMessage,
               content: [
-                ...firstMessage.content,
-                { type: "text", text: `\n\n${disabledToolGuard}` },
+                ...(Array.isArray(firstMessage.content)
+                  ? firstMessage.content
+                  : []),
+                { type: "text", text: `\n\n${text}` },
               ],
             };
           }
-        } else {
-          outboundMessages.unshift({
-            role: "system",
-            content: disabledToolGuard,
-          });
+          return;
         }
+        targetMessages.unshift({ role: "system", content: text });
       }
-      const imageBase64 = findLatestUserImageBase64(messages);
-      const audioBase64 = findLatestUserAudioBase64(messages);
 
-      // Block when ANY image is in the outbound payload (current or
-      // prior turns) and the loaded model can't process images. Keeps
-      // the gate simple: once a chat contains an image, a non-vision
-      // model can't respond — user starts a new chat to switch models.
+      // Scan post-prune history so a refused user turn's image/audio
+      // doesn't gate or mis-attribute the next turn.
+      const imageBase64 = findLatestUserImageBase64(survivingMessages);
+      const audioBase64 = findLatestUserAudioBase64(survivingMessages);
+      const hasOutboundImage = Boolean(imageBase64);
+
+      // Keep render_html local-only and mirror the backend image-turn gate.
+      // Canvas is independent of Search/Code: a local tool-capable model
+      // with Canvas on exposes render_html even with no other pills active.
+      const renderHtmlToolEnabledForThisTurn = Boolean(
+        !isExternalRequest &&
+          supportsTools &&
+          artifactsEnabled &&
+          !hasOutboundImage,
+      );
+      const artifactInstruction = artifactsEnabled
+        ? renderHtmlToolEnabledForThisTurn
+          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+        : null;
+      const effectiveDisabledToolGuard =
+        disabledToolGuard && artifactsEnabled
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
+          : disabledToolGuard;
+      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
+      addSystemInstruction(outboundMessages, artifactInstruction);
+
+      // Block when ANY image is in the outbound payload (current or prior
+      // turns) and the loaded model can't process images. Once a chat
+      // contains an image, a non-vision model can't respond — the user
+      // starts a new chat to switch models.
       if (imageBase64) {
         const activeModel = runtime.models.find(
           (m) => m.id === params.checkpoint,
@@ -1008,31 +2069,32 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
+          loadError: runtime.lastModelLoadError,
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
-          // Flip the per-thread running flag on→off so the compare-mode
-          // waitForRunEnd resolves instead of hanging. This gate fires
-          // before the streaming path's setThreadRunning(true), so the
-          // wait promise would otherwise never settle.
+          // Flip the per-thread running flag on→off so compare-mode
+          // waitForRunEnd resolves instead of hanging: this gate fires
+          // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
           runtime.setThreadRunning(gatedThreadKey, true);
           runtime.setThreadRunning(gatedThreadKey, false);
+          clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }
       }
-      // Clear pending audio from store after extracting (consumed on send)
+      // Clear pending audio from store after extracting (consumed on send).
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
-          const lastUserMsg = [...messages]
+          const lastUserMsg = [...survivingMessages]
             .reverse()
             .find((m) => m.role === "user");
           if (lastUserMsg) sentAudioNames.set(lastUserMsg.id, audioName);
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(resolvedThreadId);
+      const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
@@ -1122,26 +2184,141 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
-      // Tracks whether we are currently inside a `<think>` block opened by
-      // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
-      // and DeepSeek's reasoner stream their thinking as a separate
-      // `reasoning_content` field on the chat-completion delta — not as
-      // `content`, not as a structured part. We wrap those chunks with
-      // inline `<think>...</think>` so the existing parseAssistantContent
-      // lifts them into the reasoning panel the same way it does for
-      // local Harmony models. State has to live outside the SSE loop
-      // because the close tag fires when the next chunk carries content
-      // (or when the stream ends).
+      // True while wrapping a `delta.reasoning_content` stream in
+      // <think>...</think> for parseAssistantContent. Lives outside the
+      // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
-      // Tool call content parts — accumulated and yielded cumulatively.
-      // result is set directly on the tool-call part when tool_end arrives.
-      const toolCallParts: ToolCallMessagePart[] = [];
+      type ToolCallProvenance = {
+        source?: string;
+        healed?: boolean;
+        forced?: boolean;
+        provisional?: boolean;
+        duplicate?: boolean;
+        reason?: string;
+        [key: string]: unknown;
+      };
+      type PositionedToolCallPart = ToolCallMessagePart & {
+        textCursor?: number;
+        _delta_index?: number;
+        extra_content?: unknown;
+        provenance?: ToolCallProvenance;
+      };
+      // Tool call parts, cumulative; result lands on tool_end.
+      const toolCallParts: PositionedToolCallPart[] = [];
+      // Latest Gemini text-part thoughtSignature; pinned onto the final
+      // text MessagePart so next-turn replay carries it.
+      let latestTextThoughtSignature: string | undefined;
+      const pinTextThoughtSignature = <T extends { type: string }>(
+        parts: T[],
+      ): T[] => {
+        if (!latestTextThoughtSignature || parts.length === 0) return parts;
+        for (let i = parts.length - 1; i >= 0; i -= 1) {
+          if (parts[i].type === "text") {
+            parts[i] = {
+              ...parts[i],
+              _google_thought_signature: latestTextThoughtSignature,
+            } as T;
+            break;
+          }
+        }
+        return parts;
+      };
+      const buildAssistantContent = (rawText: string) => {
+        const positionedTools = toolCallParts
+          .map((part, index) => {
+            const cursor = (part as PositionedToolCallPart).textCursor;
+            return {
+              part,
+              index,
+              cursor:
+                typeof cursor === "number" && Number.isFinite(cursor)
+                  ? Math.min(Math.max(cursor, 0), rawText.length)
+                  : 0,
+            };
+          })
+          .sort((a, b) => a.cursor - b.cursor || a.index - b.index);
+
+        const assembled: Array<
+          ReturnType<typeof parseAssistantContent>[number] | ToolCallMessagePart
+        > = [];
+        let textCursor = 0;
+        let toolIndex = 0;
+
+        const appendTextThrough = (nextCursor: number) => {
+          if (nextCursor <= textCursor) return;
+          assembled.push(
+            ...parseAssistantContent(rawText.slice(textCursor, nextCursor)),
+          );
+          textCursor = nextCursor;
+        };
+
+        while (toolIndex < positionedTools.length) {
+          const cursor = positionedTools[toolIndex].cursor;
+          appendTextThrough(cursor);
+          while (
+            toolIndex < positionedTools.length &&
+            positionedTools[toolIndex].cursor === cursor
+          ) {
+            assembled.push(positionedTools[toolIndex].part);
+            toolIndex += 1;
+          }
+        }
+        appendTextThrough(rawText.length);
+
+        return pinTextThoughtSignature(assembled);
+      };
+      const parseToolProvenance = (
+        value: unknown,
+      ): ToolCallProvenance | undefined => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return undefined;
+        }
+        return { ...(value as Record<string, unknown>) } as ToolCallProvenance;
+      };
+      const mergeToolProvenance = (
+        existing: ToolCallProvenance | undefined,
+        incoming: ToolCallProvenance | undefined,
+      ): ToolCallProvenance | undefined => {
+        if (!incoming) return existing;
+        if (!existing) return incoming;
+        const merged: ToolCallProvenance = { ...existing, ...incoming };
+        for (const key of [
+          "healed",
+          "forced",
+          "provisional",
+          "duplicate",
+        ] as const) {
+          if (existing[key] === true || incoming[key] === true) {
+            merged[key] = true;
+          }
+        }
+        return merged;
+      };
+      const closeReasoningContent = () => {
+        if (!reasoningContentOpen) return;
+        cumulativeText += "</think>";
+        reasoningContentOpen = false;
+      };
+      // Anthropic document_citations payload, converted to Sources-panel
+      // parts at end-of-stream so inline [N] markers have matching entries.
+      const documentCitationParts: Array<{
+        type: "source";
+        sourceType: "url";
+        id: string;
+        url: string;
+        title: string;
+        metadata?: { description: string };
+      }> = [];
+      // Latched on the `anthropic_refusal` tool event; stamped onto final
+      // assistant metadata as `custom.anthropicRefusal` to drive the
+      // history-prune above.
+      let anthropicRefusalSeen = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
 
-      // Per-run cancellation token so a delayed stop POST cannot match
+      // Per-run cancellation token so a delayed stop POST can't match
       // the next run on the same thread.
       const cancelId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -1151,15 +2328,21 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
+        // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
+        // unmounts (navigation / background thread switch) and detach=false for an
+        // explicit Stop. Only a real Stop cancels the backend run; a detach must
+        // leave a backgrounded generation streaming.
+        if ((abortSignal.reason as { detach?: boolean } | undefined)?.detach) {
+          return;
+        }
         const body: Record<string, string> = { cancel_id: cancelId };
-        if (resolvedThreadId) body.session_id = resolvedThreadId;
+        if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
-        // Use apiUrl so the cancel POST reaches the right origin in
-        // Tauri production builds (where the webview origin is not the
-        // backend at 127.0.0.1:<port>). Browser/dev builds get the empty
-        // base, so the path is unchanged there.
+        // Use apiUrl so the cancel POST reaches the right origin in Tauri
+        // production builds (webview origin != backend at 127.0.0.1:<port>).
+        // Browser/dev builds get the empty base, so the path is unchanged.
         void fetch(apiUrl("/api/inference/cancel"), {
           method: "POST",
           headers: {
@@ -1182,6 +2365,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           reasoningEnabled,
           reasoningStyle,
           reasoningEffort,
+          reasoningEffortLevels,
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
@@ -1201,6 +2385,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 {
                   isReasoningProvider:
                     externalProvider.isReasoningModel === true,
+                  baseUrl: externalProvider.baseUrl ?? null,
                 },
               )
             : {
@@ -1221,25 +2406,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             reasoningEffort,
             externalReasoningCaps.reasoningEffortLevels,
           ) as RequestReasoningEffort;
-        const localReasoningEffort =
-          reasoningEffort === "low" ||
-          reasoningEffort === "medium" ||
-          reasoningEffort === "high"
-            ? reasoningEffort
-            : "low";
+        // Clamp to the loaded local model's advertised levels so a stale value
+        // (e.g. "max" carried over from an external model, or a level this model
+        // lacks) becomes one the backend will honor instead of being dropped:
+        // gpt-oss-style reasoning_effort gets low|medium|high, GLM-style
+        // enable_thinking_effort gets high|max.
+        const localReasoningEffort = clampReasoningEffortToLevels(
+          reasoningEffort,
+          reasoningEffortLevels,
+        );
         const externalReasoningEnabled =
           !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (externalSelection && externalProvider) {
-            // OpenAI shell-tool container reuse: pull the per-thread
-            // container_id (if any) so subsequent turns in the same
-            // thread reference the existing container instead of
-            // auto-creating a fresh one. Empty string / undefined →
-            // backend falls back to container_auto. Anthropic uses
-            // the parallel `anthropicCodeExecContainerId` field below
-            // (sent as `container` on /v1/messages).
+            // Per-thread container reuse; empty/undefined falls back to
+            // container_auto. Anthropic uses anthropicCodeExecContainerId.
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
@@ -1253,17 +2436,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 openaiCodeExecContainerId = null;
                 anthropicCodeExecContainerId = null;
               }
-              // Pre-send container validation (OpenAI only). The list
-              // endpoint already filters status==="expired" server-side
-              // (studio/backend/routes/inference.py — list_openai_containers),
-              // so membership in this set means "OpenAI will accept it
-              // as container_reference". A stale id silently dropped here
-              // falls through to the inheritance + lazy-create logic
-              // below, so the user never sees "Container is expired" in
-              // the chat thread. On list-call failure we leave
-              // activeContainerIds null and skip validation — the
-              // backend's transparent retry path is the safety net for
-              // that case.
+              // Pre-send container validation (OpenAI). Stale ids drop
+              // silently and fall through to lazy-create; on list-call
+              // failure, rely on the backend's retry path.
               let activeContainerIds: Set<string> | null = null;
               if (externalProvider.providerType === "openai") {
                 try {
@@ -1286,15 +2461,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = null;
                 }
               }
-              // Cross-thread inheritance: when the active thread has
-              // no container yet, default to the one most recently
-              // used on *any* other thread (provider-scoped).
-              // Matches what the Code Execution settings section
-              // shows in the picker, and keeps the user from getting
-              // a fresh container on every new thread. The picker
-              // can still be set to "Auto-create per thread"
-              // explicitly to opt into a fresh container — but
-              // that's done via the dropdown, not silently.
+              // Cross-thread inheritance: reuse the most recent container
+              // from any other thread; opt-out via the picker.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -1306,7 +2474,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   for (const t of others) {
                     if (t.id === resolvedThreadId) continue;
                     if (!t.openaiCodeExecContainerId) continue;
-                    // Skip ids not in active set; null on source thread so
+                    // Skip ids not in active set; null the source thread so
                     // the next pass doesn't re-pick a dead id.
                     if (
                       activeContainerIds &&
@@ -1314,8 +2482,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ) {
                       void updateStoredChatThreadEventually(t.id, {
                         openaiCodeExecContainerId: null,
-                      })
-                        .catch(() => {});
+                      }).catch(() => {});
                       continue;
                     }
                     openaiCodeExecContainerId = t.openaiCodeExecContainerId;
@@ -1328,13 +2495,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   /* fall through to lazy-create below */
                 }
               }
-              // Lazy pre-create when there's no inherited container.
-              // We always POST /v1/containers ourselves (rather than
-              // letting the backend send container_auto) so every
-              // container shows up in the picker with a friendly
-              // English-word name and the user's configured TTL.
-              // Falls back to container_auto only if the POST fails
-              // — keeps the chat moving in that case.
+              // Pre-create our own container (vs container_auto) so it shows
+              // in the picker with a friendly name and the configured TTL.
+              // Falls back to container_auto on failure.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -1348,10 +2511,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       baseUrl: externalProvider.baseUrl || null,
                     },
                     {
-                      // Friendly English-word name so the container
-                      // is human-readable in the picker list (e.g.
-                      // "kestrel-3f9c") instead of a thread-id slug
-                      // or OpenAI's default blank name.
+                      // Friendly English-word name so the container is
+                      // human-readable in the picker (e.g. "kestrel-3f9c")
+                      // instead of a thread-id slug or blank default.
                       name: pickFriendlyContainerName(),
                       ttlMinutes: ttlToUse,
                     },
@@ -1359,13 +2521,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = created.id;
                   void updateStoredChatThreadEventually(resolvedThreadId, {
                     openaiCodeExecContainerId: created.id,
-                  })
-                    .catch(() => {});
+                  }).catch(() => {});
                 } catch {
-                  // Fall back to backend's container_auto path on
-                  // failure — keeps the chat moving; the next turn
-                  // can retry. The auto-created container will be
-                  // unnamed, but the chat doesn't break.
+                  // Fall back to the backend's container_auto path on
+                  // failure — keeps the chat moving (the auto-created
+                  // container is unnamed); the next turn can retry.
                   openaiCodeExecContainerId = null;
                 }
               }
@@ -1374,43 +2534,33 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
-              // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature
-              // and top_p; only forward when the active provider supports them.
+              // Reasoning-class models (OpenAI gpt-5.x / o3) reject
+              // temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
                 ? { temperature: params.temperature }
                 : {}),
               ...(externalCapabilities?.topP !== false
                 ? { top_p: params.topP }
                 : {}),
-              // Clamp to the cross-provider output cap so a maxTokens value
-              // carried over from a local-model session does not blow past
-              // provider limits (e.g. Claude Opus 400s on >128k). Also
-              // floor to the provider's documented minimum — Kimi's
-              // thinking models need >=16k or the response truncates
-              // before the answer fits alongside reasoning_content.
+              // Floor at the provider's documented min (Kimi thinking
+              // needs >=16k); clamp at the per-model max.
               max_tokens: Math.min(
                 Math.max(
                   params.maxTokens,
                   getExternalMinOutputTokens(externalProvider?.providerType),
                 ),
-                EXTERNAL_MAX_OUTPUT_TOKENS,
+                getExternalMaxOutputTokens(
+                  externalProvider?.providerType,
+                  externalSelection?.modelId,
+                ),
               ),
-              // Only forward sampling knobs the provider actually accepts; the
-              // backend's external-provider proxy is param-permissive and would
-              // surface a 400 from providers that reject unknown fields (e.g.
-              // OpenAI rejects top_k, Anthropic/DeepSeek reject presence_penalty).
+              // Forward only sampling knobs the provider accepts.
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Built-in tools: Search pill maps to provider-side
-              // web_search (currently OpenAI / Anthropic / OpenRouter /
-              // Kimi); Code pill maps to Anthropic's server-side
-              // code_execution_20250825 tool (Anthropic is the only
-              // external provider that ships one today). Backend
-              // translates enabled_tools into each provider's tool
-              // schema — for Anthropic that's the entries appended to
-              // body["tools"] inside _stream_anthropic.
+              // enabled_tools from active pills; backend maps each name
+              // to the provider's tool schema.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||
@@ -1419,19 +2569,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     enable_tools: true,
                     enabled_tools: [
                       ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      // Pair web_fetch with the Search pill on any
-                      // provider that ships it (Anthropic today). The
-                      // common workflow is "search returns URLs, fetch
-                      // reads them"; without web_fetch the model can
-                      // surface a citation but cannot quote from the
-                      // page body, which is the whole point of the
-                      // tool. There is no separate UI toggle yet.
                       ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                       ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
-                      // OpenAI Responses-API only: `image_generation`
-                      // returns inline image_generation_call output
-                      // items; the backend's _stream_openai_responses
-                      // path translates them to assistant tool events.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
@@ -1467,16 +2606,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider.enablePromptCaching ?? true,
                   }
                 : {}),
-              // Anthropic-only: pass the cache TTL the user picked in
-              // Configuration → Provider. Omitted = inherit the default
-              // 5-minute pool. The backend's `_stream_anthropic` only
-              // attaches `cache_control.ttl` when the value is one of
-              // "5m" / "1h" (see external_provider.py near line 1375),
-              // so unknown values are a no-op end-to-end.
-              ...(supportsProviderPromptCacheTtl(externalProvider.providerType) &&
+              // Anthropic prompt-cache TTL; unknown values no-op on backend.
+              ...(supportsProviderPromptCacheTtl(
+                externalProvider.providerType,
+              ) &&
               (externalProvider.enablePromptCaching ?? true) &&
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
+                : {}),
+              // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
+              // silently drops on unsupported models as a backstop.
+              ...(params.fastMode &&
+              providerSupportsFastMode(
+                externalProvider.providerType,
+                externalSelection.modelId,
+              )
+                ? { fast_mode: true }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
                 ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
@@ -1487,7 +2632,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { enable_thinking: reasoningEnabled }
+                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }
@@ -1496,6 +2641,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
+            // Opt into the trailing usage chunk so the context-usage bar
+            // and tok/s readout populate (backend gates it on include_usage).
+            stream_options: { include_usage: true },
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -1506,25 +2654,89 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,
-            ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
+            ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
-              ? reasoningStyle === "reasoning_effort"
-                ? reasoningEnabled
-                  ? { reasoning_effort: localReasoningEffort }
-                  : {}
-                : { enable_thinking: reasoningEnabled }
+              ? reasoningStyle === "enable_thinking_effort"
+                ? // GLM-5.2-style: on/off gate plus an effort level. Disabling
+                  // sends enable_thinking=false (a real disable); enabling sends
+                  // the chosen level (e.g. high|max).
+                  reasoningEnabled
+                  ? {
+                      enable_thinking: true,
+                      reasoning_effort: localReasoningEffort,
+                    }
+                  : { enable_thinking: false }
+                : reasoningStyle === "reasoning_effort"
+                  ? reasoningEnabled
+                    ? { reasoning_effort: localReasoningEffort }
+                    : {}
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            ...(supportsTools && (toolsEnabled || codeToolsEnabled)
+            ...(supportsTools &&
+            (toolsEnabled ||
+              codeToolsEnabled ||
+              renderHtmlToolEnabledForThisTurn ||
+              mcpEnabledForChat ||
+              ragEnabled ||
+              projectRagEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
+                    // First so retrieval is the primary tool when Docs is on.
+                    ...(ragEnabled || projectRagEnabled
+                      ? ["search_knowledge_base"]
+                      : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(renderHtmlToolEnabledForThisTurn
+                      ? ["render_html"]
+                      : []),
                   ],
+                  mcp_enabled: mcpEnabledForChat,
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
+                  // Scope: thread_id = this thread's docs, kb_id = a KB,
+                  // project_id = the thread's project sources (auto-on whenever
+                  // the project has indexed sources, no Docs pill needed).
+                  ...(ragEnabled || projectRagEnabled
+                    ? {
+                        rag_scope: {
+                          ...(ragEnabled && ragSource.type === "kb"
+                            ? { kb_id: ragSource.kbId }
+                            : {
+                                ...(ragEnabled && resolvedThreadId
+                                  ? { thread_id: resolvedThreadId }
+                                  : {}),
+                                ...(projectRagEnabled && ragProjectId
+                                  ? { project_id: ragProjectId }
+                                  : {}),
+                              }),
+                          default_top_k: ragTopK,
+                          mode: ragMode,
+                          autoinject: resolveAutoInject(
+                            ragAutoInject,
+                            params.checkpoint,
+                          ),
+                          autoinject_min_score: ragAutoInjectMinScore,
+
+                          ...(ragAutoInject === "off"
+                            ? { whole_doc: false }
+                            : {}),
+                          context_length:
+                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+                        },
+                      }
+                    : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:
@@ -1541,10 +2753,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         let retriedWithRefreshedKey = false;
         while (true) {
           try {
-            const stream = streamChatCompletions(
-              await buildRequestPayload(retriedWithRefreshedKey),
-              abortSignal,
-            );
+            let requestPayload: OpenAIChatCompletionsRequest;
+            try {
+              requestPayload = await buildRequestPayload(
+                retriedWithRefreshedKey,
+              );
+            } catch (error) {
+              clearSelectedImageEditReference();
+              throw error;
+            }
+            clearSelectedImageEditReference();
+            await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
+            const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
               // Handle tool status events
@@ -1556,18 +2776,48 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 continue;
               }
 
+              // Local GGUF sends server-timed reasoning duration. Guard the type
+              // so a malformed or proxied chunk (string/null/NaN duration) can
+              // never turn the label into NaN.
+              const reasoningMs = (
+                chunk as { _reasoningDurationMs?: number } | null | undefined
+              )?._reasoningDurationMs;
+              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
+                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
+                continue;
+              }
+
+              // Diffusion frame: a transient canvas snapshot. Route it to the transient
+              // store (the in-bubble renderer reads it) and skip it; it has no assistant
+              // text, so it never enters the transcript or the counters below.
+              const diffusionFrame = (
+                chunk as unknown as {
+                  _diffusionFrame?: {
+                    block?: number;
+                    step?: number;
+                    total?: number;
+                    text?: string;
+                  };
+                }
+              )._diffusionFrame;
+              if (diffusionFrame !== undefined) {
+                runtime.setActiveDiffusionCanvas({
+                  block: diffusionFrame.block ?? 0,
+                  step: diffusionFrame.step ?? 0,
+                  total: diffusionFrame.total ?? 0,
+                  text: diffusionFrame.text ?? "",
+                });
+                continue;
+              }
+
               // Emit tool-call content parts for assistant-ui.
-              // On tool_start: add a new tool-call part (renders in "running" state).
-              // On tool_end: set result on the existing part (transitions to "complete").
+              // tool_start: add a part (renders "running").
+              // tool_end: set result on the part (transitions to "complete").
               const toolEvent = (
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // OpenAI shell-tool container persistence — see
-                // ThreadRecord.openaiCodeExecContainerId. The backend
-                // emits these synthetic events on the OpenAI Responses
-                // SSE stream after capturing the container_id from a
-                // response, or detecting an expired-container error.
+                // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
                     | string
@@ -1583,6 +2833,27 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                   continue;
                 }
+                if (toolEvent.type === "document_citations") {
+                  // Convert citations_delta footnotes into Sources-panel
+                  // entries matching the inline [N] markers.
+                  const cits = toolEvent.citations;
+                  if (Array.isArray(cits)) {
+                    cits.forEach((entry, idx) => {
+                      if (!entry || typeof entry !== "object") return;
+                      const part = documentCitationToSource(
+                        entry as Record<string, unknown>,
+                        idx,
+                      );
+                      if (
+                        part &&
+                        !documentCitationParts.some((p) => p.id === part.id)
+                      ) {
+                        documentCitationParts.push(part);
+                      }
+                    });
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "container_invalidated") {
                   if (resolvedThreadId) {
                     const field =
@@ -1591,29 +2862,89 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         : "openaiCodeExecContainerId";
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: null,
-                    })
-                      .catch(() => {});
+                    }).catch(() => {});
                   }
                   continue;
                 }
+                if (toolEvent.type === "anthropic_refusal") {
+                  // Latch the backend refusal signal so final message
+                  // metadata can drive the prune.
+                  anthropicRefusalSeen = true;
+                  continue;
+                }
+                closeReasoningContent();
+                const toolProvenance = parseToolProvenance(
+                  toolEvent.provenance,
+                );
                 if (toolEvent.type === "tool_start") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvalId = (toolEvent.approval_id as string) || "";
+                  const awaitingConfirmation =
+                    toolEvent.awaiting_confirmation === true;
                   const id =
-                    (toolEvent.tool_call_id as string) ||
-                    `${toolEvent.tool_name}_${Date.now()}`;
+                    awaitingConfirmation && approvalId
+                      ? `${toolConfirmationScopeId}:${approvalId}`
+                      : backendToolCallId ||
+                        approvalId ||
+                        `${toolEvent.tool_name}_${Date.now()}`;
+                  if (awaitingConfirmation && backendToolCallId) {
+                    toolConfirmationIdsByBackendId.set(backendToolCallId, id);
+                  }
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
-                  toolCallParts.push({
-                    type: "tool-call" as const,
-                    toolCallId: id,
-                    toolName: toolEvent.tool_name as string,
-                    argsText: JSON.stringify(toolArgs),
-                    args: toolArgs,
-                  });
+                  const idx = toolCallParts.findIndex(
+                    (p) => p.toolCallId === id,
+                  );
+                  if (idx !== -1) {
+                    const existing = toolCallParts[
+                      idx
+                    ] as PositionedToolCallPart;
+                    toolCallParts[idx] = {
+                      ...existing,
+                      toolName: toolEvent.tool_name as string,
+                      argsText: JSON.stringify(toolArgs),
+                      args: toolArgs,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        toolProvenance,
+                      ),
+                    };
+                  } else {
+                    toolCallParts.push({
+                      type: "tool-call" as const,
+                      toolCallId: id,
+                      toolName: toolEvent.tool_name as string,
+                      argsText: JSON.stringify(toolArgs),
+                      args: toolArgs,
+                      textCursor: cumulativeText.length,
+                      ...(toolProvenance ? { provenance: toolProvenance } : {}),
+                    } as PositionedToolCallPart);
+                  }
+                  if (awaitingConfirmation) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolConfirmation(
+                        id,
+                        approvalId,
+                        sandboxSessionId ?? "",
+                        toolConfirmationScopeId,
+                      );
+                  }
                 } else if (toolEvent.type === "tool_end") {
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
                   const id =
-                    (toolEvent.tool_call_id as string) ||
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
                     toolCallParts[toolCallParts.length - 1]?.toolCallId ||
                     "";
+                  if (backendToolCallId) {
+                    toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                  }
+                  useChatRuntimeStore.getState().clearToolConfirmation(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -1630,6 +2961,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                           size?: string;
                           quality?: string;
                           background?: string;
+                          prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     if (
@@ -1637,12 +2969,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       typeof imageB64 === "string" &&
                       imageB64
                     ) {
-                      // OpenAI Responses image_generation_call: the
-                      // backend stashes the base64 PNG/WebP/JPEG on
-                      // separate `image_b64` / `image_mime` fields on
-                      // the synthetic _toolEvent so the JSON result
-                      // string stays small enough to log. Repackage as
-                      // a structured result for the dedicated tool UI.
+                      // Backend keeps base64 on separate image_b64 /
+                      // image_mime fields so logs stay small; repackage here.
                       parsedResult = {
                         image_b64: imageB64,
                         image_mime:
@@ -1651,12 +2979,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         size: toolEvent.size as string | undefined,
                         quality: toolEvent.quality as string | undefined,
                         background: toolEvent.background as string | undefined,
+                        prompt: toolEvent.prompt as string | undefined,
                       };
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
-                      // Fall back to "_default" to match the backend sandbox directory
-                      // used when no session_id is provided (see tools.py _get_workdir).
-                      const sessionId = resolvedThreadId || "_default";
+                      // Fall back to "_default" to match the backend sandbox
+                      // dir used when no session_id (see tools.py _get_workdir).
+                      const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
                           rawResult.slice(imgIdx + imgMarker.length),
@@ -1668,16 +2997,108 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     } else {
                       parsedResult = rawResult;
                     }
+                    // Merge tool_end args first, then Gemini native_part.
+                    const nextArgs =
+                      toolEvent.arguments &&
+                      typeof toolEvent.arguments === "object"
+                        ? (toolEvent.arguments as ToolCallMessagePart["args"])
+                        : undefined;
+                    const mergedArgs: ToolCallMessagePart["args"] = {
+                      ...(toolCallParts[idx].args ?? {}),
+                      ...(nextArgs ?? {}),
+                    } as ToolCallMessagePart["args"];
+                    // Merge tool_end native_part into args.google so the
+                    // outbound translator replays both start (executableCode)
+                    // and end (result / inlineData) on the same turn.
+                    // Concatenate so each part keeps its own thoughtSignature.
+                    const endGoogle = (
+                      toolEvent as { google?: { native_part?: unknown } }
+                    ).google;
+                    if (
+                      endGoogle &&
+                      typeof endGoogle === "object" &&
+                      endGoogle.native_part &&
+                      typeof endGoogle.native_part === "object"
+                    ) {
+                      const argsObj = mergedArgs as Record<string, unknown>;
+                      const existingGoogle = (argsObj.google ?? {}) as Record<
+                        string,
+                        unknown
+                      >;
+                      const existingNative =
+                        (existingGoogle.native_part as Record<
+                          string,
+                          unknown
+                        >) ?? {};
+                      const endNative = endGoogle.native_part as Record<
+                        string,
+                        unknown
+                      >;
+                      // Extract part entries from parts:[...] or legacy
+                      // single-object native_part. Legacy thoughtSignature
+                      // always belongs on executableCode.
+                      const collectParts = (
+                        native: Record<string, unknown>,
+                      ): Record<string, unknown>[] => {
+                        if (Array.isArray(native.parts)) {
+                          return (native.parts as unknown[]).filter(
+                            (entry): entry is Record<string, unknown> =>
+                              Boolean(entry) &&
+                              typeof entry === "object" &&
+                              !Array.isArray(entry),
+                          );
+                        }
+                        const out: Record<string, unknown>[] = [];
+                        const legacySig =
+                          typeof native.thoughtSignature === "string"
+                            ? native.thoughtSignature
+                            : typeof native.thought_signature === "string"
+                              ? (native.thought_signature as string)
+                              : null;
+                        for (const key of [
+                          "executableCode",
+                          "codeExecutionResult",
+                          "inlineData",
+                        ] as const) {
+                          const sub = native[key];
+                          if (sub && typeof sub === "object") {
+                            const entry: Record<string, unknown> = {
+                              [key]: sub,
+                            };
+                            if (key === "executableCode" && legacySig) {
+                              entry.thoughtSignature = legacySig;
+                            }
+                            out.push(entry);
+                          }
+                        }
+                        return out;
+                      };
+                      const mergedParts = [
+                        ...collectParts(existingNative),
+                        ...collectParts(endNative),
+                      ];
+                      argsObj.google = {
+                        ...existingGoogle,
+                        native_part: { parts: mergedParts },
+                      };
+                    }
+                    const existing = toolCallParts[
+                      idx
+                    ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
-                      ...toolCallParts[idx],
+                      ...existing,
+                      args: mergedArgs,
+                      argsText: JSON.stringify(mergedArgs ?? {}),
                       result: parsedResult,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        toolProvenance,
+                      ),
                     };
                   }
                 }
-                // Yield cumulative state so tool UI updates (tools first, text after)
-                const textParts = parseAssistantContent(cumulativeText);
                 yield {
-                  content: [...toolCallParts, ...textParts],
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -1690,7 +3111,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 continue;
               }
 
-              // OpenAI-standard usage chunk: choices=[], usage populated
+              // OpenAI-standard usage chunk: choices=[], usage populated.
               if (chunk.choices?.length === 0 && chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
@@ -1702,11 +3123,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
 
               totalChunks += 1;
-              // OpenRouter's free router (openrouter/free) picks a different
-              // underlying free model per request and reports it in every
-              // chunk's top-level `model` field. Latch the first non-empty
-              // value that differs from the requested checkpoint so the
-              // header chip can render "openrouter/free:<chosen>".
+              // Latch the chunk's `model` field so the openrouter/free chip
+              // shows the chosen underlying model.
               if (
                 isExternalRequest &&
                 externalProvider?.providerType === "openrouter" &&
@@ -1725,30 +3143,34 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
-              // Providers like Mistral's magistral return delta.content as an
-              // array of structured parts; normalize to text (with thinking
-              // parts re-wrapped as inline <think> tags) so the rest of the
-              // accumulator stays string-based.
+              // Normalize structured delta.content (mistral magistral).
               const delta = extractDeltaText(rawDelta);
-              // Kimi (kimi-k2.6, kimi-k2-thinking) and DeepSeek reasoner
-              // stream thinking via `delta.reasoning_content` as a plain
-              // string field — separate from `delta.content` which carries
-              // the answer. Wrap reasoning chunks inline as <think>...
-              // </think> so parseAssistantContent treats them like any
-              // other reasoning. The close tag fires when the next chunk
-              // brings content, or when the stream ends.
+              // Latest Gemini text-part thoughtSignature for next-turn replay.
+              const deltaExtraContent = (
+                chunk.choices?.[0]?.delta as
+                  | { extra_content?: unknown }
+                  | undefined
+              )?.extra_content;
+              if (deltaExtraContent && typeof deltaExtraContent === "object") {
+                const eGoogle = (deltaExtraContent as Record<string, unknown>)
+                  .google;
+                if (eGoogle && typeof eGoogle === "object") {
+                  const sig = (eGoogle as Record<string, unknown>)
+                    .thought_signature;
+                  if (typeof sig === "string" && sig) {
+                    latestTextThoughtSignature = sig;
+                  }
+                }
+              }
+              // Kimi / DeepSeek stream thinking via delta.reasoning_content;
+              // wrap inline as <think>...</think> for parseAssistantContent.
               const rawReasoning = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_content?: unknown }
                   | undefined
               )?.reasoning_content;
-              // OpenRouter uses a third reasoning shape: a structured
-              // `delta.reasoning_details` array of parts (each carrying
-              // `text`). The router emits this regardless of which
-              // underlying provider it picked, so we extract here and
-              // merge into the same <think>...</think> wrap path used
-              // for Kimi / DeepSeek reasoning_content. See
-              //   https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+              // OpenRouter ships reasoning as delta.reasoning_details[]
+              // regardless of provider; merge into the same wrap path.
               const rawReasoningDetails = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_details?: unknown }
@@ -1766,6 +3188,121 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
+              // OpenAI delta.tool_calls: streams fragments by index;
+              // accumulate into one part. extra_content carries Gemini 3
+              // thoughtSignature for replay.
+              const rawDeltaToolCalls = (
+                chunk.choices?.[0]?.delta as
+                  | { tool_calls?: unknown }
+                  | undefined
+              )?.tool_calls;
+              if (
+                Array.isArray(rawDeltaToolCalls) &&
+                rawDeltaToolCalls.length > 0
+              ) {
+                closeReasoningContent();
+                for (const tc of rawDeltaToolCalls) {
+                  if (!tc || typeof tc !== "object") continue;
+                  const call = tc as {
+                    id?: string;
+                    index?: number;
+                    function?: { name?: string; arguments?: string };
+                    extra_content?: unknown;
+                  };
+                  const idx =
+                    typeof call.index === "number" ? call.index : undefined;
+                  const stableId = call.id;
+                  // Match an existing fragment by id first (canonical), then
+                  // by index slot; fall back to a minted tool_call_<n> id
+                  // for streams that send neither.
+                  let existing = stableId
+                    ? toolCallParts.find((p) => p.toolCallId === stableId)
+                    : undefined;
+                  if (!existing && idx !== undefined) {
+                    existing = toolCallParts.find(
+                      (p) => (p as PositionedToolCallPart)._delta_index === idx,
+                    );
+                  }
+                  const argsFragment = call.function?.arguments ?? "";
+                  if (existing) {
+                    const prevName = existing.toolName ?? "";
+                    const nextName = call.function?.name ?? prevName;
+                    const merged = (existing.argsText ?? "") + argsFragment;
+                    let parsedArgs: ToolCallMessagePart["args"] =
+                      existing.args ?? {};
+                    if (merged) {
+                      try {
+                        parsedArgs = JSON.parse(
+                          merged,
+                        ) as ToolCallMessagePart["args"];
+                      } catch {
+                        parsedArgs = {
+                          _raw: merged,
+                        } as ToolCallMessagePart["args"];
+                      }
+                    }
+                    const prevExtra = (existing as PositionedToolCallPart)
+                      .extra_content;
+                    const updated: PositionedToolCallPart = {
+                      ...(existing as PositionedToolCallPart),
+                      toolName: nextName,
+                      argsText: merged,
+                      args: parsedArgs,
+                      ...(call.extra_content !== undefined
+                        ? { extra_content: call.extra_content }
+                        : prevExtra !== undefined
+                          ? { extra_content: prevExtra }
+                          : {}),
+                      ...(idx !== undefined ? { _delta_index: idx } : {}),
+                    };
+                    const replaceIdx = toolCallParts.indexOf(existing);
+                    if (replaceIdx >= 0) {
+                      toolCallParts[replaceIdx] = updated;
+                    }
+                  } else {
+                    const callId =
+                      stableId || `tool_call_${idx ?? toolCallParts.length}`;
+                    const argsText = argsFragment;
+                    let parsedArgs: ToolCallMessagePart["args"] = {};
+                    if (argsText) {
+                      try {
+                        parsedArgs = JSON.parse(
+                          argsText,
+                        ) as ToolCallMessagePart["args"];
+                      } catch {
+                        parsedArgs = {
+                          _raw: argsText,
+                        } as ToolCallMessagePart["args"];
+                      }
+                    }
+                    const fresh: PositionedToolCallPart = {
+                      type: "tool-call" as const,
+                      toolCallId: callId,
+                      toolName: call.function?.name ?? "",
+                      argsText,
+                      args: parsedArgs,
+                      textCursor: cumulativeText.length,
+                      ...(call.extra_content !== undefined
+                        ? { extra_content: call.extra_content }
+                        : {}),
+                      ...(idx !== undefined ? { _delta_index: idx } : {}),
+                    };
+                    toolCallParts.push(fresh);
+                  }
+                }
+                yield {
+                  content: buildAssistantContent(cumulativeText),
+                  metadata: {
+                    timing: buildTiming(
+                      streamStartTime,
+                      totalChunks,
+                      firstTokenTime,
+                    ),
+                    custom: { reasoningDuration },
+                  },
+                };
+                continue;
+              }
               if (!delta && !reasoning) {
                 continue;
               }
@@ -1785,30 +3322,22 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
               }
               if (delta) {
-                if (reasoningContentOpen) {
-                  cumulativeText += "</think>";
-                  reasoningContentOpen = false;
-                }
+                closeReasoningContent();
                 cumulativeText += delta;
               }
-              // Mistral's magistral occasionally emits a trailing
-              // template-literal artifact (e.g. "${response}") at the end of
-              // an otherwise complete answer. It is never part of a real
-              // reply, so strip a trailing `${...}` token from external
-              // provider streams. The regex anchors to end-of-string and is
-              // idempotent — fragments mid-stream (e.g. "${re") leave the
-              // string untouched and only collapse once the closing brace
-              // arrives. Local-model output is left alone.
+              // Strip a trailing ${...} template-literal fragment from
+              // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
                 cumulativeText = cumulativeText.replace(
                   /\s*\$\{[^}]*\}\s*$/,
                   "",
                 );
               }
-              const parts = parseAssistantContent(cumulativeText);
+              const textParts = parseAssistantContent(cumulativeText);
 
+              // Fallback when no server-side reasoning_summary arrives.
               if (
-                parts.some((part) => part.type === "reasoning") &&
+                textParts.some((part) => part.type === "reasoning") &&
                 !reasoningStartAt
               ) {
                 reasoningStartAt = Date.now();
@@ -1823,9 +3352,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 );
               }
 
-              if (parts.length > 0 || toolCallParts.length > 0) {
+              if (textParts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: [...toolCallParts, ...parts],
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -1853,16 +3382,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // If the stream ended while we were still inside a
         // delta.reasoning_content block (Kimi / DeepSeek path), close
         // the open <think> tag so the reasoning panel parses cleanly.
-        if (reasoningContentOpen) {
-          cumulativeText += "</think>";
-          reasoningContentOpen = false;
-        }
+        closeReasoningContent();
         settleFirstTokenOk();
 
         // Extract source parts from completed web_search and web_fetch
-        // tool calls. Both emit the same `Title:` / `URL:` / `Snippet:`
-        // block shape from the Anthropic backend, so the parser does
-        // not need to branch on tool name.
+        // calls. Both emit the same `Title:` / `URL:` / `Snippet:` block
+        // shape, so the parser need not branch on tool name.
         const sourceParts = toolCallParts.flatMap((tc) => {
           if (
             (tc.toolName !== "web_search" && tc.toolName !== "web_fetch") ||
@@ -1881,18 +3406,31 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const finalTokPerSec = meta?.timings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
-        // Update context usage in store if we got valid server data
+        // Prefer llama-server timings; fall back to provider usage envelope.
+        const cachedTokens =
+          meta?.timings?.cache_n ??
+          meta?.usage?.prompt_tokens_details?.cached_tokens ??
+          meta?.usage?.cache_read_input_tokens ??
+          0;
+        // Anthropic-only (billed at the write premium).
+        const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
+
+        // Gate on the captured checkpoint still being active so a late
+        // completion from provider A doesn't populate the bar after a
+        // mid-stream switch to provider B.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number"
+          typeof meta.usage.total_tokens === "number" &&
+          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
           useChatRuntimeStore.getState().setContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
-            cachedTokens: meta.timings?.cache_n ?? 0,
+            cachedTokens,
+            cacheWriteTokens,
           });
         }
 
@@ -1906,23 +3444,33 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           finalTokPerSec,
         );
 
+        // Finalize reasoning-only streams.
+        if (reasoningStartAt && !reasoningDuration) {
+          reasoningDuration = Math.max(
+            0,
+            Math.round((Date.now() - reasoningStartAt) / 1000),
+          );
+        }
         yield {
           content: [
-            ...toolCallParts,
-            ...parseAssistantContent(cumulativeText),
+            ...buildAssistantContent(cumulativeText),
             ...sourceParts,
+            ...documentCitationParts,
           ],
           metadata: {
             timing: finalTiming,
             custom: {
               reasoningDuration,
+              // Persisted refusal flag driving the two-pass prune.
+              anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
               contextUsage: meta?.usage
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
-                    cachedTokens: meta.timings?.cache_n ?? 0,
+                    cachedTokens,
+                    cacheWriteTokens,
                     modelId: params.checkpoint,
                   }
                 : undefined,
@@ -1937,10 +3485,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (isContextLimitError(msg)) {
-            // llama-server was launched with --no-context-shift, so it
-            // returns a hard error instead of silently dropping old
-            // turns from the KV cache. Point the user at the exact
-            // control that raises the ceiling.
+            // llama-server runs with --no-context-shift, returning a hard
+            // error instead of silently dropping old KV-cache turns. Point
+            // the user at the control that raises the ceiling.
             toast.error("Context limit reached", {
               description:
                 "The conversation has filled the model's context window. " +
@@ -1957,8 +3504,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw err;
       } finally {
         abortSignal.removeEventListener("abort", onAbortCancel);
+        const confirmStore = useChatRuntimeStore.getState();
+        for (const part of toolCallParts) {
+          confirmStore.clearToolConfirmation(part.toolCallId);
+        }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Drop the transient denoising canvas so the finished bubble shows only
+        // the committed markdown answer (cancellation/error included).
+        runtime.setActiveDiffusionCanvas(null);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {

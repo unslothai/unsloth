@@ -1,50 +1,14 @@
 #!/usr/bin/env python3
-"""Smoke test: N parallel install.sh runs with distinct UNSLOTH_STUDIO_HOME
-values must produce N fully isolated installs whose backends can run
-side by side without clashing.
+"""Smoke test (#5190 env-override path): N parallel install.sh runs with
+distinct UNSLOTH_STUDIO_HOME values must produce N isolated installs whose
+backends run side by side. Checks install-time layout/isolation + clean HOME,
+then runtime /api/health, distinct studio_root_id, and per-venv PIDs.
 
-Covers the env-override path added in #5190:
+Integration runner (not pytest), ~1 minute on a warm uv cache. Invoke:
 
-    install-time
-        * N concurrent ``install.sh --local --no-torch`` runs against
-          this checkout, each pinned to its own UNSLOTH_STUDIO_HOME and
-          a redirected HOME, all exit 0.
-        * Each STUDIO_HOME contains its own bin/, share/, llama.cpp/
-          and unsloth_studio/ venv, with no cross-install absolute
-          paths.
-        * share/studio_install_id is unique across the N installs.
-        * share/studio.conf exports UNSLOTH_EXE, UNSLOTH_STUDIO_HOME
-          and UNSLOTH_LLAMA_CPP_PATH, all pointing inside this install.
-        * share/launch-studio.sh has @@DATA_DIR@@ substituted to its
-          own share/ at install time.
-        * bin/unsloth is a symlink that resolves into its own venv.
-        * The redirected HOME is left clean: no shell-rc append, no
-          .desktop file, no Studio.app stub, no shared marker.
+    python tests/studio/install/smoke_test_parallel_studio_home.py [--n 6 --keep]
 
-    runtime
-        * N concurrent ``bin/unsloth studio`` launches each bind their
-          own dynamically allocated free port and stay healthy.
-        * /api/health is 200, status is healthy, chat_only is true
-          under --no-torch.
-        * The studio_root_id reported by /api/health on each backend
-          equals that install's share/studio_install_id, so the
-          runtime resolver agrees with the install-time write.
-        * studio_root_id values are pairwise distinct.
-        * GET / and GET /api/chat are 200 on every backend.
-        * The Python interpreter behind each PID is the install's own
-          venv python (the bin/unsloth shim does not cross-resolve).
-
-This is an integration smoke runner, not a pytest unit test. It does
-real installs (~1 minute end to end on a warm uv cache) and is meant
-to be invoked explicitly:
-
-    python tests/studio/install/smoke_test_parallel_studio_home.py
-    python tests/studio/install/smoke_test_parallel_studio_home.py --n 6 --keep
-
-Exits 0 on PASS, 1 on FAIL, 2 on infrastructure error. Artifacts land
-under a temporary directory and are removed on PASS unless --keep is
-set; on FAIL or ERROR they are kept regardless so logs can be
-inspected.
+Exits 0 PASS / 1 FAIL / 2 error. Artifacts kept on FAIL/ERROR or with --keep.
 """
 
 from __future__ import annotations
@@ -86,12 +50,7 @@ def _free_port() -> int:
 
 
 def _run_one_install(
-    label: str,
-    repo: Path,
-    studio_home: Path,
-    fake_home: Path,
-    uv_cache: Path,
-    log_path: Path,
+    label: str, repo: Path, studio_home: Path, fake_home: Path, uv_cache: Path, log_path: Path
 ) -> tuple[str, int]:
     studio_home.mkdir(parents = True, exist_ok = True)
     fake_home.mkdir(parents = True, exist_ok = True)
@@ -120,15 +79,11 @@ def _launch_backend(
     log_path.parent.mkdir(parents = True, exist_ok = True)
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
-    # Pin UNSLOTH_STUDIO_HOME (and clear the alias) so the child cannot
-    # inherit a Studio root from the caller's shell. Without this, a shell
-    # that already exports either var would override the per-label sys.prefix
-    # inference and every backend would resolve to the caller's install.
+    # Pin UNSLOTH_STUDIO_HOME and clear the alias so the child can't inherit a
+    # Studio root from the caller's shell and resolve to the wrong install.
     env["UNSLOTH_STUDIO_HOME"] = str(studio_home)
     env.pop("STUDIO_HOME", None)
-    # The child process inherits a dup of stdout via Popen, so closing the
-    # parent's handle when this function returns is safe and avoids relying
-    # on GC timing to release the fd.
+    # Popen dups stdout into the child, so closing the parent's handle here is safe.
     with log_path.open("w") as fh:
         return subprocess.Popen(
             [
@@ -159,12 +114,14 @@ def _wait_for_health(port: int, timeout: float) -> dict:
         except (urllib.error.URLError, ConnectionError, OSError) as e:
             last_err = e
         time.sleep(HEALTH_POLL_INTERVAL_S)
-    raise TestFailure(
-        f"port {port}: /api/health never returned 200 (last_err={last_err})"
-    )
+    raise TestFailure(f"port {port}: /api/health never returned 200 (last_err={last_err})")
 
 
-def _http_status(port: int, path: str, timeout: float = 5.0) -> int:
+def _http_status(
+    port: int,
+    path: str,
+    timeout: float = 5.0,
+) -> int:
     url = f"http://127.0.0.1:{port}{path}"
     try:
         with urllib.request.urlopen(url, timeout = timeout) as r:
@@ -211,9 +168,7 @@ def _check_install_layout(label: str, studio_home: Path) -> dict:
         raise TestFailure(f"[{label}] launch-studio.sh kept @@DATA_DIR@@ placeholder")
     expected_data_dir_line = f"DATA_DIR='{studio_home}/share'"
     if expected_data_dir_line not in launcher:
-        raise TestFailure(
-            f"[{label}] launch-studio.sh missing {expected_data_dir_line!r}"
-        )
+        raise TestFailure(f"[{label}] launch-studio.sh missing {expected_data_dir_line!r}")
 
     return {"label": label, "studio_home": str(studio_home), "install_id": install_id}
 
@@ -230,17 +185,12 @@ def _check_fake_home_clean(fake_home: Path) -> None:
     ]
     leaked = [str(p) for p in forbidden if (fake_home / p).exists()]
     if leaked:
-        raise TestFailure(
-            f"redirected HOME picked up persistent install pollution: {leaked}"
-        )
+        raise TestFailure(f"redirected HOME picked up persistent install pollution: {leaked}")
 
 
 def _backend_pid_python(pid: int) -> Path | None:
-    """Resolve the binary backing a running PID. Linux exposes this at
-    /proc/PID/exe; on platforms without /proc (macOS, BSD, Windows) we
-    skip this check and rely on the install-time symlink + studio.conf
-    invariants to catch cross-resolution. Returns None when /proc is
-    unavailable so the caller can skip cleanly."""
+    """Resolve the binary backing a running PID via /proc/PID/exe (Linux only);
+    returns None elsewhere so the caller skips this check cleanly."""
     if sys.platform != "linux":
         return None
     proc_exe = Path(f"/proc/{pid}/exe")
@@ -256,9 +206,7 @@ def run(n_installs: int, keep: bool) -> int:
 
     repo = PACKAGE_ROOT
     if not (repo / "install.sh").is_file():
-        raise TestFailure(
-            f"install.sh not found at {repo}; " "run from a clone of unslothai/unsloth"
-        )
+        raise TestFailure(f"install.sh not found at {repo}; run from a clone of unslothai/unsloth")
 
     test_root = Path(tempfile.mkdtemp(prefix = "unsloth_studio_clash_"))
     _log(f"test root: {test_root}")
@@ -346,8 +294,7 @@ def run(n_installs: int, keep: bool) -> int:
                 raise TestFailure(f"[{label}] chat_only is not true under --no-torch")
             if health["studio_root_id"] in seen_root_ids:
                 raise TestFailure(
-                    f"[{label}] studio_root_id collision at runtime: "
-                    f"{health['studio_root_id']}"
+                    f"[{label}] studio_root_id collision at runtime: " f"{health['studio_root_id']}"
                 )
             seen_root_ids.add(health["studio_root_id"])
 
@@ -358,9 +305,7 @@ def run(n_installs: int, keep: bool) -> int:
 
             exe = _backend_pid_python(proc.pid)
             if exe is not None:
-                expected_python = (
-                    studio_home / "unsloth_studio" / "bin" / "python"
-                ).resolve()
+                expected_python = (studio_home / "unsloth_studio" / "bin" / "python").resolve()
                 if exe != expected_python:
                     raise TestFailure(
                         f"[{label}] PID {proc.pid} exe={exe}, expected {expected_python}"
@@ -370,10 +315,7 @@ def run(n_installs: int, keep: bool) -> int:
         if len(versions) != 1:
             raise TestFailure(f"version mismatch across installs: {versions}")
 
-        _log(
-            f"PASS: all install + runtime invariants hold "
-            f"(version={next(iter(versions))})"
-        )
+        _log(f"PASS: all install + runtime invariants hold " f"(version={next(iter(versions))})")
         return 0
 
     except TestFailure as e:

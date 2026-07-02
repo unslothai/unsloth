@@ -30,28 +30,28 @@ from tests.utils.perplexity_eval import (
 )
 
 
-def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit = False):
+def load_and_compute_8bit_ppl(
+    result_queue,
+    load_in_4bit = False,
+    load_in_8bit = False,
+):
     """Load model and compute perplexity in subprocess"""
     from unsloth import FastLanguageModel
     from tests.utils.perplexity_eval import ppl_model
 
-    # Load model
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_mistral_text_model",
         max_seq_length = 2048,
         load_in_4bit = load_in_4bit,
         load_in_8bit = load_in_8bit,
     )
-    # Set up tokenizer
     # merged_tokenizer = get_chat_template(
     #     merged_tokenizer,
     #     chat_template="llama-3.1",
     # )
 
-    # Load dataset fresh in subprocess
-    dataset_ppl = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "eval"
-    )
+    # Load dataset fresh in subprocess.
+    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
@@ -73,7 +73,6 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
         texts = []
 
         for conversation in examples["messages"]:
-            # Extract user message and assistant response
             user_message = ""
             assistant_message = ""
 
@@ -83,17 +82,12 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
                 elif turn["role"] == "assistant":
                     assistant_message = turn["content"]
 
-            # Store intermediate format
             instruction = "Complete the statement"
             instructions.append(instruction)
             inputs.append(user_message)
             outputs.append(assistant_message)
 
-            # Create formatted text
-            text = (
-                alpaca_prompt.format(instruction, user_message, assistant_message)
-                + EOS_TOKEN
-            )
+            text = alpaca_prompt.format(instruction, user_message, assistant_message) + EOS_TOKEN
             texts.append(text)
 
         return {
@@ -105,21 +99,18 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
 
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
 
-    # Compute perplexity using the passed dataset
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # IMPORTANT: Convert to Python float if it's a tensor
+    # Coerce to a plain Python float.
     if torch.is_tensor(ppl_value):
-        ppl_value = ppl_value.cpu().item()  # Move to CPU and convert to Python scalar
+        ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):
-        ppl_value = ppl_value.item()  # Convert numpy or other array types
+        ppl_value = ppl_value.item()
     else:
-        ppl_value = float(ppl_value)  # Ensure it's a float
+        ppl_value = float(ppl_value)
 
-    # Return only the perplexity value
     result_queue.put(ppl_value)
 
-    # Clean up
     del merged_model
     del merged_tokenizer
     del dataset_ppl
@@ -127,7 +118,6 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
     gc.collect()
 
 
-# Main execution code should be wrapped in this guard
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
 
@@ -161,7 +151,6 @@ if __name__ == "__main__":
     ### Response:
     {}"""
 
-    # Define helper functions outside of main
     def formatting_prompts_func(examples):
         instructions = []
         inputs = []
@@ -169,7 +158,6 @@ if __name__ == "__main__":
         texts = []
 
         for conversation in examples["messages"]:
-            # Extract user message and assistant response
             user_message = ""
             assistant_message = ""
 
@@ -179,17 +167,12 @@ if __name__ == "__main__":
                 elif turn["role"] == "assistant":
                     assistant_message = turn["content"]
 
-            # Store intermediate format
             instruction = "Complete the statement"
             instructions.append(instruction)
             inputs.append(user_message)
             outputs.append(assistant_message)
 
-            # Create formatted text
-            text = (
-                alpaca_prompt.format(instruction, user_message, assistant_message)
-                + EOS_TOKEN
-            )
+            text = alpaca_prompt.format(instruction, user_message, assistant_message) + EOS_TOKEN
             texts.append(text)
 
         return {
@@ -199,12 +182,8 @@ if __name__ == "__main__":
             "text": texts,
         }
 
-    dataset_train = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "train"
-    )
-    dataset_ppl = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "eval"
-    )
+    dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train")
+    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
@@ -259,12 +238,11 @@ if __name__ == "__main__":
         ),
     )
 
-    # run training
     trainer_stats = trainer.train()
 
     add_to_comparison("Qlora model", ppl_model(model, tokenizer, dataset_ppl))
 
-    # saving and merging the model to local disk
+    # Merge and save to local disk.
     print("merge and save to local disk")
     model.save_pretrained_merged(
         save_directory = "./unsloth_out/merged_mistral_text_model", tokenizer = tokenizer
@@ -276,7 +254,7 @@ if __name__ == "__main__":
     # torch.cuda.empty_cache()
     # gc.collect()
 
-    # load model from local disk and test
+    # Load merged model from disk and test.
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_mistral_text_model",

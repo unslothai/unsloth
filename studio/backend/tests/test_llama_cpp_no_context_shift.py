@@ -3,17 +3,15 @@
 
 """``--no-context-shift`` launch-flag contract.
 
-When llama-server runs with its default context-shift behavior, the UI
-has no way to tell the user that the KV cache has been rotated --
-earlier turns silently vanish from the conversation. The Studio
-backend always passes ``--no-context-shift`` so the server returns a
+With llama-server's default context-shift behavior, the UI cannot tell the user
+the KV cache was rotated -- earlier turns silently vanish from the conversation.
+The Studio backend always passes ``--no-context-shift`` so the server returns a
 clean error instead, and the chat adapter can point the user at the
 ``Context Length`` input in the settings panel.
 
-This file is a static read of the launch command: we ask
-``LlamaCppBackend`` to assemble its ``cmd`` list and assert the flag
-is always present. Testing via the real subprocess would require an
-actual GGUF on disk, which is out of scope for the fast test suite.
+This file statically reads the launch command: we ask ``LlamaCppBackend`` to
+assemble its ``cmd`` list and assert the flag is present. Testing via the real
+subprocess would need an actual GGUF on disk, out of scope for the fast suite.
 """
 
 from __future__ import annotations
@@ -68,11 +66,10 @@ from core.inference import llama_cpp as llama_cpp_module
 def _load_model_source() -> str:
     """Return the source of ``LlamaCppBackend.load_model``.
 
-    Using ``inspect.getsource`` instead of reading the file directly
-    scopes the assertions to the function that actually launches
-    llama-server, so neither the presence check nor the location check
-    can be fooled by a stray occurrence of ``"--no-context-shift"``
-    elsewhere in the module.
+    Using ``inspect.getsource`` instead of reading the file scopes the assertions
+    to the function that launches llama-server, so neither the presence nor the
+    location check can be fooled by a stray ``"--no-context-shift"`` elsewhere in
+    the module.
     """
     return inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
 
@@ -80,10 +77,9 @@ def _load_model_source() -> str:
 def test_no_context_shift_is_in_load_model():
     """The flag is part of the static launch-command template.
 
-    We check the source of ``load_model`` rather than mocking the whole
-    call chain (GPU probing, GGUF stat, etc.): the flag is written as
-    a literal in one place and any regression has to delete it, which
-    a text search will catch.
+    We check the source of ``load_model`` rather than mocking the whole call
+    chain (GPU probing, GGUF stat, etc.): the flag is a literal in one place and
+    any regression must delete it, which a text search catches.
     """
     assert '"--no-context-shift"' in _load_model_source(), (
         "llama-server must be launched with --no-context-shift so the "
@@ -93,21 +89,19 @@ def test_no_context_shift_is_in_load_model():
 
 
 def test_flag_sits_inside_the_base_cmd_list():
-    """Pin the flag's location so a future refactor can't accidentally
-    move it into a branch that only fires on some code paths.
+    """Pin the flag's location so a refactor can't move it into a branch that
+    only fires on some code paths.
 
-    We slice from ``cmd = [`` to the first ``]`` at the same indent.
-    Using ``inspect.getsource`` means the function lives in its own
-    string and there are no siblings to worry about, so a plain
-    bracket search would also work -- anchoring on the trailing indent
-    just keeps the slice from wandering into a later expression if the
-    opening literal ever grows an in-line comment trailing it.
+    We slice from ``cmd = [`` to the first ``]`` at the same indent. Since
+    ``inspect.getsource`` gives the function its own string with no siblings, a
+    plain bracket search would also work -- anchoring on the trailing indent just
+    keeps the slice from wandering into a later expression if the opening literal
+    ever grows a trailing in-line comment.
     """
     source = _load_model_source()
     start = source.find("cmd = [")
     assert start >= 0, "could not find the base cmd = [...] block"
     # Find the first line containing only ``]`` (possibly indented).
-    # Works for any indentation style the formatter picks.
     rest = source[start:]
     end_rel = -1
     for line_start, line in _iter_lines_with_offset(rest):
@@ -124,7 +118,7 @@ def test_flag_sits_inside_the_base_cmd_list():
         "conditional branch -- otherwise some code paths would still "
         "run with silent context shift enabled."
     )
-    # Also pin that it is next to -c / --ctx so the grouping makes sense.
+    # Pin that it sits next to -c / --ctx so the grouping makes sense.
     assert '"-c"' in block
     assert '"--flash-attn"' in block
 

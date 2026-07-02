@@ -8,12 +8,18 @@ import { parseBackendTrainingMethod } from "@/features/training/lib/training-met
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
+import { translate, useT } from "@/i18n";
+
+type StudioT = ReturnType<typeof useT>;
 
 interface HistoricalTrainingViewProps {
   runId: string;
 }
 
-function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
+function mapToViewData(
+  detail: TrainingRunDetailResponse,
+  t: StudioT,
+): TrainingViewData {
   const { run, metrics } = detail;
 
   const lossHistory = metrics.loss_step_history
@@ -53,6 +59,7 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
     outputDir: run.output_dir ?? null,
+    resumedLater: run.resumed_later ?? false,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100
@@ -62,15 +69,16 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
     evalEnabled: evalLossHistory.length > 0,
     message:
       run.status === "completed"
-        ? "Training completed"
+        ? t("studio.history.message.completed")
         : run.status === "stopped"
-          ? "Training stopped"
+          ? t("studio.history.message.stopped")
           : run.status === "running"
-            ? "Training in progress"
-            : run.error_message ?? "Training errored",
+            ? t("studio.history.message.running")
+            : run.error_message ?? t("studio.history.message.errored"),
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
+    projectName: run.project_name,
     trainingMethod: parseBackendTrainingMethod(
       detail.config?.training_type,
       detail.config?.load_in_4bit,
@@ -85,10 +93,11 @@ function mapToViewData(detail: TrainingRunDetailResponse): TrainingViewData {
 export function HistoricalTrainingView({
   runId,
 }: HistoricalTrainingViewProps): ReactElement {
+  const t = useT();
   const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Derive loading from detail/error -- no separate state needed
+  // Derive loading from detail/error; no separate state.
   const loading = detail === null && error === null;
 
   useEffect(() => {
@@ -99,11 +108,15 @@ export function HistoricalTrainingView({
       })
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof Error ? err.message : "Failed to load run");
+        setError(
+          err instanceof Error
+            ? err.message
+            : translate("studio.history.loadingRun"),
+        );
       });
     return () => {
       controller.abort();
-      // Reset on runId change so loading derives correctly for the next fetch
+      // Reset on runId change so loading derives correctly for the next fetch.
       setDetail(null);
       setError(null);
     };
@@ -120,7 +133,7 @@ export function HistoricalTrainingView({
   if (loading) {
     return (
       <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
-        Loading training run...
+        {t("studio.history.loadingRun")}
       </div>
     );
   }
@@ -128,12 +141,12 @@ export function HistoricalTrainingView({
   if (error || !detail) {
     return (
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-8 text-sm text-red-500">
-        {error ?? "Run not found"}
+        {error ?? t("studio.history.runNotFound")}
       </div>
     );
   }
 
-  const viewData = mapToViewData(detail);
+  const viewData = mapToViewData(detail, t);
   const configOverride = detail.config
     ? {
         epochs: detail.config.num_epochs as number | undefined,

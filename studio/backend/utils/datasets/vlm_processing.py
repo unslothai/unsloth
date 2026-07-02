@@ -4,8 +4,8 @@
 """
 VLM (Vision-Language Model) processing utilities.
 
-This module contains functions for generating smart instructions
-for VLM datasets based on content analysis and heuristics.
+Generates smart instructions for VLM datasets via content analysis and
+heuristics.
 """
 
 import re
@@ -19,19 +19,19 @@ def generate_smart_vlm_instruction(
     dataset_name = None,
 ):
     """
-    Generate smart, context-aware instruction for VLM datasets using heuristics.
+    Generate a smart, context-aware instruction for VLM datasets via heuristics.
 
     Strategy:
-    1. Check for explicit question/instruction columns → use that
+    1. Explicit question/instruction column → use that
     2. Infer from text column name + sample content
     3. Analyze dataset name for task hints
-    4. Fall back to generic instruction
+    4. Generic fallback
 
     Returns:
         dict: {
             "instruction": str or None,  # None means use column content
             "instruction_type": "explicit" | "inferred" | "generic",
-            "uses_dynamic_instruction": bool,  # True if instruction varies per sample
+            "uses_dynamic_instruction": bool,  # True if it varies per sample
             "confidence": float,  # 0.0 to 1.0
         }
     """
@@ -39,16 +39,16 @@ def generate_smart_vlm_instruction(
     sample = next(iter(dataset))
 
     # ===== LEVEL 1: Explicit Instruction Columns =====
-    # Check for columns that contain per-sample instructions
+    # Columns that hold per-sample instructions
     question_columns = ["question", "query", "prompt", "instruction", "user_prompt"]
 
     for col in question_columns:
         if col in column_names:
-            # Check if this column has varied content (not just empty/same)
+            # Use it only if it has non-empty content
             sample_content = sample[col]
             if sample_content and str(sample_content).strip():
                 return {
-                    "instruction": None,  # Signal to use column content
+                    "instruction": None,  # use column content
                     "instruction_column": col,
                     "instruction_type": "explicit",
                     "uses_dynamic_instruction": True,
@@ -58,7 +58,6 @@ def generate_smart_vlm_instruction(
     # ===== LEVEL 2: Infer from Column Names + Content =====
     text_col_lower = text_column.lower()
 
-    # Sample the text content to detect patterns
     text_sample = str(sample.get(text_column, ""))[:500]  # First 500 chars
 
     # Task-specific keywords and their instructions
@@ -66,9 +65,7 @@ def generate_smart_vlm_instruction(
         # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
-            "content_hints": [
-                r"[A-Za-z\u0600-\u06FF]{10,}"
-            ],  # Long text passages (Latin/Arabic)
+            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long Latin/Arabic passages
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },
@@ -124,24 +121,21 @@ def generate_smart_vlm_instruction(
         },
     }
 
-    # Check column name matches
+    # Score each task by column/dataset name and content matches
     best_match = None
     best_score = 0.0
 
     for task_name, task_info in task_patterns.items():
         score = 0.0
 
-        # Check column name
         if any(keyword in text_col_lower for keyword in task_info["keywords"]):
             score += 0.5
 
-        # Check dataset name if provided
         if dataset_name and any(
             keyword in dataset_name.lower() for keyword in task_info["keywords"]
         ):
             score += 0.3
 
-        # Check content patterns
         for pattern in task_info["content_hints"]:
             if re.search(pattern, text_sample, re.IGNORECASE):
                 score += 0.4
@@ -164,7 +158,6 @@ def generate_smart_vlm_instruction(
     if dataset_name:
         name_lower = dataset_name.lower()
 
-        # Common dataset name patterns
         if "vqa" in name_lower or "question" in name_lower:
             return {
                 "instruction": "Answer the question about this image.",
@@ -220,7 +213,6 @@ def generate_smart_vlm_instruction(
             }
     except Exception as e:
         import logging
-
         logging.getLogger(__name__).debug(f"LLM-assisted instruction skipped: {e}")
 
     # ===== LEVEL 5: Generic Fallback =====

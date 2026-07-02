@@ -8,7 +8,17 @@ export function isAdapterMethod(method: TrainingMethod): boolean {
   return method === "lora" || method === "qlora" || method === "cpt";
 }
 export type StepNumber = 1 | 2 | 3 | 4 | 5;
-export type DatasetSource = "huggingface" | "upload";
+export type DatasetSource = "huggingface" | "upload" | "s3";
+
+/** S3 bucket configuration for loading datasets */
+export interface S3Config {
+  bucket: string;
+  region: string;
+  prefix?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  useIamRole?: boolean;
+}
 export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt" | "raw";
 export type GradientCheckpointing = "none" | "true" | "unsloth" | "mlx";
 

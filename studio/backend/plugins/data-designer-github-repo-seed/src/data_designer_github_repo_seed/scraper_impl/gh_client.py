@@ -60,9 +60,7 @@ class GitHubClient:
         token_source: str | None = None,
     ):
         if token:
-            self._token_source = (
-                token_source or "explicit token argument (recipe-level field)"
-            )
+            self._token_source = token_source or "explicit token argument (recipe-level field)"
         elif os.environ.get("GH_TOKEN"):
             self._token_source = "GH_TOKEN environment variable"
             token = os.environ["GH_TOKEN"]
@@ -72,9 +70,7 @@ class GitHubClient:
         else:
             raise RuntimeError("GH_TOKEN or GITHUB_TOKEN not set in environment")
         self.session = requests.Session()
-        self.session.headers.update(
-            {**BASE_HEADERS, "Authorization": f"Bearer {token}"}
-        )
+        self.session.headers.update({**BASE_HEADERS, "Authorization": f"Bearer {token}"})
         self.min_remaining_graphql = min_remaining_graphql
         self.min_remaining_rest = min_remaining_rest
         self.graphql_remaining: Optional[int] = None
@@ -85,7 +81,11 @@ class GitHubClient:
         self.calls_rest = 0
         self.retry_count = 0
 
-    def _sleep_until(self, reset_ts: int, buffer_s: int = 10) -> None:
+    def _sleep_until(
+        self,
+        reset_ts: int,
+        buffer_s: int = 10,
+    ) -> None:
         now = int(time.time())
         wait = max(0, reset_ts - now) + buffer_s
         log.warning("Rate limit hit. Sleeping %ds until reset.", wait)
@@ -110,12 +110,10 @@ class GitHubClient:
         )
 
     def _is_auth_failure(self, r: "requests.Response") -> bool:
-        """Distinguish auth failures from rate limiting on 401/403 responses.
+        """Tell auth failures apart from rate limiting on 401/403.
 
-        - 401: always an auth failure (invalid / expired / wrong-scope token).
-        - 403: an auth failure UNLESS the response carries a clear rate-limit signal
-          (Retry-After header, X-RateLimit-Remaining: 0, or GitHub's secondary /
-          abuse rate-limit response text).
+        401 is always auth; 403 is auth unless it carries a rate-limit signal
+        (Retry-After, X-RateLimit-Remaining: 0, or abuse/secondary text).
         """
         if r.status_code == 401:
             return True
@@ -169,7 +167,6 @@ class GitHubClient:
                     timeout = 120,
                 )
                 self.calls_graphql += 1
-                # Update rate info from response headers
                 rem = r.headers.get("X-RateLimit-Remaining")
                 rst = r.headers.get("X-RateLimit-Reset")
                 if rem is not None:
@@ -190,7 +187,7 @@ class GitHubClient:
                 if self._is_auth_failure(r):
                     self._raise_auth_error(r, "GraphQL")
                 if r.status_code == 403 or r.status_code == 429:
-                    # Check for secondary/abuse
+                    # Secondary/abuse rate limit
                     retry_after = _retry_after_seconds(r.headers.get("Retry-After"))
                     if retry_after is not None:
                         log.warning("Secondary rate limit. Sleep %ds.", retry_after)
@@ -204,17 +201,14 @@ class GitHubClient:
                 r.raise_for_status()
                 data = r.json()
                 if "errors" in data and data["errors"]:
-                    # Surface errors but allow partial data
+                    # Allow partial data; retry on RATE_LIMITED
                     errs = data["errors"]
-                    # Retry on RATE_LIMITED
                     for e in errs:
                         if e.get("type") == "RATE_LIMITED":
-                            self._sleep_until(
-                                (self.graphql_reset or int(time.time()) + 60)
-                            )
+                            self._sleep_until((self.graphql_reset or int(time.time()) + 60))
                             break
                     else:
-                        # No rate-limit error, log and return partial
+                        # No rate-limit error: log and return partial
                         log.warning("GraphQL errors: %s", json.dumps(errs)[:400])
                         return data
                     continue
@@ -243,9 +237,7 @@ class GitHubClient:
         last_err = None
         for attempt in range(max_retries):
             try:
-                r = self.session.request(
-                    method, url, params = params, json = json_body, timeout = 120
-                )
+                r = self.session.request(method, url, params = params, json = json_body, timeout = 120)
                 self.calls_rest += 1
                 rem = r.headers.get("X-RateLimit-Remaining")
                 rst = r.headers.get("X-RateLimit-Reset")
@@ -269,12 +261,10 @@ class GitHubClient:
                 if r.status_code in (403, 429):
                     retry_after = _retry_after_seconds(r.headers.get("Retry-After"))
                     if retry_after is not None:
-                        log.warning(
-                            "Secondary rate limit on REST. Sleep %ds.", retry_after
-                        )
+                        log.warning("Secondary rate limit on REST. Sleep %ds.", retry_after)
                         time.sleep(retry_after + 2)
                         continue
-                    # Check if primary rate
+                    # Primary rate limit
                     if self.rest_remaining == 0 and self.rest_reset:
                         self._sleep_until(self.rest_reset)
                         continue
@@ -290,7 +280,10 @@ class GitHubClient:
         raise RuntimeError(f"REST failed after {max_retries} retries: {last_err}")
 
     def rest_paginate(
-        self, path: str, params: Optional[Dict[str, Any]] = None, per_page: int = 100
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        per_page: int = 100,
     ) -> Iterator[dict]:
         params = dict(params or {})
         params.setdefault("per_page", per_page)
@@ -298,17 +291,14 @@ class GitHubClient:
         while True:
             r = self.rest("GET", url, params = params if url == path else None)
             if r.status_code != 200:
-                log.error(
-                    "REST paginate got %s at %s: %s", r.status_code, url, r.text[:200]
-                )
+                log.error("REST paginate got %s at %s: %s", r.status_code, url, r.text[:200])
                 return
             items = r.json()
             if isinstance(items, dict):
-                # Some endpoints return dict with list field
+                # Some endpoints wrap the list in an "items" field
                 items = items.get("items", [])
             for it in items:
                 yield it
-            # Follow link header
             link = r.headers.get("Link", "")
             nxt = None
             for part in link.split(","):

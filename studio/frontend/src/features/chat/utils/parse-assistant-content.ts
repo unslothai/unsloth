@@ -8,11 +8,9 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
-// ContentPart from @assistant-ui/react has readonly fields, so we cannot
-// do `last.text += text` to coalesce adjacent same-type parts — tsc fails
-// with TS2540 "Cannot assign to 'text' because it is a read-only property".
-// Instead, replace the last element with a fresh merged object: same
-// allocation cost as the mutation path but type-safe.
+// ContentPart from @assistant-ui/react has readonly fields, so coalescing via
+// `last.text += text` fails (TS2540). Instead replace the last element with a
+// fresh merged object: same allocation cost as mutation but type-safe.
 
 function appendTextPart(parts: ContentPart[], text: string): void {
   if (!text) return;

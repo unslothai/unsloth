@@ -1,24 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the Anthropic extended-thinking translation in
-external_provider.
+"""Unit tests for Anthropic extended-thinking translation in external_provider.
 
 Covers:
-- Adaptive-mode request body nests effort under
-  ``output_config: {effort: "<level>"}`` per the Messages API
-  reference (a top-level ``effort`` field 400s with
-  "effort: Extra inputs are not permitted").
-- Streaming SSE: ``content_block_delta`` with
-  ``delta.type == "thinking_delta"`` is translated into inline
-  ``<think>...</think>`` chat-completion chunks so the frontend's
-  reasoning-panel pipeline lifts it correctly.
-- The ``<think>`` tag closes when the first ``text_delta`` arrives,
-  on ``content_block_stop``, on ``message_delta``, or on
-  ``message_stop``.
-- Thinking is paired with ``temperature=1`` and no ``top_p`` /
-  ``top_k`` on the wire (Anthropic extended-thinking contract).
+- Adaptive-mode body nests effort under ``output_config: {effort}`` (a
+  top-level ``effort`` field 400s).
+- Streaming ``thinking_delta`` is translated into inline ``<think>...</think>``
+  chunks for the frontend reasoning panel.
+- The ``<think>`` tag closes on the first ``text_delta``, ``content_block_stop``,
+  ``message_delta``, or ``message_stop``.
+- Thinking forces ``temperature=1`` with no ``top_p`` / ``top_k`` (contract).
 """
 
 import asyncio
@@ -113,9 +105,8 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
     # display=summarized is set explicitly so Opus 4.7 (which defaults to
     # "omitted") still emits thinking_delta events for the reasoning panel.
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-    # Documented shape: effort is nested under output_config.
-    # A top-level `effort` field produces a 400:
-    #   "effort: Extra inputs are not permitted".
+    # Documented shape: effort is nested under output_config. A top-level
+    # `effort` field produces a 400: "effort: Extra inputs are not permitted".
     assert body["output_config"] == {"effort": "medium"}
     assert "effort" not in body
     # Extended-thinking contract: temperature=1, no top_p / top_k.
@@ -258,10 +249,10 @@ def test_manual_thinking_body_uses_budget_tokens_on_4_5(monkeypatch):
     body = captured["body"]
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 4096}
     # max_tokens must be strictly greater than budget_tokens; we shipped 1024
-    # and budget is 4096, so the wrapper should bump max_tokens.
+    # and budget is 4096, so the wrapper must bump max_tokens.
     assert body["max_tokens"] > body["thinking"]["budget_tokens"]
-    # Manual-thinking path does not use output_config / effort — those are
-    # the adaptive-mode controls (Claude 4.6 / 4.7).
+    # Manual-thinking path does not use output_config / effort — those are the
+    # adaptive-mode controls (Claude 4.6 / 4.7).
     assert "effort" not in body
     assert "output_config" not in body
 
@@ -338,8 +329,8 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
         if isinstance(p, dict) and p["choices"][0]["delta"]
     )
 
-    # Reasoning text should be wrapped in <think>...</think>, followed by the
-    # answer text, and the stream should terminate with [DONE].
+    # Reasoning text is wrapped in <think>...</think>, then the answer text, and
+    # the stream terminates with [DONE].
     assert "<think>First I plan.</think>" in combined
     assert combined.endswith("Answer.")
     # signature_delta is intentionally dropped — no leaked signature text.
@@ -350,9 +341,9 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
 def test_thinking_only_turn_closes_tag_without_text_delta(monkeypatch):
     """display=omitted on Claude 4.7 emits a signature_delta and no text.
 
-    The <think> open is still triggered by the (synthetic) thinking_delta;
-    we want content_block_stop to close it cleanly so the tag never leaks
-    into the next chunk."""
+    The <think> open is still triggered by the (synthetic) thinking_delta; we
+    want content_block_stop to close it cleanly so the tag never leaks into the
+    next chunk."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         events = [

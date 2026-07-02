@@ -17,6 +17,8 @@ on:
       - 'studio/frontend/**'
       - 'scripts/check_frontend_dep_removal.py'
       - 'tests/studio/test_frontend_dep_removal.py'
+      - 'scripts/sync_allow_scripts_pins.py'
+      - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
   push:
     branches: [main, pip]
@@ -60,6 +62,19 @@ jobs:
         with:
           node-version: '22'
 
+      # node 22 bundles npm 10.x, which predates allowScripts. Move to the
+      # 11.x line and fail loudly if the gate is still missing, so the
+      # strict flag below can never silently degrade into a warning.
+      - name: Upgrade npm to 11.x (allowScripts enforcement)
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+            *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
       # Run the structural lockfile scan BEFORE npm ci. A compromised
       # tarball runs its `prepare` / `postinstall` during `npm ci`,
       # so any catch has to fire upstream of that. The scanner is
@@ -68,14 +83,23 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 scripts/lockfile_supply_chain_audit.py
 
+      # Dependency bumps strand the version-pinned allowScripts entries.
+      # The paired pre-commit hook auto-fixes PRs; this is the backstop.
+      - name: allowScripts pins must match the lockfile
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 tests/studio/test_sync_allow_scripts_pins.py
+          python3 scripts/sync_allow_scripts_pins.py --check
+
       - name: Lockfile must agree with package.json (npm ci is strict)
-        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
-        # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
-        run: npm ci --no-fund --no-audit
+        # The vite 8 chain (rolldown, lightningcss, tailwind oxide) ships napi
+        # binaries with no install scripts. The only script-bearing deps are
+        # covered by `allowScripts` in package.json (npm >=11.16, default in
+        # npm 12). The pre-install lockfile audit above stays the first line
+        # of defence -- it fires before any tarball can run code.
+        # --strict-allow-scripts: any unreviewed install script hard-fails
+        # the job; the sync hook keeps the pins fresh after bumps.
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
 
       - name: npm ci must not have modified the working tree
         working-directory: ${{ github.workspace }}

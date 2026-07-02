@@ -16,9 +16,7 @@ from tests.utils.cleanup_utils import safe_remove_directory
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(
-            convo, tokenize = False, add_generation_prompt = False
-        )
+        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
         for convo in convos
     ]
     return {"text": texts}
@@ -50,10 +48,7 @@ tokenizer = get_chat_template(
     chat_template = "llama-3.1",
 )
 
-# Load small dataset for quick training
-dataset_train = load_dataset(
-    "allenai/openassistant-guanaco-reformatted", split = "train[:100]"
-)
+dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train[:100]")
 dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
 
 print("✅ Base model loaded successfully!")
@@ -98,7 +93,7 @@ trainer = SFTTrainer(
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         warmup_ratio = 0.1,
-        max_steps = 10,  # Very short training for test
+        max_steps = 10,
         learning_rate = 2e-4,
         fp16 = not is_bfloat16_supported(),
         bf16 = is_bfloat16_supported(),
@@ -130,12 +125,10 @@ print(f"\n{'='*80}")
 print("🔍 PHASE 4: Loading 4bit Model and Second Fine-tuning")
 print(f"{'='*80}")
 
-# Clean up first model
 del model
 del tokenizer
 torch.cuda.empty_cache()
 
-# Load the 4bit merged model
 model_4bit, tokenizer_4bit = FastLanguageModel.from_pretrained(
     model_name = "./test_4bit_model",
     max_seq_length = 2048,
@@ -150,7 +143,6 @@ tokenizer_4bit = get_chat_template(
 
 print("✅ 4bit model loaded successfully!")
 
-# Add LoRA adapters to the 4bit model
 model_4bit = FastLanguageModel.get_peft_model(
     model_4bit,
     r = 16,
@@ -172,7 +164,6 @@ model_4bit = FastLanguageModel.get_peft_model(
     loftq_config = None,
 )
 
-# Second fine-tuning
 trainer_4bit = SFTTrainer(
     model = model_4bit,
     tokenizer = tokenizer_4bit,
@@ -186,7 +177,7 @@ trainer_4bit = SFTTrainer(
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         warmup_ratio = 0.1,
-        max_steps = 10,  # Very short training for test
+        max_steps = 10,
         learning_rate = 2e-4,
         fp16 = not is_bfloat16_supported(),
         bf16 = is_bfloat16_supported(),
@@ -237,7 +228,6 @@ print(f"\n{'='*80}")
 print("🔍 CLEANUP")
 print(f"{'='*80}")
 
-# Cleanup
 safe_remove_directory("./outputs")
 safe_remove_directory("./outputs_4bit")
 safe_remove_directory("./unsloth_compiled_cache")

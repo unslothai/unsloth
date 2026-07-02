@@ -5,6 +5,8 @@ import { getAuthToken } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { useCallback, useEffect, useState } from "react";
 
+// Checked once per launch only (no polling), to avoid background load. A
+// re-check happens naturally the next time the user reopens the app.
 const WEB_UPDATE_CHECK_DELAY_MS = 5000;
 const DISMISS_PREFIX = "unsloth_web_update_dismissed";
 const CAN_SHOW_KEY = "can_show_web_notification";
@@ -119,24 +121,21 @@ export function useWebUpdateCheck({
 
   useEffect(() => {
     if (isTauri || !enabled || !getAuthToken()) {
-      const clearTimer = window.setTimeout(() => setStatus(null), 0);
-      return () => window.clearTimeout(clearTimer);
+      setStatus(null);
+      return;
     }
 
     let canceled = false;
+    // One check per launch, 5s after load. No polling: the next re-check is
+    // simply the next time the user opens the app.
     const timer = window.setTimeout(() => {
       fetchDisplayableUpdateStatus()
-        .then((nextStatus) => {
-          if (canceled) {
-            return;
+        .then((next) => {
+          if (!canceled && next && !isDismissed(next)) {
+            setStatus(next);
           }
-          setStatus(nextStatus && !isDismissed(nextStatus) ? nextStatus : null);
         })
-        .catch(() => {
-          if (!canceled) {
-            setStatus(null);
-          }
-        });
+        .catch(() => {});
     }, delayMs);
 
     return () => {
@@ -145,6 +144,7 @@ export function useWebUpdateCheck({
     };
   }, [delayMs, enabled]);
 
+  // X: silence this version for good (persists across launches).
   const dismiss = useCallback(() => {
     setStatus((current) => {
       if (current) {
@@ -154,5 +154,12 @@ export function useWebUpdateCheck({
     });
   }, []);
 
-  return { status: enabled && !isTauri ? status : null, dismiss };
+  // "Remind me later" / post-copy: hide without persisting a dismissal, so the
+  // banner returns on the next launch if the install is still behind. Copying
+  // the command is not the same as having updated.
+  const snooze = useCallback(() => {
+    setStatus(null);
+  }, []);
+
+  return { status: enabled && !isTauri ? status : null, dismiss, snooze };
 }

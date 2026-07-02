@@ -4,33 +4,18 @@
 
 """Diff two `package-lock.json` files and flag NEW install-script deps.
 
-A package with `"hasInstallScript": true` runs `preinstall` / `install` /
-`postinstall` lifecycle hooks every time `npm ci` lays it down. Every
-npm supply-chain compromise of the last 18 months (Shai-Hulud,
-TanStack, axios-style, ArmorCode hijacks) leveraged exactly this lever:
-the attacker publishes a new malicious version of a dep we already
-trust, and the post-install hook runs the next time CI installs.
+A `"hasInstallScript": true` package runs preinstall/install/postinstall
+hooks on every `npm ci` -- the lever behind recent npm supply-chain
+compromises (attacker publishes a malicious version of a trusted dep).
+This refuses to land a newly-introduced install-script dep without a
+maintainer eyeball; pre-existing ones are not re-flagged.
 
-This scanner refuses to allow a newly-introduced install-script dep to
-land without a maintainer eyeball on the lifecycle script body.
-Existing install-script deps are NOT re-flagged -- if `node-gyp` has
-been in the lockfile since day one, it's not part of this PR's threat
-model. Only new entries are surfaced.
+Supports lockfileVersion 1 (recursive `dependencies`) and 2/3 (flat
+`packages` with `node_modules/.../node_modules/...` nesting). For each
+new entry we best-effort fetch the registry metadata to recover the
+postinstall command body; the finding is still emitted if unreachable.
 
-Supports lockfileVersion 1 (`dependencies` key, recursive), 2 and 3
-(flat `packages` key with `node_modules/<a>/node_modules/<b>` nesting
-for transitive entries). For each NEW install-script package we
-attempt a stdlib-only fetch of
-`https://registry.npmjs.org/<name>/<version>` to recover the actual
-postinstall command body. If the network is blocked we still emit the
-finding -- the lifecycle command body is informational, not
-load-bearing.
-
-Exit codes
-==========
-  0  no newly-added install-script deps
-  1  one or more newly-added install-script deps; listed on stderr
-  2  internal error (missing lockfile, malformed JSON, etc.)
+Exit codes: 0 = none; 1 = one or more (on stderr); 2 = internal error.
 """
 
 from __future__ import annotations
@@ -53,9 +38,7 @@ HIGH = "HIGH"
 class Finding:
     __slots__ = ("severity", "name", "version", "kind", "detail")
 
-    def __init__(
-        self, severity: str, name: str, version: str, kind: str, detail: str
-    ) -> None:
+    def __init__(self, severity: str, name: str, version: str, kind: str, detail: str) -> None:
         self.severity = severity
         self.name = name
         self.version = version
@@ -70,21 +53,14 @@ class Finding:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Lockfile parsing.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _strip_nm_prefix(key: str) -> str:
-    """Convert a v2/v3 `packages` key into a bare package name.
-
-    `node_modules/foo` -> `foo`; `node_modules/foo/node_modules/bar` ->
-    `bar`. The empty key (`""`) is the project root and returns "".
-    """
+    """Convert a v2/v3 `packages` key into a bare package name (leaf after last `node_modules/`)."""
     if not key:
         return ""
-    # Use the LAST `node_modules/` segment so transitives map to their
-    # leaf name, matching how npm install resolves a postinstall.
+    # LAST node_modules/ segment so transitives map to their leaf name.
     marker = "node_modules/"
     idx = key.rfind(marker)
     if idx == -1:
@@ -93,14 +69,9 @@ def _strip_nm_prefix(key: str) -> str:
 
 
 def _collect_install_script_entries(lock: dict) -> dict[str, str]:
-    """Walk a parsed lockfile and return {package_name: version} for
-    every entry with `hasInstallScript: true` (v2/v3) OR a
-    non-empty `scripts.preinstall|install|postinstall` (v1).
+    """Return {name@version: name} for entries with hasInstallScript (v2/v3) or a lifecycle script (v1).
 
-    The same package may appear at multiple versions in a single
-    lockfile (de-duplicated copies under different parents); we key by
-    `name@version` so we don't lose either copy. Returns a dict keyed
-    by `name@version` -> the same string for convenience.
+    Keyed by name@version so dup copies at different versions aren't lost.
     """
     seen: dict[str, str] = {}
     version = lock.get("lockfileVersion")
@@ -120,10 +91,7 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
         ver = entry.get("version") or "<unversioned>"
         seen[f"{name}@{ver}"] = name
 
-    # v1 also embeds a `dependencies` tree; v2/v3 carry both for
-    # backwards-compat but `packages` is canonical for them. For v1
-    # there is no `hasInstallScript` flag, so look for a non-empty
-    # `scripts.preinstall|install|postinstall` directly.
+    # v1 has no hasInstallScript flag; detect lifecycle scripts directly.
     def _walk_v1(deps: dict, depth: int = 0) -> None:
         if depth > 64 or not isinstance(deps, dict):
             return
@@ -135,8 +103,6 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
                 isinstance(scripts, dict) and scripts.get(hook)
                 for hook in ("preinstall", "install", "postinstall")
             )
-            # v1 also sets `requires` only on the parent, no flag, so
-            # the lifecycle-script presence is the only signal.
             if lifecycle:
                 ver = entry.get("version") or "<unversioned>"
                 seen[f"{name}@{ver}"] = name
@@ -157,19 +123,11 @@ def _load_lockfile(path: Path) -> dict:
         raise ValueError(f"{path}: not valid JSON: {exc}") from exc
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Registry lookup for the postinstall command body (best-effort).
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
-    """Return {hook: command} for any of preinstall / install /
-    postinstall published in the registry metadata for this name@ver.
-
-    Returns None on any error (network blocked, 404, malformed JSON).
-    Never raises; the caller treats absence as "could not enrich, emit
-    finding anyway".
-    """
+    """Return {hook: command} for lifecycle hooks in registry metadata; None on any error (never raises)."""
     safe_name = urllib.parse.quote(name, safe = "@/")
     url = f"{REGISTRY_BASE}{safe_name}/{urllib.parse.quote(version)}"
     try:
@@ -192,9 +150,7 @@ def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
     return keep or None
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Diff.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
@@ -205,10 +161,7 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
         if key in base:
             continue  # pre-existing install-script dep; not in scope
         name = head[key]
-        # key is "name@version"; rsplit("@", 1) handles scoped names.
-        version = (
-            key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
-        )
+        version = key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
         scripts = _fetch_registry_scripts(name, version)
         if scripts:
             detail = "; ".join(f"{h}={cmd!r}" for h, cmd in scripts.items())
@@ -230,16 +183,13 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
     return findings
 
 
-# ─────────────────────────────────────────────────────────────────────
 # CLI.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description = (
-            "Diff two package-lock.json files and refuse any newly-"
-            "added install-script dep."
+            "Diff two package-lock.json files and refuse any newly-added install-script dep."
         ),
     )
     parser.add_argument(

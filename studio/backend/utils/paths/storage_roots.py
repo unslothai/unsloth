@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 
 
 def _infer_studio_home_from_venv() -> Path | None:
-    """Return parent dir of sys.prefix as STUDIO_HOME if running from an
+    """Return parent of sys.prefix as STUDIO_HOME when running from an
     installer-managed unsloth_studio venv. Sentinel-gated (share/studio.conf
-    or bin shim) so a developer venv named unsloth_studio is not misidentified.
+    or bin shim) so a dev venv named unsloth_studio isn't misidentified.
     """
     try:
         prefix = Path(sys.prefix).resolve()
@@ -38,8 +39,8 @@ def studio_root() -> Path:
     """Studio install root.
 
     Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
-    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins when
-    both are set (the more specific signal beats the generic alias).
+    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins if
+    both are set (specific signal beats generic alias).
     """
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
@@ -56,8 +57,13 @@ def studio_root() -> Path:
 
 
 def cache_root() -> Path:
-    """Central cache directory for all studio downloads (models, datasets, etc.)."""
+    """Central cache dir for all studio downloads (models, datasets, etc.)."""
     return studio_root() / "cache"
+
+
+def studio_bin_root() -> Path:
+    """Dir for Studio-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
+    return studio_root() / "bin"
 
 
 def assets_root() -> Path:
@@ -96,6 +102,53 @@ def studio_db_path() -> Path:
     return studio_root() / "studio.db"
 
 
+def rag_root() -> Path:
+    """Root directory for retrieval-augmented-generation state (db + uploads)."""
+    return studio_root() / "rag"
+
+
+def rag_db_path() -> Path:
+    """SQLite file holding RAG documents, chunks, FTS5 + sqlite-vec indexes."""
+    return rag_root() / "rag.db"
+
+
+def rag_uploads_root() -> Path:
+    """Directory where uploaded source documents are stored for ingestion."""
+    return rag_root() / "uploads"
+
+
+def _xdg_user_dir(key: str) -> Path | None:
+    config = Path.home() / ".config" / "user-dirs.dirs"
+    try:
+        lines = config.read_text(encoding = "utf-8").splitlines()
+    except OSError:
+        return None
+    prefix = f"{key}="
+    for line in lines:
+        line = line.strip()
+        if not line.startswith(prefix):
+            continue
+        value = line[len(prefix) :].strip().strip('"')
+        if not value:
+            return None
+        return Path(value.replace("$HOME", str(Path.home()))).expanduser()
+    return None
+
+
+def documents_root() -> Path:
+    override = (os.environ.get("UNSLOTH_STUDIO_DOCUMENTS_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return _xdg_user_dir("XDG_DOCUMENTS_DIR") or (Path.home() / "Documents")
+
+
+def project_workspaces_root() -> Path:
+    override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return documents_root() / "Unsloth Studio" / "Projects"
+
+
 def tmp_root() -> Path:
     return Path(tempfile.gettempdir()) / "unsloth-studio"
 
@@ -126,16 +179,15 @@ def ensure_dir(path: Path) -> Path:
 
 
 def legacy_hf_cache_dir() -> Path:
-    """Old Unsloth-specific HF hub cache, kept for backward-compat scanning."""
+    """Old Unsloth-specific HF hub cache, kept for backward-compat scans."""
     return cache_root() / "huggingface" / "hub"
 
 
 def hf_default_cache_dir() -> Path:
-    """Return the platform default HuggingFace hub cache (ignoring env overrides).
+    """Platform default HuggingFace hub cache (ignoring env overrides).
 
-    This is the location HF uses when no ``HF_HUB_CACHE`` / ``HF_HOME``
-    env var is set.  We scan it so that models a user downloaded *before*
-    installing Unsloth Studio are still discovered.
+    Where HF caches when no ``HF_HUB_CACHE`` / ``HF_HOME`` is set. Scanned
+    so models downloaded *before* installing Unsloth Studio are discovered.
     """
     return Path.home() / ".cache" / "huggingface" / "hub"
 
@@ -151,7 +203,7 @@ def lmstudio_model_dirs() -> list[Path]:
             seen.add(resolved)
             dirs.append(p)
 
-    # 1. Check LM Studio settings.json for custom downloads folder
+    # LM Studio settings.json custom downloads folder
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
@@ -163,10 +215,10 @@ def lmstudio_model_dirs() -> list[Path]:
         except Exception:
             pass
 
-    # 2. LM Studio current default models directory (all platforms)
+    # LM Studio default models directory (all platforms)
     _add(Path.home() / ".lmstudio" / "models")
 
-    # 3. Legacy LM Studio cache location
+    # Legacy LM Studio cache location
     _add(Path.home() / ".cache" / "lm-studio" / "models")
 
     return dirs
@@ -175,17 +227,17 @@ def lmstudio_model_dirs() -> list[Path]:
 def well_known_model_dirs() -> list[Path]:
     """Return directories commonly used by other local LLM tools.
 
-    Used by the folder browser to offer quick-pick chips. Returns only
-    paths that exist on disk, so the UI never shows dead chips. Order
-    reflects a rough "likelihood the user has models here" -- LM Studio
-    and Ollama first, then the generic fallbacks.
+    Backs the folder browser's quick-pick chips. Returns only paths that
+    exist on disk, so the UI never shows dead chips. Order reflects rough
+    likelihood of models being there -- LM Studio and Ollama first, then
+    generic fallbacks.
     """
     candidates: list[Path] = []
 
     # LM Studio (reuses the logic above, including settings.json override)
     candidates.extend(lmstudio_model_dirs())
 
-    # Ollama -- both the user-level and common system-wide install paths
+    # Ollama -- user-level and common system-wide install paths
     # (https://github.com/ollama/ollama/issues/733).
     ollama_env = os.environ.get("OLLAMA_MODELS")
     if ollama_env:
@@ -197,11 +249,11 @@ def well_known_model_dirs() -> list[Path]:
     # HF hub cache root (separate from the explicit HF cache chip)
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
-    # Generic "my models" spots users tend to drop things into
+    # Generic "my models" spots users drop things into
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
-    # Deduplicate while preserving order; keep only extant dirs
+    # Dedupe preserving order; keep only extant dirs
     out: list[Path] = []
     seen: set[str] = set()
     for p in candidates:
@@ -218,34 +270,41 @@ def well_known_model_dirs() -> list[Path]:
 
 
 def _setup_cache_env() -> None:
-    """Set cache environment variables for HuggingFace, uv, and vLLM.
+    """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Respects the standard HF cache resolution chain: explicit ``HF_HOME``
-    / ``HF_HUB_CACHE`` env vars take priority, then ``XDG_CACHE_HOME``,
-    then the platform default (``~/.cache/huggingface``).  The legacy
-    Unsloth cache is still *scanned* for models but is never set as the
-    active download target.
-
-    Only sets variables that are not already set by the user, so
-    explicit overrides (e.g. HF_HOME=/data/hf) are respected.
-    Works on Linux, macOS, and Windows.
+    Respects the standard HF cache chain (explicit HF_HOME / HF_HUB_CACHE,
+    then XDG_CACHE_HOME, then ~/.cache/huggingface) and only sets vars the
+    user hasn't, so explicit overrides are honored. A user-set HF_HOME also
+    seeds HF_HUB_CACHE / HF_XET_CACHE (HF defaults them to $HF_HOME/hub and
+    $HF_HOME/xet); without this, models download to and load from the standard
+    cache even when HF_HOME points elsewhere, and both the Xet and HTTP-fallback
+    download paths inherit the same wrong root.
     """
     root = cache_root()
-    xdg_cache = Path(
-        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
-    ).expanduser()
-    hf_default = xdg_cache / "huggingface"
+    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    # HUGGINGFACE_HUB_CACHE is HF's legacy alias for HF_HUB_CACHE; honor it.
+    if "HF_HUB_CACHE" not in os.environ and os.environ.get("HUGGINGFACE_HUB_CACHE"):
+        os.environ["HF_HUB_CACHE"] = os.environ["HUGGINGFACE_HUB_CACHE"]
+    # Seed the hub/xet caches from HF_HOME when set, else the platform default.
+    # Strip so a blank/whitespace HF_HOME falls back instead of making " /hub".
+    hf_home = (os.environ.get("HF_HOME") or "").strip()
+    hf_base = Path(hf_home).expanduser() if hf_home else xdg_cache / "huggingface"
     defaults: dict[str, str] = {
-        "HF_HOME": str(hf_default),
-        "HF_HUB_CACHE": str(hf_default / "hub"),
-        "HF_XET_CACHE": str(hf_default / "xet"),
+        "HF_HOME": str(hf_base),
+        "HF_HUB_CACHE": str(hf_base / "hub"),
+        "HF_XET_CACHE": str(hf_base / "xet"),
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value
-            Path(value).mkdir(parents = True, exist_ok = True)
+            # Best-effort: a non-writable custom HF_HOME must not crash startup;
+            # HF surfaces a clear error at download time instead.
+            try:
+                Path(value).mkdir(parents = True, exist_ok = True)
+            except OSError:
+                pass
 
 
 def ensure_studio_directories() -> None:
@@ -266,14 +325,32 @@ def ensure_studio_directories() -> None:
     _setup_cache_env()
 
 
-def _clean_relative_path(
-    path_value: str, *, strip_prefixes: tuple[str, ...] = ()
-) -> Path:
+def _clean_relative_path(path_value: str, *, strip_prefixes: tuple[str, ...] = ()) -> Path:
     path = Path(path_value).expanduser()
     parts = [part for part in path.parts if part not in ("", ".")]
     while parts and parts[0] in strip_prefixes:
         parts = parts[1:]
     return Path(*parts) if parts else Path()
+
+
+def _has_parent_segment(raw: str, path: Path) -> bool:
+    """Return true when a user path contains a parent-directory segment.
+
+    On POSIX, ``Path("E:\\foo\\..\\bar")`` treats backslashes as normal
+    characters, so check both the host parser and Windows-style parsing.
+    """
+    if ".." in path.parts:
+        return True
+    if ".." in PureWindowsPath(raw).parts:
+        return True
+    return ".." in raw.replace("\\", "/").split("/")
+
+
+def _is_absolute_user_path(path: Path) -> bool:
+    expanded = str(path)
+    if os.name == "nt":
+        return path.is_absolute() and PureWindowsPath(expanded).is_absolute()
+    return path.is_absolute() and PurePosixPath(expanded).is_absolute()
 
 
 def _assert_contained(resolved: Path, root: Path) -> None:
@@ -287,8 +364,7 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         resolved_real.relative_to(root_real)
     except ValueError as exc:
         raise ValueError(
-            f"path escapes root: {resolved!s} -> {resolved_real!s} "
-            f"is not under {root_real!s}"
+            f"path escapes root: {resolved!s} -> {resolved_real!s} " f"is not under {root_real!s}"
         ) from exc
 
 
@@ -300,8 +376,8 @@ def resolve_under_root(
 ) -> Path:
     """Resolve ``path_value`` and assert the result is under ``root``.
 
-    Absolutes are accepted only if already contained (so internal pre-resolved
-    paths re-enter idempotently); user-facing schemas reject absolutes upstream.
+    Absolutes are accepted only if already contained (so pre-resolved
+    internal paths re-enter idempotently); schemas reject absolutes upstream.
     """
     if not path_value or not str(path_value).strip():
         return root
@@ -311,10 +387,10 @@ def resolve_under_root(
         raise ValueError("path may not contain null bytes")
 
     path = Path(raw).expanduser()
-    if ".." in path.parts:
+    if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
 
-    if path.is_absolute():
+    if _is_absolute_user_path(path):
         _assert_contained(path, root)
         return path
 
@@ -322,6 +398,23 @@ def resolve_under_root(
     candidate = root / cleaned
     _assert_contained(candidate, root)
     return candidate
+
+
+def default_run_dir_name(model_name: str) -> str:
+    # Folder-safe run name for an auto-created output dir. Repo ids keep their
+    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
+    # collapse to their final component so an absolute source can't escape
+    # outputs_root. Length-capped to stay under the filesystem name limit.
+    raw = str(model_name or "").strip()
+    is_path = (
+        "\\" in raw
+        or raw.startswith(("/", "~", "."))
+        or os.path.isabs(raw)
+        or (len(raw) >= 2 and raw[1] == ":")
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-")
+    return base or "model"
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
@@ -333,6 +426,36 @@ def resolve_output_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
+    """Resolve an export directory — contained under exports_root().
+
+    Used by scan/read endpoints. Use :func:`resolve_export_write_dir`
+    for the export write path where absolute paths are accepted.
+    """
+    return resolve_under_root(
+        path_value,
+        root = exports_root(),
+        strip_prefixes = ("exports",),
+    )
+
+
+def resolve_export_write_dir(path_value: str | None = None) -> Path:
+    """Resolve an export save directory — accepts absolute paths.
+
+    Unlike :func:`resolve_export_dir`, this function passes absolute
+    paths through as-is so users can target a different drive when
+    their Studio install lives on a constrained system volume
+    (see :gh-issue:`6082`). Used only by the export write path.
+    """
+    if not path_value or not str(path_value).strip():
+        return exports_root()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if _has_parent_segment(raw, path):
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+    if _is_absolute_user_path(path):
+        return path
     return resolve_under_root(
         path_value,
         root = exports_root(),
@@ -362,9 +485,7 @@ def resolve_dataset_path(path_value: str) -> Path:
                 return path
             except ValueError:
                 continue
-        raise ValueError(
-            f"dataset path must be relative or under a dataset root: {raw!r}"
-        )
+        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
 
     parts = [part for part in Path(path_value).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:

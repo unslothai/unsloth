@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """
-Tests for `_effective_enable_tools` -- the helper that folds the
-process-level `tool_policy` over a request's `enable_tools` field.
+Tests for `_effective_enable_tools` -- folds the process-level `tool_policy`
+over a request's `enable_tools` field.
 
 Truth table (policy x payload.enable_tools -> effective):
   policy=None  + payload=None  -> None

@@ -1804,10 +1804,17 @@ CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
-    system_message_pattern = r"\{system_message\}"
-
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
+
+    # Custom templates have no default but may carry a {system_message} placeholder;
+    # fill it before the no-default return below. A missing message here is an error.
+    if default_system_message is None and "{system_message}" in template:
+        if system_message is None:
+            raise ValueError("Unsloth: You need to provide a system message for custom templates.")
+        new_template = template.replace("{system_message}", system_message)
+        return new_template, system_message
+
     if default_system_message is None:
         if system_message is not None:
             logger.warning_once(
@@ -1817,21 +1824,9 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
             )
         return template, system_message
 
-    # For custom templates
-    if type_chat_template is None:
-        has_placeholder = re.search(system_message_pattern, template) is not None
-
-        if has_placeholder:
-            if system_message is None:
-                raise ValueError("Unsloth: You need to provide a system message for custom templates.")
-            new_template = re.sub(system_message_pattern, system_message, template)
-            return new_template, system_message
-
-        return template, system_message
-
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = re.sub(system_message_pattern, message_to_use, template)
+    new_template = template.replace("{system_message}", message_to_use)
 
     return new_template, message_to_use
 
@@ -1964,11 +1959,8 @@ def get_chat_template(
         elif map_eos_token and (stop_word != "eos_token"):
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
-            # Replaces the old EOS token with a new one.
-            # Useful for ChatML <|im_end|> for example.
-            # Usually we train 2 more tokens <|im_start|> and <|im_end|>
-            # But training the lm_head and embeddings are slow!
-            # This is a HACK!
+            # HACK: replace old EOS with a new one (e.g. ChatML <|im_end|>) to
+            # avoid the slow lm_head/embedding retraining of new tokens.
             # Idea from https://huggingface.co/cognitivecomputations/dolphin-2.6-mistral-7b-dpo-laser
 
             old_bos_token = getattr(tokenizer, "bos_token", None)
@@ -2193,18 +2185,14 @@ def to_sharegpt(
     random_state = 3407,
 ):
     """
-    Converts a dataset to ShareGPT style.
-    ShareGPT requires only 1 input and 1 output field.
-    This means one has to merge multiple columns into 1 for 1 input field.
-    Use `conversation_extension` to increase the length of each conversation by randomnly
-    selecting a few and packing them into 1.
+    Converts a dataset to ShareGPT style (1 input + 1 output field).
+    Merge multiple columns into 1 input via `merged_prompt`; use
+    `conversation_extension` to pack several convos into one.
 
     merged_prompt = "",                 Prompt to merge columns into 1 input
     merged_column_name = "instruction", Final column name for the input  field
     output_column_name = "output",      Final column name for the output field
-    remove_unused_columns = True,
-    conversation_extension = 1,         Automatically combines `conversation_extension` convos into 1
-    random_state = 3407,
+    conversation_extension = 1,         Combines this many convos into 1
     """
     if "conversations" in dataset.column_names:
         convo = dataset[0]["conversations"]
@@ -2286,28 +2274,28 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     if getattr(tokenizer, "bos_token", None) is not None:
         added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
 
-    repeatted_tokens = []
+    repeated_tokens = []
     # Join all vocab
     joined_text = "\x01\x00".join(added_tokens_decoder)
     for token in added_tokens_decoder:
         n = len(token)
-        repeatted_counts = joined_text.count(token[:n//2])
+        repeated_counts = joined_text.count(token[:n//2])
         # Try finding longer than 1/2 of the token in the rest
         # For eg <|reserved_special_token_0|>, <|reserved_special_token_1|>
-        if repeatted_counts > 2:
+        if repeated_counts > 2:
             for j in range(n//2+1, n):
-                if joined_text.count(token[:j]) < repeatted_counts:
+                if joined_text.count(token[:j]) < repeated_counts:
                     j -= 1
-                    # Remove repeatted tokens to reduce search space
+                    # Remove repeated tokens to reduce search space
                     joined_text = joined_text.replace(token[:j], "")
-                    repeatted_tokens.append(token[:j])
+                    repeated_tokens.append(token[:j])
                     break
 
     # Remove duplicates
-    splitted = joined_text.split("\x01\x00")
-    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
+    split = joined_text.split("\x01\x00")
+    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, split) if old == new]
     final_eos_tokens += extra_eos_tokens
-    final_eos_tokens += repeatted_tokens
+    final_eos_tokens += repeated_tokens
 
     # Remove new lines, spaces and HTML tags
     filtered_eos_tokens = []
@@ -2348,13 +2336,15 @@ extra_eos_tokens = None,
 
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
-    # Strip only the left
+    # Strip only the left: trailing whitespace can be part of the repeated example
+    # (e.g. "{OUTPUT}\n"). Accidental trailing whitespace (#992) is retried on failure.
     chat_template = chat_template.lstrip()
 
     assert(tokenizer is not None)
 
     if extra_eos_tokens is None: extra_eos_tokens = []
     elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
+    original_extra_eos_tokens = list(extra_eos_tokens)
 
     vocab = tokenizer.get_vocab()
     for extra_eos in extra_eos_tokens:
@@ -2461,17 +2451,54 @@ extra_eos_tokens = None,
                 f"{left_changed}"
             )
     except:
-        ending = chat_template[chat_template.find("{OUTPUT}") + len("{OUTPUT}"):]
+        # Accidental trailing whitespace (#992) desyncs the two-example detection,
+        # so retry once without it. Templates that parse as-is are never altered.
+        rstripped_chat_template = chat_template.rstrip()
+        if rstripped_chat_template != chat_template:
+            try:
+                return construct_chat_template(
+                    tokenizer = tokenizer,
+                    chat_template = rstripped_chat_template,
+                    default_system_message = default_system_message,
+                    extra_eos_tokens = original_extra_eos_tokens,
+                )
+            except Exception:
+                pass
+
+        output_pos = chat_template.find("{OUTPUT}")
+        input_pos  = chat_template.find("{INPUT}")
+        if output_pos == -1 or input_pos == -1:
+            missing = []
+            if input_pos  == -1: missing.append("{INPUT}")
+            if output_pos == -1: missing.append("{OUTPUT}")
+            raise RuntimeError(
+                f"Unsloth: chat_template must contain {' and '.join(missing)} "
+                f"placeholder(s). Got: {chat_template[:200]!r}"
+            )
+        ending = chat_template[output_pos + len("{OUTPUT}"):]
 
         ending = re.escape(ending)
         find_text = "{INPUT}" + ending + "(.+?{OUTPUT}" + ending + ")"
         response_part = re.findall(find_text, chat_template, flags = re.DOTALL | re.MULTILINE)
+        if len(response_part) == 0:
+            raise RuntimeError(
+                "Unsloth: Could not recover a two-example structure from chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         response_part = response_part[0]
 
+        found = None
         for j in range(1, len(response_part)):
             try_find = re.escape(response_part[:j])
             try: found = next(re.finditer("(" + try_find + ").+?\\{INPUT\\}", chat_template, flags = re.DOTALL | re.MULTILINE))
             except: break
+        if found is None:
+            raise RuntimeError(
+                "Unsloth: Could not locate a separator between examples in chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         separator = found.group(1)
 
         response_start = chat_template.find(response_part)
@@ -2527,7 +2554,7 @@ extra_eos_tokens = None,
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
-            part = f"{content} + '" + part[part.find(which):] + "'"
+            part = f"{content} + '" + part[len(which):] + "'"
         else:
             part = "'" + part.replace(which, f"' + {content} + '") + "'"
         if part.startswith("'' + "): part = part[5:]
@@ -2607,8 +2634,20 @@ extra_eos_tokens = None,
             jinja_template = "{{ bos_token }}" + jinja_template
 
     # Get instruction and output parts for train_on_inputs = False
-    input_part  = input_part [:input_part .find("{INPUT}")]
-    output_part = output_part[:output_part.find("{OUTPUT}")]
+    input_idx  = input_part .find("{INPUT}")
+    output_idx = output_part.find("{OUTPUT}")
+    if input_idx == -1:
+        raise RuntimeError(
+            f"Unsloth: The instruction section of the template must contain the "
+            f"'{{INPUT}}' placeholder. Section: {input_part[:200]!r}"
+        )
+    if output_idx == -1:
+        raise RuntimeError(
+            f"Unsloth: The response section of the template must contain the "
+            f"'{{OUTPUT}}' placeholder. Section: {output_part[:200]!r}"
+        )
+    input_part  = input_part [:input_idx ]
+    output_part = output_part[:output_idx]
     return modelfile, jinja_template, input_part, output_part
 
 

@@ -15,8 +15,8 @@ const CURRENCY_REGEX =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
 
 /**
- * Find regions inside code blocks (``` ... ``` and ` ... `) so we can skip them.
- * Returns sorted array of [start, end] index pairs.
+ * Find code-block regions (``` ... ``` and ` ... `) to skip.
+ * Returns a sorted array of [start, end] index pairs.
  */
 function findCodeBlockRegions(content: string): Array<[number, number]> {
   const regions: Array<[number, number]> = [];
@@ -28,12 +28,11 @@ function findCodeBlockRegions(content: string): Array<[number, number]> {
     regions.push([match.index, match.index + match[0].length]);
   }
 
-  // Inline code: `...` (but not inside fenced blocks -- we filter below)
+  // Inline code: `...` (skip spans inside fenced blocks, filtered below)
   const inlineRe = /`[^`\n]+`/g;
   while ((match = inlineRe.exec(content)) !== null) {
     const start = match.index;
     const end = start + match[0].length;
-    // Skip if this backtick span falls inside a fenced block
     let inside = false;
     for (const [rs, re] of regions) {
       if (start >= rs && end <= re) {
@@ -46,7 +45,7 @@ function findCodeBlockRegions(content: string): Array<[number, number]> {
     }
   }
 
-  // Sort by start position for binary search
+  // Sort by start position for binary search.
   regions.sort((a, b) => a[0] - b[0]);
   return regions;
 }
@@ -74,51 +73,42 @@ function isInCodeBlock(
   return false;
 }
 
-/**
- * A token (no whitespace) that looks purely like currency, e.g. `5`,
- * `1,000`, `5.99`, `100K`, `3.5M`.
- */
+/** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
 /** Body characters that almost always indicate real LaTeX. */
 const LATEX_CHAR_RE = /[\\^_{}]/;
 
 /**
- * Operators that strongly suggest a math expression. We deliberately
- * leave out `^` and `_` because `LATEX_CHAR_RE` already short-circuits
- * on those before we ever consult this regex.
+ * Operators that strongly suggest math. Omits `^` and `_` since
+ * `LATEX_CHAR_RE` short-circuits on those before this regex runs.
  */
 const MATH_OP_RE = /[=+\-<>/*]/;
 
 /**
- * Trailing chars stripped before the currency check. Includes prose
- * punctuation plus the connectors `-` and `/` that appear in compact
- * currency ranges like `$5-$10` or `$5/$10`; without them the body
- * `5-` or `5/` would slip through the single-token math shortcut.
+ * Trailing chars stripped before the currency check: prose punctuation
+ * plus `-` and `/` from compact ranges like `$5-$10`; without them the
+ * body `5-` or `5/` would slip through the single-token math shortcut.
  */
 const TRAIL_PUNCT_RE = /[.,;:!?\-/]+$/;
 
 /**
- * A standalone single letter (variable name) inside the body. We require
- * that the letter is not part of a longer word so that prose like
- * "5 to attend" doesn't get misread as a math expression with the
- * variable `t`.
+ * A standalone single-letter variable, not part of a longer word, so
+ * prose like "5 to attend" isn't misread as math with variable `t`.
  */
 const LONE_LETTER_RE = /(?<![a-zA-Z])[a-zA-Z](?![a-zA-Z])/;
 
 /**
- * Numeric or single-letter operands joined by math operators, with
- * optional whitespace. Matches `2 + 2`, `100 < 200`, `1,000 - 500`,
- * `2.5 * 3`, `x + y`. Lets us recognise numeric-only expressions like
- * `$2 + 2$` as math without forcing a lone variable token.
+ * Numeric or single-letter operands joined by math operators (optional
+ * whitespace): `2 + 2`, `100 < 200`, `1,000 - 500`, `x + y`. Recognises
+ * numeric-only expressions like `$2 + 2$` without a lone variable token.
  */
 const SIMPLE_MATH_RE =
   /^(?:\d+(?:,\d{3})*(?:\.\d+)?|[a-zA-Z])(?:\s*[=+\-<>/*]\s*(?:\d+(?:,\d{3})*(?:\.\d+)?|[a-zA-Z]))+$/;
 
 /**
- * Return true if the substring between two `$` delimiters looks like a
- * LaTeX expression rather than a span of prose between two currency
- * tokens.
+ * True if the substring between two `$` delimiters looks like LaTeX
+ * rather than prose between two currency tokens.
  *
  * Rule of thumb:
  *   - `$30^\circ$`  -> math (LaTeX chars)
@@ -142,14 +132,12 @@ function looksLikeMathBody(body: string): boolean {
 }
 
 /**
- * Return true if the `$` at `offset` opens a balanced inline math span
- * (`$...$`) on the same line. The closer must be unescaped, must not be
- * part of `$$`, and must lie inside a 200-character window. The body
- * must look like LaTeX so we don't pair two currency tokens that share
- * a line (e.g. "$5 to $10"). Bold-wrapped spans (`**$X$**` and the
- * underscore equivalent `__$X$__`) are always treated as math because
- * LLMs reach for that pattern when they want "bold math" and the
- * heuristic would otherwise reject prose-shaped bodies like "90 - x".
+ * True if the `$` at `offset` opens a balanced inline math span (`$...$`)
+ * on the same line. The closer must be unescaped, not part of `$$`, and
+ * within 200 chars. The body must look like LaTeX so we don't pair two
+ * currency tokens on a line (e.g. "$5 to $10"). Bold-wrapped spans
+ * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
+ * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
  */
 function hasInlineMathCloser(content: string, offset: number): boolean {
   const MAX_SPAN = 200;
@@ -163,10 +151,9 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
       i++;
       continue;
     }
-    // A `$` immediately followed by a digit is far more likely the start
-    // of another currency token than the closer for the current span. Keep
-    // scanning so prose like `Starts at $5 + a $10 add-on` doesn't pair
-    // the two currency markers as a math span.
+    // A `$` followed by a digit is more likely another currency token than
+    // the closer. Keep scanning so prose like `$5 + a $10 add-on` doesn't
+    // pair the two currency markers as a math span.
     if (/\d/.test(content[i + 1] ?? "")) {
       continue;
     }

@@ -1,10 +1,4 @@
-"""Tests that HfFileSystem().glob() is skipped when is_model or is_peft is False.
-
-The glob calls in FastLanguageModel.from_pretrained and FastModel.from_pretrained
-exist solely to detect repos with both config.json and adapter_config.json. When
-either AutoConfig or PeftConfig fails to load, the glob cannot find both files,
-so calling it is redundant and risks hanging on slow networks.
-"""
+"""HfFileSystem().glob() is skipped when is_model or is_peft is False (redundant, risks hanging on slow networks)."""
 
 import os
 import unittest
@@ -12,16 +6,17 @@ from unittest.mock import MagicMock, patch
 
 
 class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
-    """Verify HfFileSystem.glob is not called when is_model or is_peft is False."""
+    """glob is not called when is_model or is_peft is False."""
 
     def _run_both_exist_block(
-        self, is_model, is_peft, supports_llama32, model_name, is_local_dir = False
+        self,
+        is_model,
+        is_peft,
+        supports_llama32,
+        model_name,
+        is_local_dir = False,
     ):
-        """Simulate the both_exist detection block from loader.py.
-
-        This mirrors the exact logic at lines 500-517 / 1276-1292 of loader.py.
-        Returns (both_exist, glob_called).
-        """
+        """Mirror loader.py's both_exist detection block; returns (both_exist, glob_called)."""
         from unittest.mock import MagicMock
 
         both_exist = (is_model and is_peft) and not supports_llama32
@@ -32,18 +27,14 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
             ]
         )
 
-        # This mirrors the guarded block in loader.py
         if supports_llama32 and is_model and is_peft:
             if is_local_dir:
-                # Local path branch — would use os.path.exists in real code
+                # Local path branch (os.path.exists in real code)
                 both_exist = True  # simulate both files present locally
             else:
                 files = glob_mock(f"{model_name}/*.json")
                 files = list(os.path.split(x)[-1] for x in files)
-                if (
-                    sum(x == "adapter_config.json" or x == "config.json" for x in files)
-                    >= 2
-                ):
+                if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
 
         return both_exist, glob_mock.called
@@ -87,10 +78,8 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
             supports_llama32 = False,
             model_name = "org/some-model",
         )
-        self.assertFalse(
-            glob_called, "glob should not be called when SUPPORTS_LLAMA32=False"
-        )
-        # both_exist is set by the old-style check: (is_model and is_peft) and not SUPPORTS_LLAMA32
+        self.assertFalse(glob_called, "glob should not be called when SUPPORTS_LLAMA32=False")
+        # both_exist set by the old-style check: (is_model and is_peft) and not SUPPORTS_LLAMA32
         self.assertTrue(both_exist)
 
     # --- Cases where glob SHOULD be called ---
@@ -120,17 +109,16 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
 
 
 class TestLoaderSourceHasGuard(unittest.TestCase):
-    """Verify the actual loader.py source code has the is_model/is_peft guard."""
+    """The actual loader.py source has the is_model/is_peft guard."""
 
     def test_loader_source_has_guard(self):
-        """Check that both SUPPORTS_LLAMA32 checks in loader.py include is_model and is_peft."""
+        """Both SUPPORTS_LLAMA32 checks in loader.py include is_model and is_peft."""
         loader_path = os.path.join(
             os.path.dirname(__file__), os.pardir, "unsloth", "models", "loader.py"
         )
         with open(loader_path) as f:
             source = f.read()
 
-        # Find all lines with the SUPPORTS_LLAMA32 check near glob usage
         lines = source.splitlines()
         guard_lines = [
             line.strip()

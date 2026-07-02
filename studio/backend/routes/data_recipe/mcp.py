@@ -10,12 +10,15 @@ from collections import defaultdict
 from fastapi import APIRouter
 
 from core.data_recipe.service import build_mcp_providers
+from loggers import get_logger
 from models.data_recipe import (
     McpToolsListRequest,
     McpToolsListResponse,
     McpToolsProviderResult,
 )
+from utils.utils import safe_error_detail
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 
@@ -24,11 +27,16 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
     try:
         from data_designer.engine.mcp import io as mcp_io
     except ImportError as exc:
+        logger.error(
+            "data_recipe.mcp.dependencies_unavailable",
+            error = str(exc),
+            exc_info = True,
+        )
         return McpToolsListResponse(
             providers = [
                 McpToolsProviderResult(
                     name = "",
-                    error = f"MCP dependencies unavailable: {exc}",
+                    error = "MCP dependencies unavailable.",
                 )
             ]
         )
@@ -36,8 +44,18 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
     providers: list[McpToolsProviderResult] = []
     tool_to_providers: dict[str, list[str]] = defaultdict(list)
 
+    from core.inference.mcp_client import stdio_mcp_enabled
+
     for provider_payload in payload.mcp_providers:
         provider_name = str(provider_payload.get("name", "")).strip()
+        if provider_payload.get("provider_type") == "stdio" and not stdio_mcp_enabled():
+            providers.append(
+                McpToolsProviderResult(
+                    name = provider_name,
+                    error = "Local (stdio) MCP servers are disabled on this host.",
+                )
+            )
+            continue
         built = build_mcp_providers({"mcp_providers": [provider_payload]})
         if len(built) != 1:
             providers.append(
@@ -51,9 +69,7 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
         provider = built[0]
         try:
             tools = mcp_io.list_tools(provider, timeout_sec = payload.timeout_sec)
-            tool_names = sorted(
-                {tool.name for tool in tools if getattr(tool, "name", "")}
-            )
+            tool_names = sorted({tool.name for tool in tools if getattr(tool, "name", "")})
             for tool_name in tool_names:
                 tool_to_providers[tool_name].append(provider.name)
             providers.append(
@@ -63,10 +79,15 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
                 )
             )
         except Exception as exc:
+            logger.error(
+                "data_recipe.mcp.list_tools_failed",
+                error = str(exc),
+                exc_info = True,
+            )
             providers.append(
                 McpToolsProviderResult(
                     name = provider.name or provider_name,
-                    error = str(exc).strip() or "Failed to load tools.",
+                    error = safe_error_detail(exc, fallback = "Failed to load tools."),
                 )
             )
 

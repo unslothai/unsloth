@@ -45,6 +45,10 @@ import {
 import { cn } from "@/lib/utils";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
 import {
+  LOCAL_SEED_UPLOAD_MAX_BYTES,
+  LOCAL_SEED_UPLOAD_MAX_LABEL,
+} from "./upload-limits";
+import {
   getGithubEnvTokenStatus,
   inspectSeedDataset,
   inspectSeedUpload,
@@ -73,7 +77,6 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
 ];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
@@ -331,8 +334,8 @@ export function GithubRepoSeedForm({
         />
         <p id={tokenHelpId} className="text-xs text-muted-foreground">
           {usingEnvToken
-            ? "Studio detected a server env token, so saved/shared recipes can leave this blank."
-            : "Blank is safest for saved/shared recipes because Studio will read the server environment at run time."}
+            ? "Unsloth detected a server env token, so saved/shared recipes can leave this blank."
+            : "Blank is safest for saved/shared recipes because Unsloth will read the server environment at run time."}
         </p>
         {hasToken && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
@@ -447,7 +450,7 @@ export function GithubRepoSeedForm({
       </fieldset>
 
       <p className="text-xs text-muted-foreground">
-        Backed by Studio's built-in <code>github_repo</code> seed reader. Large
+        Backed by Unsloth's built-in <code>github_repo</code> seed reader. Large
         repos can take minutes, so start with small limits for previews.
       </p>
     </div>
@@ -740,8 +743,10 @@ export function SeedDialog({
           if (!localFile) {
             throw new Error("Select a local CSV/JSON/JSONL file first.");
           }
-          if (localFile.size > MAX_UPLOAD_BYTES) {
-            throw new Error("File too large (max 50MB).");
+          if (localFile.size > LOCAL_SEED_UPLOAD_MAX_BYTES) {
+            throw new Error(
+              `File too large (max ${LOCAL_SEED_UPLOAD_MAX_LABEL}).`,
+            );
           }
           const payload = await fileToBase64Payload(localFile);
           const response = await inspectSeedUpload({
@@ -980,7 +985,7 @@ export function SeedDialog({
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Max 50MB per file.
+                Max {LOCAL_SEED_UPLOAD_MAX_LABEL} per file.
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">

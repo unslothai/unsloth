@@ -332,7 +332,7 @@ export function GuidedTour({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.08]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.1]"
                         onClick={() => requestClose("skip")}
                         aria-label="Skip tour"
                       >
@@ -343,7 +343,7 @@ export function GuidedTour({
                     <div className="mt-5 flex items-center justify-between gap-3">
                       <Button
                         variant="ghost"
-                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.08]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.1]"
                         onClick={() => requestClose("skip")}
                       >
                         Skip

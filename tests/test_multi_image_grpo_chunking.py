@@ -1,5 +1,5 @@
-"""Static + behavioral checks for the multi-image GRPO chunking and
-zoo compatibility guard in unsloth/models/rl_replacements.py."""
+"""Static + behavioral checks for multi-image GRPO chunking and the zoo
+compatibility guard in unsloth/models/rl_replacements.py."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _read_source() -> str:
         return fh.read()
 
 
-# ---------- Per-chunk slicing fixes (cum_rows, cum_imgs, axes) ----------
+# Per-chunk slicing fixes (cum_rows, cum_imgs, axes)
 
 
 def test_cum_rows_materialized_on_cpu():
@@ -25,9 +25,7 @@ def test_cum_rows_materialized_on_cpu():
     assert idx != -1, "cum_rows assignment must exist"
     window = src[idx : idx + 400]
     assert "rows_per_sample.cumsum(0)" in window
-    assert (
-        ").cpu()" in window
-    ), "cum_rows must be moved to CPU once via .cpu() after construction"
+    assert ").cpu()" in window, "cum_rows must be moved to CPU once via .cpu() after construction"
 
 
 def test_cum_imgs_slice_indices_use_item():
@@ -62,7 +60,7 @@ def test_image_sizes_chunked_after_branch_decision():
     )
 
 
-# ---------- Behavioral simulation of chunk math ----------
+# Behavioral simulation of chunk math
 
 
 def _simulate_chunk_indices(num_images, B):
@@ -108,7 +106,7 @@ def test_simulate_pixel_attention_mask_axis_decision():
     assert select_axis(2, 2, 2, 2, False) == "sample"
 
 
-# ---------- Zoo compatibility guard ----------
+# Zoo compatibility guard
 
 
 def test_zoo_guard_branch_present():
@@ -165,9 +163,7 @@ def test_guard_prefers_inspect_signature_over_getsource():
     src_call = body.find("inspect.getsource(grpo_accumulated_loss)")
     assert sig_call != -1
     assert src_call != -1
-    assert (
-        sig_call < src_call
-    ), "signature.parameters must run before the getsource fallback"
+    assert sig_call < src_call, "signature.parameters must run before the getsource fallback"
 
 
 def test_guard_only_raises_when_both_checks_fail():
@@ -178,16 +174,12 @@ def test_guard_only_raises_when_both_checks_fail():
         r"if not _supports_num_images:\s*\n\s*raise RuntimeError",
         re.DOTALL,
     )
-    assert pattern.search(
-        src
-    ), "guard flow must be: signature check, source fallback, then raise"
+    assert pattern.search(src), "guard flow must be: signature check, source fallback, then raise"
 
 
 def test_guard_introspection_failure_does_not_silent_no_op():
     src = _read_source()
-    assert (
-        "(TypeError, OSError)" in src
-    ), "guard must catch inspect.getsource failures explicitly"
+    assert "(TypeError, OSError)" in src, "guard must catch inspect.getsource failures explicitly"
     assert re.search(
         r"_zoo_src\s*=\s*['\"]{2}", src
     ), "introspection failure path must default _zoo_src to empty string"

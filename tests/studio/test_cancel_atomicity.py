@@ -1,12 +1,4 @@
-"""
-TOCTOU atomicity guards for the cancel path.
-
-Structural: cancel_inference, _cancel_by_cancel_id_or_stash, and
-_TrackedCancel.__enter__ must each use a single _CANCEL_LOCK critical
-section over lookup + stash / register + consume-pending.
-
-Behavioral: parallel cancel-POST vs __enter__ must never drop a cancel.
-"""
+"""TOCTOU atomicity guards for the cancel path: single _CANCEL_LOCK critical sections; parallel cancel-POST vs __enter__ never drops a cancel."""
 
 from __future__ import annotations
 
@@ -16,23 +8,14 @@ import threading
 from pathlib import Path
 
 
-SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "studio"
-    / "backend"
-    / "routes"
-    / "inference.py"
-)
+SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
 _SRC = SOURCE_PATH.read_text()
 _TREE = ast.parse(_SRC)
 
 
 def _find_function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in ast.walk(_TREE):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == name
-        ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     raise AssertionError(f"function {name!r} not found")
 
@@ -187,8 +170,7 @@ def test_parallel_cancel_vs_register_never_drops():
         tracker.__exit__(None, None, None)
 
     assert dropped == 0, (
-        f"TOCTOU regression: {dropped}/{trials} parallel trials silently "
-        f"dropped the cancel"
+        f"TOCTOU regression: {dropped}/{trials} parallel trials silently " f"dropped the cancel"
     )
 
 

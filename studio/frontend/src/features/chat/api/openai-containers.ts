@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Wrappers for the three OpenAI shell-tool container management
- * endpoints exposed by the backend (studio/backend/routes/inference.py).
- * Each one proxies to OpenAI's /v1/containers REST surface using the
- * user's encrypted API key. Backend rejects any base URL that isn't
- * api.openai.com — the shell tool only exists on the managed cloud.
+ * Wrappers for the backend's three OpenAI shell-tool container endpoints
+ * (studio/backend/routes/inference.py). Each proxies to OpenAI's
+ * /v1/containers using the user's encrypted API key. Backend rejects any
+ * base URL but api.openai.com (the shell tool is managed-cloud only).
  */
 
 import { authFetch } from "@/features/auth";
@@ -110,9 +109,8 @@ export async function deleteOpenAIContainer(
       }),
     },
   );
-  // 404 = container already gone (deleted elsewhere, or expired-then-purged).
-  // Treat as idempotent success so a stale list entry doesn't surface as a
-  // confusing error — the caller will refresh and the entry will disappear.
+  // 404 = container already gone; treat as idempotent success so a stale
+  // list entry doesn't surface as a confusing error.
   if (!response.ok && response.status !== 204 && response.status !== 404) {
     throw new Error(await parseError(response));
   }

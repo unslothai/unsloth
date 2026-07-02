@@ -17,10 +17,9 @@ from packaging.version import Version
 import os, re, subprocess, inspect, functools
 import numpy as np
 
-# Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Check if modules that need patching are already imported
+# Modules that need patching but may already be imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
@@ -31,13 +30,45 @@ from .import_fixes import (
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
+    fix_bitsandbytes_rocm_arch_detection,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
 
+# Redirect a read-only Hugging Face cache before anything below imports
+# huggingface_hub / transformers / vllm (disable_broken_vllm probes `import vllm`
+# and its compiled extensions, check_fbgemm_gpu_version imports transformers,
+# fix_huggingface_hub imports huggingface_hub) -- any of which would freeze Hub's
+# cache constants with the un-redirected paths. unsloth_zoo runs the same redirect
+# at import, but only after these probes. hf_cache.py is stdlib-only, so load it
+# straight from its file without triggering the full unsloth_zoo init this early;
+# the zoo's later call is an idempotent no-op. Older unsloth_zoo without it is
+# skipped silently.
+try:
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+
+    _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
+    if _zoo_spec is not None and _zoo_spec.origin:
+        _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
+        if _hf_cache_file.is_file():
+            _hf_cache_spec = _importlib_util.spec_from_file_location(
+                "unsloth_zoo._early_hf_cache", _hf_cache_file
+            )
+            _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
+            _hf_cache_spec.loader.exec_module(_hf_cache)
+            _hf_cache.redirect_hf_cache_if_readonly()
+            del _hf_cache, _hf_cache_spec
+        del _hf_cache_file
+    del _zoo_spec, _importlib_util, _Path
+except Exception:
+    pass
+
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
+# Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
+fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -46,6 +77,7 @@ torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
+del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
@@ -54,13 +86,10 @@ del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
 
-# This check is critical because Unsloth optimizes these libraries by modifying
-# their code at import time. If they're imported first, the original (slower,
-# more memory-intensive) implementations will be used instead of Unsloth's
-# optimized versions, potentially causing OOM errors or slower training.
+# Unsloth patches these libraries at import time; if imported first, the
+# unoptimized versions run, risking OOM or slower training.
 if already_imported:
-    # stacklevel=2 makes warning point to user's import line rather than this library code,
-    # showing them exactly where to fix the import order in their script
+    # stacklevel=2 points the warning at the user's import line
     warnings.warn(
         f"WARNING: Unsloth should be imported before [{', '.join(already_imported)}] "
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
@@ -70,10 +99,14 @@ if already_imported:
     )
 del already_imported, critical_modules
 
-# Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
-# enabling it will require much more work, so we have to prioritize. Please understand!
-# We do have a beta version, which you can contact us about!
-# Thank you for your understanding and we appreciate it immensely!
+# Pin BNB_ROCM_VERSION before bitsandbytes is first imported (`import
+# unsloth_zoo` below pulls it in on ROCm hosts).
+from .import_fixes import maybe_set_windows_rocm_bnb_version
+
+maybe_set_windows_rocm_bnb_version()
+del maybe_set_windows_rocm_bnb_version
+
+# Multi-GPU is not yet supported (beta available on request).
 
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
@@ -135,6 +168,7 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
+    fix_vllm_lora_tokenizer_module,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
@@ -145,6 +179,7 @@ from .import_fixes import (
     patch_trackio,
     patch_datasets,
     patch_enable_input_require_grads,
+    patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
     fix_executorch,
@@ -153,12 +188,15 @@ from .import_fixes import (
     disable_torchcodec_if_broken,
     disable_broken_wandb,
     fix_trl_vllm_ascend,
+    fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_accelerate_recursively_apply,
 )
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
+fix_vllm_lora_tokenizer_module()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
@@ -171,6 +209,7 @@ patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
+patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()
@@ -178,15 +217,17 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
-# Must run before patch_peft_weight_converter_compatibility -- stubs the
-# transformers v5 submodules peft 0.19.x imports unconditionally, so the
-# next patch can actually wrap build_peft_weight_mapping instead of being
-# swallowed by its bare ImportError except.
+# Must run before patch_peft_weight_converter_compatibility: stubs the
+# transformers v5 submodules peft 0.19.x imports, so the next patch can wrap
+# build_peft_weight_mapping instead of being swallowed by its ImportError.
+fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_accelerate_recursively_apply()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
+del fix_vllm_lora_tokenizer_module
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
@@ -205,8 +246,10 @@ del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_broken_wandb
+del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -268,9 +311,7 @@ if DEVICE_TYPE == "cuda":
             elif os.path.exists("/usr/local"):
                 # Sometimes bitsandbytes cannot be linked properly in Runpod for example
                 possible_cudas = (
-                    subprocess.check_output(["ls", "-al", "/usr/local"])
-                    .decode("utf-8")
-                    .split("\n")
+                    subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
                 )
                 find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
                 possible_cudas = [find_cuda.search(x) for x in possible_cudas]
@@ -301,9 +342,7 @@ if DEVICE_TYPE == "cuda":
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = (
-                    bnb.functional.lib.cdequantize_blockwise_fp32
-                )
+                cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
                 libcuda_dirs()
             except:
                 warnings.warn(
@@ -349,10 +388,8 @@ from unsloth_zoo.rl_environments import (
     launch_openenv,
 )
 
-# Patch TRL trainers for backwards compatibility.
-# Skipped under UNSLOTH_ALLOW_CPU=1 (CPU-only CI) because rebinding
-# trl.SFTTrainer.__init__ to a generic wrapper changes
-# inspect.getsource(SFTTrainer.__init__) and corrupts downstream
-# drift detectors that anchor on the pristine upstream source.
+# Patch TRL trainers for backwards compatibility. Skipped under
+# UNSLOTH_ALLOW_CPU=1 (CPU-only CI): rebinding trl.SFTTrainer.__init__
+# changes inspect.getsource() and corrupts downstream drift detectors.
 if os.environ.get("UNSLOTH_ALLOW_CPU", "0") != "1":
     _patch_trl_trainer()
