@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { requestVoiceResume } from "@/components/assistant-ui/thread";
+import { requestVoiceResume, requestVoiceSubmit } from "@/components/assistant-ui/thread";
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import type { DictationAdapter } from "@assistant-ui/react";
@@ -181,8 +181,14 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         const data = (await response.json()) as { text?: string };
         const transcript = (data.text ?? "").trim();
         if (transcript) {
+          // onSpeech(isFinal) commits the transcript into the composer text;
+          // onSpeechEnd (via finish) ends the session. Then, deferred so those
+          // state updates land first, submit the turn. requestVoiceSubmit is a
+          // no-op outside voice mode, so plain Dictate-button use just fills the
+          // composer as before.
           for (const cb of speechCallbacks) cb({ transcript, isFinal: true });
           finish("stopped", transcript);
+          setTimeout(() => requestVoiceSubmit(), 0);
         } else {
           finish("stopped");
           setTimeout(() => requestVoiceResume(), 0);

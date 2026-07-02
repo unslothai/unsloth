@@ -2619,6 +2619,17 @@ export function requestVoiceResume() {
   _voiceResume?.();
 }
 
+// Registered by the mounted VoiceEngine so a batch STT adapter (Whisper) can
+// submit its finished transcript. Streaming STT (Web Speech) is driven by the
+// transcript-growth silence timer below; Whisper produces one final transcript
+// asynchronously after its own end-of-utterance VAD, so there's nothing for that
+// timer to watch — the adapter commits the text into the composer, then calls
+// this to actually send it. Self-guards: no-op unless voice mode is active.
+let _voiceSubmit: (() => void) | null = null;
+export function requestVoiceSubmit() {
+  _voiceSubmit?.();
+}
+
 // Silence debounce: how long the transcript must stop growing before we treat
 // the user as done and send. Reset on every transcript update so a mid-sentence
 // pause never clips speech; only a real pause this long auto-sends.
@@ -2662,6 +2673,11 @@ const VoiceEngine: FC = () => {
   });
   const selectedVoiceModelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
   const voiceSlotLoaded = voiceMode === "active" && selectedVoiceModelId !== null;
+  // Whisper is batch STT (one final transcript per utterance, no interim
+  // results), so the transcript-growth silence timer below can't drive it; the
+  // adapter self-terminates on its own VAD and calls requestVoiceSubmit instead.
+  const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
+  const isWhisperStt = sttEngine === "whisper";
 
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
@@ -2711,6 +2727,36 @@ const VoiceEngine: FC = () => {
   isSpeakingRef.current = isSpeaking;
   const speakRef = useRef(speak);
   speakRef.current = speak;
+
+  // Submit a batch-STT (Whisper) transcript. The adapter has already committed
+  // the final transcript into the composer via its onSpeech(isFinal) callback,
+  // so here we just end dictation and send it — the run-lifecycle effect then
+  // speaks the reply and re-arms the mic, same as the streaming path. Mirrors
+  // the silence-timer send block (clear-on-turn-1 race guard included).
+  const submitTranscript = useCallback(() => {
+    if (voiceModeRef.current !== "active") return;
+    const composer = auiRef.current.composer();
+    if (composer.getState().dictation) composer.stopDictation();
+    // User spoke a full utterance while the model was still talking: newest
+    // speech wins, so cut the TTS before sending.
+    if (isSpeakingRef.current) stop();
+    if (!composer.getState().text.trim()) {
+      resumeListen();
+      return;
+    }
+    composer.send();
+    composer.setText("");
+    const DEFERRED_CLEAR_MAX = 5;
+    const DEFERRED_CLEAR_MS = 50;
+    const deferredClear = (n: number) => {
+      if (voiceModeRef.current !== "active") return;
+      const fresh = auiRef.current.composer();
+      if (!fresh.getState().text) return;
+      fresh.setText("");
+      if (n < DEFERRED_CLEAR_MAX) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+    };
+    setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
+  }, [resumeListen, stop]);
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
@@ -2805,8 +2851,13 @@ const VoiceEngine: FC = () => {
     }
   }, [isThreadRunning, resumeListen]);
 
-  // Silence timer: only fires in "active" state.
+  // Silence timer: only fires in "active" state. Streaming STT only — Whisper
+  // (batch) has no interim transcript for this to watch and detects end-of-
+  // utterance itself, then drives the turn via requestVoiceSubmit. Running this
+  // for Whisper would stop the mic after 1.5s and check the composer text before
+  // the async transcript ever lands, so nothing would send.
   useEffect(() => {
+    if (isWhisperStt) return;
     if (dictationStatusType !== "running") return;
     if (voiceModeRef.current !== "active") return;
 
@@ -2874,7 +2925,7 @@ const VoiceEngine: FC = () => {
         silenceTimerRef.current = null;
       }
     };
-  }, [dictationTranscript, dictationStatusType, stop, resumeListen]);
+  }, [dictationTranscript, dictationStatusType, stop, resumeListen, isWhisperStt]);
 
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
@@ -2931,6 +2982,15 @@ const VoiceEngine: FC = () => {
       if (_voiceResume === resumeListen) _voiceResume = null;
     };
   }, [resumeListen]);
+
+  // Expose submitTranscript so the batch (Whisper) dictation adapter can send its
+  // finished transcript. Self-guards: no-op unless voice is active.
+  useEffect(() => {
+    _voiceSubmit = submitTranscript;
+    return () => {
+      if (_voiceSubmit === submitTranscript) _voiceSubmit = null;
+    };
+  }, [submitTranscript]);
 
   // Thread-switch voice reset moved OUT of VoiceEngine: this component remounts
   // across the ThreadWelcome → ThreadComposerDock (first-send) boundary and loses
