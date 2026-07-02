@@ -1309,6 +1309,8 @@ export function ChatPage({
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
   const [cachedQwenTtsModels, setCachedQwenTtsModels] = useState<LoraModelOption[]>([]);
   const [cachedWhisperModels, setCachedWhisperModels] = useState<LoraModelOption[]>([]);
+  // repo_id (lowercase) -> on-disk size, so default voices show a size tag too.
+  const [cachedSizes, setCachedSizes] = useState<Record<string, number>>({});
   const cachedGgufsFetchedRef = useRef(false);
   const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
   const setSelectedSttModelId = useChatRuntimeStore(
@@ -1515,36 +1517,48 @@ export function ChatPage({
     const QWEN_TTS_REPO_KEYWORDS = ["qwen3-tts", "qwen3_tts", "qwen-tts"];
     const WHISPER_REPO_KEYWORDS = ["whisper"];
     const lower = (s: string) => s.toLowerCase();
-    const toOption = (repoId: string, isGguf: boolean): LoraModelOption => ({
+    const toOption = (
+      repoId: string,
+      isGguf: boolean,
+      sizeBytes?: number,
+    ): LoraModelOption => ({
       id: repoId,
       name: repoId.includes("/") ? (repoId.split("/")[1] ?? repoId) : repoId,
       isGguf,
+      sizeBytes,
     });
 
     void authFetch("/api/models/cached-gguf")
       .then((r) => (r.ok ? r.json() : { cached: [] }))
-      .then((data: { cached: { repo_id: string }[] }) => {
+      .then((data: { cached: { repo_id: string; size_bytes?: number }[] }) => {
         setCachedGgufs(
           (data.cached ?? [])
             .filter((c) => TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
-            .map((c) => toOption(c.repo_id, true)),
+            .map((c) => toOption(c.repo_id, true, c.size_bytes)),
         );
       })
       .catch(() => {});
 
     void authFetch("/api/models/cached-models")
       .then((r) => (r.ok ? r.json() : { cached: [] }))
-      .then((data: { cached: { repo_id: string }[] }) => {
+      .then((data: { cached: { repo_id: string; size_bytes?: number }[] }) => {
         const cached = data.cached ?? [];
+        // repo_id -> size, so defaults (Spark, Qwen3-TTS) can show a size tag
+        // even though they aren't built from this scan directly.
+        const sizes: Record<string, number> = {};
+        for (const c of cached) {
+          if (c.size_bytes) sizes[lower(c.repo_id)] = c.size_bytes;
+        }
+        setCachedSizes(sizes);
         setCachedQwenTtsModels(
           cached
             .filter((c) => QWEN_TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
-            .map((c) => toOption(c.repo_id, false)),
+            .map((c) => toOption(c.repo_id, false, c.size_bytes)),
         );
         setCachedWhisperModels(
           cached
             .filter((c) => WHISPER_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
-            .map((c) => toOption(c.repo_id, false)),
+            .map((c) => toOption(c.repo_id, false, c.size_bytes)),
         );
       })
       .catch(() => {});
@@ -2593,8 +2607,15 @@ export function ChatPage({
       ...fromLoras.map((m) => m.id),
     ]);
     const voiceDefaults = VOICE_MODEL_DEFAULTS.filter((d) => !knownIds.has(d.id));
-    return [...fromLoras, ...cachedGgufs, ...voiceDefaults, ...qwenTts];
-  }, [loraModels, cachedGgufs, cachedQwenTtsModels]);
+    const all = [...fromLoras, ...cachedGgufs, ...voiceDefaults, ...qwenTts];
+    // Attach on-disk size (from the cached-models scan) to entries that don't
+    // already carry one, so default voices (Spark, Qwen3-TTS) show a size tag.
+    return all.map((m) =>
+      m.sizeBytes != null
+        ? m
+        : { ...m, sizeBytes: cachedSizes[m.id.toLowerCase()] },
+    );
+  }, [loraModels, cachedGgufs, cachedQwenTtsModels, cachedSizes]);
 
   const sttModels = useMemo<LoraModelOption[]>(
     () => cachedWhisperModels,

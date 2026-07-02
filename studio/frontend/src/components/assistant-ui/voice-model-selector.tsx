@@ -14,6 +14,7 @@ import { MicVocalIcon } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
+import { formatBytes } from "@/features/hub/lib/format";
 import { GgufVariantExpander } from "./model-selector/pickers";
 import { splitRepoLabel } from "./model-selector/row-meta";
 import type { LoraModelOption } from "./model-selector/types";
@@ -175,7 +176,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="menu-soft-surface w-[300px] gap-0 rounded-lg border-0 p-1.5 ring-0"
+        className="menu-soft-surface w-[340px] gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
         <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Speak with
@@ -239,10 +240,17 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
               >
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                  {!model.source && model.isGguf && (
+                  {/* GGUF sizes live in the per-quant expander below; show a size
+                      tag only for single-file (safetensors) voices here. */}
+                  {model.sizeBytes != null && !model.isGguf && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {formatBytes(model.sizeBytes)}
+                    </span>
+                  )}
+                  {!model.source && (
                     <DotTag
-                      tone="gguf"
-                      label="GGUF"
+                      tone={model.isGguf ? "gguf" : "checkpoint"}
+                      label={model.isGguf ? "GGUF" : "Safetensors"}
                       className="h-[18px] gap-1 rounded-md px-1.5"
                       dotClassName="size-[5px]"
                     />

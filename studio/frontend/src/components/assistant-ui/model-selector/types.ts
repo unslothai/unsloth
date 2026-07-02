@@ -17,6 +17,8 @@ export interface LoraModelOption extends ModelOption {
   source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
   audioType?: string | null;
+  /** On-disk size in bytes (for the STT/TTS pickers' size tags). */
+  sizeBytes?: number;
 }
 
 export interface ExternalModelOption extends ModelOption {
