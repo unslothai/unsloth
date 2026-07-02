@@ -118,7 +118,7 @@ export interface ExportRunSummary {
   methodLabel: string;
   method: ExportMethod;
   quantLevels: string[];
-  /** Merged: the selected precision format values (e.g. ["16-bit", "w8a8"]). */
+  /** Merged: the selected format values (for the summary "Formats" row and to reseed the picker). */
   mergedFormats: string[];
   destination: ExportDestination;
 }
@@ -141,8 +141,13 @@ export interface RunExportParams {
   quantLevels: string[];
   /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
   useImatrix?: boolean;
-  /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit. */
-  mergedSelections?: { formatType: string; compressedMethod: string | null }[];
+  /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
+   *  `label` is the display name for the success banner's per-format output line. */
+  mergedSelections?: {
+    formatType: string;
+    compressedMethod: string | null;
+    label: string;
+  }[];
   /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
   loraGgufOuttype?: string;
@@ -176,7 +181,13 @@ interface ExportRuntimeState {
    *  settling the run by polling /api/export/status instead. Logs keep streaming. */
   reconnecting: boolean;
   startedAt: number | null;
-  result: { outputPaths: string[]; destination: ExportDestination } | null;
+  /** `outputPath` is the first path (back-compat); `outputPaths` is one entry per written folder
+   *  so a multi-format merged run can list every sibling directory it created. */
+  result: {
+    outputPath: string | null;
+    outputPaths: { label: string; path: string }[];
+    destination: ExportDestination;
+  } | null;
   error: string | null;
   cancelRequested: boolean;
   hasHydrated: boolean;
@@ -320,13 +331,11 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             isExporting: false,
             phase: "success" as const,
             result: {
-              // A recovered run only records the backend's last op path, so keep any paths the
-              // store already collected (multi-format merged) and fall back to the last op.
-              outputPaths: state.result?.outputPaths?.length
-                ? state.result.outputPaths
-                : status.last_op_output_path
-                  ? [status.last_op_output_path]
-                  : [],
+              outputPath: status.last_op_output_path ?? null,
+              // A run recovered from the backend only knows the last output path.
+              outputPaths: status.last_op_output_path
+                ? [{ label: "", path: status.last_op_output_path }]
+                : [],
               destination: state.result?.destination ?? "local",
             },
           };
@@ -443,20 +452,17 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       }
       if (!isCurrent()) return;
 
-      // 2. Run the export. Collect every resolved output_path for the success banner. Merged
-      // multi-format writes one sibling directory per format; GGUF shares one directory.
+      // 2. Run the export. Collect every resolved output_path so the success
+      // banner can list each sibling directory a multi-format run created.
       set({ phase: "exporting" });
-      const outputPaths: string[] = [];
-      const addOutput = (p: string | null) => {
-        if (p && !outputPaths.includes(p)) outputPaths.push(p);
-      };
+      const outputs: { label: string; path: string }[] = [];
 
       if (params.exportMethod === "merged") {
         // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
         const selections =
           params.mergedSelections && params.mergedSelections.length > 0
             ? params.mergedSelections
-            : [{ formatType: "16-bit (FP16)", compressedMethod: null }];
+            : [{ formatType: "16-bit (FP16)", compressedMethod: null, label: "16-bit" }];
         for (let i = 0; i < selections.length; i += 1) {
           if (!isCurrent()) return;
           set({ quantIndex: i });
@@ -472,10 +478,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               private: params.privateRepo,
             }),
           );
-          addOutput(outputPath);
+          if (outputPath) outputs.push({ label: sel.label, path: outputPath });
           if (!isCurrent()) return;
-          // Surface each finished format's path as it lands, so a mid-run recovery keeps them.
-          set({ quantIndex: i + 1, result: { outputPaths: [...outputPaths], destination: params.destination } });
+          set({ quantIndex: i + 1 });
         }
       } else if (params.exportMethod === "gguf") {
         // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
@@ -490,7 +495,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             imatrix: params.useImatrix,
           }),
         );
-        addOutput(outputPath);
+        if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
@@ -504,10 +509,15 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             hf_token: params.token ?? params.loadToken ?? null,
             private: params.privateRepo,
             gguf: params.loraGguf ?? false,
-            gguf_outtype: params.loraGgufOuttype ?? "f16",
+            gguf_outtype: params.loraGgufOuttype ?? "q8_0",
           }),
         );
-        addOutput(outputPath);
+        if (outputPath) {
+          outputs.push({
+            label: params.loraGguf ? "GGUF LoRA adapter" : "LoRA adapter",
+            path: outputPath,
+          });
+        }
       }
       if (!isCurrent()) return;
 
@@ -515,7 +525,11 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         phase: "success",
         isExporting: false,
         reconnecting: false,
-        result: { outputPaths, destination: params.destination },
+        result: {
+          outputPath: outputs[0]?.path ?? null,
+          outputPaths: outputs,
+          destination: params.destination,
+        },
       });
     } catch (err) {
       if (!isCurrent()) return;

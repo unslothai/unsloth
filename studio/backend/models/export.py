@@ -234,7 +234,8 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
         description = "If True, also convert the adapter to a GGUF LoRA file "
         "(llama.cpp convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.",
     )
-    gguf_outtype: Literal["f32", "f16", "bf16", "q8_0", "auto"] = Field(
-        "f16",
-        description = "GGUF LoRA output float type (only used when gguf=True).",
+    gguf_outtype: Literal["q8_0", "f16", "bf16", "f32"] = Field(
+        "q8_0",
+        description = "GGUF LoRA output float type (only used when gguf=True). "
+        "Q8_0 falls back to F16 per tensor for dims not divisible by the block size (32).",
     )

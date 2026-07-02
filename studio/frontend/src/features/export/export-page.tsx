@@ -94,6 +94,10 @@ import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
+// GGUF LoRA output float types (Q8_0 first / default). Q8_0 falls back to F16 per tensor for dims
+// not divisible by the block size (32); no "auto" - the choice is explicit.
+const LORA_GGUF_OUTTYPES = ["q8_0", "f16", "bf16", "f32"] as const;
+
 type SourceTab = "local" | "checkpoint" | "hf";
 type SourceMode = "checkpoint" | "model";
 
@@ -202,9 +206,8 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
-  // Merged precision: one or more MERGED_FORMATS values, exported in one run.
-  // Seed from a live merged run (like method/quants above) so navigating away and back, or
-  // toggling the export method, restores the selected precisions instead of resetting to 16-bit.
+  // Merged precision: one or more MERGED_FORMATS values, exported in one run. Seed from a live run
+  // so navigating away and back (which remounts this page) keeps the selection, like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
     return isExportPanelActive(s) &&
@@ -215,7 +218,9 @@ export function ExportPage() {
   });
   // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
-  const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("f16");
+  const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("q8_0");
+  // GGUF method: export the full model as GGUF quants, or (for an adapter checkpoint) a GGUF LoRA.
+  const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
@@ -493,14 +498,14 @@ export function ExportPage() {
     setCheckpoint(null);
   }, [selectedModelIdx]);
 
-  // For a ?run= deep link, default to the run's main checkpoint. Declared after
-  // the reset effect above so it runs last and isn't clobbered back to null.
+  // Default to the newest checkpoint when none is chosen (checkpoints are sorted newest-first).
+  // Declared after the reset effect above so it runs last and isn't clobbered back to null. Covers
+  // both a ?run= deep link and a plain finetune opened without an explicit checkpoint pick.
   useEffect(() => {
-    if (appliedRunRef.current == null) return;
-    if (appliedRunRef.current !== selectedModelIdx) return;
+    if (sourceMode !== "checkpoint") return;
     if (checkpoint != null || checkpointsForModel.length === 0) return;
     setCheckpoint(checkpointsForModel[0].display_name);
-  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
+  }, [sourceMode, selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
@@ -512,7 +517,11 @@ export function ExportPage() {
     if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
-  }, [effectiveIsAdapter, effectiveIsQuantized, exportMethod]);
+    // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
+    if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
+      setGgufTarget("model");
+    }
+  }, [effectiveIsAdapter, effectiveIsQuantized, exportMethod, isMacHost, ggufTarget]);
 
   const handleSourceTabChange = useCallback((next: string) => {
     if (next === "checkpoint") {
@@ -587,6 +596,14 @@ export function ExportPage() {
   ]);
   const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
+  // GGUF method exporting an adapter checkpoint as a GGUF LoRA (vs full-model quants). Reuses the
+  // LoRA-adapter export path; no quant list needed.
+  const ggufAsLora =
+    exportMethod === "gguf" &&
+    ggufTarget === "lora" &&
+    effectiveIsAdapter &&
+    !isMacHost;
+
   // Restrict a Hub merged export to a single format; multi-format stays available for local export.
   const hubMultiFormat =
     destination === "hub" && exportMethod === "merged" && selectedFormats.length > 1;
@@ -596,7 +613,7 @@ export function ExportPage() {
     exportMethod &&
     !exportUnsupported &&
     !hubMultiFormat &&
-    (exportMethod !== "gguf" || quantLevels.length > 0) &&
+    (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0)
   );
 
@@ -666,7 +683,7 @@ export function ExportPage() {
     if (exportUnsupported) return;
     // GGUF with no quant, or merged with no format, would run an unintended/empty export; require
     // at least one (mirrors canExport, in case the panel's Start button bypasses the outer one).
-    if (exportMethod === "gguf" && quantLevels.length === 0) return;
+    if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0) return;
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
     // A Hub merged push writes each format to the repo root; several would collide (mirrors canExport).
     if (hubMultiFormat) return;
@@ -682,8 +699,13 @@ export function ExportPage() {
       ? `${hfUsername}/${modelName}`
       : undefined;
     const token = pushToHub && hfToken ? hfToken : undefined;
-    const methodLabel =
-      EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? exportMethod;
+    // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
+    const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
+    const emitLoraGguf =
+      ggufAsLora || (effectiveMethod === "lora" && loraAsGguf && !isMacHost);
+    const methodLabel = ggufAsLora
+      ? "GGUF LoRA adapter"
+      : (EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? exportMethod);
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
     // Consent gate for an HF source's custom (auto_map) code, run before we hand
@@ -715,12 +737,15 @@ export function ExportPage() {
       trustRemoteCode,
       approvedRemoteCodeFingerprint,
       loadToken: hfToken || null,
-      exportMethod,
+      exportMethod: effectiveMethod,
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
-      mergedSelections: selectedFormats.map((v) => mergedFormatPayload(v)),
-      loraGguf: loraAsGguf && !isMacHost,
+      mergedSelections: selectedFormats.map((v) => ({
+        ...mergedFormatPayload(v),
+        label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
+      })),
+      loraGguf: emitLoraGguf,
       loraGgufOuttype,
       saveDirectory,
       destination,
@@ -732,7 +757,7 @@ export function ExportPage() {
         baseModelName: sourceBaseModelName,
         checkpointLabel: selectedExportSource,
         methodLabel,
-        method: exportMethod,
+        method: effectiveMethod,
         quantLevels,
         mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
@@ -752,6 +777,7 @@ export function ExportPage() {
     effectiveImatrix,
     selectedFormats,
     hubMultiFormat,
+    ggufAsLora,
     loraAsGguf,
     isMacHost,
     loraGgufOuttype,
@@ -1468,7 +1494,7 @@ export function ExportPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {["f16", "bf16", "f32", "q8_0", "auto"].map((t) => (
+                          {LORA_GGUF_OUTTYPES.map((t) => (
                             <SelectItem key={t} value={t}>
                               {t.toUpperCase()}
                             </SelectItem>
@@ -1481,30 +1507,84 @@ export function ExportPage() {
               )}
 
               {exportMethod === "gguf" && !exportUnsupported && (
-                <>
-                  <QuantPicker
-                    value={quantLevels}
-                    onChange={setQuantLevels}
-                    sizes={quantSizeLabels}
-                  />
-                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                    <div className="space-y-0.5">
-                      <div className="text-sm font-medium">
-                        Importance matrix (imatrix)
+                <div className="space-y-3">
+                  {effectiveIsAdapter && !isMacHost && (
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">Export target</div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant={ggufTarget === "model" ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setGgufTarget("model")}
+                          title="Merge the adapter into the base model, then quantize the full model to GGUF."
+                        >
+                          Full model
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={ggufTarget === "lora" ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setGgufTarget("lora")}
+                          title="Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
+                        >
+                          LoRA adapter
+                        </Button>
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {requiresImatrix
-                          ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
-                          : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                        {ggufTarget === "lora"
+                          ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                          : "Merges the adapter into the base model, then quantizes the full model to GGUF."}
                       </div>
                     </div>
-                    <Switch
-                      checked={effectiveImatrix}
-                      onCheckedChange={setUseImatrix}
-                      disabled={requiresImatrix}
-                    />
-                  </div>
-                </>
+                  )}
+
+                  {ggufAsLora ? (
+                    <div className="space-y-1.5">
+                      <div className="text-sm font-medium">Output type</div>
+                      <Select
+                        value={loraGgufOuttype}
+                        onValueChange={(v) => setLoraGgufOuttype(v)}
+                      >
+                        <SelectTrigger className="w-full sm:w-56">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {LORA_GGUF_OUTTYPES.map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {t.toUpperCase()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : (
+                    <>
+                      <QuantPicker
+                        value={quantLevels}
+                        onChange={setQuantLevels}
+                        sizes={quantSizeLabels}
+                      />
+                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                        <div className="space-y-0.5">
+                          <div className="text-sm font-medium">
+                            Importance matrix (imatrix)
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {requiresImatrix
+                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
+                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                          </div>
+                        </div>
+                        <Switch
+                          checked={effectiveImatrix}
+                          onCheckedChange={setUseImatrix}
+                          disabled={requiresImatrix}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

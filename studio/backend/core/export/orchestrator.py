@@ -524,7 +524,7 @@ class ExportOrchestrator:
         hf_token: Optional[str] = None,
         private: bool = False,
         gguf: bool = False,
-        gguf_outtype: str = "f16",
+        gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(

@@ -991,7 +991,7 @@ class ExportBackend:
         hf_token: Optional[str] = None,
         private: bool = False,
         gguf: bool = False,
-        gguf_outtype: str = "f16",
+        gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export LoRA adapter only (not merged).
@@ -999,7 +999,7 @@ class ExportBackend:
         Args:
             gguf: If True, also convert the adapter to a GGUF LoRA file (llama.cpp
                 convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.
-            gguf_outtype: GGUF LoRA output float type; one of f32/f16/bf16/q8_0/auto.
+            gguf_outtype: GGUF LoRA output float type; one of q8_0/f16/bf16/f32.
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -1012,7 +1012,7 @@ class ExportBackend:
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
 
-        _GGUF_LORA_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
+        _GGUF_LORA_OUTTYPES = ("q8_0", "f16", "bf16", "f32")
         if gguf:
             if _IS_MLX:
                 return (

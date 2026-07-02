@@ -425,7 +425,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
                 gguf = cmd.get("gguf", False),
-                gguf_outtype = cmd.get("gguf_outtype", "f16"),
+                gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
