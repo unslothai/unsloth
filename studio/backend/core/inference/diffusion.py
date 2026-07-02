@@ -191,10 +191,13 @@ def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
 # no unsloth-hosted GGUF, so without this its curated catalog entry could not load.
 # Exact-match, lowercased, so it cannot be widened by a typo-squat. Extend
 # deliberately, and never add a repo that carries pickled weights or remote code.
+# The SDXL refiner is intentionally NOT here: it is an img2img-only refiner pipeline
+# (StableDiffusionXLImg2ImgPipeline), but this backend loads every ``sdxl`` repo as the
+# base txt2img StableDiffusionXLPipeline and advertises txt2img, so allowlisting the
+# refiner would surface the wrong workflow and call it without its required input image.
 _TRUSTED_NON_GGUF_REPOS = frozenset(
     {
         "stabilityai/stable-diffusion-xl-base-1.0",
-        "stabilityai/stable-diffusion-xl-refiner-1.0",
         "stabilityai/sdxl-turbo",
     }
 )
@@ -208,9 +211,18 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models),
     a short allowlist of official safetensors-only base repos (``_TRUSTED_NON_GGUF_REPOS``,
     e.g. the SDXL base), and local paths the user explicitly pointed at (already on their
-    disk). The GGUF path is unchanged and stays open to any repo, as before."""
-    if Path(repo_id).expanduser().exists():
-        return True
+    disk). The GGUF path is unchanged and stays open to any repo, as before.
+
+    A bare ``owner/name`` HF id is never a real filesystem path, and an id with invalid
+    characters makes ``Path.exists()`` raise OSError; treat any such failure as "not a
+    local path" so the trust decision falls through to the org/allowlist checks (the
+    loader's validate_load_request raises the clear FileNotFoundError for a genuinely
+    missing local pick)."""
+    try:
+        if Path(repo_id).expanduser().exists():
+            return True
+    except OSError:
+        pass
     rid = repo_id.strip().lower()
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
@@ -434,6 +446,16 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
+        # A GGUF load builds a transformer-only file via the generic GGUF branch
+        # (UNet2DConditionModel.from_single_file(subfolder="transformer", GGUFQuantizationConfig)).
+        # Families whose single file IS the whole pipeline (SDXL) have no transformer-only
+        # GGUF path, so reject GGUF here -- before the route evicts the current model and
+        # the background load fails deep in from_single_file.
+        if kind == "gguf" and fam.single_file_is_pipeline:
+            raise ValueError(
+                f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
+                f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+            )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
         # weights, so an arbitrary remote repo is rejected here, before any work.
@@ -568,6 +590,7 @@ class DiffusionBackend:
                 base,
                 kwargs.get("hf_token"),
                 kind = kind,
+                single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
             )
             with self._lock:
                 # Stamp progress only if this load is still current; a superseding
@@ -634,6 +657,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         *,
         kind: str = "gguf",
+        single_file_is_pipeline: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
@@ -641,7 +665,9 @@ class DiffusionBackend:
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
         single-file paths, where the transformer is the single file and the base repo
-        supplies only the companions."""
+        supplies only the companions. For a ``single_file_is_pipeline`` family (SDXL) the
+        single file is the WHOLE pipeline, so the base repo supplies only config/tokenizer
+        (no weights) and its weight files are skipped."""
         from huggingface_hub import HfApi
 
         api = HfApi()
@@ -671,9 +697,16 @@ class DiffusionBackend:
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
+            # A whole-pipeline single file (SDXL) needs only the base repo's config/tokenizer,
+            # not its (unused, multi-GB) weight files.
+            base_filter = (
+                _base_config_file_downloaded
+                if (kind == "single_file" and single_file_is_pipeline)
+                else _base_file_downloaded
+            )
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             for s in base_info.siblings:
-                if _base_file_downloaded(s.rfilename):
+                if base_filter(s.rfilename):
                     base_files.append(s.rfilename)
                     total += s.size or 0
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
@@ -719,6 +752,13 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
+        # A blank / whitespace-only token must degrade to anonymous access, not be passed
+        # as an explicit credential (from_single_file / from_pretrained / the Hub client
+        # can error on a malformed token instead of falling back). Normalize once here so
+        # every load branch and the size estimate below use a real token or None.
+        hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
+        hf_token = hf_token or None
+
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
         # family fails with ValueError even in a no-diffusers runtime.
         fam = self.validate_load_request(
@@ -1253,11 +1293,30 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            cn_model = (
-                getattr(diffusers, model_cls_name)
-                .from_pretrained(resolved_cn.path, torch_dtype = state.dtype, token = state.hf_token)
-                .to(state.device)
+            import torch
+
+            # state.dtype is the display string saved at load ("bfloat16"), NOT a
+            # torch.dtype; pass the real dtype so diffusers loads the ControlNet at the
+            # base compute dtype instead of silently defaulting to float32 (extra VRAM).
+            cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
+            cn_model = getattr(diffusers, model_cls_name).from_pretrained(
+                resolved_cn.path,
+                torch_dtype = cn_dtype,
+                # An empty / malformed token means anonymous access; the HF client can
+                # raise on a blank credential instead of falling back, so coerce to None.
+                token = state.hf_token or None,
             )
+            # Placement must follow the base model's offload policy. A resident base moves
+            # the ControlNet resident too; an offloaded (low-VRAM) base streams it through
+            # the device with group offloading instead of forcing the whole module onto the
+            # GPU, which would defeat the offload and risk an OOM. Best-effort: any failure
+            # falls back to the resident placement (the prior behaviour).
+            if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and (
+                _offload_controlnet_module(cn_model, state.device, logger)
+            ):
+                pass
+            else:
+                cn_model = cn_model.to(state.device)
             if cancel.is_set():
                 # An unload raced the blocking download above and already cleared the
                 # ControlNet caches; caching now would pin the module past the unload.
@@ -1288,7 +1347,10 @@ class DiffusionBackend:
         if denoiser is None or vae is None:
             return
         try:
-            target_dtype = denoiser.dtype
+            # Read the dtype from a parameter (not denoiser.dtype): a plain nn.Module has no
+            # .dtype, and a torch.compile'd/ wrapped denoiser can obscure it; this also
+            # matches how the VAE dtype is read on the next line.
+            target_dtype = next(denoiser.parameters()).dtype
             if next(vae.parameters()).dtype != target_dtype:
                 vae.to(dtype = target_dtype)
         except (StopIteration, AttributeError, RuntimeError):
@@ -1332,6 +1394,15 @@ class DiffusionBackend:
             )
 
         resolved = diffusion_lora.resolve_specs(specs, hf_token = state.hf_token, cancel_event = cancel)
+        # The shared catalog scans both .safetensors and .gguf, but diffusers'
+        # load_lora_weights only takes safetensors; a .gguf adapter would otherwise fail
+        # deep in generation. Reject it here as a clean 400 before touching the pipe.
+        bad = [r.id for r in resolved if r.fmt != "safetensors"]
+        if bad:
+            raise ValueError(
+                "GGUF LoRA adapters are not supported on the diffusers engine "
+                f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
+            )
         # Unique adapter names (diffusers requires distinct names; sanitized stems can collide).
         uniq: list[tuple[str, str, float]] = []
         seen: set[str] = set()
@@ -1439,8 +1510,24 @@ class DiffusionBackend:
                 pipe = state.pipe
                 init_pil = mask_pil = None
                 control_pil = None
-                cn_scale = cn_gstart = cn_gend = None
+                cn_scale = cn_gstart = cn_gend = cn_mode = None
                 ref_extra: list = []
+                # Validate parameter dependencies up front: mask / upscale / reference all
+                # need an input image, and reference conditioning needs a family that
+                # supports it. Without these guards an unsupported combination would be
+                # silently ignored and quietly fall back to txt2img / img2img.
+                if init_image is None:
+                    if mask_image is not None:
+                        raise ValueError("mask_image requires an input image (init_image).")
+                    if upscale is not None and upscale > 1.0:
+                        raise ValueError("upscale requires an input image (init_image).")
+                    if reference_images:
+                        raise ValueError("reference_images require an input image (init_image).")
+                if reference_images and not getattr(state.family, "reference", False):
+                    raise ValueError(
+                        f"Reference images are not supported for the '{state.family.name}' "
+                        "model family."
+                    )
                 if getattr(state.family, "edit", False):
                     # Instruction editing: the loaded pipe is the edit pipeline. It always
                     # needs an input image; the prompt is the edit instruction. No mask, no
@@ -1509,41 +1596,55 @@ class DiffusionBackend:
                 # and passes a control map. v1 conditions txt2img only (not img2img/inpaint/edit).
                 if controlnet is not None:
                     from core.inference import diffusion_controlnet
-
-                    if workflow != "txt2img":
-                        raise ValueError(
-                            "ControlNet currently combines with plain text-to-image only, not the "
-                            f"{workflow} workflow."
-                        )
-                    if not diffusion_controlnet.supports_controlnet(
-                        engine = "diffusers",
-                        family = state.family.name,
-                        has_controlnet_pipeline = bool(
-                            getattr(state.family, "controlnet_pipeline_class", None)
-                        ),
-                        model_kind = state.kind,
-                        transformer_quant = state.transformer_quant,
-                    ):
-                        raise ValueError(
-                            "ControlNet is not supported for this model/quantisation on the "
-                            "diffusers engine (needs a bf16 or bnb-4bit load of a family with a "
-                            "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
-                        )
                     cn_id, cn_image_b64, cn_type, cn_strength, cn_gs, cn_ge = controlnet
-                    resolved_cn = diffusion_controlnet.resolve_controlnet(
-                        cn_id,
-                        family = state.family.name,
-                        hf_token = state.hf_token,
-                        cancel_event = cancel,
-                    )
-                    pipe = self._controlnet_pipe(state, resolved_cn, cancel)
-                    workflow = "controlnet"
-                    src = _decode_b64_image(cn_image_b64, mode = "RGB")
-                    # Control map at the OUTPUT size so it aligns with the generated latents.
-                    control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
-                        (width, height), Image.LANCZOS
-                    )
-                    cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
+                    # strength 0 disables ControlNet (documented on the request model, and the
+                    # frontend slider allows it): skip the whole path so a no-op selection never
+                    # pays the multi-GB ControlNet download / VRAM cost.
+                    if cn_strength in (None, 0, 0.0):
+                        controlnet = None
+                    else:
+                        if workflow != "txt2img":
+                            raise ValueError(
+                                "ControlNet currently combines with plain text-to-image only, not "
+                                f"the {workflow} workflow."
+                            )
+                        if not diffusion_controlnet.supports_controlnet(
+                            engine = "diffusers",
+                            family = state.family.name,
+                            has_controlnet_pipeline = bool(
+                                getattr(state.family, "controlnet_pipeline_class", None)
+                            ),
+                            model_kind = state.kind,
+                            transformer_quant = state.transformer_quant,
+                        ):
+                            raise ValueError(
+                                "ControlNet is not supported for this model/quantisation on the "
+                                "diffusers engine (needs a bf16 or bnb-4bit load of a family with a "
+                                "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
+                            )
+                        # Decode + preprocess the control image FIRST so a malformed / unsupported
+                        # image fails as a clean 400 BEFORE any ControlNet download or pipe build,
+                        # rather than after paying that cost. Control map at the OUTPUT size so it
+                        # aligns with the generated latents.
+                        src = _decode_b64_image(cn_image_b64, mode = "RGB")
+                        control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
+                            (width, height), Image.LANCZOS
+                        )
+                        try:
+                            resolved_cn = diffusion_controlnet.resolve_controlnet(
+                                cn_id, family = state.family.name
+                            )
+                        except FileNotFoundError as exc:
+                            # An unknown / missing ControlNet id is a bad selection -> 400, not a
+                            # generic 500 (the route maps ValueError, not FileNotFoundError).
+                            raise ValueError(str(exc)) from exc
+                        pipe = self._controlnet_pipe(state, resolved_cn, cancel)
+                        workflow = "controlnet"
+                        cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
+                        # Flux Union ControlNet selects the active mode by an integer
+                        # ``control_mode`` (canny/depth/pose/...); map the chosen control type so
+                        # the union model applies the right head instead of a default/wrong one.
+                        cn_mode = diffusion_controlnet.union_control_mode(cn_id, cn_type)
                 # Auto-resize odd-sized inputs to a multiple of 16 for the workflows whose
                 # OUTPUT size is taken from the input image (img2img / inpaint / extend / edit),
                 # so an upload like 186px tall no longer fails the pipeline's divisibility check.
@@ -1556,9 +1657,8 @@ class DiffusionBackend:
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
-                    self._align_vae_dtype(
-                        pipe, getattr(state.family, "denoiser_attr", "transformer")
-                    )
+                    # state.family is always a DiffusionFamily, which defines denoiser_attr.
+                    self._align_vae_dtype(pipe, state.family.denoiser_attr)
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the
                 # input image and may reject width/height; a distilled pipe may take no
@@ -1620,6 +1720,10 @@ class DiffusionBackend:
                         kwargs["control_guidance_start"] = cn_gstart
                     if "control_guidance_end" in call_params and cn_gend is not None:
                         kwargs["control_guidance_end"] = cn_gend
+                    # Union ControlNet mode index (Flux); only when the pipe accepts it and the
+                    # selected control type maps to a known mode.
+                    if "control_mode" in call_params and cn_mode is not None:
+                        kwargs["control_mode"] = cn_mode
 
                 gen = _GenState(total_steps = steps)
 
@@ -1724,13 +1828,13 @@ class DiffusionBackend:
         if state.eager_patched:
             uninstall_patches()
             uninstall_arch_patches()
-        # Drop any LoRA adapters applied to the pipe so a later reference-path load is
-        # bit-identical and the freed transformer carries no adapter layers. Idempotent.
-        try:
-            if getattr(state.pipe, "_unsloth_loras", ()):
-                state.pipe.unload_lora_weights()
-        except Exception:  # noqa: BLE001 -- best-effort cleanup on teardown
-            pass
+        # NOTE: we deliberately do NOT call state.pipe.unload_lora_weights() here. unload()
+        # sets the cancel event but does not take _generate_lock, so a LoRA-backed denoise
+        # can still be running on this same pipe for up to one more callback; mutating its
+        # adapter layers now would race that in-flight generation. The whole pipe is dropped
+        # just below (self._state = None; del state; clear_gpu_cache()), so the adapter
+        # tensors are freed with it -- no explicit unload is needed for memory or for a
+        # later load (which builds a fresh pipe).
         # Drop the workflow pipes built around this load's modules so they don't pin the
         # freed pipeline (they only re-wire its components, but holding the wrappers
         # would keep the modules alive past unload).
@@ -1861,6 +1965,34 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     return base if isinstance(base, str) and base.strip() else None
 
 
+def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
+    """Stream a ControlNet module through ``device`` via diffusers group offloading.
+
+    Used when the base model was loaded with an offload policy: forcing the ControlNet
+    fully resident with ``.to(device)`` would defeat that low-VRAM placement and can OOM.
+    Group offloading is applied to this single module (it does not touch the base pipe's
+    existing hooks), so it is isolated and reversible. Returns True on success; on any
+    failure the caller falls back to a resident placement, so this never blocks a load."""
+    try:
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        onload = torch.device(device)
+        apply_group_offloading(
+            cn_model,
+            onload_device = onload,
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+            use_stream = onload.type == "cuda",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — offload is best-effort; resident is the fallback
+        if logger is not None:
+            logger.warning("diffusion.controlnet: group offload failed (%s); loading resident", exc)
+        return False
+
+
 def _base_file_downloaded(rfilename: str) -> bool:
     """True for base-repo files ``from_pretrained`` actually fetches.
 
@@ -1874,6 +2006,33 @@ def _base_file_downloaded(rfilename: str) -> bool:
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
     return not rfilename.startswith("assets/")
+
+
+# Weight file extensions the base repo need NOT supply when the single file is the whole
+# pipeline (SDXL): from_single_file(config=base) reads only the base repo's structure
+# (config/tokenizer/scheduler) and takes the weights from the single file.
+_BASE_WEIGHT_EXTS = (
+    ".safetensors",
+    ".bin",
+    ".ckpt",
+    ".pt",
+    ".pth",
+    ".gguf",
+    ".onnx",
+    ".onnx_data",
+    ".msgpack",
+    ".h5",
+    ".pb",
+)
+
+
+def _base_config_file_downloaded(rfilename: str) -> bool:
+    """True for base-repo files needed to BUILD a pipeline structure around a whole-pipeline
+    single file WITHOUT its weights: config / tokenizer / scheduler JSON, but no weight
+    tensors (the single file supplies those). Used for ``single_file_is_pipeline`` families."""
+    if not _base_file_downloaded(rfilename):
+        return False
+    return not rfilename.lower().endswith(_BASE_WEIGHT_EXTS)
 
 
 def _pipeline_file_downloaded(rfilename: str) -> bool:

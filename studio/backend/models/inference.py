@@ -1856,6 +1856,14 @@ class ControlNetSpec(BaseModel):
         1.0, ge = 0.0, le = 1.0, description = "Fraction of steps at which ControlNet ends"
     )
 
+    @model_validator(mode = "after")
+    def _check_guidance_range(self) -> "ControlNetSpec":
+        # An inverted range (start > end) means "act over no steps"; reject it as a clean
+        # 422 instead of letting the diffusers pipeline raise a 500 deep in the denoise.
+        if self.guidance_start > self.guidance_end:
+            raise ValueError("guidance_start must be <= guidance_end")
+        return self
+
 
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""

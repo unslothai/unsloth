@@ -19,7 +19,6 @@ backend read an arbitrary location.
 from __future__ import annotations
 
 import re
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -138,21 +137,28 @@ def _catalog_by_id() -> dict[str, ControlNetCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
 
-def resolve_controlnet(
-    spec_id: str,
-    *,
-    family: Optional[str] = None,
-    hf_token: Optional[str] = None,
-    cancel_event: Optional[threading.Event] = None,
-) -> ResolvedControlNet:
+def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> ResolvedControlNet:
     """Resolve a ControlNet id to a loadable repo id / local dir.
 
     Accepts a catalog/local id, or a bare public HF repo id (``owner/name``). The backend
     loads the result with ``ControlNetModelClass.from_pretrained(path)`` (download + cache
     handled there, like the base pipeline). Raises on an unknown id -> the caller maps to 400.
+
+    ``family`` (the loaded base family) enforces catalog compatibility: a ControlNet is
+    architecture-specific, so a catalog entry tagged for another family is rejected here
+    with a clear error rather than being loaded through the wrong pipeline class later.
     """
     entry = _catalog_by_id().get(spec_id)
     if entry is not None:
+        # A curated/local entry may declare the families it is built for. A client that
+        # bypasses the UI filter (direct API call) could send an entry for another family;
+        # reject it before any download so it never reaches the wrong ControlNet pipeline.
+        fam = (family or "").strip().lower()
+        if entry.families and fam and fam not in {f.lower() for f in entry.families}:
+            raise ValueError(
+                f"ControlNet '{spec_id}' is for {', '.join(entry.families)}, not the loaded "
+                f"'{family}' model; pick a ControlNet built for this family."
+            )
         if entry.source == "local":
             path = entry.local_path or ""
             if not path or not Path(path).is_dir():
@@ -172,6 +178,33 @@ def resolve_controlnet(
     raise FileNotFoundError(
         f"unknown ControlNet '{spec_id}': not a local model, catalog entry, or HF repo id"
     )
+
+
+# Union ControlNet mode indices. A single "union" model covers several control modes and
+# selects the active one via an integer ``control_mode`` argument; these are the standard
+# indices used by the FLUX.1 / Qwen-Image union ControlNets. "passthrough" (an already-made
+# map) carries no intrinsic mode, so it maps to nothing (the caller omits control_mode).
+_UNION_CONTROL_MODES: dict[str, int] = {
+    "canny": 0,
+    "tile": 1,
+    "depth": 2,
+    "blur": 3,
+    "pose": 4,
+    "gray": 5,
+    "lq": 6,
+}
+
+
+def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
+    """The integer ``control_mode`` for a union ControlNet, or None.
+
+    Returns a mode only for a curated *union* catalog entry AND a control type that maps to a
+    known index; otherwise None so the caller omits the kwarg (a non-union ControlNet has a
+    single fixed mode, and 'passthrough' does not name one). Pure lookup, no network."""
+    entry = _catalog_by_id().get(spec_id)
+    if entry is None or not entry.is_union:
+        return None
+    return _UNION_CONTROL_MODES.get((control_type or "").strip().lower())
 
 
 def preprocess_control(image: Any, control_type: str) -> Any:
