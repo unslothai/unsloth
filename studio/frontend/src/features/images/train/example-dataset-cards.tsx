@@ -3,7 +3,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/toast";
 
@@ -77,18 +76,19 @@ export function ExampleDatasetCards({
         {examples.map((ex) => (
           <div
             key={ex.id}
-            className="flex items-center gap-3 rounded-lg border border-border p-2.5"
+            className="flex min-w-0 items-center gap-3 rounded-lg border border-border p-2.5"
           >
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate text-xs font-medium">{ex.label}</span>
-                <Badge
-                  variant="secondary"
-                  className="max-w-[120px] shrink-0 truncate text-[10px] font-normal"
+                <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                  {ex.label}
+                </span>
+                <span
+                  className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground"
                   title={ex.license}
                 >
                   {ex.license}
-                </Badge>
+                </span>
               </div>
               <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
                 {ex.description}
