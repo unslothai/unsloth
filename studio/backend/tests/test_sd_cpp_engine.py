@@ -141,7 +141,6 @@ def test_terminate_reaps_killed_child():
     # zombies until a later Popen cleanup. After _terminate the returncode is set
     # (the child has been waited on), so nothing lingers.
     import subprocess
-
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         start_new_session = (os.name == "posix"),
