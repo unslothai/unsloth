@@ -240,23 +240,32 @@ class StreamToolCallHealer:
         return events
 
 
-def _last_assistant_text(data: Any) -> str:
-    """First-choice assistant content of a non-streaming chat response, or ''."""
+def _first_choice_message(data: Any) -> Optional[dict]:
+    """First-choice message dict of a non-streaming chat response, else None.
+
+    Upstream error bodies can carry ``"message": null`` (or no choices at all),
+    so never assume the shape: a non-dict message means "nothing to heal".
+    """
     try:
         message = data["choices"][0]["message"]
-        content = message.get("content")
-        return content if isinstance(content, str) else ""
     except (KeyError, IndexError, TypeError):
-        return ""
+        return None
+    return message if isinstance(message, dict) else None
+
+
+def _last_assistant_text(data: Any) -> str:
+    """First-choice assistant content of a non-streaming chat response, or ''."""
+    message = _first_choice_message(data)
+    content = message.get("content") if message else None
+    return content if isinstance(content, str) else ""
 
 
 def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
     """True when a non-streaming chat response carries a usable tool call
     (structured, or text-form that healing would promote). Used to decide
     whether a nudge retry actually improved on the original response."""
-    try:
-        message = data["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError):
+    message = _first_choice_message(data)
+    if not message:
         return False
     if message.get("tool_calls"):
         return True
@@ -275,11 +284,8 @@ def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
     """
     if not allowed_tools:
         return False
-    try:
-        message = data["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError):
-        return False
-    if message.get("tool_calls"):
+    message = _first_choice_message(data)
+    if not message or message.get("tool_calls"):
         return False
     text = message.get("content")
     if not isinstance(text, str) or not has_tool_signal(text):

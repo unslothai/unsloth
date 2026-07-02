@@ -14,6 +14,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -24,6 +26,7 @@ from core.inference.passthrough_healing import (  # noqa: E402
     heal_openai_message,
     nudge_messages,
     nudge_should_retry,
+    response_has_promotable_calls,
 )
 
 TOOLS = [
@@ -212,6 +215,28 @@ class TestNudgeHelpers:
         assert [m["role"] for m in suffix] == ["assistant", "user"]
         assert suffix[0]["content"] == "<tool_call>garbage"
         assert "`Bash` or `Read`" in suffix[1]["content"]
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            None,
+            "not a dict",
+            {},
+            {"choices": []},
+            {"choices": [{}]},
+            {"choices": [{"message": None}]},  # llama-server error bodies do this
+            {"choices": [{"message": "not a dict"}]},
+            {"choices": [{"message": {"content": None}}]},
+            {"error": {"message": "boom"}},
+        ],
+    )
+    def test_malformed_response_shapes_never_raise(self, data):
+        # A malformed upstream body must degrade to "nothing to heal/nudge",
+        # never crash the request with an AttributeError.
+        assert nudge_should_retry(data, {"Bash"}) is False
+        assert response_has_promotable_calls(data, {"Bash"}) is False
+        suffix = nudge_messages(data, {"Bash"})
+        assert suffix[0] == {"role": "assistant", "content": ""}
 
 
 # ── Route-level wiring (OpenAI passthrough) ─────────────────────────────
