@@ -160,23 +160,57 @@ def test_resolve_tasks_builtin_names(tmp_path):
     assert includes == []
 
 
-def test_resolve_tasks_custom_yaml(tmp_path):
-    task_file = tmp_path / "custom.yaml"
+def test_resolve_tasks_custom_yaml_copied_to_include_dir(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    task_file = src / "custom.yaml"
     task_file.write_text(yaml.safe_dump({"task": "my_task", "output_type": "generate_until"}))
+    # a broken sibling must not end up on the include path
+    (src / "broken.yaml").write_text("task: [unclosed")
+    tmp_dir = tmp_path / "gen"
 
-    names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path)
+    names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
+
+    custom_dir = tmp_dir / "custom"
+    assert names == ["my_task"]
+    assert includes == [str(custom_dir.resolve())]
+    assert (custom_dir / "my_task.yaml").exists()
+    assert not (custom_dir / "broken.yaml").exists()
+
+
+def test_resolve_tasks_yml_normalised_to_yaml(tmp_path):
+    task_file = tmp_path / "custom.yml"
+    task_file.write_text(yaml.safe_dump({"task": "my_task", "output_type": "generate_until"}))
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
 
     assert names == ["my_task"]
+    # lm-eval only indexes .yaml files
+    assert (tmp_dir / "custom" / "my_task.yaml").exists()
+
+
+def test_resolve_tasks_include_yaml_keeps_parent_dir(tmp_path):
+    task_file = tmp_path / "custom.yaml"
+    task_file.write_text(
+        yaml.safe_dump({"task": "my_task", "include": "base.yaml"})
+    )
+
+    names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path / "gen")
+
+    assert names == ["my_task"]
+    # the config references a sibling file, so its directory stays included
     assert includes == [str(tmp_path.resolve())]
 
 
 def test_resolve_tasks_jsonl_generates_task(tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "q", "answer": "a"}\n')
-    gen_dir = tmp_path / "gen"
+    tmp_dir = tmp_path / "gen"
 
-    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", gen_dir)
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_dir)
 
+    gen_dir = tmp_dir / "generated"
     assert names == ["qa"]
     assert includes == [str(gen_dir.resolve())]
     assert (gen_dir / "qa.yaml").exists()
@@ -196,8 +230,8 @@ def test_resolve_tasks_uniquifies_colliding_dataset_stems(tmp_path):
     )
 
     assert names == ["qa", "qa_2"]
-    spec_a = yaml.safe_load((gen_dir / "qa.yaml").read_text())
-    spec_b = yaml.safe_load((gen_dir / "qa_2.yaml").read_text())
+    spec_a = yaml.safe_load((gen_dir / "generated" / "qa.yaml").read_text())
+    spec_b = yaml.safe_load((gen_dir / "generated" / "qa_2.yaml").read_text())
     assert spec_a["dataset_kwargs"]["data_files"] == str((dir_a / "qa.jsonl").resolve())
     assert spec_b["dataset_kwargs"]["data_files"] == str((dir_b / "qa.jsonl").resolve())
     assert spec_b["task"] == "qa_2"
@@ -241,6 +275,68 @@ def test_resolve_tasks_yaml_rejects_registered_name(tmp_path):
         evalmod.resolve_tasks(
             str(task_file), "question", "answer", tmp_path, reserved = frozenset({"gsm8k"})
         )
+
+
+def test_resolve_tasks_rejects_duplicate_yaml_names(tmp_path):
+    for stem in ("one", "two"):
+        (tmp_path / f"{stem}.yaml").write_text(
+            yaml.safe_dump({"task": "same_task", "output_type": "generate_until"})
+        )
+    with pytest.raises(ValueError, match = "Duplicate task name 'same_task'"):
+        evalmod.resolve_tasks(
+            f"{tmp_path / 'one.yaml'},{tmp_path / 'two.yaml'}",
+            "question", "answer", tmp_path / "gen",
+        )
+
+
+def test_resolve_tasks_rejects_duplicate_builtins(tmp_path):
+    with pytest.raises(ValueError, match = "Duplicate task 'gsm8k'"):
+        evalmod.resolve_tasks("gsm8k,gsm8k", "question", "answer", tmp_path)
+
+
+def test_resolve_tasks_renames_dataset_colliding_with_yaml_name(tmp_path):
+    (tmp_path / "foo.yaml").write_text(
+        yaml.safe_dump({"task": "foo", "output_type": "generate_until"})
+    )
+    (tmp_path / "foo.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(
+        f"{tmp_path / 'foo.yaml'},{tmp_path / 'foo.jsonl'}", "question", "answer", tmp_dir
+    )
+
+    # the dataset must not silently shadow (or be shadowed by) the yaml task
+    assert names == ["foo", "foo_2"]
+    assert (tmp_dir / "generated" / "foo_2.yaml").exists()
+
+
+def _fake_torch(monkeypatch, cuda_available = False, device_count = 0, mps_available = False):
+    torch_mod = types.ModuleType("torch")
+    torch_mod.cuda = SimpleNamespace(
+        is_available = lambda: cuda_available, device_count = lambda: device_count
+    )
+    torch_mod.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: mps_available))
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+
+
+def test_hf_device_error_validates_cuda_strings(monkeypatch):
+    _fake_torch(monkeypatch, cuda_available = True, device_count = 2)
+    assert evalmod._hf_device_error("cuda") is None
+    assert evalmod._hf_device_error("cuda:0") is None
+    assert evalmod._hf_device_error("cuda:1") is None
+    # lm-eval only recognises canonical cuda:<i>; everything else falls back
+    for bad in ("cuda0", "cuda:", "cuda:01", "cuda:-1", "cudax"):
+        assert evalmod._hf_device_error(bad) is not None, bad
+    assert "only 2 CUDA" in evalmod._hf_device_error("cuda:2")
+
+
+def test_hf_device_error_validates_mps_strings(monkeypatch):
+    _fake_torch(monkeypatch, mps_available = True)
+    assert evalmod._hf_device_error("mps") is None
+    assert evalmod._hf_device_error("mps:0") is None
+    assert evalmod._hf_device_error("mps:1") is not None
+    _fake_torch(monkeypatch, mps_available = False)
+    assert "MPS is not available" in evalmod._hf_device_error("mps")
 
 
 def test_resolve_tasks_yaml_without_task_name_raises(tmp_path):
@@ -724,6 +820,21 @@ def test_eval_custom_yaml_shadowing_builtin_errors(fake_eval_env, tmp_path):
     )
     assert result.exit_code == 2, result.output
     assert "redefines 'gsm8k'" in result.output
+
+
+def test_eval_custom_yaml_survives_broken_sibling(fake_eval_env, tmp_path):
+    task_file = tmp_path / "good.yaml"
+    task_file.write_text(yaml.safe_dump({"task": "good_task", "output_type": "generate_until"}))
+    # the fake TaskManager (like lm-eval 0.4.4) chokes on unparseable yaml
+    # in an include dir; the broken sibling must never reach it
+    (tmp_path / "broken.yaml").write_text("task: [unclosed")
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", str(task_file), "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["tasks"] == ["good_task"]
 
 
 def test_eval_group_yaml_runs_under_group_name(fake_eval_env, tmp_path):

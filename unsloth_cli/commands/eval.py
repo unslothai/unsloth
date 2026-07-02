@@ -88,24 +88,38 @@ def _bitsandbytes_available() -> bool:
     return find_spec("bitsandbytes") is not None
 
 
+def _lm_eval_available() -> bool:
+    # probe without importing: on lm-eval 0.4.4 `import lm_eval` pulls in
+    # transformers, which must stay unimported until unsloth has loaded
+    if "lm_eval" in sys.modules:
+        return sys.modules["lm_eval"] is not None
+    from importlib.util import find_spec
+    try:
+        return find_spec("lm_eval") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _hf_device_error(device: str) -> Optional[str]:
-    # lm-eval's HFLM silently falls back to its default device when handed a
-    # string it doesn't recognise (e.g. cuda:1 on a one-GPU host), so reject
-    # unavailable devices instead of letting the run land somewhere else
-    import torch
+    # lm-eval's HFLM only recognises 'cuda', canonical 'cuda:<i>', 'mps' and
+    # 'mps:0'; anything else (cuda0, cuda:, cuda:01, an out-of-range index)
+    # silently falls back to its default device, so reject those up front
     if device.startswith("cuda"):
+        match = re.fullmatch(r"cuda(?::(0|[1-9]\d*))?", device)
+        if not match:
+            return f"invalid --device '{device}' — use 'cuda' or 'cuda:<index>'."
+        import torch
         if not torch.cuda.is_available():
             return f"--device {device} requested but CUDA is not available."
-        _, _, index = device.partition(":")
-        if index:
-            try:
-                idx = int(index)
-            except ValueError:
-                return f"invalid --device '{device}'."
+        if match.group(1) is not None:
+            idx = int(match.group(1))
             count = torch.cuda.device_count()
-            if not 0 <= idx < count:
+            if idx >= count:
                 return f"--device {device} requested but only {count} CUDA device(s) are available."
     elif device.startswith("mps"):
+        if not re.fullmatch(r"mps(?::0)?", device):
+            return f"invalid --device '{device}' — use 'mps'."
+        import torch
         mps = getattr(torch.backends, "mps", None)
         if not (mps and mps.is_available()):
             return f"--device {device} requested but MPS is not available."
@@ -253,17 +267,36 @@ def resolve_tasks(
                     "registered lm-eval task — the registered one would silently win. "
                     "Rename the task in the YAML."
                 )
+            if name in names:
+                raise ValueError(f"Duplicate task name '{name}' in --tasks.")
+            if "include" in spec or isinstance(spec.get("task"), list):
+                # include-bearing and group configs reference sibling files,
+                # so their directory must stay on the include path
+                _add_include(str(path.resolve().parent))
+            else:
+                # copy just this file into the temp include dir so a broken
+                # sibling yaml can't take down TaskManager's include scan
+                # (this also normalises .yml, which lm-eval doesn't index)
+                custom_dir = Path(tmp_dir) / "custom"
+                custom_dir.mkdir(parents = True, exist_ok = True)
+                shutil.copy2(path, custom_dir / f"{name}.yaml")
+                _add_include(str(custom_dir.resolve()))
             names.append(name)
-            _add_include(str(path.resolve().parent))
 
         elif suffix in {".jsonl", ".json", ".csv"}:
             path = Path(entry)
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
-            names.append(make_jsonl_task(path, input_key, target_key, tmp_dir, reserved))
-            _add_include(str(Path(tmp_dir).resolve()))
+            gen_dir = Path(tmp_dir) / "generated"
+            # names picked so far count as taken too (foo.yaml + foo.jsonl)
+            names.append(
+                make_jsonl_task(path, input_key, target_key, gen_dir, reserved | frozenset(names))
+            )
+            _add_include(str(gen_dir.resolve()))
 
         else:
+            if entry in names:
+                raise ValueError(f"Duplicate task '{entry}' in --tasks.")
             names.append(entry)
 
     if not names:
@@ -350,17 +383,6 @@ def evaluate(
     ),
 ):
     """Evaluate a checkpoint or LoRA adapter using lm-eval-harness."""
-    try:
-        import lm_eval
-        from lm_eval.models.huggingface import HFLM
-        from lm_eval.tasks import TaskManager
-    except ImportError as e:
-        typer.echo(
-            "Error: evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.",
-            err = True,
-        )
-        raise typer.Exit(code = 1) from e
-
     if batch_size == "auto":
         bs = "auto"
     else:
@@ -375,6 +397,49 @@ def evaluate(
     if backend not in ("unsloth", "hf"):
         typer.echo(f"Error: --backend must be 'unsloth' or 'hf', got '{backend}'.", err = True)
         raise typer.Exit(code = 2)
+
+    if not _lm_eval_available():
+        typer.echo(
+            "Error: evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
+
+    if backend == "unsloth":
+        # unsloth must be imported before transformers (which lm-eval pulls
+        # in) or its patches don't fully apply
+        with _silence():
+            import unsloth
+
+        if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
+            typer.echo(
+                "Note: Apple Silicon (MLX) detected — falling back to "
+                "--backend hf (plain transformers)."
+            )
+            backend = "hf"
+
+    # a pre-loaded model object makes lm-eval single-process (rank 0
+    # everywhere), so under accelerate/torchrun every worker would run
+    # the full task set and write results
+    if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
+        typer.echo(
+            "Error: multi-process launches (accelerate/torchrun) are not "
+            "supported with --backend unsloth. Use --backend hf for "
+            "multi-GPU evaluation.",
+            err = True,
+        )
+        raise typer.Exit(code = 2)
+
+    try:
+        import lm_eval
+        from lm_eval.models.huggingface import HFLM
+        from lm_eval.tasks import TaskManager
+    except ImportError as e:
+        typer.echo(
+            "Error: evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.",
+            err = True,
+        )
+        raise typer.Exit(code = 1) from e
 
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token  # both backends read it from the env
@@ -423,34 +488,13 @@ def evaluate(
                 )
                 raise typer.Exit(code = 2)
 
-        if num_fewshot and any((tmp_dir / f"{t}.yaml").exists() for t in task_names):
+        if num_fewshot and any(
+            (tmp_dir / "generated" / f"{t}.yaml").exists() for t in task_names
+        ):
             typer.echo(
                 "Note: few-shot examples for a generated task come from the same "
                 "file (no held-out split)."
             )
-
-        if backend == "unsloth":
-            with _silence():
-                import unsloth
-
-            if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
-                typer.echo(
-                    "Note: Apple Silicon (MLX) detected — falling back to "
-                    "--backend hf (plain transformers)."
-                )
-                backend = "hf"
-
-        # a pre-loaded model object makes lm-eval single-process (rank 0
-        # everywhere), so under accelerate/torchrun every worker would run
-        # the full task set and write results
-        if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
-            typer.echo(
-                "Error: multi-process launches (accelerate/torchrun) are not "
-                "supported with --backend unsloth. Use --backend hf for "
-                "multi-GPU evaluation.",
-                err = True,
-            )
-            raise typer.Exit(code = 2)
 
         typer.echo(f"Running tasks: {', '.join(task_names)} (backend: {backend})")
 
