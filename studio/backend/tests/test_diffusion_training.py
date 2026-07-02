@@ -210,6 +210,8 @@ class _FakeService:
     def __init__(self):
         self._running = False
         self.started_with = None
+        # Extra keys merged into status() so a test can inject metric history / perf fields.
+        self.status_extra: dict = {}
 
     def start(self, config):
         self.started_with = config
@@ -238,6 +240,7 @@ class _FakeService:
             "lora_path": None,
             "started_at": None,
             "updated_at": None,
+            **self.status_extra,
         }
 
 
@@ -475,3 +478,79 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     assert "SDXL" in r.json()["detail"]
     assert freed == []
     assert client._fake.started_with is None
+
+
+# ── metric history + perf/family fields (PR A platform) ──────────────────────
+def test_apply_event_records_metric_history_and_perf():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event(
+        {"type": "progress", "step": 1, "total_steps": 10, "loss": 0.5,
+         "learning_rate": 1e-4, "samples_per_second": 3.2, "peak_memory_gb": 7.1}
+    )
+    svc._apply_event(
+        {"type": "progress", "step": 2, "total_steps": 10, "loss": 0.4, "learning_rate": 9e-5}
+    )
+    st = svc.status()
+    assert st["metric_steps"] == [1, 2]
+    assert st["metric_loss"] == [0.5, 0.4]
+    assert st["metric_lr"] == [1e-4, 9e-5]
+    assert st["samples_per_second"] == 3.2
+    assert st["peak_memory_gb"] == 7.1
+
+
+def test_apply_event_metric_history_skips_bad_points():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    # step 0 (warmup / no real step), a None loss, and a NaN loss must all be skipped.
+    svc._apply_event({"type": "progress", "step": 0, "loss": 0.9, "learning_rate": 1e-4})
+    svc._apply_event({"type": "progress", "step": 1, "loss": None, "learning_rate": 1e-4})
+    svc._apply_event({"type": "progress", "step": 2, "loss": float("nan"), "learning_rate": 1e-4})
+    svc._apply_event({"type": "progress", "step": 3, "loss": 0.3, "learning_rate": None})
+    st = svc.status()
+    assert st["metric_steps"] == [3]
+    assert st["metric_loss"] == [0.3]
+    assert st["metric_lr"] == [None]  # lr None is retained so the series stays index-aligned
+
+
+def test_metric_history_decimates_at_cap():
+    from core.training import diffusion_training_service as svc_mod
+
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "model_load_started"})  # initialise running state
+    n = svc_mod._METRIC_CAP + 50
+    for i in range(1, n + 1):
+        svc._apply_event({"type": "progress", "step": i, "loss": 1.0 / i, "learning_rate": 1e-4})
+    st = svc.status()
+    # Never exceeds the cap, and stays a valid paired history with matching lengths.
+    assert len(st["metric_steps"]) <= svc_mod._METRIC_CAP
+    assert len(st["metric_steps"]) == len(st["metric_loss"]) == len(st["metric_lr"])
+    # Decimation keeps the curve monotonic in step (still increasing, just sparser).
+    assert st["metric_steps"] == sorted(st["metric_steps"])
+    assert st["metric_steps"][-1] == n  # the latest point is always retained
+
+
+def test_complete_event_records_family_and_catalog():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event(
+        {"type": "complete", "output_dir": "/o", "lora_path": "/o/w.safetensors",
+         "catalog_path": "/loras/w.safetensors", "family": "sdxl", "base_model": "b"}
+    )
+    st = svc.status()
+    assert st["status"] == "completed"
+    assert st["family"] == "sdxl"
+    assert st["base_model"] == "b"
+    assert st["catalog_path"] == "/loras/w.safetensors"
+
+
+def test_status_route_nests_metric_history(client):
+    # The status route folds the service's flat arrays into a nested metric_history object.
+    client._fake.status_extra = {
+        "metric_steps": [1, 2], "metric_loss": [0.5, 0.4], "metric_lr": [1e-4, 9e-5],
+        "family": "sdxl", "samples_per_second": 2.0, "peak_memory_gb": 6.0,
+    }
+    r = client.get("/api/train/diffusion/status")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["metric_history"]["steps"] == [1, 2]
+    assert body["metric_history"]["loss"] == [0.5, 0.4]
+    assert body["family"] == "sdxl"
+    assert body["samples_per_second"] == 2.0
