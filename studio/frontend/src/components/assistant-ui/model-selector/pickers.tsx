@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -102,6 +103,7 @@ import {
   type FormatFilter,
   estimateQuantBytes,
   fitsDevice,
+  hfModelFitsDevice,
   isMlxId,
   isMobileVariant,
   isRecommendableFormat,
@@ -1340,6 +1342,9 @@ export function HubModelPicker({
   }, []);
   // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  // Shared with the Hub page: list only models sized within the device budget.
+  const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   // Repos the user clicked to collapse while expand-by-default is on. Kept in
   // memory only, so it resets on reload (and when the setting is toggled).
   const [collapsedGguf, setCollapsedGguf] = useState<Set<string>>(
@@ -1717,34 +1722,19 @@ export function HubModelPicker({
       formatFilter === "all"
         ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
-    if (recommendedSort !== "recommended") return rows;
+    // The "recommended" sort always applies the device-fit filter; the shared
+    // "Fits on device" tick extends it to the other sorts too.
+    if (recommendedSort !== "recommended" && !fitOnDeviceOnly) return rows;
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
       if (downloadedSet.has(r.id.toLowerCase())) return true;
-      // Unified-memory hosts (Mac / no discrete GPU) still report system RAM,
-      // so fall back to that budget instead of skipping the fit check entirely.
-      const hasDeviceBudget =
-        gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
-      if (!hasDeviceBudget) return true;
-      // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
-      // GGUF param count, then the repo name, for a size estimate. Anything we
-      // still cannot size is hidden (requireKnown) so over-budget models like a
-      // 1T GGUF don't slip into Recommended.
-      const params = r.totalParams ?? paramsFromId(r.id);
-      const sizeBytes =
-        r.estimatedSizeBytes ??
-        (params ? estimateQuantBytes(params) : undefined);
-      return fitsDevice({
-        sizeBytes,
-        gpuGb: gpu.memoryTotalGb,
-        systemRamGb: gpu.systemRamAvailableGb,
-        requireKnown: true,
-      });
+      return hfModelFitsDevice(r, gpu);
     });
   }, [
     recommendedSearch.results,
     downloadedSet,
     recommendedSort,
+    fitOnDeviceOnly,
     formatFilter,
     isMac,
     gpu,
@@ -2013,6 +2003,12 @@ export function HubModelPicker({
     if (!showHfSection || section !== "recommended") return [];
     return results
       .filter(isChatSupported)
+      .filter(
+        (r) =>
+          !fitOnDeviceOnly ||
+          downloadedSet.has(r.id.toLowerCase()) ||
+          hfModelFitsDevice(r, gpu),
+      )
       .map((result) => result.id)
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
@@ -2035,6 +2031,9 @@ export function HubModelPicker({
     isKnownGgufRepo,
     isChatSupported,
     formatFilter,
+    fitOnDeviceOnly,
+    downloadedSet,
+    gpu,
     isMac,
   ]);
 
@@ -2581,6 +2580,21 @@ export function HubModelPicker({
           </div>
         )}
       </div>
+
+      {showConnected ? null : (
+        <label
+          className="flex w-fit cursor-pointer select-none items-center gap-1.5 px-1 text-xs text-muted-foreground hover:text-foreground"
+          title="Hides models larger than this device's memory budget. Downloaded models stay visible."
+        >
+          <Checkbox
+            checked={fitOnDeviceOnly}
+            onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
+            className="size-3.5"
+            aria-label="Only show models that fit on this device"
+          />
+          Only show models that fit on this device
+        </label>
+      )}
 
       <div
         ref={scrollRef}

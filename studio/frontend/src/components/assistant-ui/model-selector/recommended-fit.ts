@@ -114,3 +114,25 @@ export function fitsDevice(opts: {
   }
   return requireKnown ? false : true;
 }
+
+/** Fit predicate for one Hub listing row, shared by the chat model selector
+ * and the Hub page "Fits on device" filter. GGUF/MLX repos rarely expose
+ * safetensors metadata, so fall back to the GGUF param count, then the repo
+ * name, for a size estimate; anything still unsizable is hidden (requireKnown)
+ * so over-budget models with no metadata don't slip through. An unknown device
+ * budget keeps everything. */
+export function hfModelFitsDevice(
+  model: { id: string; totalParams?: number; estimatedSizeBytes?: number },
+  gpu: { memoryTotalGb: number; systemRamAvailableGb: number },
+): boolean {
+  if (gpu.memoryTotalGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
+  const params = model.totalParams ?? paramsFromId(model.id);
+  const sizeBytes =
+    model.estimatedSizeBytes ?? (params ? estimateQuantBytes(params) : undefined);
+  return fitsDevice({
+    sizeBytes,
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    requireKnown: true,
+  });
+}

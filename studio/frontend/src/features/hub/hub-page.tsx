@@ -5,6 +5,7 @@ import {
   loadRememberedLoadSettings,
   rememberedLoadSettingsKey,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { hfModelFitsDevice } from "@/components/assistant-ui/model-selector/recommended-fit";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -327,6 +328,9 @@ export function ModelsPage() {
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  // Shared with the chat model selector: list only models sized for this device.
+  const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
 
   useEffect(() => {
     let cancelled = false;
@@ -697,7 +701,8 @@ export function ModelsPage() {
         !isHiddenModelId(row.id) &&
         matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
+        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
+        (!fitOnDeviceOnly || hfModelFitsDevice(row.result, gpu)),
     );
   }, [
     discoverRows,
@@ -705,6 +710,8 @@ export function ModelsPage() {
     effectiveDiscoverFormat,
     deferredCapabilityFilter,
     activeChannel,
+    fitOnDeviceOnly,
+    gpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -1448,6 +1455,8 @@ export function ModelsPage() {
           onFormatFilterChange={setFormatFilter}
           capabilityFilter={capabilityFilter}
           onCapabilityFilterChange={setCapabilityFilter}
+          fitOnDeviceOnly={fitOnDeviceOnly}
+          onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
           onOpenFineTune={() => handleOpenList("finetune")}
         />

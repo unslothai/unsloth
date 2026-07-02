@@ -68,6 +68,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilter,
   onCapabilityFilterChange,
+  fitOnDeviceOnly,
+  onFitOnDeviceOnlyChange,
   onManageLocalFolders,
   onOpenFineTune,
 }: {
@@ -84,6 +86,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   capabilityFilter: CapabilityFilter;
   onCapabilityFilterChange: (value: CapabilityFilter) => void;
+  /** Shared with the chat model selector: hide models over the device budget. */
+  fitOnDeviceOnly: boolean;
+  onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
@@ -351,6 +356,37 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             ariaLabel="Sort models"
             className={cn(triggerBase, "w-[128px]")}
           />
+        )}
+
+        {tab === "discover" && !isDataset && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-pressed={fitOnDeviceOnly}
+                aria-label="Only show models that fit on this device"
+                onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
+                className={cn(
+                  "hub-menu-trigger inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12.5px] transition-colors",
+                  fitOnDeviceOnly
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    fitOnDeviceOnly ? "bg-emerald-500" : "bg-muted-foreground/40",
+                  )}
+                />
+                Fits device
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Only show models that fit on this device
+            </TooltipContent>
+          </Tooltip>
         )}
 
         <div
