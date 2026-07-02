@@ -6,10 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-// Deep import (not the studio feature index) so the Images bundle does not statically pull
-// in the heavy StudioPage; charts-section itself lazy-loads its recharts content.
-// eslint-disable-next-line no-restricted-imports
-import { ChartsSection } from "@/features/studio/sections/charts-section";
 import type { TrainingSeriesPoint } from "@/features/training";
 // eslint-disable-next-line no-restricted-imports -- matches images-page.tsx's token access
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
@@ -27,6 +23,8 @@ import {
   uploadDiffusionDataset,
 } from "../api";
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
+import { DatasetShowcase } from "./dataset-showcase";
+import { DiffusionCharts } from "./diffusion-charts";
 import { ExampleDatasetCards } from "./example-dataset-cards";
 
 // The families the Train tab can train, in the popularity order the user asked for. This is
@@ -549,6 +547,14 @@ export function DiffusionTrainPanel({
           ) : (
             selectedDataset && (
               <>
+                {selectedDataset.image_count > 0 && !gridOpen && (
+                  <DatasetShowcase
+                    dataset={dataset}
+                    imageCount={selectedDataset.image_count}
+                    refreshKey={gridRefresh}
+                    onBrowse={() => setGridOpen(true)}
+                  />
+                )}
                 <LabelingGridToggle
                   count={selectedDataset.image_count}
                   open={gridOpen}
@@ -707,16 +713,7 @@ export function DiffusionTrainPanel({
               )}
             </div>
 
-            <ChartsSection
-              currentStep={status.step}
-              totalSteps={status.total_steps}
-              isTraining={running}
-              evalEnabled={false}
-              lossHistory={lossHistory}
-              lrHistory={lrHistory}
-              gradNormHistory={[]}
-              evalLossHistory={[]}
-            />
+            <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
 
             {completed && (
               <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
