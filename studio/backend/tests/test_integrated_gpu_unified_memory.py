@@ -62,8 +62,11 @@ def _clear_visibility_masks(monkeypatch):
         monkeypatch.delenv(_m, raising = False)
 
 
-def _fixed_avail(monkeypatch, mib):
-    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: mib))
+def _fixed_avail(monkeypatch, mib, total = None):
+    # Pin the unified-memory budget (available, total) that _get_gpu_memory reads.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_system_memory_budget_mib", staticmethod(lambda: (mib, total))
+    )
 
 
 # ── _get_gpu_memory: unified-memory ceiling ──
@@ -128,6 +131,18 @@ def test_rocm_integrated_apu_not_overridden(monkeypatch):
         assert LlamaCppBackend._get_gpu_memory() == [(0, 1590, 124610)]
 
 
+def test_integrated_gpu_clamps_total_to_container_budget(monkeypatch):
+    # 8 GiB container cap on a 128 GiB host: total must be clamped to the budget
+    # too. The fit reserves (1 - frac) * total, so leaving total at 124610 while
+    # free is the 7 GiB allowance would zero the budget and floor the context.
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(integrated = True, free_mib = 1590, total_mib = 124610)
+    )
+    _fixed_avail(monkeypatch, 7000, total = 8192)
+    with _mock_nvidia_smi_run("", returncode = 1):
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 7000, 8192)]
+
+
 # ── _gpu_is_integrated flag ──
 
 
@@ -149,64 +164,102 @@ def test_gpu_is_integrated_missing_attr_is_false(monkeypatch):
     assert LlamaCppBackend._gpu_is_integrated(0) is False
 
 
-# ── cgroup clamp: a memory-capped container must not budget host RAM ──
+# ── cgroup: read the process's own cgroup, discount reclaimable cache ──
 
 
-def _cgroup_files(tmp_path, limit: str, usage: str):
-    lim = tmp_path / "memory.max"
-    use = tmp_path / "memory.current"
-    lim.write_text(limit)
-    use.write_text(usage)
-    return ((str(lim), str(use)),)
+def _make_v2(tmp_path, rel, *, limit, current, inactive_file):
+    """Fake cgroup v2 tree: memory files at <root><rel>, /proc/self/cgroup -> rel."""
+    root = tmp_path / "cgroup"
+    d = root if rel in ("", "/") else root / rel.lstrip("/")
+    d.mkdir(parents = True, exist_ok = True)
+    (d / "memory.max").write_text(str(limit))
+    (d / "memory.current").write_text(str(current))
+    (d / "memory.stat").write_text(f"anon 4096\ninactive_file {inactive_file}\nactive_file 8192\n")
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text(f"0::{rel or '/'}\n")
+    return str(proc), str(root)
 
 
-_GIB = str(1024 * 1024 * 1024)
-
-
-def test_cgroup_available_reads_limit_minus_usage(tmp_path):
-    # 8 GiB cap, 2 GiB used -> 6 GiB (6144 MiB) still allocatable.
-    pairs = _cgroup_files(tmp_path, limit = str(8 * 1024**3), usage = str(2 * 1024**3))
-    assert LlamaCppBackend._cgroup_available_memory_mib(pairs) == 6144
-
-
-def test_cgroup_available_v2_max_is_unlimited(tmp_path):
-    # cgroup v2 uses the literal "max" for no cap -> None (no clamp).
-    pairs = _cgroup_files(tmp_path, limit = "max", usage = str(2 * 1024**3))
-    assert LlamaCppBackend._cgroup_available_memory_mib(pairs) is None
-
-
-def test_cgroup_available_falls_through_to_v1(tmp_path):
-    # v2 paths missing -> try the v1 pair.
-    v1_lim = tmp_path / "limit_in_bytes"
-    v1_use = tmp_path / "usage_in_bytes"
-    v1_lim.write_text(str(4 * 1024**3))
-    v1_use.write_text(str(1024**3))
-    pairs = (
-        (str(tmp_path / "does_not_exist.max"), str(tmp_path / "nope.current")),
-        (str(v1_lim), str(v1_use)),
+def test_cgroup_v2_available_discounts_reclaimable(tmp_path):
+    # 8 GiB cap, 3 GiB used but 2 GiB of that is reclaimable file cache -> 1 GiB
+    # working set -> 7 GiB (7168 MiB) available; limit 8192 MiB.
+    proc, root = _make_v2(
+        tmp_path, "/pod123", limit = 8 * 1024**3, current = 3 * 1024**3, inactive_file = 2 * 1024**3
     )
-    assert LlamaCppBackend._cgroup_available_memory_mib(pairs) == 3072
+    assert LlamaCppBackend._cgroup_memory_mib(proc, root) == (7168, 8192)
 
 
-def test_cgroup_available_none_when_unreadable(tmp_path):
-    pairs = ((str(tmp_path / "absent.max"), str(tmp_path / "absent.current")),)
-    assert LlamaCppBackend._cgroup_available_memory_mib(pairs) is None
+def test_cgroup_v2_max_is_unlimited(tmp_path):
+    proc, root = _make_v2(tmp_path, "/pod123", limit = "max", current = 2 * 1024**3, inactive_file = 0)
+    assert LlamaCppBackend._cgroup_memory_mib(proc, root) == (None, None)
 
 
-def test_available_system_memory_clamps_to_cgroup(monkeypatch):
-    # Big host (60 GB free) but an 8 GB container cap: the budget must be the cap,
-    # else context fitting picks a size that OOM-kills the container (signal 9).
-    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 8000))
-    fake_psutil = types.ModuleType("psutil")
-    fake_psutil.virtual_memory = lambda: types.SimpleNamespace(available = 60000 * 1024 * 1024)
-    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-    assert LlamaCppBackend._available_system_memory_mib() == 8000
+def test_cgroup_v2_reads_process_path_not_root(tmp_path):
+    # The process's own /pod123 cgroup caps at 8 GiB; the mount root has a bogus
+    # 1 GiB. Resolving the path from /proc/self/cgroup must read the pod, not root.
+    proc, root = _make_v2(
+        tmp_path, "/pod123", limit = 8 * 1024**3, current = 0, inactive_file = 0
+    )
+    root_dir = tmp_path / "cgroup"
+    (root_dir / "memory.max").write_text(str(1 * 1024**3))
+    (root_dir / "memory.current").write_text("0")
+    (root_dir / "memory.stat").write_text("inactive_file 0\n")
+    assert LlamaCppBackend._cgroup_memory_mib(proc, root) == (8192, 8192)
 
 
-def test_available_system_memory_uses_host_without_cgroup(monkeypatch):
-    # No container cap -> host MemAvailable is returned unchanged.
-    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
-    fake_psutil = types.ModuleType("psutil")
-    fake_psutil.virtual_memory = lambda: types.SimpleNamespace(available = 60000 * 1024 * 1024)
-    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+def test_cgroup_v2_falls_back_to_mount_root(tmp_path):
+    # cgroup-namespaced: /proc/self/cgroup names /pod123 but the files live at the
+    # (namespaced) mount root. The root files must still be read.
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    (root / "memory.max").write_text(str(4 * 1024**3))
+    (root / "memory.current").write_text(str(1024**3))
+    (root / "memory.stat").write_text("inactive_file 0\n")
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/pod123\n")  # path absent under root
+    assert LlamaCppBackend._cgroup_memory_mib(str(proc), str(root)) == (3072, 4096)
+
+
+def test_cgroup_v1_available_discounts_reclaimable(tmp_path):
+    root = tmp_path / "cgroup"
+    memdir = root / "memory" / "docker" / "abc"
+    memdir.mkdir(parents = True)
+    (memdir / "memory.limit_in_bytes").write_text(str(4 * 1024**3))
+    (memdir / "memory.usage_in_bytes").write_text(str(2 * 1024**3))
+    (memdir / "memory.stat").write_text(f"cache 9\ntotal_inactive_file {1024**3}\n")
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("12:memory:/docker/abc\n11:cpu:/docker/abc\n")
+    # usage 2 GiB - reclaimable 1 GiB = 1 GiB working set -> 3 GiB avail, 4 GiB limit.
+    assert LlamaCppBackend._cgroup_memory_mib(str(proc), str(root)) == (3072, 4096)
+
+
+def test_cgroup_none_when_unreadable(tmp_path):
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/pod\n")
+    assert LlamaCppBackend._cgroup_memory_mib(str(proc), str(tmp_path / "absent")) == (None, None)
+
+
+# ── budget composition: clamp both available and total to the cgroup ──
+
+
+def test_system_budget_clamps_available_and_total(monkeypatch):
+    # Big host (60/128 GB) but an 8 GB container cap: both figures clamp to the cap.
+    monkeypatch.setattr(LlamaCppBackend, "_host_memory_mib", staticmethod(lambda: (60000, 128000)))
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_mib", staticmethod(lambda: (7000, 8192)))
+    assert LlamaCppBackend._system_memory_budget_mib() == (7000, 8192)
+    assert LlamaCppBackend._available_system_memory_mib() == 7000
+
+
+def test_system_budget_uses_host_without_cgroup(monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_host_memory_mib", staticmethod(lambda: (60000, 128000)))
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_mib", staticmethod(lambda: (None, None)))
+    assert LlamaCppBackend._system_memory_budget_mib() == (60000, 128000)
     assert LlamaCppBackend._available_system_memory_mib() == 60000
+
+
+def test_system_budget_v1_unlimited_folds_to_host(monkeypatch):
+    # An unlimited v1 limit reads as a huge sentinel; min() with the host wins.
+    huge = 0x7FFFFFFFFFFFF000 // (1024 * 1024)
+    monkeypatch.setattr(LlamaCppBackend, "_host_memory_mib", staticmethod(lambda: (60000, 128000)))
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_mib", staticmethod(lambda: (huge, huge)))
+    assert LlamaCppBackend._system_memory_budget_mib() == (60000, 128000)

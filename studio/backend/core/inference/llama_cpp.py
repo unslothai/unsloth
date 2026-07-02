@@ -2314,8 +2314,11 @@ class LlamaCppBackend:
             # RAM pool -- NVIDIA GB10 / DGX Spark, Jetson) mem_get_info's "free"
             # tracks raw MemFree and ignores reclaimable page cache, so it reads a
             # small fraction of what is really usable and the context fit floors at
-            # min_ctx (#6757). System MemAvailable is the real ceiling there, and
-            # what the weights + KV actually draw from; total stays as reported.
+            # min_ctx (#6757). The system RAM budget is the real ceiling there, and
+            # what the weights + KV actually draw from. Both free AND total are
+            # lifted to that budget: the fit reserves (1 - frac) * total, so leaving
+            # total at the host-wide figure while free is the container allowance
+            # would zero the budget in a capped container.
             #
             # NVIDIA (non-HIP) only: PyTorch also flags AMD APUs as integrated, but
             # their unified-memory handling is scoped to gfx1150/gfx1151 in
@@ -2324,7 +2327,7 @@ class LlamaCppBackend:
             # would let selection believe a model fits while the launch path leaves
             # llama.cpp on the ROCm budget -> OOM, so leave ROCm to that path.
             is_rocm = getattr(torch.version, "hip", None) is not None
-            sys_avail_mib = LlamaCppBackend._available_system_memory_mib()
+            budget_avail_mib, budget_total_mib = LlamaCppBackend._system_memory_budget_mib()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -2332,11 +2335,15 @@ class LlamaCppBackend:
                 total_mib = total_bytes // (1024 * 1024)
                 if (
                     not is_rocm
-                    and sys_avail_mib is not None
-                    and sys_avail_mib > free_mib
+                    and budget_avail_mib is not None
+                    and budget_avail_mib > free_mib
                     and LlamaCppBackend._gpu_is_integrated(ordinal)
                 ):
-                    free_mib = sys_avail_mib
+                    free_mib = budget_avail_mib
+                    if budget_total_mib is not None and budget_total_mib > 0:
+                        total_mib = (
+                            min(total_mib, budget_total_mib) if total_mib > 0 else budget_total_mib
+                        )
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
@@ -2350,61 +2357,131 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _cgroup_available_memory_mib(
-        _path_pairs = (
-            ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),  # v2
-            (
-                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-                "/sys/fs/cgroup/memory/memory.usage_in_bytes",
-            ),  # v1
-        ),
-    ) -> Optional[int]:
-        """Memory a memory-capped Linux container can still allocate (cgroup limit
-        minus current usage), in MiB; None when there is no cap or it is unreadable
-        (bare metal, macOS, Windows). cgroup v2 first, then v1. An unlimited v1
-        limit reads as a huge sentinel, which the caller's ``min`` folds back to
-        the host figure. Used to clamp host-wide MemAvailable so a container on a
-        large host does not pick a context that fits the host but exceeds the
-        container cap and gets OOM-killed."""
-        for limit_path, usage_path in _path_pairs:
+    def _cgroup_memory_mib(
+        _proc_cgroup = "/proc/self/cgroup",
+        _root = "/sys/fs/cgroup",
+    ) -> tuple[Optional[int], Optional[int]]:
+        """``(available, limit)`` for the process's own memory cgroup, in MiB, or
+        ``(None, None)`` when there is no cap or it is unreadable (bare metal,
+        macOS, Windows).
+
+        ``available`` discounts reclaimable file cache (``inactive_file``) from
+        current usage, so a warm page cache -- e.g. right after downloading or
+        loading a large GGUF -- does not shrink the budget (mirrors MemAvailable).
+        The cgroup-relative path is resolved from ``/proc/self/cgroup`` so a nested
+        cgroup under a host hierarchy is read, not the root, with a fallback to the
+        mount root for the cgroup-namespaced case. cgroup v2 first, then v1. An
+        unlimited v1 limit reads as a huge sentinel, which the caller's ``min``
+        folds back to the host figure."""
+
+        def _read(path: str) -> str:
+            with open(path, encoding = "utf-8") as f:
+                return f.read().strip()
+
+        def _stat_val(path: str, key: str) -> int:
+            for ln in _read(path).splitlines():
+                parts = ln.split()
+                if len(parts) == 2 and parts[0] == key:
+                    return int(parts[1])
+            return 0
+
+        # Relative cgroup paths from /proc/self/cgroup: v2 line is "0::<path>";
+        # v1 lines are "<hid>:<controllers>:<path>".
+        v2_rel = v1_rel = None
+        try:
+            for line in _read(_proc_cgroup).splitlines():
+                fields = line.split(":", 2)
+                if len(fields) != 3:
+                    continue
+                hid, controllers, path = fields
+                if hid == "0" and controllers == "":
+                    v2_rel = path
+                elif "memory" in controllers.split(","):
+                    v1_rel = path
+        except Exception:
+            pass
+
+        def _bases(root: str, rel: Optional[str]):
+            # Resolved path first, then the mount root (cgroup-namespaced case).
+            seen = []
+            for r in ((rel,) if rel else ()) + ("",):
+                base = root + (r if r and r != "/" else "")
+                if base not in seen:
+                    seen.append(base)
+                    yield base
+
+        # cgroup v2 (unified hierarchy at the mount root).
+        for base in _bases(_root, v2_rel):
             try:
-                with open(limit_path) as f:
-                    raw = f.read().strip()
-                if raw == "max":
-                    return None  # cgroup v2 explicit "no limit"
-                limit = int(raw)
-                with open(usage_path) as f:
-                    usage = int(f.read().strip())
-                return max(0, limit - usage) // (1024 * 1024)
+                raw = _read(f"{base}/memory.max")
             except Exception:
                 continue
-        return None
+            if raw == "max":
+                return None, None  # explicit "no limit"
+            try:
+                limit = int(raw)
+                usage = int(_read(f"{base}/memory.current"))
+                reclaimable = _stat_val(f"{base}/memory.stat", "inactive_file")
+            except Exception:
+                continue
+            avail = max(0, limit - max(0, usage - reclaimable))
+            return avail // (1024 * 1024), limit // (1024 * 1024)
+
+        # cgroup v1 (memory controller mounted under <root>/memory).
+        for base in _bases(f"{_root}/memory", v1_rel):
+            try:
+                limit = int(_read(f"{base}/memory.limit_in_bytes"))
+                usage = int(_read(f"{base}/memory.usage_in_bytes"))
+                reclaimable = _stat_val(f"{base}/memory.stat", "total_inactive_file")
+            except Exception:
+                continue
+            avail = max(0, limit - max(0, usage - reclaimable))
+            return avail // (1024 * 1024), limit // (1024 * 1024)
+
+        return None, None
+
+    @staticmethod
+    def _host_memory_mib() -> tuple[Optional[int], Optional[int]]:
+        """``(available, total)`` host RAM in MiB via psutil, then /proc/meminfo;
+        None entries where unreadable."""
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            return int(vm.available // (1024 * 1024)), int(vm.total // (1024 * 1024))
+        except Exception:
+            pass
+        avail = total = None
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        avail = int(line.split()[1]) // 1024  # kB -> MiB
+                    elif line.startswith("MemTotal:"):
+                        total = int(line.split()[1]) // 1024
+        except Exception:
+            pass
+        return avail, total
+
+    @staticmethod
+    def _system_memory_budget_mib() -> tuple[Optional[int], Optional[int]]:
+        """``(available, total)`` RAM budget in MiB for a unified-memory GPU,
+        clamped to the process's memory cgroup inside a capped container so a large
+        host does not lift the budget past the container cap (OOM). None entries
+        where a figure is unreadable."""
+        avail, total = LlamaCppBackend._host_memory_mib()
+        cg_avail, cg_limit = LlamaCppBackend._cgroup_memory_mib()
+        if avail is not None and cg_avail is not None:
+            avail = min(avail, cg_avail)
+        if total is not None and cg_limit is not None:
+            total = min(total, cg_limit)
+        return avail, total
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
-        """Available system RAM in MiB (psutil, then /proc/meminfo), clamped to the
-        cgroup's remaining allowance inside a memory-capped container, or None if
-        unreadable. On a unified-memory host this, not the reported VRAM, is the
-        real ceiling: the weights load into shared system RAM."""
-        host: Optional[int] = None
-        try:
-            import psutil
-            host = int(psutil.virtual_memory().available // (1024 * 1024))
-        except Exception:
-            pass
-        if host is None:
-            try:
-                with open("/proc/meminfo") as f:
-                    for line in f:
-                        if line.startswith("MemAvailable:"):
-                            host = int(line.split()[1]) // 1024  # kB -> MiB
-                            break
-            except Exception:
-                pass
-        if host is None:
-            return None
-        cgroup = LlamaCppBackend._cgroup_available_memory_mib()
-        return min(host, cgroup) if cgroup is not None else host
+        """Available system RAM in MiB (host, clamped to the cgroup allowance in a
+        capped container), or None if unreadable. On a unified-memory host this,
+        not the reported VRAM, is the real ceiling: weights load into shared RAM."""
+        return LlamaCppBackend._system_memory_budget_mib()[0]
 
     @staticmethod
     def _apu_ram_shortfall_message(
