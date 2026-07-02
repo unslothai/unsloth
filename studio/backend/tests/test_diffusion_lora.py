@@ -88,13 +88,19 @@ def test_supports_lora_matrix():
     # A torch.compile'd diffusers transformer (Speed=default/max) can't take a non-hotswap
     # adapter: diffusers needs the adapter loaded before compilation.
     assert not dl.supports_lora(
-        engine = "diffusers", family = "flux.1", model_kind = "pipeline",
-        transformer_quant = None, compiled = True,
+        engine = "diffusers",
+        family = "flux.1",
+        model_kind = "pipeline",
+        transformer_quant = None,
+        compiled = True,
     )
     # compiled is diffusers-only; the native path ignores it.
     assert dl.supports_lora(
-        engine = "sd_cpp", family = "flux.1", model_kind = "gguf",
-        transformer_quant = None, compiled = True,
+        engine = "sd_cpp",
+        family = "flux.1",
+        model_kind = "gguf",
+        transformer_quant = None,
+        compiled = True,
     )
 
 
@@ -109,6 +115,7 @@ def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatc
     with pytest.raises(RuntimeError) as ei:
         dl.resolve_specs([("a", 1.0)])
     assert str(ei.value) == dl.DIFFUSION_CANCELLED_MSG
+
     # A non-cancellation RuntimeError is left untouched.
     def _other(spec_id, weight, **kw):
         raise RuntimeError("disk full")

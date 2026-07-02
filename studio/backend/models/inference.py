@@ -1908,7 +1908,9 @@ class DiffusionGenerateRequest(BaseModel):
             seen: set[str] = set()
             for spec in value:
                 if spec.id in seen:
-                    raise ValueError(f"duplicate LoRA id '{spec.id}'; list each adapter at most once")
+                    raise ValueError(
+                        f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
+                    )
                 seen.add(spec.id)
         return value
 
