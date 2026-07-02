@@ -181,7 +181,7 @@ def _map_guidance(
     classifier-free ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a
     value > 1 is real CFG. Mirrors the engine mapping validated in the CPU benchmark.
     """
-    if fam.name in ("flux.1", "flux.2-klein"):
+    if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
         return None, (float(guidance) if guidance is not None else None)
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
@@ -506,10 +506,18 @@ class SdCppDiffusionBackend:
 
         from core.inference import diffusion_lora
 
-        if init_image is not None or mask_image is not None or reference_images:
+        if (
+            init_image is not None
+            or mask_image is not None
+            or reference_images
+            or (upscale is not None and upscale > 1)
+        ):
+            # upscale needs an input image, so a direct API call with upscale > 1 but no
+            # init_image must be rejected too rather than silently returning a plain,
+            # un-upscaled text-to-image result (the diffusers backend rejects the same).
             raise ValueError(
-                "img2img / inpaint / reference are not yet supported on the native sd.cpp "
-                "engine; run on a GPU (diffusers) for image-conditioned workflows."
+                "img2img / inpaint / reference / upscale are not yet supported on the native "
+                "sd.cpp engine; run on a GPU (diffusers) for image-conditioned workflows."
             )
 
         cancel = threading.Event()
@@ -691,6 +699,7 @@ class SdCppDiffusionBackend:
                 "transformer_cache": None,
                 "engine": "sd_cpp",
                 "supports_lora": False,
+                "workflows": [],
             }
         from core.inference import diffusion_lora
 
@@ -722,6 +731,11 @@ class SdCppDiffusionBackend:
                 model_kind = "gguf",
                 transformer_quant = None,
             ),
+            # The native engine supports plain text-to-image only (generate() rejects
+            # img2img / inpaint / reference / upscale), so advertise just txt2img. Without
+            # this the status omits workflows, the UI reads [], and it disables the Create
+            # tab for a loaded native model, stranding the user on an image-only tab.
+            "workflows": ["txt2img"],
         }
 
 
