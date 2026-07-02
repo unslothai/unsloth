@@ -85,12 +85,12 @@ export const VoiceOrb: FC = () => {
             onClick={() => requestVoiceToggle()}
             aria-label="Exit voice mode"
             className={cn(
-              "pointer-events-auto absolute right-4 top-4 flex size-8 items-center justify-center",
-              "rounded-full text-muted-foreground/60 transition-colors",
+              "pointer-events-auto absolute right-4 top-4 flex size-9 items-center justify-center",
+              "rounded-full text-foreground/90 transition-colors",
               "hover:bg-accent hover:text-foreground",
             )}
           >
-            <XIcon className="size-4" />
+            <XIcon className="size-5" strokeWidth={2.5} />
           </button>
         )}
         <div
