@@ -1508,13 +1508,9 @@ def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int 
 
 
 def _gemma_parse_value(text: str, i: int):
-    """Parse one Gemma arg value at ``i``; returns ``(value, next_index, closed)``.
-
-    Single forward pass: ``{}``/``[]`` are parsed in place (no separate
-    balanced-brace pre-scan + re-walk), so nested values stay O(n) instead of
-    re-scanning each subtree per level. ``closed`` is False when a string /
-    object / array runs off the end of ``text`` without its terminator, so the
-    caller can fall back to the raw scalar."""
+    """Parse one Gemma arg value at ``i`` in a single O(n) forward pass; returns
+    ``(value, next_index, closed)``. ``closed`` is False when a string/object/array
+    runs off the end without its terminator, so the caller can fall back to raw."""
     if text.startswith(_GEMMA_STR_BEGIN, i):
         close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
         if close < 0:
@@ -1570,8 +1566,8 @@ def _gemma_parse_array(text: str, start: int):
 
 def _gemma_coerce_scalar(raw: str) -> Any:
     """Coerce an unquoted Gemma value to bool/int/float/None, else keep str.
-    Surrounding quotes are stripped first so the loop's duplicate-call collapse
-    treats quoted and unquoted variants of the same value as identical."""
+    Quotes are stripped first so the loop's duplicate-call collapse treats quoted
+    and unquoted variants of the same value as identical."""
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]

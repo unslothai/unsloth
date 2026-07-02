@@ -31,9 +31,7 @@ from core.inference.tool_call_parser import (
 )
 
 
-# ────────────────────────────────────────────────────────────────────
 # GLM string-vs-JSON-encoded value coercion (finding B in plan)
-# ────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -125,9 +123,7 @@ def test_glm_arg_value_with_literal_less_than():
     assert args["code"] == "if x < 10: pass"
 
 
-# ────────────────────────────────────────────────────────────────────
 # GLM 4.7 no-newline emission shape
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_glm_4_7_no_newlines_between_name_and_arg_key():
@@ -167,9 +163,7 @@ def test_glm_4_7_does_not_break_qwen_path():
     assert calls[0]["function"]["name"] == "web_search"
 
 
-# ────────────────────────────────────────────────────────────────────
 # Kimi K2 dotted name + bare counter (finding C in plan)
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_kimi_dotted_namespace_keeps_full_dotted_name():
@@ -228,9 +222,7 @@ def test_kimi_bare_counter_id_is_dropped():
     assert calls == []
 
 
-# ────────────────────────────────────────────────────────────────────
 # DeepSeek truncated mid-stream
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_deepseek_v3_1_huge_truncated_body_is_linear():
@@ -313,9 +305,7 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
     assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
 
-# ────────────────────────────────────────────────────────────────────
 # Routes-layer strip across the three new families
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_routes_layer_strip_removes_deepseek_envelope():
@@ -365,9 +355,7 @@ def test_routes_layer_strip_removes_glm_block():
     assert stripped == "before  after"
 
 
-# ────────────────────────────────────────────────────────────────────
 # strip_tool_markup (parser-level finalise path) over the new families
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_strip_tool_markup_handles_deepseek_envelope():
@@ -401,10 +389,8 @@ def test_strip_tool_markup_handles_kimi_section():
     assert "tool_calls_section_begin" not in stripped
 
 
-# ────────────────────────────────────────────────────────────────────
 # Round-2 review findings: GLM quoted-string / unclosed-arg, DeepSeek
 # strict terminator, nested wrapper-less Gemma strip
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_glm_quoted_string_arg_keeps_its_quotes():
@@ -480,10 +466,8 @@ def test_strip_tool_markup_removes_nested_wrapperless_gemma_call():
     assert "answer:" in stripped and "done" in stripped
 
 
-# ────────────────────────────────────────────────────────────────────
 # Pass-3 review findings: bare-Kimi streaming (non-final) strip symmetry
 # and the wrapper-less Gemma route-display strip
-# ────────────────────────────────────────────────────────────────────
 
 
 def test_strip_tool_markup_non_final_removes_bare_kimi_call():
