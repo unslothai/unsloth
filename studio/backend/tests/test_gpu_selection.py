@@ -207,13 +207,13 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result, {"available": False, "backend": "cpu", "devices": []})
 
     def test_gpu_utilization_mlx_stays_available_without_agx_stats(self):
+        fake_psutil = ModuleType("psutil")
+        fake_psutil.virtual_memory = lambda: SimpleNamespace(total = 64 * 1024**3)
+
         with (
+            patch.dict(sys.modules, {"psutil": fake_psutil}),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
             patch("utils.hardware.hardware._read_apple_gpu_stats", return_value = {}),
-            patch(
-                "psutil.virtual_memory",
-                return_value = SimpleNamespace(total = 64 * 1024**3),
-            ),
             patch(
                 "core.training.get_training_backend",
                 return_value = SimpleNamespace(_progress = None),
