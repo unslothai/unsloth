@@ -601,6 +601,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                 stdin = subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as exc:
+
             def _decode(stream) -> str:
                 if isinstance(stream, bytes):
                     return stream.decode("utf-8", errors = "replace")
