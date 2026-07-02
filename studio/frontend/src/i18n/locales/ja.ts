@@ -666,7 +666,8 @@ export const ja = {
       continueAction: "トレーニングを続行",
       cancelAction: "トレーニングを取り消し",
       stopTitle: "トレーニングを停止",
-      stopDescription: "現在のトレーニング実行をどのように停止するか選択してください。",
+      stopDescription:
+        "現在のトレーニング実行をどのように停止するか選択してください。「停止して保存」は後で再開できるチェックポイントを書き込みます。「停止」した場合は再開できません。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止して保存",

@@ -167,6 +167,8 @@ def train(
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
     training_kwargs["resume_from_checkpoint"] = resume_checkpoint
+    if resume_checkpoint:
+        typer.echo(f"Resuming from checkpoint: {resume_checkpoint}")
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:

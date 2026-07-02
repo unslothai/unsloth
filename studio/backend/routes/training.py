@@ -198,7 +198,7 @@ async def start_training(
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped run with saved trainer state.",
+                    detail = "Resume checkpoint must belong to a stopped or errored run with saved trainer state.",
                 )
             resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
             if not resume_checkpoint:
@@ -602,9 +602,9 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 "loss": getattr(progress, "loss", None),
                 "learning_rate": getattr(progress, "learning_rate", None),
             }
-            output_dir = getattr(backend, "_output_dir", None)
-            if output_dir:
-                details["output_dir"] = output_dir
+            # Always present: an explicit null tells the client to drop a
+            # cached path (stop without save clears the run's output_dir).
+            details["output_dir"] = getattr(backend, "_output_dir", None) or None
 
         # Metric history for chart recovery after SSE reconnection.
         metric_history = None

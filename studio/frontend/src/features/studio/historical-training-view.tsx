@@ -110,6 +110,9 @@ export function HistoricalTrainingView({
   const [resuming, setResuming] = useState(false);
   const { resumeTrainingRunFromHistory } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  const isTrainingRunning = useTrainingRuntimeStore(
+    (state) => state.isTrainingRunning,
+  );
 
   const handleResume = async () => {
     setResuming(true);
@@ -200,7 +203,7 @@ export function HistoricalTrainingView({
             size="sm"
             variant="outline"
             className="gap-1.5"
-            disabled={isStarting || resuming}
+            disabled={isStarting || resuming || isTrainingRunning}
             onClick={() => void handleResume()}
           >
             {resuming ? (

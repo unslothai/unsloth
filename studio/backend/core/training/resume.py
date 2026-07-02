@@ -78,8 +78,17 @@ def _uses_s3_dataset(run: dict) -> bool:
 def can_resume_run(run: dict) -> bool:
     if run.get("resumed_later"):
         return False
+    # Set when a stop-and-save failed to write a current-step checkpoint.
+    if run.get("resume_blocked"):
+        return False
     if _uses_s3_dataset(run):
         return False
+
+    status = run.get("status")
+    if status == "error":
+        # A save-time crash can report final_step == total_steps with no final
+        # artifacts; checkpoint state alone decides resumability.
+        return has_resume_state(run.get("output_dir"))
 
     final_step = run.get("final_step")
     total_steps = run.get("total_steps")
@@ -89,9 +98,4 @@ def can_resume_run(run: dict) -> bool:
         or total_steps <= 0
         or final_step < total_steps
     )
-    # "error" also covers crash recovery; has_resume_state() still requires a checkpoint.
-    return (
-        run.get("status") in ("stopped", "error")
-        and has_remaining_steps
-        and has_resume_state(run.get("output_dir"))
-    )
+    return status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
