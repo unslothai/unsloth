@@ -189,6 +189,22 @@ def test_apply_event_transitions():
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
 
 
+def test_terminal_events_clear_model_load_flag():
+    # A stop or error during model load emits complete/error WITHOUT a preceding
+    # model_load_completed, so the terminal update must reset in_model_load or the
+    # client shows a stale loading indicator after the job ended.
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "model_load_started"})
+    assert svc.status()["in_model_load"] is True
+    svc._apply_event({"type": "complete", "stopped": True})
+    assert svc.status()["in_model_load"] is False and svc.status()["status"] == "stopped"
+
+    svc2 = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc2._apply_event({"type": "model_load_started"})
+    svc2._apply_event({"type": "error", "message": "load failed"})
+    assert svc2.status()["in_model_load"] is False and svc2.status()["status"] == "error"
+
+
 # ── route wiring (mocked service) ─────────────────────────────────────────────
 class _FakeService:
     def __init__(self):

@@ -31,10 +31,24 @@ _CTX = mp.get_context("spawn")
 _TERMINAL = ("complete", "error")
 
 
-def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
+
+
+def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+    # First thing in the spawned child (before torch is imported): bind to the parent's
+    # death on Linux and scrub the native path lease secret, exactly like the inference /
+    # export / LLM-training workers. multiprocessing children cannot be given a
+    # parent-set preexec_fn, so the child must self-bind; otherwise a Studio crash or
+    # kill leaves this trainer holding the GPU. Tests inject their own target, so this
+    # binding only runs for the real production spawn.
+    from utils.native_path_leases import run_without_native_path_secret
+
+    run_without_native_path_secret(
+        _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
+    )
 
 
 def _idle_state() -> dict[str, Any]:
@@ -225,8 +239,12 @@ class DiffusionTrainingService:
                     message = "Training...",
                 )
             elif etype == "complete":
+                # Reset in_model_load: a stop during model load emits complete without a
+                # preceding model_load_completed, which would otherwise leave a stale
+                # loading indicator after the job ended.
                 s.update(
                     active = False,
+                    in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
@@ -235,7 +253,14 @@ class DiffusionTrainingService:
                     else "Training complete.",
                 )
             elif etype == "error":
-                s.update(active = False, status = "error", message = str(ev.get("message", "error")))
+                # Reset in_model_load too: an error raised during model loading has no
+                # model_load_completed, so the terminal state must clear it explicitly.
+                s.update(
+                    active = False,
+                    in_model_load = False,
+                    status = "error",
+                    message = str(ev.get("message", "error")),
+                )
 
 
 _service: Optional[DiffusionTrainingService] = None
