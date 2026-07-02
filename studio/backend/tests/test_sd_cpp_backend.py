@@ -90,6 +90,11 @@ class _FakeServer:
         self.started = None
         self.stopped = False
         self.payloads = []
+        self.timeouts = []
+        self.alive = True
+
+    def is_alive(self):
+        return self.alive and not self.stopped
 
     def start(
         self,
@@ -114,10 +119,12 @@ class _FakeServer:
         *,
         on_step = None,
         cancel_event = None,
+        total_timeout = None,
     ):
         import io as _io
 
         self.payloads.append(payload)
+        self.timeouts.append(total_timeout)
         if on_step is not None:
             steps = payload.get("sample_params", {}).get("sample_steps", 0)
             on_step(f"  {steps}/{steps}")
@@ -398,6 +405,16 @@ def test_resolve_backend_falls_back_to_oneshot_without_server(monkeypatch):
     assert mode == "oneshot" and engine is not None
 
 
+def test_resolve_backend_cached_fallback_engine_does_not_pin_oneshot(monkeypatch):
+    # A lazily cached fallback engine (NOT an explicit injection) must not force one-shot:
+    # once a server is available again, the next load can use it.
+    b = SdCppDiffusionBackend()  # no injected engine
+    b._engine = _FakeEngine()  # simulate a prior lazy one-shot fallback caching the engine
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    mode, binary, engine = b._resolve_backend()
+    assert mode == "server" and binary == "/x/sd-server" and engine is None
+
+
 def _run_server_load(
     monkeypatch,
     b,
@@ -406,6 +423,8 @@ def _run_server_load(
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    # The fake binary path is not a real executable; skip the up-front runnability probe.
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
 
     def _factory(binary):
         s = _FakeServer(binary)
@@ -459,6 +478,48 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     assert b._gen is None  # cleared after generate
 
 
+def test_server_generate_splits_batches_above_server_limit(monkeypatch):
+    # A batch above the server's per-job limit is chunked (the one-shot path did these
+    # image-by-image); each chunk gets a timeout proportional to its image count.
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 100, batch_size = 10)
+    assert len(out["images"]) == 10
+    counts = [p["batch_count"] for p in servers[0].payloads]
+    assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
+    # Each chunk's timeout scales with its image count, not one fixed batch deadline.
+    assert servers[0].timeouts == [
+        bk._SERVER_PER_IMAGE_TIMEOUT_S * 8,
+        bk._SERVER_PER_IMAGE_TIMEOUT_S * 2,
+    ]
+    # Seeds run contiguously across chunks (chunk 2 submitted at base + 8).
+    assert out["seeds"] == list(range(100, 110))
+    assert servers[0].payloads[1]["seed"] == 108
+
+
+def test_server_generate_masks_large_seed(monkeypatch):
+    # sd.cpp's image seed is signed int64; a larger explicit seed must be masked before it
+    # reaches the server (the request model / diffusers accept up to 2**64 - 1).
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 2**64 - 1, batch_size = 1)
+    assert servers[0].payloads[0]["seed"] <= (1 << 63) - 1
+    assert all(s <= (1 << 63) - 1 for s in out["seeds"])
+
+
+def test_status_clears_when_server_died(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    assert b.status()["loaded"] is True
+    servers[0].alive = False  # the resident server crashed / was OOM-killed
+    st = b.status()
+    assert st["loaded"] is False
+    assert b._state is None  # stale state was dropped so clients reload
+
+
 def test_server_generate_progress_from_stdout(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
@@ -473,10 +534,13 @@ def test_server_generate_progress_from_stdout(monkeypatch):
             *,
             on_step = None,
             cancel_event = None,
+            total_timeout = None,
         ):
             on_step("  4/8")
             seen["mid"] = b.generate_progress()
-            return super().img_gen(payload, on_step = on_step, cancel_event = cancel_event)
+            return super().img_gen(
+                payload, on_step = on_step, cancel_event = cancel_event, total_timeout = total_timeout
+            )
 
     b._state = bk._SdState(
         repo_id = b._state.repo_id,
@@ -528,6 +592,8 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
     # A present-but-broken sd-server must not fail the load when sd-cli works.
     b = SdCppDiffusionBackend()
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    # Probe passes; the failure we exercise here is in start(), not the up-front probe.
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
 
     class _BadServer:
         def __init__(self, binary):

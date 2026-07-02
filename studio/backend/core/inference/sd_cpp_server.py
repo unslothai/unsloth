@@ -40,6 +40,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import deque
 from typing import Any, Callable, Optional
 
 import httpx
@@ -74,6 +75,12 @@ _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
+# After a cancel is requested, how long to let the server reflect it in job status before
+# abandoning the poll. The native cancel is best-effort, so without this cap a server that
+# ignores/loses the cancel would keep this call (and the backend's generate lock) alive
+# until the job finishes naturally, blocking a superseding load from swapping the model.
+_CANCEL_GRACE_S = 5.0
+
 
 class SdCppServer:
     """A resident ``sd-server`` subprocess plus the HTTP client that drives it."""
@@ -88,9 +95,15 @@ class SdCppServer:
         self.host = host
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
-        self._tail: list[str] = []
+        # Fixed-size, thread-safe tail buffer: the drain thread appends while lifecycle /
+        # request threads read it for diagnostics, so a deque(maxlen) is safer and cheaper
+        # than a list with manual slicing.
+        self._tail: deque[str] = deque(maxlen = 200)
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
+        # Set (lock-free) by stop() so a blocking start()/readiness wait can be aborted
+        # promptly without waiting on the lifecycle lock start() holds.
+        self._abort = threading.Event()
         # Set for the duration of a generation so the continuous stdout drain can feed
         # the active request's step-progress callback; cleared in img_gen's finally.
         self._step_listener: Optional[Callable[[str], None]] = None
@@ -133,6 +146,7 @@ class SdCppServer:
         """
         with self._lifecycle_lock:
             self._stopped = False
+            self._abort.clear()
             port = self._find_free_port()
             # An empty scratch dir for sd-server's LoRA / upscaler / embeddings scans
             # (it recursively iterates them per request and errors on a missing dir).
@@ -200,9 +214,12 @@ class SdCppServer:
                 self._dispose()
                 raise RuntimeError(f"failed to spawn sd-server: {self._spawn_error}")
             if not self._wait_ready(startup_timeout):
-                tail = "\n".join(self._tail[-30:])
+                tail = "\n".join(list(self._tail)[-30:])
+                aborted = self._abort.is_set()
                 self._kill_locked()
                 self._dispose()
+                if aborted:
+                    raise SdCppCancelled("sd-server startup was cancelled.")
                 raise RuntimeError("sd-server failed to become ready. Last output:\n" + tail[:2000])
 
     def _wait_ready(
@@ -217,6 +234,11 @@ class SdCppServer:
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
         while time.monotonic() < deadline:
+            # A concurrent stop() (unload / superseding load) sets _abort so this wait can
+            # bail without holding the model-load hostage for the full startup_timeout.
+            if self._abort.is_set():
+                logger.info("sd-server startup aborted before ready")
+                return False
             if not self.is_alive():
                 code = None if self._process is None else self._process.returncode
                 logger.error("sd-server exited early during load (code %s)", code)
@@ -239,9 +261,7 @@ class SdCppServer:
                 line = raw.rstrip()
                 if not line:
                     continue
-                self._tail.append(line)
-                if len(self._tail) > 200:
-                    del self._tail[:-200]
+                self._tail.append(line)  # deque(maxlen) discards the oldest automatically
                 logger.debug("[sd-server] %s", line)
                 cb = self._step_listener
                 if cb is not None:
@@ -255,8 +275,12 @@ class SdCppServer:
     def stop(self) -> None:
         """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
         client + atexit handler. Idempotent."""
+        # Signal abort BEFORE contending for the lifecycle lock: a concurrent start() holds
+        # that lock for the whole (up to startup_timeout) readiness wait, so setting the
+        # event lets that wait bail immediately instead of stop() blocking behind it.
+        self._abort.set()
+        self._stopped = True
         with self._lifecycle_lock:
-            self._stopped = True
             self._kill_locked()
             self._dispose()
 
@@ -320,7 +344,12 @@ class SdCppServer:
         Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
         the log tail attached.
         """
+        # If the server was already stopped for a cancel/unload/superseding load that set
+        # the cancel event before this submit began, report it as a cancellation (which the
+        # route maps to a client-state 409) rather than a generic "server died" 500.
         if self._stopped or not self.is_alive():
+            if cancel_event is not None and cancel_event.is_set():
+                raise SdCppCancelled("sd-server generation was cancelled.")
             raise RuntimeError("sd-server is not running.")
 
         self._step_listener = on_step
@@ -345,17 +374,27 @@ class SdCppServer:
                 raise RuntimeError(
                     f"sd-server img_gen returned a non-JSON submit response: {exc}"
                 ) from exc
+            if not isinstance(job, dict):
+                raise RuntimeError(
+                    f"sd-server img_gen returned an unexpected submit response type: {type(job)}"
+                )
             job_id = job.get("id")
             if not job_id:
                 raise RuntimeError(f"sd-server img_gen returned no job id: {job}")
 
             # Poll the job to a terminal state.
             deadline = time.monotonic() + total_timeout
-            cancel_sent = False
+            cancel_sent_at: Optional[float] = None
             while True:
-                if cancel_event is not None and cancel_event.is_set() and not cancel_sent:
-                    self.cancel(job_id)
-                    cancel_sent = True
+                if cancel_event is not None and cancel_event.is_set():
+                    if cancel_sent_at is None:
+                        self.cancel(job_id)
+                        cancel_sent_at = time.monotonic()
+                    elif time.monotonic() - cancel_sent_at > _CANCEL_GRACE_S:
+                        # The best-effort cancel was not reflected in job status within the
+                        # grace window; abandon the poll so the caller can stop the server
+                        # instead of holding the generate lock until the job finishes.
+                        raise SdCppCancelled("sd-server generation was cancelled.")
                 if not self.is_alive():
                     # If we're unwinding a cancel (e.g. unload killed the server), surface a
                     # clean cancellation rather than a generic "server died" error.
@@ -379,6 +418,10 @@ class SdCppServer:
                     jd = jr.json()
                 except ValueError as exc:
                     raise RuntimeError(f"sd-server job status was not JSON: {exc}") from exc
+                if not isinstance(jd, dict):
+                    raise RuntimeError(
+                        f"sd-server job status returned an unexpected response type: {type(jd)}"
+                    )
                 status = jd.get("status")
                 if status == _TERMINAL_OK:
                     return self._decode_images(jd)
@@ -403,10 +446,13 @@ class SdCppServer:
 
     @staticmethod
     def _decode_images(job: dict[str, Any]) -> list[bytes]:
-        result = job.get("result") or {}
-        images = result.get("images") or []
+        # Defensive against an unexpected response shape (a misbehaving/older server):
+        # verify each level is the type we index before calling dict/list methods.
+        result = job.get("result") if isinstance(job, dict) else None
+        images = result.get("images") if isinstance(result, dict) else None
+        items = [it for it in images if isinstance(it, dict)] if isinstance(images, list) else []
         out: list[bytes] = []
-        for item in sorted(images, key = lambda d: d.get("index", 0)):
+        for item in sorted(items, key = lambda d: d.get("index", 0)):
             b64 = item.get("b64_json")
             if not b64:
                 continue
@@ -419,7 +465,7 @@ class SdCppServer:
         return out
 
     def _died_message(self, where: str, exc: Optional[Exception]) -> str:
-        tail = "\n".join(self._tail[-20:])
+        tail = "\n".join(list(self._tail)[-20:])
         base = f"sd-server connection lost during {where}"
         if not self.is_alive():
             code = None if self._process is None else self._process.returncode

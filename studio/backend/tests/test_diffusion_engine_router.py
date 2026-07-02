@@ -32,6 +32,10 @@ def _clean_env_and_state(monkeypatch):
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(status = lambda: {"loaded": False, "repo_id": None}),
     )
+    # Default: no resident sd-server (so existing tests exercise the sd-cli path only) and
+    # a stubbed runnability probe, so neither reaches the real install/exec path.
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
+    monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
     yield
 
 
@@ -68,6 +72,16 @@ def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
     _set_runnable(monkeypatch)
     assert _select() == ENGINE_SD_CPP
     assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
+    # An sd-server-only install (no runnable sd-cli) must still route to native: the
+    # backend prefers the resident server, so a runnable sd-server is native availability.
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, None)  # no sd-cli
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: "/usr/bin/sd-server")
+    assert _select() == ENGINE_SD_CPP
 
 
 def test_present_but_not_runnable_binary_falls_back(monkeypatch):

@@ -333,3 +333,86 @@ def test_img_gen_rejected_after_stop(patched):
     s.stop()
     with pytest.raises(RuntimeError, match = "not running"):
         s.img_gen({"prompt": "x"})
+
+
+# ── cancellation + defensive parsing (review follow-ups) ───────────────────────
+
+
+def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
+    # The server was stopped for a cancel/unload before submit; with the cancel event set
+    # this must surface as a cancellation (route -> 409), not a generic "not running" 500.
+    popen = _FakePopen()
+    patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
+    s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
+    s.start(_FILES, startup_timeout = 5.0)
+    s.stop()
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(SdCppCancelled):
+        s.img_gen({"prompt": "x"}, cancel_event = cancel)
+
+
+def test_img_gen_abandons_when_cancel_not_honored(patched):
+    # A best-effort cancel the server ignores must not pin this call (and the generate
+    # lock) until natural completion: after the grace window it raises cancellation.
+    patched.setattr(srv, "_CANCEL_GRACE_S", 0.0)
+    popen = _FakePopen()
+    cancel = threading.Event()
+    cancel.set()
+    client = _FakeClient(
+        post = lambda url, json: _Resp(202, {"id": "jobG"}),
+        get = lambda url: _Resp(200, {"status": "generating"}),  # never terminal
+    )
+    s = _server_with(popen, client)
+    with pytest.raises(SdCppCancelled):
+        s.img_gen({"prompt": "x"}, cancel_event = cancel, poll_interval = 0.01)
+
+
+def test_img_gen_non_dict_submit_json_raises(patched):
+    popen = _FakePopen()
+    s = _server_with(popen, _FakeClient(post = lambda url, json: _Resp(202, ["not", "a", "dict"])))
+    with pytest.raises(RuntimeError, match = "unexpected submit response"):
+        s.img_gen({"prompt": "x"})
+
+
+def test_img_gen_non_dict_status_json_raises(patched):
+    popen = _FakePopen()
+    s = _server_with(
+        popen,
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobH"}),
+            get = lambda url: _Resp(200, ["unexpected"]),
+        ),
+    )
+    with pytest.raises(RuntimeError, match = "unexpected response type"):
+        s.img_gen({"prompt": "x"}, poll_interval = 0.01)
+
+
+def test_decode_images_tolerates_unexpected_shapes():
+    # A misbehaving/older server can return non-dict result/images/items; _decode_images
+    # must raise a clean "no images" rather than an AttributeError on .get().
+    for job in ({"result": ["x"]}, {"result": {"images": "nope"}}, {"result": {"images": [1, 2]}}):
+        with pytest.raises(RuntimeError, match = "no images"):
+            SdCppServer._decode_images(job)
+
+
+def test_start_aborted_by_concurrent_stop(patched):
+    # A stop() during the readiness wait must abort start() promptly (without waiting out
+    # the startup timeout) and surface as a cancellation.
+    popen = _FakePopen(lines = ["loading model"])
+    patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
+
+    def _never_ready(url):
+        raise srv.httpx.ConnectError("refused")
+
+    s = _server_with(popen, _FakeClient(get = _never_ready))
+
+    def _stop_soon():
+        import time as _t
+
+        _t.sleep(0.2)
+        s.stop()
+
+    threading.Thread(target = _stop_soon, daemon = True).start()
+    with pytest.raises(SdCppCancelled):
+        s.start(_FILES, startup_timeout = 30.0)

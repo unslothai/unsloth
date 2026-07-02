@@ -29,7 +29,12 @@ from typing import Any, Optional
 
 from core.inference.diffusion_device import resolve_diffusion_device_target
 from core.inference.diffusion_families import DiffusionFamily, family_sd_cpp_supported
-from core.inference.sd_cpp_backend import _install_allowed, ensure_sd_cpp_binary
+from core.inference.sd_cpp_backend import (
+    _install_allowed,
+    _server_binary_runnable,
+    ensure_sd_cpp_binary,
+    ensure_sd_server_binary,
+)
 from core.inference.sd_cpp_engine import (
     ENGINE_DIFFUSERS,
     ENGINE_SD_CPP,
@@ -124,17 +129,27 @@ def select_and_activate_engine(fam: DiffusionFamily, *, hf_token: Optional[str] 
     fam_ok = family_sd_cpp_supported(fam)
 
     binary = None
+    server_binary = None
     if policy_eligible and fam_ok:
-        binary = ensure_sd_cpp_binary(allow_install = _install_allowed())
         # Probe runnability here, before committing the route to native: a present but
         # non-runnable binary (wrong arch, missing shared libs, no execute bit) would
         # otherwise pass as available and only fail inside the background load, instead
         # of falling back to diffusers now.
+        binary = ensure_sd_cpp_binary(allow_install = _install_allowed())
         if binary and SdCppEngine(binary = binary).version() is None:
-            logger.warning("sd-cli at %s is present but not runnable; using diffusers", binary)
+            logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
             binary = None
+        # A resident sd-server counts as native availability too: the backend PREFERS the
+        # server, and an sd-server-only install (no sd-cli) must still route to native
+        # rather than silently falling back to diffusers.
+        server_binary = ensure_sd_server_binary(allow_install = _install_allowed())
+        if server_binary and not _server_binary_runnable(server_binary):
+            logger.warning(
+                "sd-server at %s is present but not runnable; not using it", server_binary
+            )
+            server_binary = None
 
-    native_available = bool(binary) and policy_eligible and fam_ok
+    native_available = bool(binary or server_binary) and policy_eligible and fam_ok
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
@@ -146,8 +161,8 @@ def select_and_activate_engine(fam: DiffusionFamily, *, hf_token: Optional[str] 
         reason = f"GPU backend '{backend}' uses diffusers"
     elif not fam_ok:
         reason = f"family '{fam.name}' has no native sd.cpp asset mapping"
-    elif not binary:
-        reason = "sd-cli binary unavailable"
+    elif not (binary or server_binary):
+        reason = "native sd.cpp binary unavailable"
     else:
         reason = "diffusers selected"
     return _activate(ENGINE_DIFFUSERS, reason)
