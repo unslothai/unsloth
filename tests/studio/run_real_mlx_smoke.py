@@ -565,30 +565,50 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(f"no .gguf files in {save_dir}")
     gguf_path = gguf_files[0]
 
+    # This is a save/reload-integrity smoke; a few generated tokens are enough.
+    # Keep llama.cpp bounded on macOS runners where BF16 GGUF decode is CPU-bound.
+    n_predict = os.environ.get("UNSLOTH_GGUF_RELOAD_N", "8")
+    n_threads = os.environ.get("UNSLOTH_GGUF_RELOAD_THREADS", str(os.cpu_count() or 4))
+    reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
+
     with Phase("reload_gguf", metrics):
-        proc = subprocess.run(
-            [
-                str(llama_cli),
-                "-m",
-                str(gguf_path),
-                "-p",
-                PROMPT,
-                "-n",
-                "24",
-                "--temp",
-                "0",
-                "--seed",
-                str(SEED),
-                "-no-cnv",
-                "--no-warmup",
-            ],
-            capture_output = True,
-            text = True,
-            timeout = 300,
-            # Hand llama-cli an immediate EOF; without it -no-cnv can still leave the
-            # process blocked reading stdin, which times out instead of generating.
-            stdin = subprocess.DEVNULL,
-        )
+        argv = [
+            str(llama_cli),
+            "-m",
+            str(gguf_path),
+            "-p",
+            PROMPT,
+            "-n",
+            n_predict,
+            "-t",
+            n_threads,
+            "--temp",
+            "0",
+            "--seed",
+            str(SEED),
+            "-c",
+            "256",
+            "--no-warmup",
+        ]
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output = True,
+                text = True,
+                timeout = reload_timeout,
+                # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
+                input = "/exit\n",
+            )
+        except subprocess.TimeoutExpired as exc:
+
+            def _decode(stream) -> str:
+                if isinstance(stream, bytes):
+                    return stream.decode("utf-8", errors = "replace")
+                return stream or ""
+
+            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
+            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
+            raise
 
     metrics["llama_cli_returncode"] = proc.returncode
     metrics["generation"] = (proc.stdout or "")[:1500]
