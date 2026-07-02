@@ -98,8 +98,13 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
     (s) => s.setSelectedVoiceVariant,
   );
 
+  const selectedVoiceVariant = useChatRuntimeStore((s) => s.selectedVoiceVariant);
   const selectedModel = value ? models.find((m) => m.id === value) : null;
-  const displayName = selectedModel?.name ?? BROWSER_VOICE_LABEL;
+  const displayName = selectedModel
+    ? selectedModel.isGguf && selectedVoiceVariant
+      ? `${selectedModel.name} · ${selectedVoiceVariant}`
+      : selectedModel.name
+    : BROWSER_VOICE_LABEL;
 
   // The picker is non-interactive when there's no chat model to answer (disabled)
   // OR the chat model is a speech-LLM that speaks with its own voice
