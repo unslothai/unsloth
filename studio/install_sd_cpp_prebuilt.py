@@ -360,8 +360,12 @@ def _resolve_with_fallback(
         )
         if release is not None and chosen:
             if repo != primary:
+                # Diagnostic goes to stderr, not stdout: --print-asset documents its
+                # stdout as the asset name only, so a caller parsing it as a single line
+                # must not see this fallback log mixed in.
                 print(
                     f"falling back to {repo} for {platform.system()}/{platform.machine()}",
+                    file = sys.stderr,
                     flush = True,
                 )
             return repo, release, chosen

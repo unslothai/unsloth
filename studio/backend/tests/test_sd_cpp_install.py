@@ -420,9 +420,11 @@ def test_install_falls_back_to_upstream_when_mirror_missing(tmp_path, monkeypatc
     )
     sd_cli = install(install_dir = tmp_path)
     assert sd_cli.name == "sd-cli" and sd_cli.is_file()
-    out = capsys.readouterr().out
-    assert "falling back to leejet/stable-diffusion.cpp" in out
-    assert "source leejet/stable-diffusion.cpp" in out
+    captured = capsys.readouterr()
+    # The repo-fallback diagnostic goes to stderr so --print-asset's stdout stays a single
+    # asset line; the "source ..." install note still prints to stdout.
+    assert "falling back to leejet/stable-diffusion.cpp" in captured.err
+    assert "source leejet/stable-diffusion.cpp" in captured.out
 
 
 def test_install_errors_when_neither_source_serves(tmp_path, monkeypatch):
