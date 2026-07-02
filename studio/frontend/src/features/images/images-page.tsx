@@ -1015,12 +1015,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
-        if (cancelled) return;
-        // Clear the SELECTED adapters too, not just the options: leaving a stale `loras`
-        // selection in state (with the picker now hidden/empty) would still be posted by
-        // handleGenerate and could apply adapters from the previous model, or fail.
-        setAvailableLoras([]);
-        setLoras([]);
+        // Clear only the OPTIONS on a failed catalog refresh. Unlike the catalog-only
+        // picker below the stack, this free-text picker holds selections (bare HF repo
+        // ids) that are valid without being in the catalog; a transient refresh failure
+        // must not wipe them. Stale cross-family selections are already cleared by the
+        // family-swap check above, and hidden LoRAs are never sent (handleGenerate is
+        // gated on loraCapable).
+        if (!cancelled) setAvailableLoras([]);
       });
     return () => {
       cancelled = true;
