@@ -107,7 +107,10 @@ class SdCppServer:
         # Set for the duration of a generation so the continuous stdout drain can feed
         # the active request's step-progress callback; cleared in img_gen's finally.
         self._step_listener: Optional[Callable[[str], None]] = None
-        self._client = httpx.Client(timeout = 30.0)
+        # trust_env=False: this client only ever talks to the loopback sd-server, so it must
+        # not route through HTTP_PROXY/HTTPS_PROXY (a proxy without 127.0.0.1 in NO_PROXY
+        # would break readiness/generation). Matches the local llama-server clients.
+        self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
         self._stopped = False
         atexit.register(self.stop)
@@ -145,7 +148,12 @@ class SdCppServer:
         a concurrent start/stop can't interleave.
         """
         with self._lifecycle_lock:
-            self._stopped = False
+            # A stop()/unload that raced in AFTER the backend published this server as
+            # _pending_server but BEFORE start() took the lock has already set _abort and
+            # closed the httpx client. Honor that delivered stop instead of clearing the
+            # abort and spawning a model process the cancelled load would then leak.
+            if self._stopped or self._abort.is_set():
+                raise SdCppCancelled("sd-server start was cancelled before launch.")
             self._abort.clear()
             port = self._find_free_port()
             # An empty scratch dir for sd-server's LoRA / upscaler / embeddings scans
@@ -167,7 +175,10 @@ class SdCppServer:
             if env:
                 run_env.update(env)
             logger.info("starting sd-server: %s", " ".join(cmd))
-            self._tail = []
+            # Clear in place: reassigning to [] drops the deque(maxlen=200) bound, so the
+            # continuous stdout drain would then grow the tail without limit for the whole
+            # resident-server lifetime.
+            self._tail.clear()
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
@@ -402,13 +413,27 @@ class SdCppServer:
                         raise SdCppCancelled("sd-server generation was cancelled.")
                     raise RuntimeError(self._died_message("img_gen poll", None))
                 if time.monotonic() > deadline:
+                    # Best-effort cancel, then tear the server down: current sd-server does
+                    # not interrupt an already-generating job (cancel_generating=false / 409),
+                    # so leaving it up would keep denoising the abandoned job and block later
+                    # generations/reloads behind it. Stopping frees the slot; the backend sees
+                    # the dead server on the next generate and takes the recoverable reload path.
                     self.cancel(job_id)
+                    self.stop()
                     raise RuntimeError(f"sd-server generation timed out after {total_timeout}s")
                 try:
                     jr = self._client.get(f"{self.base_url}{_JOBS_PATH}/{job_id}", timeout = 10.0)
                 except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                     time.sleep(poll_interval)
                     continue
+                except RuntimeError as exc:
+                    # A concurrent stop()/unload closes the shared httpx client; httpx then
+                    # raises a plain RuntimeError ("client has been closed") that is NOT a
+                    # transport error. When we are being cancelled, report it as a clean
+                    # cancellation (route -> 409) instead of a generic 500 generation failure.
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                    raise
                 if jr.status_code in (404, 410):
                     raise RuntimeError(f"sd-server job {job_id} is gone (HTTP {jr.status_code}).")
                 if jr.status_code != 200:

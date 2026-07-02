@@ -110,7 +110,11 @@ def _server_binary_runnable(binary: str) -> bool:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- timeout or anything odd: don't block on a flaky probe
         return True
-    return proc.returncode not in (126, 127)
+    # A negative return code is a signal death (e.g. -4 SIGILL from an incompatible
+    # prebuilt on an older CPU): the binary launches but immediately crashes, so treat it
+    # as unavailable and let the load fall back to diffusers instead of routing to a
+    # server that will die on startup.
+    return proc.returncode >= 0 and proc.returncode not in (126, 127)
 
 
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
@@ -321,7 +325,18 @@ class SdCppDiffusionBackend:
         """
         if self._engine_injected and self._engine is not None:
             return "oneshot", None, self._resolve_engine()
-        server_binary = ensure_sd_server_binary(allow_install = _install_allowed())
+        # Install the sd-server build matching the resolved device backend (ROCm / Vulkan /
+        # CUDA), not the default CPU build: a forced/enabled native load on a GPU host must
+        # not silently fetch the plain-CPU server. Lazy import avoids an import cycle with
+        # the router, which imports this backend during engine selection.
+        from core.inference.diffusion_engine_router import _install_accelerator_for
+
+        accelerator = _install_accelerator_for(
+            getattr(resolve_diffusion_device_target(), "backend", "cpu")
+        )
+        server_binary = ensure_sd_server_binary(
+            allow_install = _install_allowed(), accelerator = accelerator
+        )
         if server_binary is not None:
             return "server", server_binary, None
         logger.warning(
@@ -679,6 +694,16 @@ class SdCppDiffusionBackend:
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                # A resident server can exit while idle; if a client generates without first
+                # polling status, drop the stale loaded state and report not-loaded so it gets
+                # the recoverable reload path instead of a 500 from img_gen (not running).
+                if (
+                    state.mode == "server"
+                    and state.server is not None
+                    and not state.server.is_alive()
+                ):
+                    self._state = None
+                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
             try:
                 if seed is None:
@@ -792,6 +817,13 @@ class SdCppDiffusionBackend:
                 cancel_event = cancel,
                 total_timeout = _SERVER_PER_IMAGE_TIMEOUT_S * count,
             )
+            # All-or-nothing per chunk, like the one-shot path: if the server returns fewer
+            # blobs than requested (e.g. one image in the batch failed to encode), fail
+            # rather than silently dropping images from the user's requested batch.
+            if not cancel.is_set() and len(blobs) != count:
+                raise RuntimeError(
+                    f"sd-server returned {len(blobs)} of {count} requested images in the batch."
+                )
             images.extend(Image.open(io.BytesIO(b)).convert("RGB") for b in blobs)
             # sd.cpp advances the seed per image within a job, so report chunk_seed+i.
             seeds.extend((chunk_seed + i) & ((1 << 63) - 1) for i in range(len(blobs)))
