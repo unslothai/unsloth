@@ -32,6 +32,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
@@ -67,7 +68,7 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
-import { DiffusionTrainDialog } from "./diffusion-train-dialog";
+import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 
 // Curated diffusion GGUFs the picker recommends. The backend resolves each one's
 // pipeline + base diffusers repo from its repo id, so the rail just lists them;
@@ -948,8 +949,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // offers. Applied at generate time; available adapters are refreshed per loaded family.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
-  // "Train a LoRA" dialog (SDXL). Independent of the loaded generation model.
-  const [trainOpen, setTrainOpen] = useState(false);
+  // Page mode: "create" is the generation workspace; "train" is the full-page LoRA
+  // training workspace. Independent of the loaded generation model.
+  const [pageMode, setPageMode] = useState<"create" | "train">("create");
   // Bumped when a training run completes, to force the LoRA discovery effect to rescan so
   // a freshly-trained adapter appears in the picker without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
@@ -1025,6 +1027,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // loaded, so the poll must roll the label back rather than advertise the failed
   // quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
   const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // A trained adapter awaiting deployment: after Deploy loads the base, the LoRA discovery
+  // effect applies this once the model is loaded + LoRA-capable for the matching family.
+  const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -1064,6 +1069,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setLoras([]);
     }
     prevLoraFamilyRef.current = fam;
+    // A just-deployed adapter: now that the base is loaded + LoRA-capable, apply it (after
+    // the family-swap clear above so it isn't wiped). Only when the family matches what it
+    // was trained for; otherwise warn instead of silently applying an incompatible adapter.
+    const deploy = pendingDeploy.current;
+    if (deploy) {
+      pendingDeploy.current = null;
+      if (!deploy.family || deploy.family === fam) {
+        setLoras([{ id: deploy.loraId, weight: 1 }]);
+      } else {
+        toast.error(
+          `The trained adapter is for ${deploy.family}, but the loaded model is ` +
+            `${fam ?? "a different family"}, so it was not applied.`,
+        );
+      }
+    }
     let cancelled = false;
     listDiffusionLoras(status?.family ?? undefined)
       .then((list) => {
@@ -1565,6 +1585,36 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [busy, handleLoad, quant],
   );
 
+  // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base as
+  // a pipeline, and queue the adapter so the LoRA discovery effect applies it once the base
+  // is loaded + LoRA-capable. Seeds the prompt with the trigger phrase when provided.
+  const handleDeployAdapter = useCallback(
+    (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
+      if (busy !== null) {
+        toast.error("Finish the current model load before deploying the adapter.");
+        return;
+      }
+      // The picker keys a local adapter by its filename stem (see diffusion_lora scan).
+      const base = args.catalogPath.replace(/\\/g, "/").split("/").pop() ?? "";
+      const stem = base.replace(/\.(safetensors|gguf)$/i, "");
+      if (!stem) {
+        toast.error("Could not resolve the trained adapter's name.");
+        return;
+      }
+      pendingDeploy.current = { loraId: stem, family: args.family };
+      if (args.trigger.trim()) setPrompt(args.trigger.trim());
+      setPageMode("create");
+      setQuant(null);
+      const d = defaultsFor(args.baseRepo);
+      setSteps(d.steps);
+      setGuidance(d.guidance);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+        if (!started) pendingDeploy.current = null;
+      });
+    },
+    [busy, handleLoad],
+  );
+
   const handleUnload = useCallback(async () => {
     // Ejecting cancels any in-flight replacement load on the backend, so tear
     // down its client-side tracking too: the load poll reschedules on phase
@@ -1910,54 +1960,57 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onOpenChange={(o) => setSelectorOpen(active && o)}
         />
         <div className="flex items-center gap-2">
-          {/* Train a LoRA (SDXL): opens a self-contained dialog; available regardless of
-              whether a generation model is loaded. */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-[34px]"
-            onClick={() => setTrainOpen(true)}
-            title="Teach SDXL your own style or subject from a folder of images"
-          >
-            <HugeiconsIcon icon={AiMagicIcon} className="mr-1.5 size-3.5" />
-            Train LoRA
-          </Button>
+          {/* Create | Train page-mode switch, next to the model selector. Create is the
+              generation workspace; Train is the full-page LoRA training workspace. */}
+          <Tabs value={pageMode} onValueChange={(v) => setPageMode(v as "create" | "train")}>
+            <TabsList className="h-[34px]">
+              <TabsTrigger value="create">Create</TabsTrigger>
+              <TabsTrigger value="train">
+                <HugeiconsIcon icon={AiMagicIcon} className="mr-1 size-3.5" />
+                Train
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
-              toggle, same icon in both states so it never moves). Highlighted when open. */}
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((o) => !o)}
-            aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-            aria-pressed={advancedOpen}
-            title="Advanced options"
-            className={cn(
-              "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              advancedOpen
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
-          >
-            <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-          </button>
+              toggle, same icon in both states so it never moves). Highlighted when open.
+              Only meaningful in Create mode (load-time tuning), so hidden while training. */}
+          {pageMode === "create" && (
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((o) => !o)}
+              aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
+              aria-pressed={advancedOpen}
+              title="Advanced options"
+              className={cn(
+                "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                advancedOpen
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+            </button>
+          )}
         </div>
       </div>
-      <DiffusionTrainDialog
-        open={active && trainOpen}
-        onOpenChange={setTrainOpen}
-        defaultBaseModel={
-          status?.family === "sdxl"
-            ? // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF or
-              // single-file SDXL load repo_id is the checkpoint path, which the trainer's
-              // from_pretrained cannot open. base_repo is the companion pipeline.
-              status?.base_repo ?? status?.repo_id ?? undefined
-            : undefined
-        }
-        onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
-      />
 
-      {/* ── Controls rail + preview canvas. Padding mirrors the other tabs
-          (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */}
+      {/* Train mode: the full-page training workspace. Kept unmounted in Create mode so its
+          polling stops; Create's own state (gallery, model, workflow) is untouched. */}
+      {pageMode === "train" ? (
+        <DiffusionTrainPanel
+          active={active && pageMode === "train"}
+          loadedFamily={status?.family ?? null}
+          loadedBaseRepo={
+            // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF or
+            // single-file load repo_id is the checkpoint path, not a trainable base.
+            status?.base_repo ?? status?.repo_id ?? null
+          }
+          onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
+          onDeploy={handleDeployAdapter}
+        />
+      ) : (
+      /* ── Controls rail + preview canvas. Padding mirrors the other tabs
+          (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */
       <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 sm:px-9">
         {/* The controls rail. Plain card (the gray surface) with no header —
             the prompt + Generate button make the panel self-explanatory. */}
@@ -2640,6 +2693,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
