@@ -2563,22 +2563,28 @@ export function ChatPage({
       ...cachedQwenTtsModels,
       ...QWEN_TTS_DEFAULTS.filter((d) => !cachedIds.has(d.id)),
     ];
-    // Speech-LLMs that can double as a plain voice. Picking one here loads it in
-    // the voice slot (GGUF llama-server) so it only synthesizes a separate chat
-    // model's replies. Orpheus (snac) is a real GGUF and works; downloaded on
-    // first load if not cached. (Spark's LLM is safetensors -> can't load here.)
-    const SPEECH_LLM_VOICE_DEFAULTS: LoraModelOption[] = [
+    // TTS voices offered next to Qwen3-TTS. Picking one here uses it purely as
+    // the voice for a separate chat model. Orpheus is a GGUF (snac); Spark-TTS is
+    // safetensors (bicodec), served via Studio's audio backend. Downloaded on
+    // first load if not cached.
+    const VOICE_MODEL_DEFAULTS: LoraModelOption[] = [
       {
         id: "unsloth/orpheus-3b-0.1-ft-GGUF",
         name: "orpheus-3b-0.1-ft (voice)",
         isGguf: true,
       },
+      {
+        id: "unsloth/Spark-TTS-0.5B",
+        name: "Spark-TTS-0.5B (voice)",
+        isGguf: false,
+      },
     ];
-    const ggufIds = new Set(cachedGgufs.map((m) => m.id));
-    const speechLlmVoices = SPEECH_LLM_VOICE_DEFAULTS.filter(
-      (d) => !ggufIds.has(d.id),
-    );
-    return [...fromLoras, ...cachedGgufs, ...speechLlmVoices, ...qwenTts];
+    const knownIds = new Set([
+      ...cachedGgufs.map((m) => m.id),
+      ...fromLoras.map((m) => m.id),
+    ]);
+    const voiceDefaults = VOICE_MODEL_DEFAULTS.filter((d) => !knownIds.has(d.id));
+    return [...fromLoras, ...cachedGgufs, ...voiceDefaults, ...qwenTts];
   }, [loraModels, cachedGgufs, cachedQwenTtsModels]);
 
   const sttModels = useMemo<LoraModelOption[]>(
