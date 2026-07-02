@@ -91,9 +91,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             known = ", ".join(supported_family_names())
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
         if not fam.trainable:
-            raise ValueError(
-                f"'{fam.name}' models can't be trained yet. {_trainable_hint()}"
-            )
+            raise ValueError(f"'{fam.name}' models can't be trained yet. {_trainable_hint()}")
         return fam.name
 
     fam = detect_family_for_pick(base_model)

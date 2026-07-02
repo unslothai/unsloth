@@ -484,8 +484,15 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
 def test_apply_event_records_metric_history_and_perf():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
-        {"type": "progress", "step": 1, "total_steps": 10, "loss": 0.5,
-         "learning_rate": 1e-4, "samples_per_second": 3.2, "peak_memory_gb": 7.1}
+        {
+            "type": "progress",
+            "step": 1,
+            "total_steps": 10,
+            "loss": 0.5,
+            "learning_rate": 1e-4,
+            "samples_per_second": 3.2,
+            "peak_memory_gb": 7.1,
+        }
     )
     svc._apply_event(
         {"type": "progress", "step": 2, "total_steps": 10, "loss": 0.4, "learning_rate": 9e-5}
@@ -531,8 +538,14 @@ def test_metric_history_decimates_at_cap():
 def test_complete_event_records_family_and_catalog():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
-        {"type": "complete", "output_dir": "/o", "lora_path": "/o/w.safetensors",
-         "catalog_path": "/loras/w.safetensors", "family": "sdxl", "base_model": "b"}
+        {
+            "type": "complete",
+            "output_dir": "/o",
+            "lora_path": "/o/w.safetensors",
+            "catalog_path": "/loras/w.safetensors",
+            "family": "sdxl",
+            "base_model": "b",
+        }
     )
     st = svc.status()
     assert st["status"] == "completed"
@@ -544,8 +557,12 @@ def test_complete_event_records_family_and_catalog():
 def test_status_route_nests_metric_history(client):
     # The status route folds the service's flat arrays into a nested metric_history object.
     client._fake.status_extra = {
-        "metric_steps": [1, 2], "metric_loss": [0.5, 0.4], "metric_lr": [1e-4, 9e-5],
-        "family": "sdxl", "samples_per_second": 2.0, "peak_memory_gb": 6.0,
+        "metric_steps": [1, 2],
+        "metric_loss": [0.5, 0.4],
+        "metric_lr": [1e-4, 9e-5],
+        "family": "sdxl",
+        "samples_per_second": 2.0,
+        "peak_memory_gb": 6.0,
     }
     r = client.get("/api/train/diffusion/status")
     assert r.status_code == 200, r.text
