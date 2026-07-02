@@ -838,12 +838,8 @@ def _ensure_qwen3_5_mtp_config_for_gguf(save_directory):
 
     text_config = config.get("text_config")
     text_config_is_dict = isinstance(text_config, dict)
-    if (
-        config.get("mtp_num_hidden_layers") == target_mtp_layers
-        and (
-            not text_config_is_dict
-            or text_config.get("mtp_num_hidden_layers") == target_mtp_layers
-        )
+    if config.get("mtp_num_hidden_layers") == target_mtp_layers and (
+        not text_config_is_dict or text_config.get("mtp_num_hidden_layers") == target_mtp_layers
     ):
         return
 
