@@ -37,10 +37,19 @@ def test_inject_prompt_tags_appends_with_spacing():
     assert dl.inject_prompt_tags("x", [r1]) == "x <lora:s:1>"
 
 
-def test_inject_prompt_tags_dedupes_user_typed_tag():
+def test_inject_prompt_tags_validated_weight_overrides_user_typed():
     r = dl.ResolvedLora("id", "style", "/p", "safetensors", 0.8)
-    # user already wrote a tag for the same alias -> not duplicated
-    assert dl.inject_prompt_tags("a cat <lora:style:1>", [r]) == "a cat <lora:style:1>"
+    # A user-typed tag for a SELECTED adapter is replaced by the backend-validated weight
+    # (so the recorded/validated 0-2 weight wins over whatever was typed), not duplicated.
+    assert dl.inject_prompt_tags("a cat <lora:style:1>", [r]) == "a cat <lora:style:0.8>"
+
+
+def test_inject_prompt_tags_keeps_unselected_user_tags():
+    r = dl.ResolvedLora("id", "style", "/p", "safetensors", 0.8)
+    # A user tag for an alias that is NOT one of the selected adapters is left untouched.
+    out = dl.inject_prompt_tags("a cat <lora:other:0.5>", [r])
+    assert "<lora:other:0.5>" in out
+    assert "<lora:style:0.8>" in out
 
 
 def test_inject_prompt_tags_empty_returns_prompt():
@@ -127,6 +136,41 @@ def test_resolve_specs_drops_zero_weight(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
     out = dl.resolve_specs([("a", 0.0), ("a", 1.0)])
     assert len(out) == 1 and out[0].weight == 1.0
+
+
+def test_resolve_specs_maps_unknown_id_to_valueerror(tmp_path, monkeypatch):
+    # An unknown / stale id raises FileNotFoundError in resolve_one; resolve_specs must
+    # surface it as ValueError so the route returns 400, not a generic 500.
+    d = tmp_path / "loras"
+    d.mkdir()
+    monkeypatch.setattr(dl, "loras_dir", lambda: d)
+    with pytest.raises(ValueError):
+        dl.resolve_specs([("nope", 1.0)])
+
+
+def test_scan_local_disambiguates_identical_stems(tmp_path, monkeypatch):
+    # foo.safetensors and foo.gguf must get distinct ids so each is addressable; a
+    # unique stem keeps its clean stem id.
+    d = tmp_path / "loras"
+    d.mkdir()
+    (d / "foo.safetensors").write_bytes(b"x")
+    (d / "foo.gguf").write_bytes(b"y")
+    (d / "solo.safetensors").write_bytes(b"z")
+    monkeypatch.setattr(dl, "loras_dir", lambda: d)
+    by_id = {e.id: e for e in dl.list_loras()}
+    assert "foo.safetensors" in by_id and "foo.gguf" in by_id
+    assert by_id["foo.safetensors"].fmt == "safetensors"
+    assert by_id["foo.gguf"].fmt == "gguf"
+    assert "solo" in by_id  # unique stem is untouched
+
+
+def test_resolve_one_rejects_traversal_weight_name(tmp_path, monkeypatch):
+    # A client-supplied weight file with traversal / absolute path is rejected before it
+    # can reach the downloader (it must stay a plain filename inside the repo).
+    monkeypatch.setattr(dl, "loras_dir", lambda: tmp_path)
+    for bad in ("owner/name:../secret.safetensors", "owner/name:/etc/x.safetensors"):
+        with pytest.raises(ValueError):
+            dl.resolve_one(bad, 1.0)
 
 
 # ── Request-model validation ────────────────────────────────────────────────
@@ -264,3 +308,21 @@ def test_diffusers_apply_rejects_unsupported_quant():
             [("styleA", 1.0)],
             threading.Event(),
         )
+
+
+def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
+    # A .gguf adapter (discoverable in the shared catalog) cannot load on the diffusers
+    # engine; it must be rejected as a clean 400 before touching the pipe.
+    import threading
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.gguf", "gguf", w) for i, w in specs
+        ],
+    )
+    pipe = _FakePipe()
+    with pytest.raises(ValueError, match = "GGUF LoRA"):
+        _backend()._apply_loras(_fake_state(pipe), [("styleA", 1.0)], threading.Event())
+    assert pipe.loaded == []  # never touched the pipe

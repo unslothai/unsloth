@@ -986,7 +986,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setLoras((prev) => prev.filter((s) => ids.has(s.id)));
       })
       .catch(() => {
-        if (!cancelled) setAvailableLoras([]);
+        if (cancelled) return;
+        // Clear the SELECTED adapters too, not just the options: leaving a stale `loras`
+        // selection in state (with the picker now hidden/empty) would still be posted by
+        // handleGenerate and could apply adapters from the previous model, or fail.
+        setAvailableLoras([]);
+        setLoras([]);
       });
     return () => {
       cancelled = true;
@@ -2015,7 +2020,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               <div className="space-y-2">
                 {loras.map((sel, i) => (
                   <div
-                    key={i}
+                    key={sel.id || i}
                     className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                   >
                     <div className="flex items-center gap-2">
