@@ -194,13 +194,11 @@ def test_malformed_gemma_array_does_not_hang():
     result: dict = {}
 
     def _run():
-        result["calls"] = parse_tool_calls_from_text(
-            "<|tool_call>call:f{a:[},]}<tool_call|>"
-        )
+        result["calls"] = parse_tool_calls_from_text("<|tool_call>call:f{a:[},]}<tool_call|>")
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target = _run, daemon = True)
     t.start()
-    t.join(timeout=10.0)
+    t.join(timeout = 10.0)
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed array input"
 
 
@@ -211,11 +209,9 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     result: dict = {}
 
     def _run():
-        result["calls"] = parse_tool_calls_from_text(
-            "<|tool_call>call:f{a:}},b:1}<tool_call|>"
-        )
+        result["calls"] = parse_tool_calls_from_text("<|tool_call>call:f{a:}},b:1}<tool_call|>")
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target = _run, daemon = True)
     t.start()
-    t.join(timeout=10.0)
+    t.join(timeout = 10.0)
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
