@@ -190,7 +190,6 @@ _ANYIO_BAD_FLOOR = (4, 14)
 def _installed_anyio_version() -> tuple[int, int] | None:
     try:
         from importlib.metadata import version as _pkg_version
-
         raw = _pkg_version("anyio")
     except Exception:
         return None
