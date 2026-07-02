@@ -42,6 +42,7 @@ const MicDevicePicker: FC = () => {
   const selectedMicDeviceId = useChatRuntimeStore((s) => s.selectedMicDeviceId);
   const setSelectedMicDeviceId = useChatRuntimeStore((s) => s.setSelectedMicDeviceId);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +72,8 @@ const MicDevicePicker: FC = () => {
       label: d.label || `Microphone ${i + 1}`,
     })),
   ];
+  const current =
+    rows.find((r) => r.id === (selectedMicDeviceId ?? null)) ?? rows[0];
 
   return (
     <>
@@ -78,35 +81,55 @@ const MicDevicePicker: FC = () => {
       <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         Microphone
       </div>
-      {/* Cap at ~4 rows tall (each ~2rem) and scroll past that so a machine with
-          many inputs doesn't blow out the popover height. */}
-      <div className="max-h-[8.5rem] overflow-y-auto">
-        {rows.map((row, i) => {
-          const active = (selectedMicDeviceId ?? null) === row.id;
-          return (
-            <button
-              key={row.id ?? `default-${i}`}
-              type="button"
-              onClick={() => setSelectedMicDeviceId(row.id)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
-                active && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
-              )}
-            >
-              <MicIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate">{row.label}</span>
-              {active && (
-                <DotTag
-                  tone="success"
-                  label="Active"
-                  className="ml-auto h-[18px] shrink-0 gap-1 rounded-md px-1.5"
-                  dotClassName="size-[5px]"
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
+      {/* Collapsed selector: shows the current mic; expands the device list on
+          click so many inputs don't blow out the popover height. */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]"
+      >
+        <MicIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">{current.label}</span>
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          strokeWidth={2}
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open && (
+        <div className="max-h-[8.5rem] overflow-y-auto">
+          {rows.map((row, i) => {
+            const active = (selectedMicDeviceId ?? null) === row.id;
+            return (
+              <button
+                key={row.id ?? `default-${i}`}
+                type="button"
+                onClick={() => {
+                  setSelectedMicDeviceId(row.id);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-full px-2 py-1.5 pl-7 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+                  active && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate">{row.label}</span>
+                {active && (
+                  <DotTag
+                    tone="success"
+                    label="Active"
+                    className="ml-auto h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+                    dotClassName="size-[5px]"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 };
