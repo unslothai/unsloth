@@ -263,7 +263,14 @@ def test_cgroup_v2_max_is_unlimited(tmp_path):
     assert LlamaCppBackend._cgroup_memory_mib(proc, root) == (None, None)
 
 
-def _write_v2_level(root, rel, *, limit, current, inactive_file = 0):
+def _write_v2_level(
+    root,
+    rel,
+    *,
+    limit,
+    current,
+    inactive_file = 0,
+):
     d = root if rel in ("", "/") else root / rel.lstrip("/")
     d.mkdir(parents = True, exist_ok = True)
     (d / "memory.max").write_text(str(limit))
