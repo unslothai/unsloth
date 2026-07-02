@@ -1253,6 +1253,7 @@ _DATASET_NAME_RE = None  # compiled lazily; module keeps its import block torch-
 def _clean_diffusion_dataset_name(name: str) -> str:
     """Validate a dataset folder name: a single path component, no traversal, printable."""
     import re
+
     global _DATASET_NAME_RE
     if _DATASET_NAME_RE is None:
         _DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")
