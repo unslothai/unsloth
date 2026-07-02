@@ -203,7 +203,16 @@ export function ExportPage() {
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
   // Merged precision: one or more MERGED_FORMATS values, exported in one run.
-  const [selectedFormats, setSelectedFormats] = useState<string[]>(["16-bit"]);
+  // Seed from a live merged run (like method/quants above) so navigating away and back, or
+  // toggling the export method, restores the selected precisions instead of resetting to 16-bit.
+  const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
+    const s = useExportRuntimeStore.getState();
+    return isExportPanelActive(s) &&
+      s.summary?.method === "merged" &&
+      s.summary.mergedFormats.length > 0
+      ? s.summary.mergedFormats
+      : ["16-bit"];
+  });
   // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
   const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("f16");
@@ -725,6 +734,7 @@ export function ExportPage() {
         methodLabel,
         method: exportMethod,
         quantLevels,
+        mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
       },
     });

@@ -118,6 +118,8 @@ export interface ExportRunSummary {
   methodLabel: string;
   method: ExportMethod;
   quantLevels: string[];
+  /** Merged: the selected precision format values (e.g. ["16-bit", "w8a8"]). */
+  mergedFormats: string[];
   destination: ExportDestination;
 }
 
@@ -174,7 +176,7 @@ interface ExportRuntimeState {
    *  settling the run by polling /api/export/status instead. Logs keep streaming. */
   reconnecting: boolean;
   startedAt: number | null;
-  result: { outputPath: string | null; destination: ExportDestination } | null;
+  result: { outputPaths: string[]; destination: ExportDestination } | null;
   error: string | null;
   cancelRequested: boolean;
   hasHydrated: boolean;
@@ -318,7 +320,13 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             isExporting: false,
             phase: "success" as const,
             result: {
-              outputPath: status.last_op_output_path ?? null,
+              // A recovered run only records the backend's last op path, so keep any paths the
+              // store already collected (multi-format merged) and fall back to the last op.
+              outputPaths: state.result?.outputPaths?.length
+                ? state.result.outputPaths
+                : status.last_op_output_path
+                  ? [status.last_op_output_path]
+                  : [],
               destination: state.result?.destination ?? "local",
             },
           };
@@ -435,10 +443,13 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       }
       if (!isCurrent()) return;
 
-      // 2. Run the export. Capture the resolved output_path for the success
-      // banner; multi-quant GGUF shares one directory, so keep the last.
+      // 2. Run the export. Collect every resolved output_path for the success banner. Merged
+      // multi-format writes one sibling directory per format; GGUF shares one directory.
       set({ phase: "exporting" });
-      let lastOutputPath: string | null = null;
+      const outputPaths: string[] = [];
+      const addOutput = (p: string | null) => {
+        if (p && !outputPaths.includes(p)) outputPaths.push(p);
+      };
 
       if (params.exportMethod === "merged") {
         // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
@@ -461,9 +472,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               private: params.privateRepo,
             }),
           );
-          lastOutputPath = outputPath ?? lastOutputPath;
+          addOutput(outputPath);
           if (!isCurrent()) return;
-          set({ quantIndex: i + 1 });
+          // Surface each finished format's path as it lands, so a mid-run recovery keeps them.
+          set({ quantIndex: i + 1, result: { outputPaths: [...outputPaths], destination: params.destination } });
         }
       } else if (params.exportMethod === "gguf") {
         // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
@@ -478,7 +490,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             imatrix: params.useImatrix,
           }),
         );
-        lastOutputPath = outputPath ?? lastOutputPath;
+        addOutput(outputPath);
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
@@ -495,7 +507,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             gguf_outtype: params.loraGgufOuttype ?? "f16",
           }),
         );
-        lastOutputPath = outputPath;
+        addOutput(outputPath);
       }
       if (!isCurrent()) return;
 
@@ -503,7 +515,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         phase: "success",
         isExporting: false,
         reconnecting: false,
-        result: { outputPath: lastOutputPath, destination: params.destination },
+        result: { outputPaths, destination: params.destination },
       });
     } catch (err) {
       if (!isCurrent()) return;

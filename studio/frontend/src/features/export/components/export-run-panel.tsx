@@ -28,7 +28,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { EXPORT_METHODS, type ExportMethod } from "../constants";
+import { EXPORT_METHODS, findMergedFormat, type ExportMethod } from "../constants";
 import type { ExportLogEntry } from "../api/export-api";
 import { getExportLogLineClass } from "../lib/log-style";
 import {
@@ -200,6 +200,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const summaryMethodLabel = summary?.methodLabel ?? methodTitle;
   const summaryQuants = summary?.quantLevels ?? quantLevels;
   const summaryMethod = summary?.method ?? exportMethod;
+  // Merged precision formats, shown as friendly labels (e.g. "16-bit, INT8 (W8A8)").
+  const summaryFormatLabels = (summary?.mergedFormats ?? []).map(
+    (v) => findMergedFormat(v)?.label ?? v,
+  );
   const showProgress = isExporting || isTerminal;
 
   return (
@@ -390,16 +394,19 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <span>
               {run.result?.destination === "hub"
                 ? "Export finished and pushed to Hugging Face Hub."
-                : "Export finished successfully."}
+                : (run.result?.outputPaths.length ?? 0) > 1
+                  ? `Export finished successfully — ${run.result?.outputPaths.length} outputs.`
+                  : "Export finished successfully."}
             </span>
-            {run.result?.outputPath ? (
+            {run.result?.outputPaths.map((p) => (
               <code
+                key={p}
                 className="select-all break-all font-mono text-[12px] text-foreground/90"
-                title={run.result.outputPath}
+                title={p}
               >
-                {run.result.outputPath}
+                {p}
               </code>
-            ) : null}
+            ))}
           </div>
         </div>
       )}
@@ -432,6 +439,14 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
           <span>Export Method</span>
           <span className="font-medium text-foreground">{summaryMethodLabel}</span>
         </div>
+        {summaryMethod === "merged" && summaryFormatLabels.length > 0 && (
+          <div className="flex justify-between gap-4">
+            <span>{summaryFormatLabels.length > 1 ? "Formats" : "Format"}</span>
+            <span className="font-medium text-foreground text-right">
+              {summaryFormatLabels.join(", ")}
+            </span>
+          </div>
+        )}
         {summaryMethod === "gguf" && summaryQuants.length > 0 && (
           <div className="flex justify-between">
             <span>Quantizations</span>
