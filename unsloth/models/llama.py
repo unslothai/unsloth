@@ -3306,6 +3306,11 @@ class FastLlamaModel:
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        # Persist the configured GC mode so the trainer restores it verbatim.
+        # for_inference() clears the module flags (GRPO does this every generation
+        # step), and a plain TrainingArguments defaults gradient_checkpointing=False,
+        # which would otherwise silently disable this setting at train time (#4735).
+        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         if ensure_weight_tying:
             try:
