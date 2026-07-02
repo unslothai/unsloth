@@ -65,14 +65,10 @@ def train(
     # Resolve resume target to an on-disk checkpoint (same validators as Studio).
     resume_checkpoint: Optional[str] = None
     if resume and resume_from_checkpoint:
-        typer.echo(
-            "Error: use either --resume or --resume-from-checkpoint, not both.", err = True
-        )
+        typer.echo("Error: use either --resume or --resume-from-checkpoint, not both.", err = True)
         raise typer.Exit(code = 2)
 
-    resume_target = resume_from_checkpoint or (
-        str(cfg.training.output_dir) if resume else None
-    )
+    resume_target = resume_from_checkpoint or (str(cfg.training.output_dir) if resume else None)
     if resume_target is not None:
         from studio.backend.core.training.resume import (
             get_resume_checkpoint_path,
