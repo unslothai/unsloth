@@ -1390,7 +1390,10 @@ export function ChatPage({
         const res = await authFetch("/api/inference/voice/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model_path: id }),
+          body: JSON.stringify({
+            model_path: id,
+            parallel: useChatRuntimeStore.getState().voiceParallelN,
+          }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -1451,7 +1454,10 @@ export function ChatPage({
         const res = await authFetch("/api/inference/voice/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model_path: id }),
+          body: JSON.stringify({
+            model_path: id,
+            parallel: useChatRuntimeStore.getState().voiceParallelN,
+          }),
         });
         if (!res.ok && !cancelled) {
           const body = await res.json().catch(() => ({}));

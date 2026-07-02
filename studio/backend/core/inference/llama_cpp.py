@@ -8962,6 +8962,11 @@ class LlamaCppBackend:
     }
 
     _codec_mgr = None  # Shared AudioCodecManager instance
+    # Serializes codec decode across concurrent --parallel synths: llama-server
+    # parallelizes token generation, but the codec (SNAC/BiCodec) is one shared
+    # torch model on the GPU, so decodes must not overlap.
+    import threading as _threading
+    _codec_decode_lock = _threading.Lock()
 
     def init_audio_codec(self, audio_type: str) -> None:
         """Load the audio codec at model load time (mirrors the non-GGUF path)."""
@@ -9048,6 +9053,7 @@ class LlamaCppBackend:
         import torch
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        return LlamaCppBackend._codec_mgr.decode(
-            audio_type, device, token_ids = token_ids, text = data.get("content", "")
-        )
+        with LlamaCppBackend._codec_decode_lock:
+            return LlamaCppBackend._codec_mgr.decode(
+                audio_type, device, token_ids = token_ids, text = data.get("content", "")
+            )

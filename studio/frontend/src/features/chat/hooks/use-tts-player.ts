@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
@@ -170,21 +171,29 @@ export function useTtsPlayer(
             .then((response) => (response.ok ? response.blob() : null))
             .catch(() => null);
 
-        // Pipeline one sentence ahead: synthesize the next clip while the current
-        // one plays, but keep synthesis strictly serial. The voice slot runs
-        // --parallel 1 and /api/audio/speech has no lock, so overlapping calls
-        // would clash; chaining the next synth off the current one guarantees a
-        // single request in flight at a time.
-        let nextSynth: Promise<Blob | null> = synth(sentences[0]);
+        // Bounded-concurrency pipeline: keep up to N sentences synthesizing at
+        // once (voiceParallelN), play them back strictly in order. N=1 is the old
+        // one-ahead behavior. The GGUF voice slot must be loaded with matching
+        // --parallel N; the backend serializes only the shared codec decode.
+        const N = Math.min(
+          sentences.length,
+          Math.max(1, useChatRuntimeStore.getState().voiceParallelN),
+        );
+        const jobs: Array<Promise<Blob | null>> = [];
+        let launched = 0;
+        const launchUpTo = (limit: number) => {
+          while (launched < sentences.length && launched < limit) {
+            jobs[launched] = synth(sentences[launched]);
+            launched++;
+          }
+        };
+        launchUpTo(N); // prime N in flight
         for (let i = 0; i < sentences.length; i++) {
           if (requestIdRef.current !== reqId) return;  // superseded
-          const current = nextSynth;
-          nextSynth =
-            i + 1 < sentences.length
-              ? current.then(() => synth(sentences[i + 1]))
-              : Promise.resolve(null);
-          const blob = await current;
+          const blob = await jobs[i];
           if (requestIdRef.current !== reqId) return;
+          // Refill the window so N stay in flight ahead of playback.
+          launchUpTo(i + 1 + N);
           if (!blob) continue;  // skip a sentence that failed to synthesize
           await playBlob(blob, reqId);
         }

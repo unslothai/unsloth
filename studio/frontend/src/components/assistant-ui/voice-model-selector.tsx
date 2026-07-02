@@ -12,6 +12,7 @@ import { ArrowDown01Icon, CloudIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MicVocalIcon } from "lucide-react";
 import { useState, type FC } from "react";
+import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { splitRepoLabel } from "./model-selector/row-meta";
 import type { LoraModelOption } from "./model-selector/types";
@@ -32,6 +33,45 @@ interface VoiceModelSelectorProps {
 
 const BROWSER_VOICE_ID = null;
 const BROWSER_VOICE_LABEL = "Browser voice";
+
+// How many sentence chunks a GGUF voice slot synthesizes at once (llama-server
+// --parallel N). Applied when the voice slot next loads. In-process voices
+// (Qwen3-TTS, SpeechT5) ignore it.
+const ParallelVoicesPicker: FC = () => {
+  const value = useChatRuntimeStore((s) => s.voiceParallelN);
+  const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
+  return (
+    <>
+      <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+      <div className="flex items-center justify-between gap-2 px-2 py-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Parallel synthesis
+        </span>
+        <div className="flex items-center gap-1">
+          {[1, 2, 3, 4].map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setValue(n)}
+              className={cn(
+                "flex size-6 items-center justify-center rounded-md text-[13px] transition-colors",
+                value === n
+                  ? "bg-[#ececec] text-foreground dark:bg-[var(--sidebar-accent)]"
+                  : "text-muted-foreground hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+              )}
+              aria-label={`${n} parallel voice${n > 1 ? "s" : ""}`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="px-2 pb-1 text-[10px] leading-tight text-muted-foreground/70">
+        GGUF voices only. Applied on next load.
+      </p>
+    </>
+  );
+};
 
 export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   models,
@@ -197,6 +237,8 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             No TTS models found. Train or export a voice model first.
           </p>
         )}
+
+        <ParallelVoicesPicker />
       </PopoverContent>
     </Popover>
   );

@@ -3366,6 +3366,11 @@ class _VoiceLoadRequest(BaseModel):
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
     n_ctx: int = Field(4096, ge = 0, description = "Context length (0 = model default)")
+    parallel: int = Field(
+        1, ge = 1, le = 4,
+        description = "llama-server --parallel slots for the GGUF voice slot "
+        "(concurrent sentence synthesis). Ignored by in-process voice backends.",
+    )
 
 
 @router.post("/voice/load")
@@ -3486,6 +3491,7 @@ async def voice_load_model(
                 hf_token = request.hf_token,
                 model_identifier = config.identifier,
                 n_ctx = request.n_ctx,
+                n_parallel = request.parallel,
             )
         else:
             # Local file mode: llama-server loads via -m <path>
@@ -3496,6 +3502,7 @@ async def voice_load_model(
                 model_identifier = config.identifier,
                 n_ctx = request.n_ctx,
                 hf_token = request.hf_token,
+                n_parallel = request.parallel,
             )
     except Exception as e:
         logger.error("Voice slot load error: %s", e, exc_info = True)
