@@ -74,6 +74,25 @@ def _chat_turn_end_eos_ids(tokenizer) -> list[int]:
     return sorted(ids)
 
 
+def _chat_eos_repair(current_eos, eos_token, eos_token_id) -> Optional[list]:
+    """Repaired ``generation_config.eos_token_id`` list, or None if no change.
+
+    Only acts when the tokenizer's own eos is a chat turn-end marker (so base
+    models, whose eos is a plain document terminator, are skipped) and that id is
+    not already in the current eos set."""
+    if eos_token not in _CHAT_TURN_END_TOKENS or eos_token_id is None:
+        return None
+    if isinstance(current_eos, (list, tuple)):
+        current_set = set(current_eos)
+    elif current_eos is not None:
+        current_set = {current_eos}
+    else:
+        current_set = set()
+    if eos_token_id in current_set:
+        return None
+    return sorted(current_set | {eos_token_id})
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -248,6 +267,44 @@ class InferenceBackend:
     def _normalize_top_k(top_k: int) -> int:
         # API uses -1 to disable top-k; transformers uses 0.
         return 0 if top_k < 0 else top_k
+
+    def _repair_chat_eos_in_generation_config(self, model_name: str) -> None:
+        """Ensure a chat model's generation_config stops at the real turn-end token.
+
+        Some checkpoints declare the chat turn-end as ``tokenizer.eos_token``
+        (e.g. Qwen3.5 / Qwen3.6 small chat models use ``<|im_end|>``) but ship
+        ``config.eos_token_id = <|endoftext|>`` and no ``generation_config.json``,
+        so ``.generate()`` paths that read ``generation_config`` (the vision path,
+        tool loops) never stop at the turn boundary and loop. Add the tokenizer's
+        turn-end id to ``generation_config.eos_token_id`` when it is missing.
+
+        No-op for base models (their eos is a plain ``<|endoftext|>``-style
+        terminator, not a turn-end marker) and for already-correct configs.
+        """
+        info = self.models.get(model_name) or {}
+        model = info.get("model")
+        tokenizer = info.get("tokenizer")
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)  # unwrap processors
+        gen = getattr(model, "generation_config", None)
+        if model is None or tokenizer is None or gen is None:
+            return
+        repaired = _chat_eos_repair(
+            gen.eos_token_id,
+            getattr(tokenizer, "eos_token", None),
+            getattr(tokenizer, "eos_token_id", None),
+        )
+        if repaired is None:
+            return
+        previous = gen.eos_token_id
+        gen.eos_token_id = repaired
+        logger.info(
+            "Repaired generation_config.eos_token_id for %s: %s -> %s "
+            "(tokenizer turn-end %r was missing)",
+            model_name,
+            previous,
+            repaired,
+            tokenizer.eos_token,
+        )
 
     def load_model(
         self,
@@ -535,6 +592,7 @@ class InferenceBackend:
                 max_seq_length,
             )
 
+            self._repair_chat_eos_in_generation_config(model_name)
             self._load_chat_template_info(model_name)
 
             self.active_model_name = model_name

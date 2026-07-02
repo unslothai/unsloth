@@ -17,7 +17,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from core.inference.inference import _chat_turn_end_eos_ids  # noqa: E402
+from core.inference.inference import _chat_eos_repair, _chat_turn_end_eos_ids  # noqa: E402
 
 
 class _FakeTokenizer:
@@ -63,3 +63,32 @@ def test_unk_marker_is_not_added():
     # A marker that maps to unk (not really in vocab) must be ignored.
     tok = _FakeTokenizer(eos_id = 7, vocab = {"<|end|>": 0}, unk_token_id = 0)
     assert _chat_turn_end_eos_ids(tok) == [7]
+
+
+# _chat_eos_repair: load-time generation_config.eos_token_id repair for chat
+# models whose eos declares the turn-end but config points elsewhere (Qwen3.5).
+
+
+def test_repair_adds_turn_end_when_config_points_at_endoftext():
+    # Qwen3.5: generation_config eos = <|endoftext|> (248044), tokenizer turn-end
+    # = <|im_end|> (248046). Repaired to include both.
+    assert _chat_eos_repair(248044, "<|im_end|>", 248046) == [248044, 248046]
+
+
+def test_repair_from_missing_generation_config_eos():
+    # No generation_config eos at all -> just the turn-end id.
+    assert _chat_eos_repair(None, "<|im_end|>", 248046) == [248046]
+
+
+def test_repair_skips_base_model_endoftext_eos():
+    # Base model eos is a plain document terminator, not a turn-end marker.
+    assert _chat_eos_repair(248044, "<|endoftext|>", 248044) is None
+
+
+def test_repair_noop_when_turn_end_already_present():
+    assert _chat_eos_repair([248046, 248044], "<|im_end|>", 248046) is None
+
+
+def test_repair_skips_unrecognized_eos_token():
+    # </s> is not a ChatML-style turn-end marker; leave it alone.
+    assert _chat_eos_repair(2, "</s>", 2) is None
