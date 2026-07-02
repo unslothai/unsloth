@@ -468,6 +468,36 @@ def test_generate_img2img_unsupported_family_raises(fake_runtime, tmp_path, monk
         backend.generate(prompt = "x", steps = 4, init_image = _tiny_png_b64())
 
 
+def test_generate_rejects_conditioning_without_init_image(fake_runtime, tmp_path):
+    """mask / upscale / reference all need an input image; without one they must raise a
+    clear ValueError rather than silently degrading to txt2img."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    with pytest.raises(ValueError, match = "mask_image requires"):
+        backend.generate(prompt = "x", steps = 4, mask_image = _mask_b64(64))
+    with pytest.raises(ValueError, match = "upscale requires"):
+        backend.generate(prompt = "x", steps = 4, upscale = 2.0)
+    with pytest.raises(ValueError, match = "reference_images require"):
+        backend.generate(prompt = "x", steps = 4, reference_images = [_tiny_png_b64()])
+
+
+def test_generate_rejects_reference_on_unsupported_family(fake_runtime, tmp_path):
+    """A non-reference family rejects reference_images instead of silently dropping them."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    with pytest.raises(ValueError, match = "Reference images are not supported"):
+        backend.generate(
+            prompt = "x", steps = 4, init_image = _tiny_png_b64(),
+            reference_images = [_tiny_png_b64()],
+        )
+
+
 def test_generate_upscale_enlarges_and_low_strength(fake_runtime, tmp_path):
     """An init_image + upscale factor routes generate() through the family's img2img
     pipeline (hires fix): the source is enlarged to size*factor (rounded to /16) before the
