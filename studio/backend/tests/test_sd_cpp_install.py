@@ -377,6 +377,7 @@ def _stub_two_repos(monkeypatch, *, mirror_serves, upstream_serves, zip_bytes, d
         repo = None,
         token = None,
         timeout = 30.0,
+        allow_latest = True,
     ):
         r = repo or sdmod.DEFAULT_REPO
         if r == sdmod.DEFAULT_REPO:
@@ -430,3 +431,117 @@ def test_install_errors_when_neither_source_serves(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match = "No prebuilt sd-cli"):
         install(install_dir = tmp_path)
+
+
+# ── explicit GPU accelerator on a CPU-only mirror -> no CPU substitution ──────
+
+
+def test_mirror_windows_gpu_accel_is_no_match_not_cpu():
+    # The mirror ships only a CPU win zip. An explicit --accelerator cuda/vulkan/rocm must
+    # NOT silently resolve to that CPU build; it returns None so install() falls back to
+    # upstream, which does build the accelerated asset.
+    for accel in ("cuda", "vulkan", "rocm"):
+        assert _mresolve("Windows", "AMD64", accel) is None
+    # auto / cpu still resolve to the CPU build.
+    assert _mresolve("Windows", "AMD64", "cpu") == f"sd-{_TAG}-bin-win-cpu-x64.zip"
+
+
+def test_mirror_linux_gpu_accel_is_no_match_not_cpu():
+    for accel in ("cuda", "vulkan", "rocm"):
+        assert _mresolve("Linux", "x86_64", accel) is None
+    assert _mresolve("Linux", "x86_64", "cpu") == f"sd-{_TAG}-bin-Linux-Ubuntu-22.04-x86_64.zip"
+
+
+def test_upstream_full_matrix_still_resolves_gpu_accel():
+    # Regression guard: the "explicit GPU accel -> None on miss" change must not break
+    # the upstream matrix, which does publish the accelerated builds.
+    assert _resolve("Windows", "AMD64", "cuda") == "sd-master-8caa3f9-bin-win-cuda12-x64.zip"
+    assert _resolve("Linux", "x86_64", "vulkan").endswith("x86_64-vulkan.zip")
+    assert "rocm" in _resolve("Linux", "x86_64", "rocm")
+
+
+# ── explicit repo override suppresses the upstream fallback ───────────────────
+
+
+def test_explicit_repo_override_equal_to_default_suppresses_fallback(tmp_path, monkeypatch):
+    # A user who pins UNSLOTH_SD_CPP_REPO (even to the default value) must get exactly that
+    # repo -- no surprise leejet substitution -- so a missing release errors instead.
+    _stub_two_repos(
+        monkeypatch, mirror_serves = False, upstream_serves = True, zip_bytes = b"", digest = ""
+    )
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPO", sdmod.DEFAULT_REPO)
+    with pytest.raises(RuntimeError, match = "No prebuilt sd-cli"):
+        install(install_dir = tmp_path)
+
+
+# ── pinned tag missing on mirror -> pinned upstream before mirror latest ──────
+
+
+def test_pinned_tag_prefers_upstream_pin_over_mirror_latest(tmp_path, monkeypatch, capsys):
+    # The mirror lacks the pinned tag but has a newer latest; upstream has the pin. The
+    # pinned upstream build must win over the unpinned mirror-latest (reproducibility).
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-999-pinned")
+    zb = _zip_with_sd_cli()
+    digest = "sha256:" + hashlib.sha256(zb).hexdigest()
+
+    def _rel(name, tag):
+        return {
+            "tag_name": tag,
+            "assets": [
+                {
+                    "name": name,
+                    "browser_download_url": f"https://example.invalid/{name}",
+                    "digest": digest,
+                }
+            ],
+        }
+
+    mirror_latest = "sd-master-000-latest-bin-Linux-Ubuntu-22.04-x86_64.zip"
+    upstream_pinned = "sd-master-999-pinned-bin-Linux-Ubuntu-24.04-x86_64.zip"
+
+    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0, allow_latest = True):
+        r = repo or sdmod.DEFAULT_REPO
+        if r == sdmod.DEFAULT_REPO:
+            if tag == "master-999-pinned":  # mirror lacks the pin
+                if not allow_latest:
+                    return None
+                return _rel(mirror_latest, "master-000-latest")
+            return _rel(mirror_latest, "master-000-latest")
+        # upstream HAS the pin
+        if tag == "master-999-pinned":
+            return _rel(upstream_pinned, "master-999-pinned")
+        return _rel(upstream_pinned, "master-999-pinned")
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    monkeypatch.setattr(sdmod, "_download", lambda url, dest, **k: dest.write_bytes(zb))
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "x86_64")
+
+    install(install_dir = tmp_path)
+    out = capsys.readouterr().out
+    assert "source leejet/stable-diffusion.cpp release master-999-pinned" in out
+
+
+# ── --print-asset routes through the primary/upstream fallback ────────────────
+
+
+def test_print_asset_uses_upstream_fallback(monkeypatch, capsys):
+    # A host the mirror does not build (Linux Vulkan) must print the upstream asset that a
+    # real install would fetch, not "no matching prebuilt".
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+
+    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0, allow_latest = True):
+        r = repo or sdmod.DEFAULT_REPO
+        if r == sdmod.DEFAULT_REPO:
+            return {"tag_name": _TAG, "assets": [{"name": n} for n in _MIRROR_ASSETS]}
+        return {"tag_name": "master-8caa3f9", "assets": [{"name": n} for n in _ASSETS]}
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "x86_64")
+    rc = sdmod.main(["--print-asset", "--accelerator", "vulkan"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "vulkan" in out and "no matching prebuilt" not in out
