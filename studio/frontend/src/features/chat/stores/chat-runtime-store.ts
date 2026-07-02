@@ -50,6 +50,7 @@ const CHAT_STT_ENGINE_KEY = "unsloth_chat_stt_engine";
 const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
 const CHAT_MIC_DEVICE_ID_KEY = "unsloth_chat_mic_device_id";
 const CHAT_VOICE_PARALLEL_KEY = "unsloth_chat_voice_parallel";
+const CHAT_VOICE_VARIANT_KEY = "unsloth_chat_voice_variant";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -726,6 +727,9 @@ type ChatRuntimeStore = {
   /** llama-server --parallel slots for a GGUF voice slot: how many sentence
    *  chunks synthesize concurrently. 1-4. Persisted. */
   voiceParallelN: number;
+  /** GGUF quant variant for the selected GGUF voice (null = repo default).
+   *  Applied on next voice-slot load. Persisted. */
+  selectedVoiceVariant: string | null;
   /** True while the voice slot (TTS) is loading, so the orb can show a loading
    *  (lilac) state instead of appearing ready to listen. Not persisted. */
   voiceSlotLoading: boolean;
@@ -745,6 +749,7 @@ type ChatRuntimeStore = {
   setSelectedSttModelId: (id: string | null) => void;
   setSelectedMicDeviceId: (id: string | null) => void;
   setVoiceParallelN: (n: number) => void;
+  setSelectedVoiceVariant: (variant: string | null) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
   setVoiceOrbState: (
@@ -1171,6 +1176,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
   selectedMicDeviceId: loadString(CHAT_MIC_DEVICE_ID_KEY, "") || null,
   voiceParallelN: Math.min(4, Math.max(1, Number(loadString(CHAT_VOICE_PARALLEL_KEY, "1")) || 1)),
+  selectedVoiceVariant: loadString(CHAT_VOICE_VARIANT_KEY, "") || null,
   voiceSlotLoading: false,
   voiceTranscribing: false,
   voiceOrbState: null,
@@ -1243,6 +1249,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const voiceParallelN = Math.min(4, Math.max(1, Math.round(n) || 1));
       saveString(CHAT_VOICE_PARALLEL_KEY, String(voiceParallelN));
       return { voiceParallelN };
+    }),
+  setSelectedVoiceVariant: (selectedVoiceVariant) =>
+    set(() => {
+      saveString(CHAT_VOICE_VARIANT_KEY, selectedVoiceVariant ?? "");
+      return { selectedVoiceVariant };
     }),
   setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
   setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),

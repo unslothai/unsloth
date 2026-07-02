@@ -571,7 +571,7 @@ function ModelRow({
 
 // ── GGUF Variant Expander ────────────────────────────────────
 
-function GgufVariantExpander({
+export function GgufVariantExpander({
   repoId,
   onSelect,
   gpuGb,

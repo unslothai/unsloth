@@ -1394,6 +1394,7 @@ export function ChatPage({
           body: JSON.stringify({
             model_path: id,
             parallel: useChatRuntimeStore.getState().voiceParallelN,
+            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
           }),
         });
         if (!res.ok) {
@@ -1458,6 +1459,7 @@ export function ChatPage({
           body: JSON.stringify({
             model_path: id,
             parallel: useChatRuntimeStore.getState().voiceParallelN,
+            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
           }),
         });
         if (!res.ok && !cancelled) {

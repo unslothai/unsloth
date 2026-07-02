@@ -14,6 +14,7 @@ import { MicVocalIcon } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
+import { GgufVariantExpander } from "./model-selector/pickers";
 import { splitRepoLabel } from "./model-selector/row-meta";
 import type { LoraModelOption } from "./model-selector/types";
 
@@ -83,6 +84,11 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   className,
 }) => {
   const [open, setOpen] = useState(false);
+  // Which GGUF voice row is expanded to show its quant list.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const setSelectedVoiceVariant = useChatRuntimeStore(
+    (s) => s.setSelectedVoiceVariant,
+  );
 
   const selectedModel = value ? models.find((m) => m.id === value) : null;
   const displayName = selectedModel?.name ?? BROWSER_VOICE_LABEL;
@@ -97,8 +103,9 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
       ? "Model's own voice"
       : displayName;
 
-  const handleSelect = (id: string | null) => {
+  const handleSelect = (id: string | null, variant: string | null = null) => {
     setOpen(false);
+    setSelectedVoiceVariant(variant);
     onValueChange(id);
   };
 
@@ -199,36 +206,66 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
 
         {models.map((model) => {
           const { name } = splitRepoLabel(model.id);
+          const isExpanded = expandedId === model.id;
+          // GGUF voices expand to the same quant list as the model picker; clicking
+          // the row toggles the quants instead of loading the default. Non-GGUF
+          // voices (Qwen3-TTS safetensors) load directly on click.
           return (
-            <button
-              key={model.id}
-              type="button"
-              onClick={() => handleSelect(model.id)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
-                value === model.id && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+            <div key={model.id}>
+              <button
+                type="button"
+                onClick={() =>
+                  model.isGguf
+                    ? setExpandedId(isExpanded ? null : model.id)
+                    : handleSelect(model.id)
+                }
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+                  value === model.id && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                  {!model.source && model.isGguf && (
+                    <DotTag
+                      tone="gguf"
+                      label="GGUF"
+                      className="h-[18px] gap-1 rounded-md px-1.5"
+                      dotClassName="size-[5px]"
+                    />
+                  )}
+                  {value === model.id && (
+                    <DotTag
+                      tone="success"
+                      label="Active"
+                      className="h-[18px] gap-1 rounded-md px-1.5"
+                      dotClassName="size-[5px]"
+                    />
+                  )}
+                  {model.isGguf && (
+                    <HugeiconsIcon
+                      icon={ArrowDown01Icon}
+                      strokeWidth={2}
+                      className={cn(
+                        "size-3.5 text-muted-foreground transition-transform",
+                        isExpanded && "rotate-180",
+                      )}
+                    />
+                  )}
+                </span>
+              </button>
+              {model.isGguf && isExpanded && (
+                <div className="pl-2">
+                  <GgufVariantExpander
+                    repoId={model.id}
+                    onDevice
+                    onSelect={(id, meta) =>
+                      handleSelect(id, meta.ggufVariant ?? null)
+                    }
+                  />
+                </div>
               )}
-            >
-              <span className="min-w-0 flex-1 truncate">{name}</span>
-              <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                {!model.source && model.isGguf && (
-                  <DotTag
-                    tone="gguf"
-                    label="GGUF"
-                    className="h-[18px] gap-1 rounded-md px-1.5"
-                    dotClassName="size-[5px]"
-                  />
-                )}
-                {value === model.id && (
-                  <DotTag
-                    tone="success"
-                    label="Active"
-                    className="h-[18px] gap-1 rounded-md px-1.5"
-                    dotClassName="size-[5px]"
-                  />
-                )}
-              </span>
-            </button>
+            </div>
           );
         })}
 
