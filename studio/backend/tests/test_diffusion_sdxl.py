@@ -138,7 +138,7 @@ def test_align_vae_dtype_skips_gguf_packed_uint8_params():
 
     class _GgufDenoiser:
         def parameters(self):
-            yield types.SimpleNamespace(dtype = torch.uint8)   # packed GGUF block
+            yield types.SimpleNamespace(dtype = torch.uint8)  # packed GGUF block
             yield types.SimpleNamespace(dtype = torch.bfloat16)  # compute dtype
 
     vae = _FakeVae(dtype = torch.float32)
@@ -151,9 +151,7 @@ def test_align_vae_dtype_skips_gguf_packed_uint8_params():
             yield types.SimpleNamespace(dtype = torch.uint8)
 
     vae2 = _FakeVae(dtype = torch.float32)
-    DiffusionBackend._align_vae_dtype(
-        types.SimpleNamespace(transformer = _AllPacked(), vae = vae2)
-    )
+    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(transformer = _AllPacked(), vae = vae2))
     assert vae2.moved_to is None
 
 
