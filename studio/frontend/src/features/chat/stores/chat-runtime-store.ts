@@ -726,6 +726,9 @@ type ChatRuntimeStore = {
   /** llama-server --parallel slots for a GGUF voice slot: how many sentence
    *  chunks synthesize concurrently. 1-4. Persisted. */
   voiceParallelN: number;
+  /** True while the voice slot (TTS) is loading, so the orb can show a loading
+   *  (lilac) state instead of appearing ready to listen. Not persisted. */
+  voiceSlotLoading: boolean;
   /** Derived orb state written by VoiceToggle; consumed by VoiceOrb.
    *  "synthesizing" = TTS is generating audio but nothing is playing yet. */
   voiceOrbState: "listening" | "thinking" | "synthesizing" | "speaking" | null;
@@ -739,6 +742,7 @@ type ChatRuntimeStore = {
   setSelectedSttModelId: (id: string | null) => void;
   setSelectedMicDeviceId: (id: string | null) => void;
   setVoiceParallelN: (n: number) => void;
+  setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceOrbState: (
     state: "listening" | "thinking" | "synthesizing" | "speaking" | null,
   ) => void;
@@ -1163,6 +1167,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
   selectedMicDeviceId: loadString(CHAT_MIC_DEVICE_ID_KEY, "") || null,
   voiceParallelN: Math.min(4, Math.max(1, Number(loadString(CHAT_VOICE_PARALLEL_KEY, "1")) || 1)),
+  voiceSlotLoading: false,
   voiceOrbState: null,
   voiceOrbCollapsed: false,
   hydratePersistedSettings: async () => {
@@ -1234,6 +1239,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveString(CHAT_VOICE_PARALLEL_KEY, String(voiceParallelN));
       return { voiceParallelN };
     }),
+  setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),

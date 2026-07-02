@@ -1304,7 +1304,8 @@ export function ChatPage({
   const setSelectedVoiceModelId = useChatRuntimeStore(
     (s) => s.setSelectedVoiceModelId,
   );
-  const [voiceSlotLoading, setVoiceSlotLoading] = useState(false);
+  const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
+  const setVoiceSlotLoading = useChatRuntimeStore((s) => s.setVoiceSlotLoading);
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
   const [cachedQwenTtsModels, setCachedQwenTtsModels] = useState<LoraModelOption[]>([]);
   const [cachedWhisperModels, setCachedWhisperModels] = useState<LoraModelOption[]>([]);
