@@ -68,6 +68,7 @@ from models.training import (
     DiffusionDatasetSummary,
     DiffusionDatasetUploadResponse,
     DiffusionMetricHistory,
+    DiffusionTrainableFamily,
     DiffusionTrainingInfoResponse,
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
@@ -1132,6 +1133,39 @@ def _free_gpu_for_diffusion_training() -> None:
         logger.warning("Could not free chat models for diffusion training: %s", e)
 
 
+def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
+    """HEAD a remote base repo's model_index.json with the caller's token; raise HTTP 400 on
+    401/403 (gated / unauthorized) with an actionable message. Best-effort: a local path,
+    a non-repo string, or a network hiccup passes through so the trainer can surface any real
+    load error itself. Runs before GPU teardown so a doomed start never evicts a loaded model."""
+    import urllib.error
+    import urllib.request
+
+    repo = (base_model or "").strip()
+    # Only remote 'org/name' repos are gated; skip local paths and single-file names.
+    if not repo or repo.count("/") != 1 or repo.startswith((".", "/", "~")) or repo.endswith(".gguf"):
+        return
+    url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"
+    headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+    req = urllib.request.Request(url, method = "HEAD", headers = headers)
+    try:
+        urllib.request.urlopen(req, timeout = 5)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Access to '{repo}' is gated or unauthorized. Accept the model's license "
+                    f"on its Hugging Face page and add your HF token in Studio settings, then "
+                    f"try again."
+                ),
+            )
+        # 404 (e.g. a repo without a root model_index.json) and other codes are not an
+        # access problem -- let the trainer surface any genuine load error.
+    except Exception:  # noqa: BLE001 -- network/DNS hiccup must not block a start
+        return
+
+
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
     body: DiffusionTrainingStartRequest, current_subject: str = Depends(get_current_subject)
@@ -1176,8 +1210,13 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
+    # Preflight access to a gated base repo with the user's token BEFORE freeing GPU
+    # residents, so a missing/insufficient token fails fast (400) without tearing down the
+    # user's loaded chat/Images model, and never surfaces as a confusing mid-load 401.
+    _preflight_gated_base(config.get("base_model", ""), config.get("hf_token"))
+
     # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
-    # loads its own SDXL pipeline.
+    # loads its own pipeline.
     _free_gpu_for_diffusion_training()
 
     service = get_diffusion_training_service()
@@ -1266,8 +1305,14 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
                 continue
             if summary.image_count > 0:
                 found.append(summary)
+        from core.training.diffusion_train_common import family_train_infos
+
+        families = [DiffusionTrainableFamily(**info) for info in family_train_infos()]
         return DiffusionTrainingInfoResponse(
-            datasets_root = str(root), outputs_root = str(outputs_root()), datasets = found
+            datasets_root = str(root),
+            outputs_root = str(outputs_root()),
+            datasets = found,
+            families = families,
         )
 
     return await asyncio.to_thread(scan)

@@ -195,20 +195,29 @@ def test_config_rejects_nonpositive_learning_rate():
         ).normalized()
 
 
-def test_config_rejects_known_non_sdxl_base_models():
-    # Known DiT families and GGUF checkpoints must fail at normalise time (an instant
-    # 400 via the API) instead of minutes later inside from_pretrained.
+def test_config_rejects_untrainable_base_models():
+    # GGUF checkpoints and families without a trainer (Kontext editing, SD3) must fail at
+    # normalise time (an instant 400 via the API), not minutes later inside from_pretrained.
     for bad in (
         "unsloth/FLUX.1-dev-GGUF",
-        "black-forest-labs/FLUX.1-schnell",
-        "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
-        "Tongyi-MAI/Z-Image-Turbo",
+        "z-image-turbo-Q4_K_M.gguf",
         "stabilityai/stable-diffusion-3-medium",
         "unsloth/FLUX.1-Kontext-dev",
-        "z-image-turbo-Q4_K_M.gguf",
     ):
-        with pytest.raises(ValueError, match = "SDXL"):
+        with pytest.raises(ValueError):
             DiffusionLoraConfig(base_model = bad, data_dir = "d", output_dir = "o").normalized()
+
+
+def test_config_resolves_dit_families():
+    # FLUX.1 / Qwen-Image / Z-Image bases now resolve to their DiT trainer families.
+    for base, fam in (
+        ("black-forest-labs/FLUX.1-dev", "flux.1"),
+        ("black-forest-labs/FLUX.1-schnell", "flux.1"),
+        ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "qwen-image"),
+        ("Tongyi-MAI/Z-Image-Turbo", "z-image"),
+    ):
+        cfg = DiffusionLoraConfig(base_model = base, data_dir = "d", output_dir = "o").normalized()
+        assert cfg.resolved_family == fam
 
 
 def test_config_accepts_sdxl_and_unknown_base_models():
@@ -236,7 +245,15 @@ def test_get_trainer_unknown_family_raises():
     from core.training.diffusion_lora_trainer import get_trainer
 
     with pytest.raises(ValueError, match = "No trainer"):
-        get_trainer("flux.1")  # not registered until the DiT trainers ship
+        get_trainer("flux.2-dev")  # a real family with no registered trainer
+
+
+def test_get_trainer_resolves_dit_families():
+    from core.training.diffusion_dit_trainer import run_dit_lora_training
+    from core.training.diffusion_lora_trainer import get_trainer
+
+    for fam in ("flux.1", "qwen-image", "z-image"):
+        assert get_trainer(fam) is run_dit_lora_training
 
 
 def test_normalized_sets_resolved_family():
@@ -254,9 +271,16 @@ def test_explicit_model_family_validated():
     # A bogus explicit family is rejected up front.
     with pytest.raises(ValueError, match = "Unknown model_family"):
         C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "not-a-family").normalized()
-    # A known-but-not-yet-trainable family is rejected with the SDXL hint.
-    with pytest.raises(ValueError, match = "SDXL"):
-        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "flux.1").normalized()
+    # A known-but-not-trainable family (Kontext editing) is rejected with a helpful hint.
+    with pytest.raises(ValueError):
+        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "flux.1-kontext").normalized()
+    # A DiT family that IS trainable resolves to itself.
+    assert (
+        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "flux.1")
+        .normalized()
+        .resolved_family
+        == "flux.1"
+    )
     # SDXL explicit passes.
     assert (
         C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "sdxl")

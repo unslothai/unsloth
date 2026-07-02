@@ -554,3 +554,55 @@ def test_status_route_nests_metric_history(client):
     assert body["metric_history"]["loss"] == [0.5, 0.4]
     assert body["family"] == "sdxl"
     assert body["samples_per_second"] == 2.0
+
+
+# ── /diffusion/info families + gated-repo preflight (PR B) ──────────────────────
+def test_info_lists_trainable_families(client):
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    families = {f["name"]: f for f in r.json()["families"]}
+    for fam in ("sdxl", "flux.1", "qwen-image", "z-image"):
+        assert fam in families
+    assert families["flux.1"]["default_base"] == "black-forest-labs/FLUX.1-dev"
+    assert families["z-image"]["defaults"]["resolution"] == 768
+
+
+def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatch):
+    # A gated FLUX base with no valid token must 400 from the HEAD preflight BEFORE the GPU
+    # residents are freed, so a doomed start never evicts the user's loaded model.
+    import urllib.error
+    import urllib.request
+
+    import routes.training as tr
+
+    freed: list[int] = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+
+    def _fake_urlopen(req, timeout = None):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+    )
+    assert r.status_code == 400
+    assert "gated" in r.json()["detail"].lower()
+    assert freed == []
+    assert client._fake.started_with is None
+
+
+def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
+    # A reachable base (HEAD 200) proceeds to start normally.
+    import urllib.request
+
+    import routes.training as tr
+
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+    )
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["base_model"] == "black-forest-labs/FLUX.1-dev"
