@@ -11,9 +11,7 @@ def _load_formatter_builders():
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter"}
     funcs = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     namespace = {"re": re}
     module = ast.Module(body = funcs, type_ignores = [])
