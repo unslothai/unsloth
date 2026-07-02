@@ -65,23 +65,13 @@ export const VoiceOrb: FC = () => {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [showOverlay, setVoiceOrbCollapsed]);
 
-  // Focus containment: the overlay hides the chat/sidebar visually but they stay
-  // in the DOM and keyboard-focusable, so Tab lands on them and pops their
-  // tooltips over the orb. Start focus on the close button and bounce any focus
-  // that escapes to hidden UI back to it; the composer dock (z-40) stays
-  // reachable so you can still type.
+  // On open, move focus to the close button so keyboard focus starts inside the
+  // overlay. (We deliberately do NOT trap focus with a focusin listener: bouncing
+  // focus fought other focus managers, e.g. Radix tooltips, and could spin into a
+  // focus war that lagged the whole UI.)
   useEffect(() => {
     if (!showOverlay) return;
     closeRef.current?.focus();
-    const onFocusIn = (e: FocusEvent) => {
-      const t = e.target;
-      if (!(t instanceof HTMLElement)) return;
-      if (overlayRef.current?.contains(t)) return;
-      if (t.closest(".aui-thread-composer-dock")) return;
-      closeRef.current?.focus();
-    };
-    document.addEventListener("focusin", onFocusIn);
-    return () => document.removeEventListener("focusin", onFocusIn);
   }, [showOverlay]);
 
   return (
