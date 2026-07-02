@@ -191,10 +191,13 @@ def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
 # no unsloth-hosted GGUF, so without this its curated catalog entry could not load.
 # Exact-match, lowercased, so it cannot be widened by a typo-squat. Extend
 # deliberately, and never add a repo that carries pickled weights or remote code.
+# The SDXL refiner is intentionally NOT here: it is an img2img-only refiner pipeline
+# (StableDiffusionXLImg2ImgPipeline), but this backend loads every ``sdxl`` repo as the
+# base txt2img StableDiffusionXLPipeline and advertises txt2img, so allowlisting the
+# refiner would surface the wrong workflow and call it without its required input image.
 _TRUSTED_NON_GGUF_REPOS = frozenset(
     {
         "stabilityai/stable-diffusion-xl-base-1.0",
-        "stabilityai/stable-diffusion-xl-refiner-1.0",
         "stabilityai/sdxl-turbo",
     }
 )
@@ -434,6 +437,16 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
+        # A GGUF load builds a transformer-only file via the generic GGUF branch
+        # (UNet2DConditionModel.from_single_file(subfolder="transformer", GGUFQuantizationConfig)).
+        # Families whose single file IS the whole pipeline (SDXL) have no transformer-only
+        # GGUF path, so reject GGUF here -- before the route evicts the current model and
+        # the background load fails deep in from_single_file.
+        if kind == "gguf" and fam.single_file_is_pipeline:
+            raise ValueError(
+                f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
+                f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+            )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
         # weights, so an arbitrary remote repo is rejected here, before any work.
@@ -568,6 +581,7 @@ class DiffusionBackend:
                 base,
                 kwargs.get("hf_token"),
                 kind = kind,
+                single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
             )
             with self._lock:
                 # Stamp progress only if this load is still current; a superseding
@@ -634,6 +648,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         *,
         kind: str = "gguf",
+        single_file_is_pipeline: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
@@ -641,7 +656,9 @@ class DiffusionBackend:
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
         single-file paths, where the transformer is the single file and the base repo
-        supplies only the companions."""
+        supplies only the companions. For a ``single_file_is_pipeline`` family (SDXL) the
+        single file is the WHOLE pipeline, so the base repo supplies only config/tokenizer
+        (no weights) and its weight files are skipped."""
         from huggingface_hub import HfApi
 
         api = HfApi()
@@ -671,9 +688,16 @@ class DiffusionBackend:
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
+            # A whole-pipeline single file (SDXL) needs only the base repo's config/tokenizer,
+            # not its (unused, multi-GB) weight files.
+            base_filter = (
+                _base_config_file_downloaded
+                if (kind == "single_file" and single_file_is_pipeline)
+                else _base_file_downloaded
+            )
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             for s in base_info.siblings:
-                if _base_file_downloaded(s.rfilename):
+                if base_filter(s.rfilename):
                     base_files.append(s.rfilename)
                     total += s.size or 0
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
@@ -719,6 +743,13 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
+        # A blank / whitespace-only token must degrade to anonymous access, not be passed
+        # as an explicit credential (from_single_file / from_pretrained / the Hub client
+        # can error on a malformed token instead of falling back). Normalize once here so
+        # every load branch and the size estimate below use a real token or None.
+        hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
+        hf_token = hf_token or None
+
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
         # family fails with ValueError even in a no-diffusers runtime.
         fam = self.validate_load_request(
@@ -1288,7 +1319,10 @@ class DiffusionBackend:
         if denoiser is None or vae is None:
             return
         try:
-            target_dtype = denoiser.dtype
+            # Read the dtype from a parameter (not denoiser.dtype): a plain nn.Module has no
+            # .dtype, and a torch.compile'd/ wrapped denoiser can obscure it; this also
+            # matches how the VAE dtype is read on the next line.
+            target_dtype = next(denoiser.parameters()).dtype
             if next(vae.parameters()).dtype != target_dtype:
                 vae.to(dtype = target_dtype)
         except (StopIteration, AttributeError, RuntimeError):
@@ -1556,9 +1590,8 @@ class DiffusionBackend:
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
-                    self._align_vae_dtype(
-                        pipe, getattr(state.family, "denoiser_attr", "transformer")
-                    )
+                    # state.family is always a DiffusionFamily, which defines denoiser_attr.
+                    self._align_vae_dtype(pipe, state.family.denoiser_attr)
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the
                 # input image and may reject width/height; a distilled pipe may take no
@@ -1874,6 +1907,33 @@ def _base_file_downloaded(rfilename: str) -> bool:
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
     return not rfilename.startswith("assets/")
+
+
+# Weight file extensions the base repo need NOT supply when the single file is the whole
+# pipeline (SDXL): from_single_file(config=base) reads only the base repo's structure
+# (config/tokenizer/scheduler) and takes the weights from the single file.
+_BASE_WEIGHT_EXTS = (
+    ".safetensors",
+    ".bin",
+    ".ckpt",
+    ".pt",
+    ".pth",
+    ".gguf",
+    ".onnx",
+    ".onnx_data",
+    ".msgpack",
+    ".h5",
+    ".pb",
+)
+
+
+def _base_config_file_downloaded(rfilename: str) -> bool:
+    """True for base-repo files needed to BUILD a pipeline structure around a whole-pipeline
+    single file WITHOUT its weights: config / tokenizer / scheduler JSON, but no weight
+    tensors (the single file supplies those). Used for ``single_file_is_pipeline`` families."""
+    if not _base_file_downloaded(rfilename):
+        return False
+    return not rfilename.lower().endswith(_BASE_WEIGHT_EXTS)
 
 
 def _pipeline_file_downloaded(rfilename: str) -> bool:
