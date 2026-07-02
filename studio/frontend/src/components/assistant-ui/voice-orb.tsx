@@ -4,7 +4,7 @@
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
-import { useEffect, type FC } from "react";
+import { useEffect, useRef, type FC } from "react";
 
 export const orbConfig = {
   listening: {
@@ -44,6 +44,8 @@ export const VoiceOrb: FC = () => {
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const showOverlay = Boolean(orbState) && !collapsed;
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   const cfg = orbState ? orbConfig[orbState] : null;
 
@@ -63,6 +65,25 @@ export const VoiceOrb: FC = () => {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [showOverlay, setVoiceOrbCollapsed]);
 
+  // Focus containment: the overlay hides the chat/sidebar visually but they stay
+  // in the DOM and keyboard-focusable, so Tab lands on them and pops their
+  // tooltips over the orb. Start focus on the close button and bounce any focus
+  // that escapes to hidden UI back to it; the composer dock (z-40) stays
+  // reachable so you can still type.
+  useEffect(() => {
+    if (!showOverlay) return;
+    closeRef.current?.focus();
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (overlayRef.current?.contains(t)) return;
+      if (t.closest(".aui-thread-composer-dock")) return;
+      closeRef.current?.focus();
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [showOverlay]);
+
   return (
     <>
       <style>{`
@@ -81,6 +102,7 @@ export const VoiceOrb: FC = () => {
       `}</style>
 
       <div
+        ref={overlayRef}
         className={cn(
           // When active, the backdrop must intercept pointer events so hovers
           // don't fall through to hidden chat history underneath (tooltips,
@@ -97,6 +119,7 @@ export const VoiceOrb: FC = () => {
       >
         {showOverlay && (
           <button
+            ref={closeRef}
             type="button"
             onClick={() => setVoiceOrbCollapsed(true)}
             aria-label="Back to chat"
