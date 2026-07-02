@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { requestVoiceResume } from "@/components/assistant-ui/thread";
+import { useChatRuntimeStore } from "@/features/chat";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 
@@ -208,8 +209,16 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
 
     void (async () => {
       try {
+        // Honor the voice-loop mic picker (shared with the Whisper adapter) so
+        // browser voice also listens only to the chosen input device, not a
+        // loopback / default-communications device. null -> browser default.
+        const micDeviceId = useChatRuntimeStore.getState().selectedMicDeviceId;
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
+          },
         });
         if (ended) {
           stopStream(stream);
