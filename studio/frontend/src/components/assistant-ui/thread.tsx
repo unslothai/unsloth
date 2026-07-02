@@ -2734,10 +2734,34 @@ const VoiceEngine: FC = () => {
     attempt(1);
   }, []);
 
-  const { isSpeaking, isPlaying, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
+  const { isSpeaking, isPlaying, beginStream, feedText, endStream, stop, primeAudio } =
+    useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
   isSpeakingRef.current = isSpeaking;
-  const speakRef = useRef(speak);
-  speakRef.current = speak;
+  // Streaming TTS handles (refs so the run-lifecycle effect never goes stale).
+  const beginStreamRef = useRef(beginStream);
+  beginStreamRef.current = beginStream;
+  const feedTextRef = useRef(feedText);
+  feedTextRef.current = feedText;
+  const endStreamRef = useRef(endStream);
+  endStreamRef.current = endStream;
+  // Interval that feeds the growing assistant reply into the TTS stream.
+  const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Latest assistant reply text (concatenated text parts of the newest assistant
+  // message). Used both to stream during generation and to flush on completion.
+  const latestAssistantText = useCallback((): string => {
+    const messages = auiRef.current.thread().getState().messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "assistant") continue;
+      let text = "";
+      for (const part of msg.content as Array<{ type: string; text?: string }>) {
+        if (part.type === "text" && part.text) text += part.text;
+      }
+      return text;
+    }
+    return "";
+  }, []);
 
   // Submit a batch-STT (Whisper) transcript. The adapter has already committed
   // the final transcript into the composer via its onSpeech(isFinal) callback,
@@ -2819,7 +2843,8 @@ const VoiceEngine: FC = () => {
     }
   }, [storeVoiceMode, activateLoop]);
 
-  // Run lifecycle: stop dictation when model starts; speak + resume mic when done.
+  // Run lifecycle: while the model streams, synthesize each finished sentence so
+  // the first plays fast; on completion flush the rest and re-arm the mic.
   useEffect(() => {
     if (isThreadRunning) {
       _prevRunning = true;
@@ -2830,36 +2855,36 @@ const VoiceEngine: FC = () => {
         }
         const composer = auiRef.current.composer();
         if (composer.getState().dictation) composer.stopDictation();
+        // Begin streaming TTS and feed the reply as it generates so audio starts
+        // on the first complete sentence, not after the whole reply.
+        beginStreamRef.current();
+        if (streamPollRef.current) clearInterval(streamPollRef.current);
+        streamPollRef.current = setInterval(() => {
+          feedTextRef.current(latestAssistantText());
+        }, 150);
       }
       return;
     }
     if (!_prevRunning) return;
     _prevRunning = false;
 
-    if (voiceModeRef.current !== "active") return;
-    // Note: no isSpeaking guard here. If a stale utterance is still speaking
-    // (or a slow synth is still in flight) when a newer reply lands, the newest
-    // reply wins — speak() below supersedes the old one via stop(). Skipping
-    // instead would silently drop the new reply and dead-end the voice loop.
-
-    const messages = auiRef.current.thread().getState().messages;
-    let text = "";
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role !== "assistant") continue;
-      for (const part of msg.content as Array<{
-        type: string;
-        text?: string;
-      }>) {
-        if (part.type === "text" && part.text) text += part.text;
-      }
-      break;
+    if (streamPollRef.current) {
+      clearInterval(streamPollRef.current);
+      streamPollRef.current = null;
     }
+    if (voiceModeRef.current !== "active") return;
+    // Note: no isSpeaking guard here. If a stale utterance is still speaking when
+    // a newer reply lands, the newest wins — beginStream above supersedes via
+    // stop(). Skipping would silently drop the reply and dead-end the loop.
+
+    const text = latestAssistantText();
     if (!text) {
       resumeListen();
       return;
     }
-    speakRef.current(text);
+    // Flush the remaining sentences (incl. the trailing one) and finish; the
+    // stream's consumer calls resumeListen when playback drains.
+    endStreamRef.current(text);
     // Arm the mic DURING TTS so barge-in works for both engines. Whisper barges
     // via its real-time VAD (requestVoiceBargeIn) which needs a live mic session
     // while the model speaks. The just-ended turn's dictation can read as "set"
@@ -2876,7 +2901,7 @@ const VoiceEngine: FC = () => {
         ?.click();
     };
     armDuringTts(0);
-  }, [isThreadRunning, resumeListen]);
+  }, [isThreadRunning, resumeListen, latestAssistantText]);
 
   // Silence timer: only fires in "active" state. Streaming STT only — Whisper
   // (batch) has no interim transcript for this to watch and detects end-of-
@@ -2993,6 +3018,7 @@ const VoiceEngine: FC = () => {
     return () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (bargeTimerRef.current) clearTimeout(bargeTimerRef.current);
+      if (streamPollRef.current) clearInterval(streamPollRef.current);
     };
   }, []);
 

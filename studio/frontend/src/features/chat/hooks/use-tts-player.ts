@@ -25,6 +25,19 @@ export function splitIntoSentences(text: string): string[] {
   return out;
 }
 
+// For streaming: while the LLM is still writing, only fully-terminated sentences
+// are safe to synthesize; the trailing chunk is the sentence in progress.
+export function splitStreaming(text: string): {
+  complete: string[];
+  partial: string;
+} {
+  const parts = splitIntoSentences(text);
+  if (parts.length === 0) return { complete: [], partial: "" };
+  // If the text already ends with terminal punctuation, everything is complete.
+  if (/[.!?]["')\]]?\s*$/.test(text)) return { complete: parts, partial: "" };
+  return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
+}
+
 export function useTtsPlayer(
   audioType: string | null | undefined,
   onPlaybackEnd?: () => void,
@@ -34,6 +47,11 @@ export function useTtsPlayer(
   /** True only while an audio clip is actually playing (not during synthesis). */
   isPlaying: boolean;
   speak(text: string): void;
+  /** Streaming: start a session, feed growing text, then end. Synthesizes each
+   *  complete sentence as it arrives so the first one plays fast. */
+  beginStream(): void;
+  feedText(text: string): void;
+  endStream(finalText: string): void;
   stop(): void;
   primeAudio(): void;
 } {
@@ -53,6 +71,16 @@ export function useTtsPlayer(
   const playResolveRef = useRef<(() => void) | null>(null);
   const onPlaybackEndRef = useRef(onPlaybackEnd);
   onPlaybackEndRef.current = onPlaybackEnd;
+
+  // Streaming session state: synth jobs per sentence index, how many produced,
+  // which is playing, and whether the LLM has finished.
+  const streamRef = useRef<{
+    reqId: number;
+    jobs: Array<Promise<Blob | null>>;
+    produced: number;
+    playIndex: number;
+    final: boolean;
+  } | null>(null);
 
   const isTtsModel = TTS_AUDIO_TYPES.has(audioType ?? "") || voiceSlotLoaded;
 
@@ -240,6 +268,91 @@ export function useTtsPlayer(
     [isTtsModel, stop, playBlob],
   );
 
+  // ── Streaming TTS ───────────────────────────────────────────────
+  // POST one sentence to /api/audio/speech; null on failure.
+  const synthOne = useCallback((sentence: string): Promise<Blob | null> => {
+    return authFetch("/api/audio/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: sentence, voice: "default" }),
+    })
+      .then((r) => (r.ok ? r.blob() : null))
+      .catch(() => null);
+  }, []);
+
+  // Start a streaming session. Sentences fed via feedText are synthesized as they
+  // arrive and played strictly in order, so the first sentence plays without
+  // waiting for the whole reply. Browser voice has no server synth, so it just
+  // waits for endStream and speaks the whole thing.
+  const beginStream = useCallback(() => {
+    stop();
+    const reqId = requestIdRef.current;
+    streamRef.current = { reqId, jobs: [], produced: 0, playIndex: 0, final: false };
+    if (!isTtsModel) return;
+    setIsSpeaking(true);
+    void (async () => {
+      while (true) {
+        if (requestIdRef.current !== reqId) return;
+        const st = streamRef.current;
+        if (!st || st.reqId !== reqId) return;
+        if (st.playIndex < st.produced) {
+          const blob = await st.jobs[st.playIndex];
+          if (requestIdRef.current !== reqId) return;
+          st.playIndex++;
+          if (blob) await playBlob(blob, reqId);
+        } else if (st.final) {
+          break;
+        } else {
+          await new Promise<void>((r) => setTimeout(r, 40));
+        }
+      }
+      if (requestIdRef.current !== reqId) return;
+      setIsSpeaking(false);
+      streamRef.current = null;
+      onPlaybackEndRef.current?.();
+    })();
+  }, [stop, isTtsModel, playBlob]);
+
+  // Feed the growing assistant text; synthesizes any newly-complete sentences.
+  const feedText = useCallback(
+    (text: string) => {
+      const s = streamRef.current;
+      if (!s || requestIdRef.current !== s.reqId || !isTtsModel) return;
+      const { complete } = splitStreaming(text);
+      while (s.produced < complete.length) {
+        s.jobs[s.produced] = synthOne(complete[s.produced] ?? "");
+        s.produced++;
+      }
+    },
+    [isTtsModel, synthOne],
+  );
+
+  // Finish the session: flush the final (incl. trailing) sentences, mark done.
+  const endStream = useCallback(
+    (finalText: string) => {
+      const s = streamRef.current;
+      if (!s || requestIdRef.current !== s.reqId) return;
+      if (!isTtsModel) {
+        // Browser voice: nothing streamed; speak the whole reply now.
+        streamRef.current = null;
+        speak(finalText);
+        return;
+      }
+      const all = splitIntoSentences(finalText);
+      while (s.produced < all.length) {
+        s.jobs[s.produced] = synthOne(all[s.produced] ?? "");
+        s.produced++;
+      }
+      s.final = true;
+      if (s.produced === 0) {
+        streamRef.current = null;
+        setIsSpeaking(false);
+        onPlaybackEndRef.current?.();
+      }
+    },
+    [isTtsModel, synthOne, speak],
+  );
+
   useEffect(() => {
     return () => {
       requestIdRef.current += 1;
@@ -248,5 +361,5 @@ export function useTtsPlayer(
     };
   }, [stopTts, stopSynth]);
 
-  return { isSpeaking, isPlaying, speak, stop, primeAudio };
+  return { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio };
 }
