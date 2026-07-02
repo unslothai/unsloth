@@ -1471,13 +1471,19 @@ class DiffusionBackend:
         if denoiser is None or vae is None:
             return
         try:
-            # Read the dtype from a parameter (not denoiser.dtype): a plain nn.Module has no
-            # .dtype, and a torch.compile'd/ wrapped denoiser can obscure it; this also
-            # matches how the VAE dtype is read on the next line.
-            target_dtype = next(denoiser.parameters()).dtype
+            # Read the dtype from the parameters (not denoiser.dtype): a plain nn.Module
+            # has no .dtype, and a torch.compile'd / wrapped denoiser can obscure it. Take
+            # the first FLOATING dtype: a GGUF-quantized transformer's leading params are
+            # packed uint8 storage, and nn.Module.to() rejects integer dtypes outright.
+            target_dtype = next(
+                (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
+                None,
+            )
+            if target_dtype is None:
+                return
             if next(vae.parameters()).dtype != target_dtype:
                 vae.to(dtype = target_dtype)
-        except (StopIteration, AttributeError, RuntimeError):
+        except (StopIteration, AttributeError, RuntimeError, TypeError):
             pass
 
     def _apply_loras(
