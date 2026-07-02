@@ -1,0 +1,9 @@
+- Decision: hook feedback says task is not fully satisfied because best-vs-best ComfyUI fp8 coverage is incomplete for all tested model families.
+- Decision: confirmed completed items include `sd.cpp` GPU support, CUDA build for `sm_100`, working CPU/GPU paths, sd.cpp vs diffusers comparisons, diffusers+opts beating ComfyUI for tested best-vs-best cases, and LPIPS accuracy staying within the 25% rule with no 50% loss.
+- Decision: performance conclusions preserved: optimized diffusers is `1.9-3.4x` faster on GPU than optimized `sd.cpp`; `sd.cpp` is `1.6-2.8x` faster on CPU; diffusers+opts beats ComfyUI best-vs-best `1.9-3.4x` on GPU for FLUX.1 and Qwen.
+- Pending gap: `test as many models as possible` remains incomplete; only 2 of 4 model families have full best-vs-best ComfyUI fp8 comparisons: `FLUX.1` and `Qwen-Image`.
+- Pending gap: `Z-Image` and `FLUX.2-klein` currently have only ComfyUI GGUF comparison numbers, not ComfyUI fp8 best numbers.
+- Verbatim unresolved statement to preserve: `For Z-Image and FLUX.2-klein I only have the ComfyUI **GGUF** numbers so far (2.51s, 1.01s) vs our 0.51s/0.27s — I can fetch their fp8 single-files and rerun those two best-vs-best to fully close it.`
+- Key output: ComfyUI GGUF numbers for `Z-Image` and `FLUX.2-klein` are `2.51s` and `1.01s`; current “our” numbers are `0.51s/0.27s`.
+- Completed: most sd.cpp/diffusers optimization, CPU/GPU, performance, and accuracy validation work.
+- Pending: fetch fp8 single-files for `Z-Image` and `FLUX.2-klein`, rerun ComfyUI fp8 best-vs-best, compare against optimized diffusers/sd.cpp, and update final conclusion.

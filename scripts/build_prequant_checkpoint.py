@@ -55,8 +55,10 @@ def main(argv = None) -> int:
 
     # Reuse the runtime quant factory + filter so offline == runtime (the LPIPS-0 invariant).
     from core.inference.diffusion_transformer_quant import (
+        TQ_FP8,
         TQ_SCHEMES,
         _make_quant_config,
+        _resolve_fast_accum,
         exclude_tokens_for_scheme,
         make_filter_fn,
     )
@@ -83,12 +85,14 @@ def main(argv = None) -> int:
     # skip the M=1 AdaLN-modulation / conditioning-embedder projections, else the saved checkpoint
     # bakes them as int8 and crashes (torch._int_mm needs M>16) at the first denoise step on
     # Flux / Qwen. fp8 / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns ().
+    exclude_name_tokens = exclude_tokens_for_scheme(scheme)
+    # fp8 bakes the accumulate mode into the saved kernels; record the resolved choice so the
+    # loader can refuse a checkpoint whose baked value contradicts an explicit runtime request.
+    fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
     quantize_(
         transformer,
         _make_quant_config(scheme),
-        filter_fn = make_filter_fn(
-            args.min_features, exclude_name_tokens = exclude_tokens_for_scheme(scheme)
-        ),
+        filter_fn = make_filter_fn(args.min_features, exclude_name_tokens = exclude_name_tokens),
     )
 
     # Move the state dict to CPU for a portable, GPU-free artifact.
@@ -103,6 +107,11 @@ def main(argv = None) -> int:
             "family": fam.name,
             "scheme": scheme,
             "min_features": args.min_features,
+            # The layers skipped for this scheme (int8's M=1 modulation projections; () for
+            # the scaled_mm schemes) and, for fp8, the baked accumulate mode. Both let the
+            # loader reject a checkpoint that would not match the runtime path.
+            "exclude_name_tokens": list(exclude_name_tokens),
+            "fast_accum": fast_accum,
             "torch_dtype": args.dtype,
             "quant_backend": "torchao",
             "transformer_class": fam.transformer_class,
