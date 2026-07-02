@@ -45,15 +45,27 @@ _MAX_SIGNAL_LEN = max(len(s) for s in TOOL_XML_SIGNALS)
 _MAX_HOLD_CHARS = 64 * 1024
 
 
-def heal_gate(auto_heal: Optional[bool], tools: Optional[list]) -> Optional[set]:
+def heal_gate(
+    auto_heal: Optional[bool],
+    tools: Optional[list],
+    tool_choice: Any = None,
+) -> Optional[set]:
     """Return the declared client-tool name set when healing applies, else None.
 
     ``tools`` is the OpenAI-shaped list forwarded to llama-server
     (``[{"type": "function", "function": {"name": ...}}, ...]``). The name set
     doubles as the promotion allowlist so healed calls can never invent a tool
     the client did not declare.
+
+    ``tool_choice`` (OpenAI shape) constrains the allowlist so healing never
+    contradicts the request: ``"none"`` forbids tool calls outright (text-form
+    markup stays text), and a forced ``{"type": "function", "function":
+    {"name": N}}`` narrows promotion to that one function. ``"auto"`` /
+    ``"required"`` / absent keep the full declared set.
     """
     if _HEALING_DISABLED or auto_heal is False:
+        return None
+    if tool_choice == "none":
         return None
     names = set()
     for tool in tools or []:
@@ -62,6 +74,11 @@ def heal_gate(auto_heal: Optional[bool], tools: Optional[list]) -> Optional[set]
         function = tool.get("function")
         if isinstance(function, dict) and isinstance(function.get("name"), str):
             names.add(function["name"])
+    if isinstance(tool_choice, dict):
+        function = tool_choice.get("function")
+        forced = function.get("name") if isinstance(function, dict) else None
+        if isinstance(forced, str):
+            names &= {forced}
     return names or None
 
 

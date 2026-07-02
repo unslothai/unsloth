@@ -8304,7 +8304,9 @@ async def _responses_stream(
         # Text-form tool calls promoted back to structured calls (declared
         # client tools only); dormant once grammar-mode structured deltas appear.
         _allowed_tools = heal_gate(
-            getattr(chat_req, "auto_heal_tool_calls", None), body.get("tools")
+            getattr(chat_req, "auto_heal_tool_calls", None),
+            body.get("tools"),
+            body.get("tool_choice"),
         )
         healer = StreamToolCallHealer(_allowed_tools) if _allowed_tools else None
         healed_tc_index = 0
@@ -8473,6 +8475,41 @@ async def _responses_stream(
                     },
                 ),
             ]
+
+        def _healed_event_sse(events) -> list[str]:
+            """Serialize healer events preserving their order.
+
+            Text around a healed call must keep its position relative to the
+            function_call item (output indexes are claimed in emission order),
+            so never split an event list into all-text-then-all-calls.
+            """
+            nonlocal full_text
+            out: list[str] = []
+            for kind, value in events:
+                if kind == "text":
+                    if not value:
+                        continue
+                    out.extend(_ensure_message_open())
+                    full_text += value
+                    api_monitor.append_reply(monitor_id, value)
+                    out.append(
+                        _sse(
+                            "response.output_text.delta",
+                            {
+                                "type": "response.output_text.delta",
+                                "item_id": message_state["item_id"],
+                                "output_index": message_state["output_index"],
+                                "content_index": 0,
+                                "delta": value,
+                            },
+                        )
+                    )
+                else:
+                    tc = _healed_tc(value)
+                    if tc is None:
+                        continue
+                    out.extend(_tool_call_delta_events(tc))
+            return out
 
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
@@ -8688,19 +8725,23 @@ async def _responses_stream(
                     )
                 # Heal text-form tool calls in the visible stream (never in
                 # reasoning text): promoted calls join the structured tc loop
-                # below through the same state machinery. Once a structured
-                # delta arrives, grammar mode worked and the healer goes dormant.
-                healed_calls: list = []
+                # below through the same state machinery, and healer events are
+                # emitted IN ORDER so text after a healed call never jumps ahead
+                # of the function_call item. Once a structured delta arrives,
+                # grammar mode worked and the healer goes dormant.
                 if healer is not None and not healer.dormant:
+                    healed_events = []
                     if delta.get("tool_calls"):
-                        held = healer.structured_tool_call_seen()
-                        visible_delta = (
-                            "".join(t for kind, t in held if kind == "text") + visible_delta
-                        )
+                        # Held text preceded the structured call; the call's own
+                        # deltas follow in the structured loop below.
+                        healed_events = healer.structured_tool_call_seen()
+                        if visible_delta:
+                            healed_events.append(("text", visible_delta))
                     elif visible_delta:
-                        events = healer.feed(visible_delta)
-                        visible_delta = "".join(t for kind, t in events if kind == "text")
-                        healed_calls = [v for kind, v in events if kind == "tool_call"]
+                        healed_events = healer.feed(visible_delta)
+                    visible_delta = ""
+                    for event in _healed_event_sse(healed_events):
+                        yield event
                 if visible_delta:
                     for event in _ensure_message_open():
                         yield event
@@ -8717,12 +8758,7 @@ async def _responses_stream(
                         },
                     )
 
-                for tc in [
-                    *(delta.get("tool_calls") or []),
-                    *(_healed_tc(call) for call in healed_calls),
-                ]:
-                    if tc is None:
-                        continue
+                for tc in delta.get("tool_calls") or []:
                     for event in _tool_call_delta_events(tc):
                         yield event
 
@@ -8781,12 +8817,13 @@ async def _responses_stream(
                 },
             )
         # Last-chance heal of any held residue (e.g. a tool block the model
-        # never closed) before the trailing visible text is flushed.
-        healed_final_calls: list = []
+        # never closed) before the trailing visible text is flushed; events
+        # keep healer order so trailing text stays behind a healed call.
         if healer is not None:
             events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
-            final_visible = "".join(t for kind, t in events if kind == "text")
-            healed_final_calls = [v for kind, v in events if kind == "tool_call"]
+            final_visible = ""
+            for event in _healed_event_sse(events):
+                yield event
         if final_visible:
             for event in _ensure_message_open():
                 yield event
@@ -8802,12 +8839,6 @@ async def _responses_stream(
                     "delta": final_visible,
                 },
             )
-        for call in healed_final_calls:
-            tc = _healed_tc(call)
-            if tc is None:
-                continue
-            for event in _tool_call_delta_events(tc):
-                yield event
 
         close_items: list[tuple[int, str, dict[str, Any]]] = []
         if reasoning_state["opened"]:
@@ -10123,7 +10154,8 @@ async def _anthropic_passthrough_stream(
         emitter = AnthropicPassthroughEmitter()
         # Promote text-form tool calls (declared client tools only) into
         # tool_use blocks; verbatim behavior when healing is off or no tools.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools)
+        # tool_choice arrives here already converted to the OpenAI shape.
+        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools, disable_parallel_tool_use = disable_parallel_tool_use
@@ -10298,7 +10330,8 @@ async def _anthropic_passthrough_non_streaming(
         )
 
     data = resp.json()
-    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools)
+    # tool_choice arrives here already converted to the OpenAI shape.
+    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
 
     # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the model
     # tried to call a tool but nothing usable came out; re-ask once with the
@@ -10710,8 +10743,11 @@ async def _openai_passthrough_stream(
     )
     # Text-form tool calls from small models get promoted to structured calls on
     # the way back (declared client tools only); requests without tools or with
-    # auto_heal_tool_calls=false keep the verbatim relay.
-    _allowed_tools = heal_gate(payload.auto_heal_tool_calls, body.get("tools"))
+    # auto_heal_tool_calls=false keep the verbatim relay. tool_choice constrains
+    # the allowlist ("none" disables, a forced function narrows to it).
+    _allowed_tools = heal_gate(
+        payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
+    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -11192,7 +11228,9 @@ async def _openai_passthrough_non_streaming(
     _guided_fence = bool((payload.model_extra or {}).get("_unsloth_guided_fence"))
     _do_fence = _guided_fence and _extract_response_format(payload) is not None
     _cap_parallel = payload.parallel_tool_calls is False
-    _allowed_tools = heal_gate(payload.auto_heal_tool_calls, body.get("tools"))
+    _allowed_tools = heal_gate(
+        payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
+    )
 
     try:
         data = resp.json()
@@ -11242,8 +11280,13 @@ async def _openai_passthrough_non_streaming(
 
         # Small models emit tool calls as text instead of structured tool_calls;
         # promote them (declared client tools only) so the agent sees a real call.
+        # Truncation wins over the upgrade (same rule as the streaming and
+        # Anthropic paths): a call cut off at max_tokens keeps
+        # finish_reason="length" so the client knows the arguments may be
+        # incomplete, while the healed call itself stays attached.
         if _allowed_tools and heal_openai_message(msg, _allowed_tools):
-            choice["finish_reason"] = "tool_calls"
+            if choice.get("finish_reason") == "stop":
+                choice["finish_reason"] = "tool_calls"
             changed = True
 
         # OpenAI requires content=null on a pure tool-call turn; llama-server

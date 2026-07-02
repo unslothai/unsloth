@@ -58,6 +58,24 @@ class TestHealGate:
     def test_malformed_tool_entries_ignored(self):
         assert heal_gate(None, ["nonsense", {"function": "x"}, {}]) is None
 
+    def test_tool_choice_none_disables(self):
+        assert heal_gate(None, TOOLS, "none") is None
+
+    def test_tool_choice_forced_function_narrows_allowlist(self):
+        forced = {"type": "function", "function": {"name": "Bash"}}
+        assert heal_gate(None, TOOLS, forced) == {"Bash"}
+
+    def test_tool_choice_forced_undeclared_function_disables(self):
+        forced = {"type": "function", "function": {"name": "Nuke"}}
+        assert heal_gate(None, TOOLS, forced) is None
+
+    def test_tool_choice_auto_and_required_keep_full_set(self):
+        assert heal_gate(None, TOOLS, "auto") == {"Bash", "Read"}
+        assert heal_gate(None, TOOLS, "required") == {"Bash", "Read"}
+
+    def test_tool_choice_unrecognized_dict_keeps_full_set(self):
+        assert heal_gate(None, TOOLS, {"type": "function"}) == {"Bash", "Read"}
+
 
 class TestHealOpenaiMessage:
     def test_promotes_xml_and_strips_content(self):
@@ -431,6 +449,49 @@ class TestOpenaiNonStreamingRoute:
 
         asyncio.run(_run())
 
+    def test_length_finish_reason_preserved(self, monkeypatch):
+        async def _run():
+            # Truncated generation: the healed call stays attached but the
+            # client must still see the truncation, so length is never
+            # upgraded to tool_calls.
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(),
+                [_upstream_message(LOOKUP_XML, finish_reason = "length")],
+            )
+            choice = data["choices"][0]
+            assert choice["finish_reason"] == "length"
+            (call,) = choice["message"]["tool_calls"]
+            assert call["function"]["name"] == "lookup"
+
+        asyncio.run(_run())
+
+    def test_tool_choice_none_relays_verbatim(self, monkeypatch):
+        async def _run():
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(tool_choice = "none"),
+                [_upstream_message(LOOKUP_XML)],
+            )
+            message = data["choices"][0]["message"]
+            assert message["content"] == LOOKUP_XML
+            assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
+    def test_tool_choice_forcing_other_function_not_promoted(self, monkeypatch):
+        async def _run():
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(tool_choice = {"type": "function", "function": {"name": "other"}}),
+                [_upstream_message(LOOKUP_XML)],
+            )
+            message = data["choices"][0]["message"]
+            assert message["content"] == LOOKUP_XML
+            assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
 
 GARBAGE_SIGNAL = "<tool_call>call lookup somehow???"
 
@@ -747,6 +808,7 @@ class TestAnthropicNonStreamingRoute:
         bodies,
         auto_heal = None,
         tools = None,
+        tool_choice = "auto",
     ):
         import routes.inference as inf_mod
         from routes.inference import _anthropic_passthrough_non_streaming
@@ -763,6 +825,7 @@ class TestAnthropicNonStreamingRoute:
             256,
             "msg_test",
             "gguf",
+            tool_choice = tool_choice,
             auto_heal_tool_calls = auto_heal,
         )
         return client, json.loads(response.body)
@@ -806,6 +869,23 @@ class TestAnthropicNonStreamingRoute:
             )
             assert data["stop_reason"] == "max_tokens"
             assert any(b["type"] == "tool_use" for b in data["content"])
+
+        asyncio.run(_run())
+
+    def test_tool_choice_none_keeps_legacy_strip(self, monkeypatch):
+        async def _run():
+            # Anthropic {"type": "none"} arrives here converted to "none":
+            # the request forbade tool calls, so nothing is promoted and the
+            # legacy XML strip applies as before healing existed.
+            _, data = await self._drive(
+                monkeypatch,
+                [_upstream_message(f"plan {LOOKUP_XML}")],
+                tool_choice = "none",
+            )
+            assert data["stop_reason"] == "end_turn"
+            (block,) = data["content"]
+            assert block["type"] == "text"
+            assert block["text"] == "plan"
 
         asyncio.run(_run())
 
