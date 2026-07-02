@@ -2332,9 +2332,9 @@ export function HubModelPicker({
         checked={fitOnDeviceOnly}
         onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
         className="size-3.5"
-        aria-label="Only show models that fit on this device"
+        aria-label="Only show models that fit"
       />
-      Only show models that fit on this device
+      Only show models that fit
     </label>
   );
   const sectionSortDropdown =

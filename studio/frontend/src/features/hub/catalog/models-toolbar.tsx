@@ -366,9 +366,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                     checked={fitOnDeviceOnly}
                     onCheckedChange={(v) => onFitOnDeviceOnlyChange(v === true)}
                     className="size-3.5"
-                    aria-label="Only show models that fit on this device"
+                    aria-label="Only show models that fit"
                   />
-                  Only show models that fit on this device
+                  Only show models that fit
                 </label>
               )
             }

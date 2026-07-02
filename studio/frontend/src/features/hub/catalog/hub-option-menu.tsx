@@ -239,7 +239,8 @@ export function HubOptionMenu<T extends string>({
           })}
         </div>
         {footer && (
-          <div className="mt-1 border-t border-border/60 px-1 pt-1">{footer}</div>
+          // -mt-3 cancels the surface's 16px flex gap down to 4px.
+          <div className="-mt-3 border-t border-border/60 px-1 pt-1">{footer}</div>
         )}
       </PopoverContent>
     </Popover>
