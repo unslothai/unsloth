@@ -391,9 +391,14 @@ async def start_training(
                 # release the arbiter so it doesn't think the gone pipeline owns
                 # the GPU. Must precede the chat block, which early-returns.
                 from core.inference import gpu_arbiter
-                from core.inference.diffusion import get_diffusion_backend
+                from core.inference.diffusion_engine_router import (
+                    get_active_diffusion_engine,
+                )
 
-                diffusion = get_diffusion_backend()
+                # The ACTIVE engine, not the diffusers singleton: on a native
+                # (sd_cpp) selection the diffusers backend reports unloaded while
+                # the native engine still holds model state / a live generation.
+                diffusion = get_active_diffusion_engine()
                 if diffusion.is_loaded:
                     logger.info(
                         "Unloading diffusion (Images) model to free GPU memory for training"

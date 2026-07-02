@@ -1296,13 +1296,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
 
   const handleLoad = useCallback(
+    // Resolves true when the background load STARTED (callers may revert
+    // optimistic picker state on false); poll outcomes are handled internally.
     async (
       repoId: string,
       opts: {
         kind: "gguf" | "single_file" | "pipeline";
         filename?: string;
       },
-    ) => {
+    ): Promise<boolean> => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       setBusy("loading");
@@ -1336,9 +1338,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
         void refreshStatus();
-        return;
+        return false;
       }
       void pollLoadProgress();
+      return true;
     },
     [
       pollLoadProgress,
@@ -1386,13 +1389,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void handleLoad(id, { kind: spec.kind, filename: spec.filename });
         return;
       }
-      // GGUF quant pick from the variant expander.
+      // GGUF quant pick from the variant expander. Optimistic for instant picker
+      // feedback, but revert if the load fails to START (400/409/network): the
+      // selector must not advertise a quant that is not the loaded one. Poll-phase
+      // failures re-sync via refreshStatus.
       if (meta.ggufVariant && meta.ggufFilename) {
+        const prevQuant = quant;
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
-        void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename });
+        void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename }).then((started) => {
+          if (!started) setQuant(prevQuant);
+        });
         return;
       }
       // A direct local .gguf file picked without a variant isn't wired for Images.
@@ -1410,7 +1419,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setGuidance(d.guidance);
       void handleLoad(id, { kind: "pipeline" });
     },
-    [busy, handleLoad],
+    [busy, handleLoad, quant],
   );
 
   const handleUnload = useCallback(async () => {
@@ -1570,7 +1579,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           height: h,
           steps,
           guidance,
-          seed: baseSeed + i,
+          // Offset runs by the batch size: the native engine seeds image j of a
+          // run at seed+j, so a +1 run offset would regenerate the previous run's
+          // batch-mates. Unique per image on both engines, reproducible via recipes.
+          seed: baseSeed + i * batchSize,
           batch_size: batchSize,
           // Transform/Inpaint/Extend send the source image (+ mask for inpaint/extend) and
           // a denoise strength, resolved above. The backend derives output size from the
