@@ -105,23 +105,55 @@ def test_align_vae_dtype_uses_unet_denoiser():
     # For SDXL the denoiser lives at pipe.unet; _align_vae_dtype must read it (a pipe
     # with only .unet and no .transformer) and cast the VAE to the U-Net's dtype. The
     # dtype is read from a parameter (denoiser has no .dtype), so use a _FakeVae denoiser.
-    vae = _FakeVae(dtype = "float32")
-    unet = _FakeVae(dtype = "bfloat16")
+    import torch
+
+    vae = _FakeVae(dtype = torch.float32)
+    unet = _FakeVae(dtype = torch.bfloat16)
     pipe = types.SimpleNamespace(unet = unet, vae = vae)
     DiffusionBackend._align_vae_dtype(pipe, "unet")
-    assert vae.moved_to == "bfloat16"
+    assert vae.moved_to == torch.bfloat16
 
 
 def test_align_vae_dtype_transformer_default_unchanged():
     # DiT default: reads pipe.transformer; a pipe with no transformer is a safe no-op.
-    vae = _FakeVae(dtype = "float32")
-    transformer = _FakeVae(dtype = "bfloat16")
+    import torch
+
+    vae = _FakeVae(dtype = torch.float32)
+    transformer = _FakeVae(dtype = torch.bfloat16)
     pipe = types.SimpleNamespace(transformer = transformer, vae = vae)
     DiffusionBackend._align_vae_dtype(pipe)
-    assert vae.moved_to == "bfloat16"
+    assert vae.moved_to == torch.bfloat16
     # No denoiser attribute -> no-op (does not raise, does not move the VAE).
-    vae2 = _FakeVae(dtype = "float32")
+    vae2 = _FakeVae(dtype = torch.float32)
     DiffusionBackend._align_vae_dtype(types.SimpleNamespace(vae = vae2), "unet")
+    assert vae2.moved_to is None
+
+
+def test_align_vae_dtype_skips_gguf_packed_uint8_params():
+    # A GGUF-quantized transformer's leading parameters are packed uint8 storage; the
+    # dtype probe must skip them and use the first FLOATING dtype, or nn.Module.to()
+    # rejects the integer dtype and an Edit/img2img call 500s (regression: Qwen-Image-
+    # Edit GGUF). All-integer params (no floating dtype at all) must be a clean no-op.
+    import torch
+
+    class _GgufDenoiser:
+        def parameters(self):
+            yield types.SimpleNamespace(dtype = torch.uint8)   # packed GGUF block
+            yield types.SimpleNamespace(dtype = torch.bfloat16)  # compute dtype
+
+    vae = _FakeVae(dtype = torch.float32)
+    pipe = types.SimpleNamespace(transformer = _GgufDenoiser(), vae = vae)
+    DiffusionBackend._align_vae_dtype(pipe)
+    assert vae.moved_to == torch.bfloat16
+
+    class _AllPacked:
+        def parameters(self):
+            yield types.SimpleNamespace(dtype = torch.uint8)
+
+    vae2 = _FakeVae(dtype = torch.float32)
+    DiffusionBackend._align_vae_dtype(
+        types.SimpleNamespace(transformer = _AllPacked(), vae = vae2)
+    )
     assert vae2.moved_to is None
 
 
