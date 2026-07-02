@@ -458,12 +458,8 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_preserve_thinking"] is True
 
 
-# =====================================================================
-# _sf_reasoning_prefill_mode -- gates the prefilled-<think> extractor so
-# safetensors/MLX reach GGUF reasoning-block parity for enable_thinking models.
-# =====================================================================
-
-
+# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor so safetensors/MLX
+# reach GGUF reasoning-block parity for enable_thinking models.
 class TestSafetensorsReasoningPrefillGate:
     # A minimal Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."

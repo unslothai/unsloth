@@ -118,9 +118,8 @@ class TestParser:
     def test_xml_param_preserves_leading_indentation(self):
         import json
 
-        # The chat template wraps the value in a single \n on each side; only
-        # that wrapping newline is trimmed, so significant indentation in a code
-        # argument survives (str.strip() used to destroy it).
+        # Only the template's single wrapping \n is trimmed, so significant indentation
+        # in a code argument survives (str.strip() used to destroy it).
         text = (
             "<function=python><parameter=code>\n"
             "    indented = 1\n"
@@ -219,10 +218,9 @@ class TestParser:
         assert not _detect_render_html_tool_start("use render_html[ARGS] to render")
 
     def test_render_html_start_detector_skips_think_block_rehearsal(self):
-        # A render_html rehearsed inside a <think>/[THINK] block is skipped by the
-        # parser, so the provisional card must not fire for it -- else the loop shows
-        # a render_html card but executes the real (non-render_html) call after the
-        # block. The first EXECUTABLE call (outside think) decides.
+        # A render_html rehearsed inside <think>/[THINK] is skipped by the parser, so the
+        # provisional card must not fire for it; the first executable (outside-think) call
+        # decides.
         assert not _detect_render_html_tool_start(
             '<think>draft render_html[ARGS]{"code":"x"}</think>python[ARGS]{"code":"print(1)"}'
         )
@@ -237,9 +235,8 @@ class TestParser:
         assert not _detect_render_html_tool_start('<think>render_html[ARGS]{"code":"x"}</think>')
 
     def test_render_html_start_detector_reads_top_level_array_name(self):
-        # ``[TOOL_CALLS] [{...}]`` array: the real tool name is the object's top-level
-        # ``"name"``, not an argument key. A naive ``"name"`` search latched onto the
-        # nested ``render_html`` argument value and fired a false provisional card.
+        # ``[TOOL_CALLS] [{...}]`` array: the tool name is the object's top-level
+        # ``"name"``, not an argument key (a naive ``"name"`` search fired a false card).
         assert not _detect_render_html_tool_start(
             '[TOOL_CALLS] [{"arguments":{"name":"render_html"},"name":"python"}]'
         )
@@ -423,9 +420,8 @@ class TestParser:
         assert result[0]["function"]["name"] == "mcp__srv__list-issues"
 
     def test_streaming_strip_removes_partial_bracket_marker(self):
-        # A bracket tag streamed before its opening brace (split delta) must
-        # be stripped on the final pass instead of leaking the raw marker to
-        # the UI, the same way a bare <tool_call> open tag is stripped.
+        # A bracket tag streamed before its opening brace (split delta) must be stripped
+        # on the final pass, like a bare <tool_call> open tag, instead of leaking.
         assert strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
         assert strip_tool_markup("text python[ARGS]", final = True) == "text"
         # Non-final must keep the in-progress tag buffered (not yet stripped).
@@ -631,11 +627,9 @@ class TestParser:
         assert "search[ARGS]" in out
 
     def test_streaming_strip_preserves_rehearsal_inside_think(self):
-        # The STREAMING display strip must also preserve a rehearsal inside <think>
-        # (the final strip already does). Stripping it mid-stream emits a shorter
-        # cumulative text that the final strip then grows back -- a non-monotonic
-        # shrink/grow that corrupts append-by-length consumers and visible reasoning.
-        # The GGUF streaming strip protects <think>; safetensors must match.
+        # The STREAMING display strip must also preserve a rehearsal inside <think>:
+        # stripping it mid-stream emits a shorter cumulative text the final strip grows
+        # back, a shrink/grow that corrupts append-by-length consumers. Matches GGUF.
         text = '<think>plan: search[ARGS]{"q":"x"}</think> A'
         assert strip_tool_markup_streaming(text) == text
         assert strip_tool_markup_streaming(text, tool_protocol_active = True) == text
@@ -812,10 +806,9 @@ def test_rehearsal_call_name_is_not_streamed_before_args():
 
 
 def test_rehearsal_call_name_split_before_args_is_not_streamed():
-    # Finding 5: the rehearsal name and ``[ARGS]`` arrive in SEPARATE chunks
-    # (``web_search`` then ``[ARGS]{...}``). The bare active-tool-name prefix must
-    # be held -- not streamed as visible content -- until ``[ARGS]`` flips it to a
-    # drain. Without _is_rehearsal_prefix the name leaks before the call executes.
+    # Finding 5: rehearsal name and ``[ARGS]`` arrive in SEPARATE chunks (``web_search``
+    # then ``[ARGS]{...}``). The bare name prefix must be held until ``[ARGS]`` arrives;
+    # without _is_rehearsal_prefix the name leaks before the call executes.
     loop, exec_fn = _make_loop(
         turns = [["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
         exec_results = ["RESULT"],
@@ -840,10 +833,9 @@ def test_plain_word_matching_no_tool_still_streams():
 
 
 def test_rehearsal_name_after_prose_in_streaming_is_not_streamed():
-    # The BUFFERING guard only covers a rehearsal at the turn start. When prose has
-    # already streamed (STREAMING state) and the model then emits ``web_search``
-    # (name) and ``[ARGS]{...}`` in later chunks, the bare name must still be held,
-    # not flushed as visible content before the call drains.
+    # The BUFFERING guard only covers a turn-start rehearsal. Once prose has streamed
+    # (STREAMING state) and the model emits ``web_search`` then ``[ARGS]{...}`` in later
+    # chunks, the bare name must still be held, not flushed before the call drains.
     loop, exec_fn = _make_loop(
         turns = [
             # _make_loop accumulates these deltas into cumulative snapshots.
@@ -893,10 +885,9 @@ def test_initial_buffer_flush_holds_split_rehearsal_name():
 
 
 def test_think_rehearsal_streams_monotonically_and_keeps_reasoning():
-    # A turn whose visible reasoning rehearses a call inside <think> must stream the
-    # same text the final strip keeps. The cumulative content events must be
-    # monotonically non-decreasing (no shrink-then-grow) and end with the rehearsal
-    # markup intact inside the reasoning block.
+    # A turn rehearsing a call inside <think> must stream the same text the final strip
+    # keeps: cumulative content events stay monotonically non-decreasing (no
+    # shrink-then-grow) and end with the rehearsal markup intact in the block.
     loop, exec_fn = _make_loop(
         turns = [["<think>plan ", 'search[ARGS]{"q":"x"}', "</think> visible"]],
         max_tool_iterations = 1,
@@ -925,10 +916,9 @@ def test_plain_answer_ending_with_tool_name_word_is_preserved():
 
 
 def test_long_tool_name_split_rehearsal_is_not_capped_and_executes():
-    # Finding 10/11: a realistic MCP name longer than _MAX_BUFFER_CHARS (32) split as
-    # NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding,
-    # so the generic char cap must not cut it short) -- the name must not leak and
-    # the call must execute.
+    # Finding 10/11: an MCP name longer than _MAX_BUFFER_CHARS (32) split as NAME then
+    # [ARGS]{...} must still be held (a rehearsal prefix is self-bounding, so the char
+    # cap must not cut it short); the name must not leak and the call must execute.
     from core.inference.safetensors_agentic import _MAX_BUFFER_CHARS
 
     name = "mcp__github__create_pull_request"
@@ -1245,10 +1235,9 @@ class TestLoopBasic:
         assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
 
     def test_render_html_rehearsed_in_think_block_emits_no_provisional_start(self):
-        # BUG B: a render_html rehearsed inside <think> followed by a real python call
-        # must NOT emit a provisional render_html card -- the parser executes python,
-        # so a render_html tool_start would corrupt the event stream (and reuse the
-        # python call id). Only the real, outside-think call may start a card.
+        # BUG B: a render_html rehearsed inside <think> before a real python call must
+        # NOT emit a provisional render_html card (the parser executes python, so a
+        # render_html tool_start would corrupt the stream). Only the outside-think call fires.
         exec_fn = FakeExecuteTool(["ok"])
         turn_iter = iter(
             [
@@ -2100,10 +2089,9 @@ if __name__ == "__main__":
 
 
 def test_streaming_strip_keeps_bare_args_before_think_block():
-    # F3: a bare ``foo[ARGS]`` (no JSON body) before a <think> block is prose, not a
-    # truncated call. The open-ended tail arms in _TOOL_ALL_PATS are anchored to true
-    # EOS, so they must run only on the LAST segment; earlier segments use the
-    # closed-only patterns (mirrors strip_tool_call_markup and the route strip).
+    # F3: a bare ``foo[ARGS]`` before a <think> block is prose, not a truncated call.
+    # The EOS-anchored tail arms in _TOOL_ALL_PATS run only on the LAST segment; earlier
+    # segments use the closed-only patterns (mirrors strip_tool_call_markup).
     text = "Please pass foo[ARGS] <think>pause</think> to the template."
     out = strip_tool_markup_streaming(text, tool_protocol_active = True)
     assert out == text
@@ -2142,10 +2130,9 @@ def test_prose_args_marker_before_real_call_does_not_drain_the_prose():
 
 
 def test_inactive_name_args_with_body_is_not_parsed_into_disabled_noop():
-    # BUG A: a whole-turn prose answer containing ``foo[ARGS]{...}`` (``foo`` is not an
-    # active tool) must not be drained/parsed into a disabled ``foo`` no-op that forces
-    # an extra generation turn. The BUFFERING and end-of-stream safety-net ``[ARGS]``
-    # checks gate on active tool names, matching the mid-stream path.
+    # BUG A: a whole-turn prose answer with an inactive ``foo[ARGS]{...}`` must not be
+    # drained/parsed into a disabled ``foo`` no-op that forces an extra turn; the
+    # BUFFERING and end-of-stream ``[ARGS]`` checks are name-gated like the mid-stream path.
     turns = [['foo[ARGS]{"x":1} is just syntax.']]
     turn_calls: list[int] = []
 

@@ -1990,13 +1990,9 @@ class TestTranslatedMessagesValidate:
             ChatMessage(**m.model_dump(exclude_none = True))
 
 
-# =====================================================================
-# reasoning_prefilled mode -- Qwen3/GLM enable_thinking templates prefill an
-# unclosed <think> in the prompt, so generation begins inside the think block
-# and emits only the closing </think>. The extractor must start in reasoning.
-# =====================================================================
-
-
+# reasoning_prefilled mode: Qwen3/GLM enable_thinking templates prefill an unclosed
+# <think> in the prompt, so generation begins inside the block and emits only the
+# closing </think>; the extractor must start in reasoning.
 class TestReasoningPrefilledExtractor:
     def test_prefilled_single_feed_splits_lone_close(self):
         # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
@@ -2082,9 +2078,8 @@ class TestReasoningPrefilledExtractor:
         assert visible == "hi"
 
     def test_not_prefilled_lone_close_preserves_current_behavior(self):
-        # T9: GGUF-parity guard -- WITHOUT prefilled, a lone </think> keeps the
-        # pre-fix behavior (reasoning stays visible, tag dropped). Ensures GGUF and
-        # every existing caller are byte-identical.
+        # T9: GGUF-parity guard -- WITHOUT prefilled, a lone </think> keeps the pre-fix
+        # behavior (reasoning stays visible, tag dropped), so existing callers match.
         reasoning, visible = _extract_responses_reasoning(
             "reasoning</think>ans",
             parse_think_markers = True,

@@ -2053,23 +2053,20 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
         )
     )
 
-    # No tool executed and no tool_start/tool_end events for the inactive name. Only
-    # ONE stream is supplied, so a spurious disabled-``foo`` no-op + re-prompt would
-    # exhaust the stream list and error -- the clean completion proves no retry turn.
+    # No tool executed for the inactive name. Only ONE stream is supplied, so a spurious
+    # disabled-``foo`` no-op + re-prompt would exhaust the streams and error.
     assert calls == [], calls
     assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
-    # The inactive ``foo[ARGS]{...}`` is prose, not a call: the strip is gated on the
-    # active tool list too, so the WHOLE sentence (rehearsal markup and all) survives
-    # in the visible content rather than being partially stripped to " is just syntax."
+    # The inactive ``foo[ARGS]{...}`` is prose: the strip is name-gated too, so the
+    # WHOLE sentence (rehearsal markup and all) survives in the visible content.
     assert any('foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts), content_texts
 
 
 def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(monkeypatch):
-    """BUG X (#5704): an inactive-name ``foo[ARGS]{...}`` immediately preceding a real
-    ``web_search[ARGS]{...}`` in the same delta must NOT swallow the real call. The gate
-    is threaded through parse and strip, so web_search still executes while the inactive
-    ``foo[ARGS]{...}`` stays visible as prose (it is not a call, so it is not stripped)."""
+    """BUG X (#5704): an inactive ``foo[ARGS]{...}`` before a real ``web_search[ARGS]{...}``
+    in one delta must NOT swallow the real call; web_search executes while the inactive
+    rehearsal stays visible as prose."""
     first_stream = [
         _sse({"content": 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'}),
         _done(),

@@ -27,16 +27,14 @@ assert _m, "could not extract _TOOL_XML_RE source"
 _ns = {"_re": _re}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
-# The display helper applies the closed-only variant to segments before the last
-# <think> block (open-ended tails only on the final segment), so the extracted
-# helper needs it in scope to run.
+# The display helper uses the closed-only variant on segments before the last <think>
+# block, so the extracted helper needs it in scope to run.
 _mc = _re.search(r"_TOOL_XML_CLOSED_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _mc, "could not extract _TOOL_XML_CLOSED_RE source"
 exec(f"_TOOL_XML_CLOSED_RE = _re.compile({_mc.group(1)})", _ns)
 _TOOL_XML_CLOSED_RE = _ns["_TOOL_XML_CLOSED_RE"]
-# Extract both the gate helper and the display strip (multi-line signature, so
-# capture the whole span up to the next top-level ``logger =`` statement rather
-# than pinning the exact argument list).
+# Extract the gate helper and the display strip, capturing up to the next top-level
+# ``logger =`` rather than pinning the multi-line signature.
 _helper = _re.search(
     r"def _display_tool_name_gate\(.*?(?=\nlogger = get_logger)",
     _src,
@@ -456,9 +454,8 @@ def test_core_strip_removes_orphan_tool_calls_closer_named_form_keeps_tail():
 
 
 def test_core_strip_removes_call_with_literal_think_in_argument():
-    # An unclosed literal ``<think>`` inside a tool call's arguments must be stripped
-    # WITH the call (it is argument data), not preserved as a reasoning block, even
-    # though the greedy think match runs past the call's closer to EOF.
+    # An unclosed literal ``<think>`` inside a call's arguments must be stripped WITH the
+    # call (argument data), not preserved as a reasoning block, despite the greedy match.
     text = 'before <tool_call>{"name":"write","arguments":{"text":"literal <think> marker"}}</tool_call> after'
     assert _strip_tool_call_markup(text, final = True) == "before  after"
 
@@ -477,11 +474,9 @@ def test_route_display_strip_removes_orphan_tool_calls_closer_named_form_keeps_t
 
 
 def test_incomplete_xml_call_with_literal_think_in_arg_is_stripped():
-    # An INCOMPLETE (unclosed) <tool_call> the parser still executes via
-    # allow_incomplete, whose argument contains a literal <think>, must have its
-    # markup stripped (to EOS) instead of the literal being treated as a reasoning
-    # block and leaking the raw call. The complete-call case already worked; this
-    # covers the unclosed tail that _tool_call_markup_spans previously missed.
+    # An INCOMPLETE <tool_call> (run via allow_incomplete) whose argument holds a literal
+    # <think> must be stripped to EOS, not treated as a reasoning block; covers the
+    # unclosed tail _tool_call_markup_spans previously missed.
     from core.tool_healing import parse_tool_calls_from_text as _parse
     from core.tool_healing import strip_tool_call_markup as _strip
 
@@ -517,10 +512,8 @@ def test_display_tool_name_gate_returns_active_names_or_none():
 
 
 def test_route_display_strip_keeps_inactive_rehearsal_when_gated():
-    # P1 #5704: ``foo[ARGS]{...}`` where ``foo`` is NOT an active tool is prose, not a
-    # call. With the active-tool gate the display strip must leave it (and its trailing
-    # sentence) intact -- matching the loop-level parse/strip gate so the route does
-    # not re-corrupt already-correct loop output.
+    # P1 #5704: an inactive ``foo[ARGS]{...}`` is prose, not a call, so the gated display
+    # strip must leave it (and its sentence) intact, matching the loop-level gate.
     gate = {"web_search"}
     text = 'foo[ARGS]{"x":1} is just syntax.'
     assert (
