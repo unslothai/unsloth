@@ -493,7 +493,9 @@ def test_generate_rejects_reference_on_unsupported_family(fake_runtime, tmp_path
     )
     with pytest.raises(ValueError, match = "Reference images are not supported"):
         backend.generate(
-            prompt = "x", steps = 4, init_image = _tiny_png_b64(),
+            prompt = "x",
+            steps = 4,
+            init_image = _tiny_png_b64(),
             reference_images = [_tiny_png_b64()],
         )
 
