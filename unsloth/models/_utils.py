@@ -3610,10 +3610,12 @@ def make_fast_generate_wrapper(original_generate):
             )
 
         def _is_vllm_prompt(a):
-            # str prompt, {"prompt"/"multi_modal_data":...} dict, or a list/tuple of those
+            # str prompt, a vLLM prompt dict (prompt / prompt_token_ids / prompt_embeds /
+            # multi_modal_data), or a list/tuple of those
             head = a[0] if isinstance(a, (list, tuple)) and len(a) > 0 else a
             return isinstance(head, str) or (
-                isinstance(head, dict) and ("prompt" in head or "multi_modal_data" in head)
+                isinstance(head, dict)
+                and any(k in head for k in ("prompt", "prompt_token_ids", "prompt_embeds", "multi_modal_data"))
             )
 
         # vLLM-only; also catch SamplingParams passed positionally (fast_generate(prompt, params))
