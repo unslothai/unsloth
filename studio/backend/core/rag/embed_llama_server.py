@@ -141,13 +141,16 @@ class LlamaServerBackend:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
         returning its local path. Re-resolves when the effective repo changed (a
         custom model was saved in Settings)."""
-        repo = config.effective_gguf_repo()
-        if self._model_path is not None and self._model_repo == repo:
+        # Captured once: if the setting changes mid-download, the path must stay
+        # tagged with the repo it was resolved FOR, so _current() sees the new
+        # setting as stale and respawns instead of serving the old model.
+        desired = config.effective_gguf_repo()
+        if self._model_path is not None and self._model_repo == desired:
             return self._model_path
         local = self._resolve_local_gguf(config.effective_embedding_model())
         if local is not None:
             self._model_path = local
-            self._model_repo = repo
+            self._model_repo = desired
             with self._dim_lock:
                 self._dim = None
             return self._model_path
@@ -156,6 +159,7 @@ class LlamaServerBackend:
         token = os.environ.get("HF_TOKEN") or None
         # A custom model derives its "-GGUF" companion repo; when that guess does
         # not exist, the model repo itself may host the .gguf files.
+        repo = desired
         candidates = [repo]
         model = config.effective_embedding_model()
         if model != repo:
@@ -183,7 +187,7 @@ class LlamaServerBackend:
         filename = sorted(match, key = len)[0]
         logger.info("resolving GGUF embedder %s/%s", repo, filename)
         self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
-        self._model_repo = config.effective_gguf_repo()
+        self._model_repo = desired
         with self._dim_lock:
             self._dim = None
         return self._model_path

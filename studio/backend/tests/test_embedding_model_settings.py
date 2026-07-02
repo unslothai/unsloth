@@ -114,6 +114,23 @@ def test_effective_gguf_repo_env_wins(settings_store, monkeypatch):
     assert rag_config.effective_gguf_repo() == rag_config.EMBED_GGUF_REPO
 
 
+def test_effective_gguf_repo_ignores_gguf_substring(settings_store, monkeypatch):
+    """"gguf" must match as a whole name segment, not inside a word."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems.set_rag_embedding_model("org/bigguf-model")
+    assert rag_config.effective_gguf_repo() == "org/bigguf-model-GGUF"
+    ems.set_rag_embedding_model("org/model.GGUF")
+    assert rag_config.effective_gguf_repo() == "org/model.GGUF"
+
+
+def test_env_custom_model_derives_companion(settings_store, monkeypatch):
+    """RAG_EMBEDDING_MODEL set to a custom model without RAG_EMBED_GGUF_REPO:
+    the llama backend derives <custom>-GGUF instead of staying on the default."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-custom")
+    assert rag_config.effective_gguf_repo() == "org/env-custom-GGUF"
+
+
 # ---------------------------------------------------------------------------
 # Route-level tests
 # ---------------------------------------------------------------------------
@@ -163,6 +180,53 @@ def test_put_embedding_model_verified(client):
     assert body["is_custom"] is True
     assert calls["checked"] == "org/my-embedder"
     assert calls["token"] == "hf_abc"
+
+
+def test_put_embedding_model_trims_hf_token(client):
+    c, calls = client
+    r = c.put(
+        "/embedding-model",
+        json = {"embedding_model": "org/my-embedder", "hf_token": "  hf_abc  "},
+    )
+    assert r.status_code == 200
+    assert calls["token"] == "hf_abc"
+    # Whitespace-only tokens degrade to anonymous access, not a broken client.
+    r = c.put(
+        "/embedding-model",
+        json = {"embedding_model": "org/other-embedder", "hf_token": "   "},
+    )
+    assert r.status_code == 200
+    assert calls["token"] is None
+
+
+def test_put_local_dir_without_gguf_on_llama_backend_409(client, monkeypatch, tmp_path):
+    """A sentence-transformers-only local folder verifies as an embedding model
+    but cannot run on the llama-server backend; the save must warn via 409."""
+    import core.rag.config as core_rag_config
+
+    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "llama-server")
+    local = tmp_path / "st-only"
+    local.mkdir()
+    (local / "modules.json").write_text("{}")
+    c, _ = client
+    r = c.put("/embedding-model", json = {"embedding_model": str(local)})
+    assert r.status_code == 409
+    assert "gguf" in r.json()["detail"].lower()
+    # force saves anyway (user may point env overrides at it later).
+    r = c.put("/embedding-model", json = {"embedding_model": str(local), "force": True})
+    assert r.status_code == 200
+
+
+def test_put_local_dir_with_gguf_on_llama_backend_saves(client, monkeypatch, tmp_path):
+    import core.rag.config as core_rag_config
+
+    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "llama-server")
+    local = tmp_path / "gguf-model"
+    local.mkdir()
+    (local / "embedder-F16.gguf").write_bytes(b"GGUF")
+    c, _ = client
+    r = c.put("/embedding-model", json = {"embedding_model": str(local)})
+    assert r.status_code == 200
 
 
 def test_put_embedding_model_unverified_409(client):

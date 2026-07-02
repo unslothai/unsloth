@@ -109,11 +109,12 @@ def create_document(
     status: str = "pending",
     stored_path: str | None = None,
     document_id: str | None = None,
+    embedding_model: str | None = None,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
-        "status, stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "status, stored_path, created_at, embedding_model) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
@@ -125,6 +126,7 @@ def create_document(
             status,
             stored_path,
             _now(),
+            embedding_model,
         ),
     )
     conn.commit()
@@ -266,6 +268,11 @@ def search_dense(conn: sqlite3.Connection, scope, vector, k: int):
     [(chunk_id, 1 - distance)]. vec0 KNN constrains its partition key by
     equality, so multi-scope runs one query per scope and merges by score."""
     if not rag_db.vec_table_exists(conn):
+        return []
+    dim = rag_db.vec_table_dim(conn)
+    if dim is not None and dim != len(vector):
+        # Embedding model switched widths and nothing re-indexed yet; the stale
+        # table cannot answer new-model queries (vec0 errors on the MATCH).
         return []
     out: list[tuple[str, float]] = []
     for s in _scopes(scope):

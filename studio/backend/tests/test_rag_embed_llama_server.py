@@ -416,6 +416,35 @@ def test_resolve_model_path_local_dir_without_gguf(monkeypatch, tmp_path):
         b._resolve_model_path()
 
 
+def test_resolve_tags_path_with_repo_captured_at_entry(monkeypatch, tmp_path):
+    """A setting change during download must not retag the old model path with
+    the new repo key, or _current() would treat the stale server as current."""
+    import sys
+    import types as _types
+
+    repos = {"first": "org/first-GGUF", "current": "org/first-GGUF"}
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repos["current"])
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/first-GGUF")
+
+    hub = _types.ModuleType("huggingface_hub")
+
+    def list_repo_files(repo_id, token = None):
+        # Simulate the user saving a different model mid-listing.
+        repos["current"] = "org/second-GGUF"
+        return ["first-F16.gguf"]
+
+    hub.list_repo_files = list_repo_files
+    hub.hf_hub_download = lambda repo_id, filename, token = None: str(tmp_path / filename)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+    b = LlamaServerBackend()
+    b._resolve_model_path()
+    # Tagged with the repo the download was FOR, so the next _ensure_ready
+    # detects the newer setting as stale and respawns.
+    assert b._model_repo == "org/first-GGUF"
+    assert b._current() is False
+
+
 def test_ensure_ready_respawns_on_model_change(monkeypatch):
     b = LlamaServerBackend()
     spawned = {"n": 0}

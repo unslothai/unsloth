@@ -83,6 +83,65 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
         conn.close()
 
 
+def test_reupload_after_model_change_reingests(rag_home, stub_embeddings, tmp_path, monkeypatch):
+    """Dedupe must not keep stale vectors: identical bytes re-uploaded after an
+    embedding model change replace the old document instead of deduping."""
+    from core.rag import config
+
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    _drain(job_id)
+    _wait_completed(job_id)
+
+    conn = rag_db.get_connection()
+    try:
+        recorded = store.get_document(conn, doc_id)["embedding_model"]
+        assert recorded == config.effective_embedding_model()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/new-embedder")
+    path2 = _write(tmp_path, "copy.txt", "alpha bravo charlie")
+    doc_id2, job_id2 = ingestion.start_ingestion(scope, "K1", None, "copy.txt", path2)
+    events = _drain(job_id2)
+    _wait_completed(job_id2)
+    assert doc_id2 != doc_id
+    assert not any(e.get("deduped") for e in events)
+
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id) is None  # stale doc replaced
+        doc2 = store.get_document(conn, doc_id2)
+        assert doc2["status"] == "completed"
+        assert doc2["embedding_model"] == "org/new-embedder"
+    finally:
+        conn.close()
+
+
+def test_reupload_with_legacy_null_model_still_dedupes(rag_home, stub_embeddings, tmp_path):
+    """Docs from before the embedding_model column existed (NULL) keep the old
+    dedupe behavior instead of re-ingesting on every duplicate upload."""
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    _drain(job_id)
+    _wait_completed(job_id)
+
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("UPDATE documents SET embedding_model=NULL WHERE id=?", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    path2 = _write(tmp_path, "copy.txt", "alpha bravo charlie")
+    doc_id2, job_id2 = ingestion.start_ingestion(scope, "K1", None, "copy.txt", path2)
+    events = _drain(job_id2)
+    assert doc_id2 == doc_id
+    assert any(e.get("deduped") for e in events)
+
+
 def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embeddings, tmp_path):
     # A prior ingest of identical bytes that yielded no chunks (e.g. a scanned PDF
     # before a vision model loaded) must re-ingest, not dedupe to the empty record.

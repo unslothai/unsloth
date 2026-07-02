@@ -13,7 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { PipelineType } from "@huggingface/hub";
 import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue } from "@/hooks";
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useMemo, useRef } from "react";
 
 // HF pipeline filter for embedding models; matches the backend's
 // is_embedding_model signals (sentence-similarity / feature-extraction).
@@ -42,14 +42,11 @@ export function EmbeddingModelCombobox({
   ariaLabel,
   className,
 }: EmbeddingModelComboboxProps): ReactElement {
-  const [inputValue, setInputValue] = useState(value);
   const selectingRef = useRef(false);
   const anchorRef = useRef<HTMLDivElement>(null);
-  const debouncedQuery = useDebouncedValue(inputValue);
-
-  useEffect(() => {
-    setInputValue(value);
-  }, [value]);
+  // Fully controlled: the parent updates value on every keystroke, so the
+  // prop itself is the search query.
+  const debouncedQuery = useDebouncedValue(value);
 
   const { results, isLoading } = useHubModelSearch(debouncedQuery, {
     task: EMBEDDING_TASKS,
@@ -94,7 +91,6 @@ export function EmbeddingModelCombobox({
             selectingRef.current = false;
             return;
           }
-          setInputValue(next);
           onChange(next);
         }}
         itemToStringValue={(item) => item}

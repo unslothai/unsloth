@@ -260,6 +260,39 @@ def _embedding_model_response() -> EmbeddingModelResponse:
     )
 
 
+def _local_gguf_backend_error(model: str) -> str | None:
+    """409 detail when ``model`` is a local dir without a .gguf but this install
+    embeds via llama-server (macOS/CPU default), which needs one. A
+    sentence-transformers-only folder would verify fine yet fail at first index.
+    None when not applicable. ``force`` skips this check like HF verification."""
+    from pathlib import Path
+
+    if not Path(model).expanduser().is_dir():
+        return None
+    from core.rag import config as rag_config
+    from core.rag import embeddings
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    try:
+        raw = (rag_config.EMBED_BACKEND or "auto").strip().lower()
+        key = embeddings._resolve_auto() if raw in embeddings._AUTO_ALIASES else raw
+    except Exception:  # noqa: BLE001 - backend probe must never block saving
+        return None
+    if key not in embeddings._LLAMA_ALIASES:
+        return None
+    try:
+        LlamaServerBackend._resolve_local_gguf(model)
+        return None
+    except RuntimeError:
+        return (
+            f"{model!r} contains no .gguf file, but this install embeds with the "
+            "llama-server backend which requires one. Add a GGUF file to the "
+            "folder or use a Hugging Face repo."
+        )
+    except Exception:  # noqa: BLE001 - filesystem oddity: don't block saving
+        return None
+
+
 @router.get("/embedding-model", response_model = EmbeddingModelResponse)
 def get_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -289,7 +322,8 @@ def update_embedding_model(
         ) from exc
     # The env/default model needs no verification; saving it is a no-op override.
     if model != default_embedding_model() and not payload.force:
-        if not is_embedding_model(model, hf_token = payload.hf_token or None):
+        hf_token = (payload.hf_token or "").strip() or None
+        if not is_embedding_model(model, hf_token = hf_token):
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -298,6 +332,9 @@ def update_embedding_model(
                     "you may be offline)."
                 ),
             )
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error:
+            raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",

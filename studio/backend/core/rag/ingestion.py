@@ -274,15 +274,24 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        effective_model = model_name or config.effective_embedding_model()
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
             doc = store.get_document(conn, existing)
             empty_completed = (
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
             )
-            if empty_completed:
+            # Vectors from a different embedder are stale; re-uploading must
+            # re-index, not dedupe. NULL (legacy rows) is assumed current.
+            stale_model = (
+                doc is not None
+                and doc.get("embedding_model") is not None
+                and doc.get("embedding_model") != effective_model
+            )
+            if empty_completed or stale_model:
                 # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
-                # PDF uploaded before a vision model loaded). Re-ingest, don't dedupe.
+                # PDF uploaded before a vision model loaded), or was embedded with a
+                # different model. Re-ingest, don't dedupe.
                 store.delete_document(conn, existing)
                 _remove_upload(doc.get("stored_path"), keep_path = stored_path)
             else:
@@ -310,6 +319,7 @@ def start_ingestion(
             project_id = project_id,
             status = "pending",
             stored_path = stored_path,
+            embedding_model = effective_model,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
