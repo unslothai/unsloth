@@ -11,9 +11,19 @@ from typing import Any
 from json_repair import repair_json
 
 from .core import ScoreNode, _leaf_count, _score
-from .schema import Node, normalize_schema
+from .schema import ArrayNode, LeafNode, Node, ObjectNode, normalize_schema
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _resolve_node(schema: Any) -> Node | None:
+    """Normalize `schema` to a Node once. Passes an already-Node through
+    unchanged so callers can hoist normalization out of a hot loop."""
+    if schema is None:
+        return None
+    if isinstance(schema, (LeafNode, ObjectNode, ArrayNode)):
+        return schema
+    return normalize_schema(schema)
 
 
 def json_anls_score(
@@ -27,8 +37,9 @@ def json_anls_score(
     """Score a predicted JSON document against ground truth.
 
     Returns a float in [0, 1], or (float, ScoreNode) if return_key_scores=True.
+    ``schema`` may be a raw DSL value or an already-normalized Node.
     """
-    node = normalize_schema(schema) if schema is not None else None
+    node = _resolve_node(schema)
     result = _score(ground_truth, prediction, node, default_comparator)
     if return_key_scores:
         return result.score, result
@@ -65,7 +76,7 @@ def _extract_json(text: Any) -> Any | None:
 
     try:
         repaired = repair_json(s, return_objects = True)
-        if isinstance(repaired, (dict, list)) and repaired:
+        if isinstance(repaired, (dict, list)):
             return repaired
     except Exception:
         pass
@@ -84,19 +95,17 @@ def score_from_text(
 
     Returns the same shape as ``json_anls_score`` (a float, or ``(float,
     ScoreNode)`` when ``return_key_scores=True``). Unparseable output scores 0.0.
+    ``schema`` may be a raw DSL value or an already-normalized Node.
     """
+    node = _resolve_node(schema)
     pred = _extract_json(raw_text)
     if pred is None:
-        node: Node | None = normalize_schema(schema) if schema is not None else None
         n = max(_leaf_count(ground_truth, node), 1)
         zero = ScoreNode(0.0, n, note = "unparseable prediction")
         if return_key_scores:
             return 0.0, zero
         return 0.0
-    return json_anls_score(
-        ground_truth,
-        pred,
-        schema,
-        default_comparator = default_comparator,
-        return_key_scores = return_key_scores,
-    )
+    result = _score(ground_truth, pred, node, default_comparator)
+    if return_key_scores:
+        return result.score, result
+    return result.score

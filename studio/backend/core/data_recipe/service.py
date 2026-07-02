@@ -348,10 +348,16 @@ def _attach_studio_evaluations(designer: Any, evaluations: list[dict[str, Any]])
     if not evaluations:
         return
 
+    # Preserve data_designer's default so callers that omit num_records still
+    # work — otherwise attaching evaluations narrows the wrapped signature.
+    from data_designer.config.utils.constants import (  # pyright: ignore[reportMissingImports]
+        DEFAULT_NUM_RECORDS,
+    )
+
     original_preview = designer.preview
     original_create = designer.create
 
-    def patched_preview(config_builder, *, num_records):
+    def patched_preview(config_builder, *, num_records = DEFAULT_NUM_RECORDS):
         results = original_preview(config_builder, num_records = num_records)
         if results.dataset is not None:
             for evaluation in evaluations:
@@ -362,7 +368,7 @@ def _attach_studio_evaluations(designer: Any, evaluations: list[dict[str, Any]])
     def patched_create(
         config_builder,
         *,
-        num_records,
+        num_records = DEFAULT_NUM_RECORDS,
         dataset_name = "dataset",
     ):
         results = original_create(

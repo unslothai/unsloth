@@ -189,3 +189,18 @@ def test_string_none_and_empty_mix():
     cmp = get_comparator("string")
     assert cmp(None, "") == 1.0
     assert cmp(None, "x") == 0.0
+
+
+def test_money_empty_string_does_not_crash():
+    # Regression: `"" in "+-"` is True in Python, so the sign-peel branch used
+    # to enter with an empty s and raise IndexError on s[0]. Empty strings
+    # should be treated as non-numeric (score 0.0), not crash the batch.
+    cmp = get_comparator("money")
+    assert cmp("", 100.0) == 0.0
+    assert cmp(100.0, "") == 0.0
+
+
+def test_numeric_empty_string_does_not_crash():
+    cmp = get_comparator("numeric")
+    assert cmp("", 5.0) == 0.0
+    assert cmp(5.0, "") == 0.0

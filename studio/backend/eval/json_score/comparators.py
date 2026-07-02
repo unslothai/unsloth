@@ -36,9 +36,10 @@ def _to_number(x: Any) -> float | None:
         except ValueError:
             pass
         # Fallback: peel a leading sign, then extract the first number even if a
-        # currency symbol or other prefix sits in front of it.
+        # currency symbol or other prefix sits in front of it. `"" in "+-"` is
+        # truthy in Python, so guard on non-empty first — else `s[0]` raises.
         sign = ""
-        if s[:1] in "+-":
+        if s and s[0] in "+-":
             sign, s = s[0], s[1:].lstrip()
         m = _NUM_RE.search(s)
         if m:

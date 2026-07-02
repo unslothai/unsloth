@@ -376,5 +376,16 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       }
     }
   }
+  if (config.kind === "evaluation") {
+    if (!config.prediction_column.trim()) {
+      errors.push("Prediction column is required.");
+    }
+    if (!config.reference_column.trim()) {
+      errors.push("Reference column is required.");
+    }
+    if (!config.score_column.trim()) {
+      errors.push("Score column is required.");
+    }
+  }
   return errors;
 }

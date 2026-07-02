@@ -104,3 +104,18 @@ def test_score_from_text_prose_still_unparseable():
         return_key_scores = True,
     )
     assert score == 0.0 and node.note == "unparseable prediction"
+
+
+def test_extract_json_accepts_repaired_empty_object():
+    # Regression: `_extract_json` used to discard well-repaired `{}` / `[]`
+    # via `and repaired` — treating a valid empty match as unparseable.
+    from eval.json_score.api import _extract_json
+
+    assert _extract_json("{") == {}
+    assert _extract_json("[") == []
+
+
+def test_score_from_text_empty_object_repaired_scores_perfect():
+    # Ground truth is an empty object; a stub prediction that repairs to `{}`
+    # should score 1.0, not fall into the unparseable branch.
+    assert score_from_text({}, "{", None) == 1.0

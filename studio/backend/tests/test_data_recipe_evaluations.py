@@ -127,6 +127,16 @@ def test_score_parquet_dir_ignores_unknown_processor_type(parquet_dir: Path) -> 
     assert list(df.columns) == ["prediction", "reference"]
 
 
+def test_score_parquet_dir_does_not_rewrite_when_no_eval_matched(parquet_dir: Path) -> None:
+    # Regression: score_parquet_dir used to rewrite every parquet file
+    # unconditionally, even when no evaluation actually mutated the dataframe —
+    # silently changing compression / metadata vs. what data_designer produced.
+    parquet_file = parquet_dir / "batch_00000.parquet"
+    original_bytes = parquet_file.read_bytes()
+    score_parquet_dir(parquet_dir, [{"processor_type": "unknown_score", "name": "x"}])
+    assert parquet_file.read_bytes() == original_bytes
+
+
 def test_score_parquet_dir_is_noop_when_no_evaluations(parquet_dir: Path) -> None:
     score_parquet_dir(parquet_dir, [])
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")

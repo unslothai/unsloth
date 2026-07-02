@@ -340,12 +340,15 @@ export function makeEvaluationDocumentScoreConfig(
   id: string,
   existing: NodeConfig[],
 ): EvaluationDocumentScoreConfig {
+  // Default score_column to the (already uniquified) name so successive
+  // Document Score blocks write to distinct dataframe columns.
+  const name = nextName(existing, "doc_score");
   return {
     id,
     kind: "evaluation",
     // biome-ignore lint/style/useNamingConvention: api schema
     processor_type: "json_document_score",
-    name: nextName(existing, "doc_score"),
+    name,
     // biome-ignore lint/style/useNamingConvention: api schema
     prediction_column: "",
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -354,7 +357,7 @@ export function makeEvaluationDocumentScoreConfig(
     // biome-ignore lint/style/useNamingConvention: api schema
     default_comparator: "string",
     // biome-ignore lint/style/useNamingConvention: api schema
-    score_column: "doc_score",
+    score_column: name,
     // biome-ignore lint/style/useNamingConvention: api schema
     breakdown_column: "",
   };
