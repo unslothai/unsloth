@@ -67,6 +67,12 @@ def _to_rgb(path_or_img: Any) -> Any:
     return np.asarray(img.convert("RGB"), dtype = np.float64)
 
 
+# Finite PSNR (dB) a perfect (inf) sample is capped to when averaged with imperfect ones,
+# so a lossless render counts as excellent without hiding diverged samples. Well above the
+# ~37 dB compile and ~21 dB quant noise floors this harness reports.
+_PERFECT_MATCH_PSNR = 100.0
+
+
 def psnr(a_img: Any, b_img: Any) -> float:
     """PSNR (dB) between two images; inf when identical, 0 when shapes differ."""
     a, b = _to_rgb(a_img), _to_rgb(b_img)
@@ -280,13 +286,19 @@ def _compare(
             clip_sim.append(clip.image_similarity(img, ref))
 
     def _mean(xs: list[float]) -> Optional[float]:
-        # Preserve +inf: an identical render (reference vs itself, or a lossless
-        # quant/offload) scores PSNR=inf, which is exactly the case this harness
-        # verifies; dropping it as non-finite would print "-" instead of "inf".
-        if xs and any(x == math.inf for x in xs):
+        # +inf marks an identical render (reference vs itself, or a lossless quant/offload)
+        # scoring PSNR=inf -- the case this harness verifies. Report inf ONLY when every
+        # sample is inf; a mix of inf and finite means some renders diverged, so a bare inf
+        # would mask those bad samples. Cap the perfect ones to a high finite PSNR and
+        # average so the drift still shows. (Only PSNR is ever inf; SSIM/CLIP stay finite.)
+        if not xs:
+            return None
+        if all(x == math.inf for x in xs):
             return math.inf
-        finite = [x for x in xs if math.isfinite(x)]
-        return round(sum(finite) / len(finite), 4) if finite else None
+        vals = [
+            _PERFECT_MATCH_PSNR if x == math.inf else x for x in xs if math.isfinite(x) or x == math.inf
+        ]
+        return round(sum(vals) / len(vals), 4) if vals else None
 
     return {
         "mean_psnr": _mean(psnrs),

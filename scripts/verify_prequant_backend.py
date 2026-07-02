@@ -37,6 +37,14 @@ OUT = Path(os.environ.get("PREQUANT_OUT_DIR", str(_RESEARCH / "prequant_verify_i
 logging.basicConfig(level = logging.INFO, format = "%(message)s")
 LOGGER = logging.getLogger("verify_prequant")
 
+# Prequant and runtime produce the SAME quantized weights, so their images must be
+# near-identical; anything above this LPIPS means the prequant path diverged and the run
+# fails. The prequant load peak must also sit clearly below the dense runtime peak (the
+# whole point of the path); require at least this fractional headroom.
+LPIPS_MAX = 0.02
+PREQUANT_PEAK_MAX_FRACTION = 0.75
+_RUNTIME_PEAK_FILE = OUT / "runtime_peak.txt"
+
 
 def _target(dtype):
     import types
@@ -81,7 +89,11 @@ def run(mode, steps, seed, res):
     sys.path.insert(0, str(BACKEND))
     import torch
     import diffusers
-    from core.inference.diffusion_prequant import PrequantSource, load_prequantized_transformer
+    from core.inference.diffusion_prequant import (
+        ALLOW_LOCAL_PREQUANT_PATH_ENV,
+        PrequantSource,
+        load_prequantized_transformer,
+    )
     from core.inference.diffusion_transformer_quant import quantize_transformer
 
     OUT.mkdir(parents = True, exist_ok = True)
@@ -90,6 +102,14 @@ def run(mode, steps, seed, res):
     torch.cuda.empty_cache()
 
     if mode == "prequant":
+        # A local checkpoint is refused unless its directory is allowlisted (unpickling an
+        # arbitrary file is unsafe). This verifier's CKPT is operator-supplied and trusted,
+        # so allowlist its directory here or the load returns None and measures nothing.
+        ckpt_dir = os.path.dirname(os.path.realpath(CKPT))
+        existing = os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV, "")
+        os.environ[ALLOW_LOCAL_PREQUANT_PATH_ENV] = (
+            ckpt_dir if not existing else existing + os.pathsep + ckpt_dir
+        )
         source = PrequantSource(kind = "path", location = CKPT, filename = None)
         transformer = load_prequantized_transformer(
             transformer_cls,
@@ -122,17 +142,44 @@ def run(mode, steps, seed, res):
         scheme = quantize_transformer(pipe, _target(torch.bfloat16), mode = "fp8", logger = LOGGER)
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         print(f"[runtime] engaged={scheme}  load_gpu_peak={load_peak:.1f} GB", flush = True)
+        # Persist the dense reference peak so a later prequant run can enforce its VRAM win.
+        _RUNTIME_PEAK_FILE.write_text(f"{load_peak:.6f}")
 
     img, dt = _gen(pipe, steps, seed, res)  # warmup
     img, dt = _gen(pipe, steps, seed, res)
     img.save(OUT / f"{mode}.png")
     print(f"[{mode}] gen={dt:.3f}s saved {mode}.png", flush = True)
 
+    if mode != "prequant":
+        return 0
+
+    # Enforce the two invariants this verifier exists to check, so a broken prequant
+    # checkpoint fails loudly instead of passing just because generation completed.
     ref_path = OUT / "runtime.png"
-    if mode == "prequant" and ref_path.exists():
-        from PIL import Image
-        lp = _lpips(np.array(Image.open(ref_path).convert("RGB")), np.array(img))
-        print(f"[prequant] LPIPS_vs_runtime={lp}", flush = True)
+    if not ref_path.exists():
+        print("FAIL: runtime reference image missing; run --mode runtime first", flush = True)
+        return 1
+    from PIL import Image
+    lp = _lpips(np.array(Image.open(ref_path).convert("RGB")), np.array(img))
+    print(f"[prequant] LPIPS_vs_runtime={lp}", flush = True)
+    if lp is None:
+        print("FAIL: LPIPS could not be computed (install lpips)", flush = True)
+        return 1
+    if lp > LPIPS_MAX:
+        print(f"FAIL: LPIPS {lp:.4f} > {LPIPS_MAX} (prequant diverged from runtime)", flush = True)
+        return 1
+    if _RUNTIME_PEAK_FILE.exists():
+        try:
+            runtime_peak = float(_RUNTIME_PEAK_FILE.read_text().strip())
+        except ValueError:
+            runtime_peak = 0.0
+        if runtime_peak > 0.0 and load_peak > runtime_peak * PREQUANT_PEAK_MAX_FRACTION:
+            print(
+                f"FAIL: prequant load peak {load_peak:.1f} GB not below "
+                f"{PREQUANT_PEAK_MAX_FRACTION:.0%} of dense {runtime_peak:.1f} GB",
+                flush = True,
+            )
+            return 1
     return 0
 
 

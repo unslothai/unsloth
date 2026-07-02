@@ -43,6 +43,18 @@ logger = get_logger(__name__)
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 
+# Resolved device backend -> the prebuilt sd-cli accelerator to install. Only used
+# when a *force-native* load on a GPU host has to install the binary: without this the
+# installer defaults to "cpu" and downloads the plain build, so an sd_cpp generation
+# forced on a ROCm/Intel box would silently run on CPU. Unknown/GPU-less backends fall
+# back to "auto" (the CPU/Metal plain build), matching the installer's own default.
+# (install_sd_cpp_prebuilt has no CUDA-Linux asset, so "cuda" only differs on Windows.)
+_INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
+
+
+def _install_accelerator_for(backend: str) -> str:
+    return _INSTALL_ACCELERATOR.get(backend, "auto")
+
 # The engine the current (or most recent) load committed to, and why a non-native
 # choice was made. Mutated only under _lock during selection.
 _lock = threading.Lock()
@@ -125,7 +137,10 @@ def select_and_activate_engine(fam: DiffusionFamily, *, hf_token: Optional[str] 
 
     binary = None
     if policy_eligible and fam_ok:
-        binary = ensure_sd_cpp_binary(allow_install = _install_allowed())
+        binary = ensure_sd_cpp_binary(
+            allow_install = _install_allowed(),
+            accelerator = _install_accelerator_for(backend),
+        )
         # Probe runnability here, before committing the route to native: a present but
         # non-runnable binary (wrong arch, missing shared libs, no execute bit) would
         # otherwise pass as available and only fail inside the background load, instead

@@ -11055,7 +11055,7 @@ async def load_diffusion_model(
         annotate_status,
         select_and_activate_engine,
     )
-    from core.inference.gpu_arbiter import acquire_for, DIFFUSION
+    from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -11088,6 +11088,14 @@ async def load_diffusion_model(
             # Then kick the (slow) load onto a background thread and return at once --
             # the client polls images/load-progress.
             await asyncio.to_thread(acquire_for, DIFFUSION)
+        else:
+            # A CPU-only native load never touches the GPU, so it neither acquires nor is
+            # tracked by the arbiter. But switching here FROM a previous diffusers/GPU load
+            # (select_and_activate_engine unloaded it above) leaves DIFFUSION still marked
+            # as the arbiter owner; a later chat acquire would then "evict" this CPU model
+            # for no reason. Release that stale ownership -- release() is owner-guarded, so
+            # it is a no-op when diffusion never owned the GPU.
+            await asyncio.to_thread(release, DIFFUSION)
         status_dict = await asyncio.to_thread(
             engine.begin_load,
             request.model_path,
