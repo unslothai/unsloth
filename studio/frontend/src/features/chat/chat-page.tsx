@@ -215,6 +215,16 @@ const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
+// A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so a
+// separate TTS voice slot doesn't apply and must not be auto-loaded. Module-level
+// so both the render-time greying and the voice-slot ensure-load effect can share
+// one definition.
+const SPEECH_LLM_CHECKPOINT_RE =
+  /(?:orpheus|csm|spark|bark|parler|musicgen|kokoro|text-to-speech|[-_]tts)/i;
+function isSpeechLLMCheckpoint(checkpoint: string | null | undefined): boolean {
+  return SPEECH_LLM_CHECKPOINT_RE.test(checkpoint ?? "");
+}
+
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
@@ -1419,6 +1429,12 @@ export function ChatPage({
   // no-op, so the two never double-load.
   useEffect(() => {
     if (voiceMode === "off") return;
+    // Speech-LLM chat models (Orpheus etc.) speak with their own voice, so the
+    // separate TTS slot is greyed out and must not be auto-loaded -- doing so
+    // wastes VRAM/time loading a voice that never gets used.
+    if (isSpeechLLMCheckpoint(useChatRuntimeStore.getState().params.checkpoint)) {
+      return;
+    }
     const id = useChatRuntimeStore.getState().selectedVoiceModelId;
     if (!id) return;
     let cancelled = false;
@@ -2557,10 +2573,7 @@ export function ChatPage({
   // A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so
   // a separate TTS voice doesn't apply. Detected from the loaded checkpoint;
   // listening (STT) stays available regardless.
-  const chatModelIsSpeechLLM =
-    /(?:orpheus|csm|spark|bark|parler|musicgen|kokoro|text-to-speech|[-_]tts)/i.test(
-      inferenceParams.checkpoint ?? "",
-    );
+  const chatModelIsSpeechLLM = isSpeechLLMCheckpoint(inferenceParams.checkpoint);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
