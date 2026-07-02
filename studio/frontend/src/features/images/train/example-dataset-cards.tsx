@@ -14,9 +14,13 @@ import {
   listDiffusionDatasetExamples,
 } from "../api";
 
-// One-click example-dataset importers. Each card shows the license verbatim so users see
-// the terms before importing. On success the parent refreshes its dataset list and selects
-// the imported folder (and can seed the trigger prompt from suggested_trigger).
+// One-click example-dataset importers. Each card shows the license so users see the terms
+// before importing. On success the parent refreshes its dataset list and selects the
+// imported folder (and can seed the trigger prompt from suggested_trigger).
+//
+// Layout: one card per row (the config column is only ~340px, so a two-column grid wrapped
+// titles one word per line and let the long license text overrun into the next card). The
+// license is a compact truncated badge with the full text in its title tooltip.
 export function ExampleDatasetCards({
   onImported,
 }: {
@@ -66,29 +70,35 @@ export function ExampleDatasetCards({
 
   return (
     <div className="grid gap-2">
-      <span className="text-[11px] text-muted-foreground">
-        Or start from an example dataset:
+      <span className="text-[11px] font-medium text-muted-foreground">
+        Or start from an example dataset
       </span>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2">
         {examples.map((ex) => (
           <div
             key={ex.id}
-            className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5"
+            className="flex items-center gap-3 rounded-lg border border-border p-2.5"
           >
-            <div className="flex items-start justify-between gap-2">
-              <span className="text-xs font-medium">{ex.label}</span>
-              <Badge variant="secondary" className="shrink-0 text-[10px]">
-                {ex.license}
-              </Badge>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-xs font-medium">{ex.label}</span>
+                <Badge
+                  variant="secondary"
+                  className="max-w-[120px] shrink-0 truncate text-[10px] font-normal"
+                  title={ex.license}
+                >
+                  {ex.license}
+                </Badge>
+              </div>
+              <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+                {ex.description}
+              </p>
             </div>
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              {ex.description}
-            </p>
             <Button
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 w-fit text-xs"
+              className="h-7 shrink-0 self-center px-3 text-xs"
               onClick={() => void doImport(ex)}
               disabled={busyId !== null}
             >

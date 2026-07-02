@@ -3,7 +3,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  AiMagicIcon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
@@ -465,34 +464,41 @@ function Field({
 function AdvancedSelect({
   label,
   hint,
+  desc,
   value,
   onValueChange,
   options,
 }: {
   label: string;
   hint?: ReactNode;
+  // A short always-visible description under the row (the hint tooltip carries the full
+  // detail). Used for controls whose label alone does not convey what they do.
+  desc?: string;
   value: string;
   onValueChange: (v: string) => void;
   options: Array<[string, string]>;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-        {label}
-        {hint && <InfoHint>{hint}</InfoHint>}
-      </span>
-      <Select value={value} onValueChange={onValueChange}>
-        <SelectTrigger className="h-8 w-[160px] text-xs">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map(([v, l]) => (
-            <SelectItem key={v} value={v} className="text-xs">
-              {l}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          {label}
+          {hint && <InfoHint>{hint}</InfoHint>}
+        </span>
+        <Select value={value} onValueChange={onValueChange}>
+          <SelectTrigger className="h-8 w-[160px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map(([v, l]) => (
+              <SelectItem key={v} value={v} className="text-xs">
+                {l}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {desc && <p className="text-[11px] leading-snug text-muted-foreground/70">{desc}</p>}
     </div>
   );
 }
@@ -1865,7 +1871,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
-          label="GGUF speed mode"
+          label="GGUF compute"
+          desc="Off runs the GGUF as-is. INT8/FP8/FP4 dequantise the transformer onto low-precision tensor cores for a faster step, at the cost of a larger download and more VRAM."
           hint="Optional speed-up for GGUF models. Off runs the GGUF as-is. FP8/INT8/FP4 instead load the FULL base model and quantise its transformer onto low-precision tensor cores: faster per step, but a larger download and more VRAM, and it falls back to the GGUF if it can't fit. Needs CUDA."
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
@@ -1879,9 +1886,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           ]}
         />
       ) : (
-        <div className="flex items-center justify-between gap-2 text-xs">
-          <span className="text-muted-foreground">GGUF speed mode</span>
-          <span className="text-muted-foreground/70">GGUF models only</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            GGUF compute
+          </span>
+          <span className="text-xs text-muted-foreground/60">GGUF models only</span>
         </div>
       )}
       <AdvancedSelect
@@ -1964,9 +1973,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               generation workspace; Train is the full-page LoRA training workspace. */}
           <Tabs value={pageMode} onValueChange={(v) => setPageMode(v as "create" | "train")}>
             <TabsList className="h-[34px]">
-              <TabsTrigger value="create">Create</TabsTrigger>
-              <TabsTrigger value="train">
-                <HugeiconsIcon icon={AiMagicIcon} className="mr-1 size-3.5" />
+              <TabsTrigger value="create" className="w-[64px]">
+                Create
+              </TabsTrigger>
+              <TabsTrigger value="train" className="w-[64px]">
                 Train
               </TabsTrigger>
             </TabsList>
