@@ -101,7 +101,6 @@ def _contains_sensitive_path_component(path: str) -> bool:
 
 
 def contains_sensitive_path_component(path: str) -> bool:
-    """Public predicate for the credential/config denylist (.ssh, .aws, ...)."""
     return _contains_sensitive_path_component(path)
 
 

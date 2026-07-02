@@ -244,7 +244,6 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     assert media_root.resolve() in allowlist
     assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
 
-    # Sensitive dirs under an allowlisted media root stay unbrowseable (parity with Hub).
     with pytest.raises(_HTTPException) as exc:
         ns["_resolve_browse_target"](str(media_root / ".ssh"), allowlist)
     assert exc.value.status_code == 403

@@ -1391,7 +1391,6 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                         "under your home folder."
                     ),
                 )
-            # Same denylist registration enforces: keep ~/.ssh, ~/.aws, etc. unbrowseable.
             if contains_sensitive_path_component(str(resolved_child)):
                 raise HTTPException(
                     status_code = 403,
