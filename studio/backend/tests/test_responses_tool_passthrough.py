@@ -1990,13 +1990,8 @@ class TestTranslatedMessagesValidate:
             ChatMessage(**m.model_dump(exclude_none = True))
 
 
-# =====================================================================
-# reasoning_prefilled mode -- Qwen3/GLM enable_thinking templates prefill an
-# unclosed <think> in the prompt, so generation begins inside the think block
-# and emits only the closing </think>. The extractor must start in reasoning.
-# =====================================================================
-
-
+# reasoning_prefilled mode: Qwen3/GLM enable_thinking templates prefill an unclosed <think>, so
+# generation begins inside the think block and emits only the closing </think>; the extractor starts in reasoning.
 class TestReasoningPrefilledExtractor:
     def test_prefilled_single_feed_splits_lone_close(self):
         # T1: reasoning...</think>answer with a prefilled (unseen) open tag.

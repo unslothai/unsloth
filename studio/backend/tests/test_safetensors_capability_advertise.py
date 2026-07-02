@@ -127,11 +127,8 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_tools"] is False
 
 
-# Llama-3 / Mistral / Gemma 4 templates emit tool calls in formats the
-# shared parser now understands (<|python_tag|>, [TOOL_CALLS], and
-# <|tool_call>). The route helper must surface supports_tools=True for
-# all of them so the UI enables the pill. Only templates whose tool
-# format is NONE of the five known markers should be suppressed.
+# Llama-3 / Mistral / Gemma 4 tool-call formats are now parser-supported, so supports_tools=True
+# must hold for all of them; only templates matching none of the five known markers are suppressed.
 
 LLAMA3_TEMPLATE = """
 {%- if tools %}
@@ -562,9 +559,8 @@ _TOOLS_ADVERTISED_NO_PARSEABLE_FORM = (
 
 
 def test_detect_safetensors_features_keeps_tools_for_pretty_printed_bare_json():
-    # A template advertising tools whose bare-JSON example is pretty-printed
-    # (``{ "name" :`` with whitespace) must keep supports_tools: the parser accepts
-    # that whitespace via raw_decode, so the capability gate must not downgrade it.
+    # A pretty-printed bare-JSON example (``{ "name" :``) must keep supports_tools since the parser
+    # accepts that whitespace via raw_decode.
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
@@ -606,12 +602,8 @@ def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
     assert flags["supports_tools"] is True
 
 
-# =====================================================================
-# _sf_reasoning_prefill_mode -- gates the prefilled-<think> extractor so
-# safetensors/MLX reach GGUF reasoning-block parity for enable_thinking models.
-# =====================================================================
-
-
+# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor so safetensors/MLX reach
+# GGUF reasoning-block parity for enable_thinking models.
 class TestSafetensorsReasoningPrefillGate:
     # A minimal Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."

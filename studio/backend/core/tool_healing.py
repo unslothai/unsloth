@@ -27,16 +27,13 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Name class ``[\w.\-]`` (dots/hyphens) matches the wrapper-less ``_GEMMA_BARE_TC_RE``
-# and the other parsers, so a dotted/namespaced Gemma tool name (mcp.server-list)
-# in the wrapped form is parsed instead of silently producing no call.
+# Name class allows dots/hyphens so dotted/namespaced Gemma tool names (mcp.server-list) parse.
 _TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Trailing class is horizontal whitespace only so the wrapping newline + the
-# value's first-line indentation survive; _trim_param_value trims one newline.
+# Horizontal whitespace only so the wrapping newline + value indentation survive; _trim_param_value trims one newline.
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>[^\S\n]*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
@@ -272,9 +269,7 @@ def _quote_gemma_object_keys(src: str) -> str:
                     json.loads(raw.strip())
                     parts.append(raw)
                 except (json.JSONDecodeError, ValueError):
-                    # Bare value: quote it. An empty value ({k:}) must become ""
-                    # so json.loads sees {"k":""} instead of invalid {"k":}, which
-                    # would drop the whole call.
+                    # Quote bare value; empty ({k:}) becomes "" so json.loads sees {"k":""} not invalid {"k":}.
                     parts.append(json.dumps(raw.strip()))
         else:
             parts.append(src[key_start:i])
@@ -305,11 +300,7 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
 
 
 def _trim_param_value(val: str) -> str:
-    """Trim a single wrapping newline the chat template adds around an XML
-    parameter value (``<parameter=k>\nVALUE\n</parameter>``) while preserving any
-    significant leading indentation / trailing whitespace inside VALUE. Using
-    ``str.strip()`` here destroyed the indentation of code/diff arguments; SGLang's
-    qwen3_coder detector trims only the wrapping newline."""
+    """Trim only the wrapping newline (not str.strip) so code/diff argument indentation survives."""
     if val.startswith("\n"):
         val = val[1:]
     if val.endswith("\n"):
@@ -375,8 +366,7 @@ def parse_tool_calls_from_text(
             if kind == "json":
                 obj = json.loads(content[m.end() - 1 : end + 1])
                 name = obj.get("name", "")
-                # Accept ``parameters`` as an alias for ``arguments`` (Llama-3.2
-                # drift inside a Hermes ``<tool_call>``); else it parses to ``{}``.
+                # Accept ``parameters`` alias for ``arguments`` (Llama-3.2 drift inside a Hermes <tool_call>).
                 arguments = obj.get("arguments")
                 if arguments is None:
                     arguments = obj.get("parameters", {})
@@ -418,9 +408,7 @@ def parse_tool_calls_from_text(
                     continue
                 body = body[:close_idx]
             else:
-                # Lenient: terminate at the last </function> so trailing prose
-                # after a bare call doesn't leak into the final parameter value;
-                # with no close at all, heal by keeping the whole body.
+                # Terminate at last </function> so trailing prose doesn't leak into the value; no close -> keep whole body.
                 close_idx = body.rfind(_FUNC_CLOSE_TAG)
                 if close_idx >= 0:
                     body = body[:close_idx]

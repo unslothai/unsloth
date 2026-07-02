@@ -213,9 +213,7 @@ class TestHealingPathUnaffected:
 
 
 class TestParserLinearity:
-    """The Llama-3 ``.call`` kwargs and Mistral-array healing paths must stay
-    linear: both formerly ran a regex per offset and blew up (tens of seconds)
-    on a long truncated body reachable from the agentic loop."""
+    """Llama-3 ``.call`` kwargs and Mistral-array healing must stay linear (a regex-per-offset blew up on long truncated bodies)."""
 
     def test_llama3_unterminated_call_arg_is_linear(self):
         import time
@@ -254,9 +252,7 @@ class TestParserLinearity:
         }
 
     def test_llama3_call_scientific_notation_args_parse(self):
-        # The numeric kwarg regex matched only the mantissa, so scientific notation
-        # was truncated to its leading digits (1e-3 -> 1) and the call executed with
-        # the wrong value. Exponent and decimal forms must decode as float.
+        # Scientific notation must decode as float (the old regex truncated 1e-3 -> 1).
         text = "<|python_tag|>calc.call(x=1e-3, y=-2E+4, z=0.5e2, n=42)"
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
@@ -285,10 +281,8 @@ class TestLlamaBuiltinChainAndNesting:
         assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
 
     def test_nested_python_tag_in_json_string_arg_is_not_a_call(self):
-        # The custom JSON form carries a code arg that literally contains a
-        # <|python_tag|>...call(...) string. The real call is the outer "python",
-        # not the nested "os" -- the built-in scan must stay anchored to the first
-        # tag and let the JSON parser win.
+        # A code arg literally containing a <|python_tag|>...call(...) string: the real call is the
+        # outer "python", not the nested "os" -- the scan stays anchored to the first tag.
         text = (
             '<|python_tag|>{"name":"python","parameters":'
             '{"code":"<|python_tag|>os.call(\'rm -rf /\')"}}'
@@ -375,9 +369,8 @@ def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
 def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
     from core.inference.tool_call_parser import strip_tool_markup
 
-    # The parser uses the LAST </function>; the strip must too, so a literal
-    # </function> inside a parameter value does not truncate the strip and leak the
-    # tail. Separate calls must still be stripped independently.
+    # The strip uses the LAST </function> (like the parser) so a literal </function> in a value doesn't
+    # truncate it; separate calls still strip independently.
     text = '<function=python><parameter=code>print("</function>")</parameter></function> done'
     assert strip_tool_markup(text, final = True) == "done"
     two = (
@@ -390,10 +383,8 @@ def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
 def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
     from core.inference.tool_call_parser import parse_tool_calls_from_text, strip_tool_markup
 
-    # A literal ``<function=x>`` OPENER inside a parameter value is data, not a new
-    # call (the parser ignores it via _inside_open_parameter). The strip must do the
-    # same: a regex negative-lookahead stopped at the nested opener and the
-    # unclosed-tail arm then ate the trailing prose. Scan-based strip keeps " done".
+    # A literal ``<function=x>`` opener inside a parameter value is data, not a call: the scan-based
+    # strip keeps " done" (the old negative-lookahead regex ate the trailing prose).
     text = '<function=python><parameter=code>print("<function=x>")</parameter></function> done'
     assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
     assert strip_tool_markup(text, final = True) == "done"
@@ -405,9 +396,8 @@ def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
 def test_strip_leading_bare_json_call_ignores_nested_name():
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
-    # A nested ``"name"`` equal to an enabled tool must NOT gate the strip: the object
-    # is an ordinary JSON answer, not a call. Both truncated and complete forms are
-    # kept verbatim. Only a TOP-LEVEL enabled name is treated as a real call.
+    # A nested ``"name"`` must NOT gate the strip (only a TOP-LEVEL enabled name is a call); the
+    # ordinary JSON answer is kept verbatim, truncated or complete.
     nested_trunc = '{"result":{"name":"web_search","age":'
     nested_full = '{"result":{"name":"web_search","age":1}}'
     assert strip_leading_bare_json_call(nested_trunc, {"web_search"}) == nested_trunc

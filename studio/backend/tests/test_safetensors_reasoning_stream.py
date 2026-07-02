@@ -3,15 +3,9 @@
 
 """Safetensors/MLX reasoning-block parity with GGUF.
 
-enable_thinking templates (Qwen3/Qwen3.5/GLM) prefill an unclosed ``<think>`` in
-the generation prompt, so the model emits only the closing ``</think>`` then the
-answer. The safetensors chat stream must split that leading text into
-``reasoning_content`` deltas (so the UI renders the collapsible thinking block),
-exactly like the GGUF path, on both the plain stream and the tool loop, resetting
-per tool-loop turn and appending ONLY the visible text to the monitor reply.
-
-This replays a faithful copy of the ``sf_tool_stream`` reasoning loop from
-studio/backend/routes/inference.py against synthetic tool-loop events.
+enable_thinking templates prefill an unclosed ``<think>``, so the stream must split the leading
+text into ``reasoning_content`` deltas (per turn, monitor gets visible text only). Replays a copy
+of ``sf_tool_stream``'s reasoning loop from routes/inference.py against synthetic events.
 """
 
 from __future__ import annotations
@@ -30,14 +24,8 @@ from routes.inference import (
 
 
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
-    """Mirror routes.inference.sf_tool_stream's reasoning loop.
-
-    Diff each cumulative ``content`` snapshot against ``prev_text``; feed the
-    delta through the extractor; collect reasoning vs visible deltas. Reset the
-    (prefilled) extractor and cursor on ``tool_start`` and empty ``status`` --
-    flushing first -- so each assistant turn splits independently. The monitor
-    reply receives only visible text.
-    """
+    """Mirror sf_tool_stream's reasoning loop: diff each cumulative snapshot, feed the delta through
+    the extractor, and reset (flushing first) on ``tool_start`` / empty ``status`` so turns split independently."""
     prev_text = ""
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = True, reasoning_prefilled = prefilled

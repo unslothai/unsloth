@@ -46,9 +46,7 @@ def test_normal_multi_key_arguments_still_split():
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
-    # An empty bare value (``{query:}``) must serialise as ``""`` so json.loads
-    # sees ``{"query":""}``; emitting bare ``{"query":}`` is invalid JSON and
-    # silently dropped the whole call.
+    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
     calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}

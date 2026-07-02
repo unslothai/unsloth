@@ -139,9 +139,7 @@ class TestParser:
         assert "print('hi')" in result[0]["function"]["arguments"]
 
     def test_xml_param_preserves_leading_indentation(self):
-        # The chat template wraps the value in a single \n on each side; only
-        # that wrapping newline is trimmed, so significant indentation in a code
-        # argument survives (str.strip() used to destroy it).
+        # Only the wrapping newline is trimmed, so code-argument indentation survives (str.strip() destroyed it).
         text = (
             "<function=python><parameter=code>\n"
             "    indented = 1\n"
@@ -240,10 +238,8 @@ class TestParser:
         )
 
     def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
-        # A literal ``<function=...>`` inside a parameter value is data, not a nested
-        # call, so the streaming strip must close the call at its REAL ``</function>``
-        # and keep the trailing prose -- matching the guarded final strip. The raw
-        # open-ended regex ate everything to EOF, dropping `` tail``.
+        # A literal ``<function=...>`` in a value is data: the strip must close at the REAL
+        # ``</function>`` and keep trailing prose (the open-ended regex ate to EOF).
         raw = (
             "pref <function=python><parameter=code>"
             'print("<function=x>")</parameter></function> tail'
@@ -262,7 +258,7 @@ class TestParserMultiFormat:
     agentic loop is family-agnostic.
     """
 
-    # ── Llama-3 ────────────────────────────────────────────────────
+    # Llama-3
 
     def test_llama3_python_tag_dot_call(self):
         # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
@@ -308,7 +304,7 @@ class TestParserMultiFormat:
         text = '<|python_tag|>brave_search.call(query="x")'
         assert strip_tool_markup(text, final = True) == ""
 
-    # ── Llama-3.2 bare JSON ``custom_tools`` ─────────────────────
+    # Llama-3.2 bare JSON ``custom_tools``
 
     def test_llama3_2_bare_json_parameters(self):
         # Llama-3.2-Instruct emits bare JSON directly as content; no
@@ -406,7 +402,7 @@ class TestParserMultiFormat:
         ):
             assert parse_tool_calls_from_text(bad) == [], bad
 
-    # ── Mistral pre-v11 ───────────────────────────────────────────
+    # Mistral pre-v11
 
     def test_mistral_pre_v11_array(self):
         import json
@@ -447,7 +443,7 @@ class TestParserMultiFormat:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
 
-    # ── Mistral v11+ ───────────────────────────────────────────────
+    # Mistral v11+
 
     def test_mistral_v11_single(self):
         # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
@@ -539,7 +535,7 @@ class TestParserMultiFormat:
         assert len(result) == 1
         assert json.loads(result[0]["function"]["arguments"]) == {"q": "explain the [THINK] token"}
 
-    # ── Gemma 4 ───────────────────────────────────────────────────
+    # Gemma 4
 
     def test_gemma4_simple_call(self):
         import json
@@ -597,7 +593,7 @@ class TestParserMultiFormat:
         text = "<|tool_call>call:foo{x:1}<tool_call|>"
         assert strip_tool_markup(text, final = True) == ""
 
-    # ── Cross-format sentinels ────────────────────────────────────
+    # Cross-format sentinels
 
     def test_all_markers_in_tool_xml_signals(self):
         # Streaming buffer wakes up on every emission marker.
@@ -751,11 +747,8 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
 
 
 def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
-    # A tool call emitted AFTER plain prose has flipped the loop to STREAMING is
-    # caught by the safety-net parser. An unclosed ``<tool_call>`` heals only when
-    # Auto-Heal is on; with it off the safety net must not pass
-    # ``allow_incomplete=True`` and execute a truncated call. (The DRAINING path
-    # already gated this; the safety-net call site previously omitted the flag.)
+    # A late call caught by the safety net: an unclosed ``<tool_call>`` heals only with Auto-Heal on;
+    # off, the safety net must not pass ``allow_incomplete=True`` and execute a truncated call.
     prose = "Sure, let me look that up for you right now. "
     incomplete = '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
 
@@ -2342,11 +2335,7 @@ class TestGptOssNameDetection:
         assert is_gpt_oss_model_name(cast(str, None)) is False
 
 
-# ────────────────────────────────────────────────────────────────────
 # Routes-level python_tag strip (multi-line; stop on next sentinel)
-# ────────────────────────────────────────────────────────────────────
-
-
 class TestRoutesPythonTagStrip:
     """Earlier revisions of ``_TOOL_XML_RE`` in
     ``studio.backend.routes.inference`` used either ``[^\\n<]*`` (5615 --
@@ -2424,11 +2413,7 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == "<|eom_id|>"
 
 
-# ────────────────────────────────────────────────────────────────────
 # Robustness fixes uncovered while validating against vLLM / sglang.
-# ────────────────────────────────────────────────────────────────────
-
-
 class TestParserRobustness:
     def test_tool_call_json_accepts_parameters_key(self):
         # Hermes wrapper around a Llama-3.2 bare-JSON object that uses
