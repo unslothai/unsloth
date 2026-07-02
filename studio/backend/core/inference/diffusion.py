@@ -1249,6 +1249,15 @@ class DiffusionBackend:
             )
 
         resolved = diffusion_lora.resolve_specs(specs, hf_token = state.hf_token, cancel_event = cancel)
+        # The shared catalog scans both .safetensors and .gguf, but diffusers'
+        # load_lora_weights only takes safetensors; a .gguf adapter would otherwise fail
+        # deep in generation. Reject it here as a clean 400 before touching the pipe.
+        bad = [r.id for r in resolved if r.fmt != "safetensors"]
+        if bad:
+            raise ValueError(
+                "GGUF LoRA adapters are not supported on the diffusers engine "
+                f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
+            )
         # Unique adapter names (diffusers requires distinct names; sanitized stems can collide).
         uniq: list[tuple[str, str, float]] = []
         seen: set[str] = set()
@@ -1579,13 +1588,13 @@ class DiffusionBackend:
         if state.eager_patched:
             uninstall_patches()
             uninstall_arch_patches()
-        # Drop any LoRA adapters applied to the pipe so a later reference-path load is
-        # bit-identical and the freed transformer carries no adapter layers. Idempotent.
-        try:
-            if getattr(state.pipe, "_unsloth_loras", ()):
-                state.pipe.unload_lora_weights()
-        except Exception:  # noqa: BLE001 -- best-effort cleanup on teardown
-            pass
+        # NOTE: we deliberately do NOT call state.pipe.unload_lora_weights() here. unload()
+        # sets the cancel event but does not take _generate_lock, so a LoRA-backed denoise
+        # can still be running on this same pipe for up to one more callback; mutating its
+        # adapter layers now would race that in-flight generation. The whole pipe is dropped
+        # just below (self._state = None; del state; clear_gpu_cache()), so the adapter
+        # tensors are freed with it -- no explicit unload is needed for memory or for a
+        # later load (which builds a fresh pipe).
         # Drop the workflow pipes built around this load's modules so they don't pin the
         # freed pipeline (they only re-wire its components, but holding the wrappers
         # would keep the modules alive past unload).
