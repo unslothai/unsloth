@@ -8526,9 +8526,7 @@ async def _responses_stream(
                             "id": message_state["item_id"],
                             "status": "completed",
                             "role": "assistant",
-                            "content": [
-                                {"type": "output_text", "text": text, "annotations": []}
-                            ],
+                            "content": [{"type": "output_text", "text": text, "annotations": []}],
                         },
                     },
                 ),

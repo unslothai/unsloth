@@ -144,9 +144,7 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
         return False
     # allow_incomplete: the response is final, so a trailing unclosed block is a
     # model failure worth repairing (same as the enable-tools loop at drain).
-    parsed, spans = parse_tool_calls_from_text(
-        content, allow_incomplete = True, with_spans = True
-    )
+    parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
     calls = []
     promoted_spans = []
     for call, span in zip(parsed, spans):
