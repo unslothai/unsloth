@@ -37,6 +37,12 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
+# The fp8 weight/activation granularity the runtime config uses (see _make_quant_config):
+# per-ROW is REQUIRED for correctness on outlier-heavy DiTs. Stamped into a pre-quantized
+# fp8 checkpoint's metadata at build time and required by the loader, so a stale checkpoint
+# baked with the old per-TENSOR layout is rejected and rebuilt rather than reproducing noise.
+FP8_GRANULARITY = "per_row"
+
 # Skip linears whose in/out features are below this. A small share of the FLOPs, so leaving
 # them bf16 costs ~nothing and keeps quality a touch higher.
 DEFAULT_MIN_LINEAR_FEATURES = 512

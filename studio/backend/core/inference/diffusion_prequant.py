@@ -244,6 +244,22 @@ def _validate_checkpoint(
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
+    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). A
+    # checkpoint built before that fix carries the old per-tensor layout and either omits
+    # ``fp8_granularity`` or records something other than per-row; reject it so the loader
+    # falls back to rebuilding/re-quantising instead of installing a broken fp8 transformer.
+    from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
+
+    if scheme == TQ_FP8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"fp8 checkpoint granularity {meta.get('fp8_granularity')!r} != "
+                f"{FP8_GRANULARITY!r} (stale per-tensor artifact); rebuild it"
+            ),
+        )
+        return False
     ckpt_base = meta.get("base_model_id")
     if ckpt_base and base and not _same_base_model(ckpt_base, base):
         _warn(logger, scheme, ValueError(f"checkpoint base {ckpt_base!r} != {base!r}"))

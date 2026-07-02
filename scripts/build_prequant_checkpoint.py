@@ -55,6 +55,8 @@ def main(argv = None) -> int:
 
     # Reuse the runtime quant factory + filter so offline == runtime (the LPIPS-0 invariant).
     from core.inference.diffusion_transformer_quant import (
+        FP8_GRANULARITY,
+        TQ_FP8,
         TQ_SCHEMES,
         _make_quant_config,
         exclude_tokens_for_scheme,
@@ -96,20 +98,25 @@ def main(argv = None) -> int:
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
         for k, v in transformer.state_dict().items()
     }
+    metadata = {
+        "base_model_id": args.base,
+        "family": fam.name,
+        "scheme": scheme,
+        "min_features": args.min_features,
+        "torch_dtype": args.dtype,
+        "quant_backend": "torchao",
+        "transformer_class": fam.transformer_class,
+        "torch_version": torch.__version__,
+        "torchao_version": getattr(torchao, "__version__", "?"),
+        "diffusers_version": diffusers.__version__,
+    }
+    # Record the fp8 granularity so the loader can reject a stale per-tensor checkpoint
+    # (the runtime now requires per-row; see FP8_GRANULARITY).
+    if scheme == TQ_FP8:
+        metadata["fp8_granularity"] = FP8_GRANULARITY
     ckpt = {
         "format": PREQUANT_FORMAT,
-        "metadata": {
-            "base_model_id": args.base,
-            "family": fam.name,
-            "scheme": scheme,
-            "min_features": args.min_features,
-            "torch_dtype": args.dtype,
-            "quant_backend": "torchao",
-            "transformer_class": fam.transformer_class,
-            "torch_version": torch.__version__,
-            "torchao_version": getattr(torchao, "__version__", "?"),
-            "diffusers_version": diffusers.__version__,
-        },
+        "metadata": metadata,
         "state_dict": state_dict,
     }
 
