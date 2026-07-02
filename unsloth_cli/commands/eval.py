@@ -85,7 +85,6 @@ def _has_tokenizer_files(model: str) -> bool:
 
 def _bitsandbytes_available() -> bool:
     from importlib.util import find_spec
-
     return find_spec("bitsandbytes") is not None
 
 
@@ -337,8 +336,7 @@ def evaluate(
         base_manager = None
         reserved: frozenset = frozenset()
         if any(
-            Path(e.strip()).suffix.lower() in {".jsonl", ".json", ".csv"}
-            for e in tasks.split(",")
+            Path(e.strip()).suffix.lower() in {".jsonl", ".json", ".csv"} for e in tasks.split(",")
         ):
             base_manager = TaskManager()
             reserved = frozenset(_registry_names(base_manager))
