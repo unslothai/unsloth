@@ -752,6 +752,31 @@ async function buildOutpaint(
   mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
   mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
 
+  // The grown canvas can exceed the backend's 4096px-per-side decode limit (e.g. a
+  // 2048px source at 100% on both sides -> 6144px), which would 400 the load. Scale the
+  // built pair down proportionally to fit, so Extend still returns an outpaint instead
+  // of failing. The backend also rounds to /16, so exact dims here are not required.
+  const MAX_SIDE = 4096;
+  const longest = Math.max(nw, nh);
+  if (longest > MAX_SIDE) {
+    const scale = MAX_SIDE / longest;
+    const sw = Math.max(1, Math.round(nw * scale));
+    const sh = Math.max(1, Math.round(nh * scale));
+    const scaleCanvas = (source: HTMLCanvasElement): HTMLCanvasElement => {
+      const dst = document.createElement("canvas");
+      dst.width = sw;
+      dst.height = sh;
+      const dctx = dst.getContext("2d");
+      if (!dctx) throw new Error("Could not scale the extended canvas");
+      dctx.drawImage(source, 0, 0, sw, sh);
+      return dst;
+    };
+    return {
+      image: scaleCanvas(ic).toDataURL("image/png"),
+      mask: scaleCanvas(mc).toDataURL("image/png"),
+    };
+  }
+
   return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 

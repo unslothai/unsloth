@@ -68,14 +68,6 @@ from .diffusion_attention import (
 )
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_gguf_compile as gguf_compile
-from .diffusion_eager_patches import (
-    install_compile_safe_patches,
-    uninstall_patches,
-)
-from .diffusion_arch_patches import (
-    install_arch_patches,
-    uninstall_arch_patches,
-)
 from .diffusion_cache import apply_step_cache
 from .diffusion_precision import quantize_text_encoders
 from .diffusion_prequant import (
@@ -149,11 +141,6 @@ def _decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
         blob = base64.b64decode(raw, validate = False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"Invalid base64 image data: {exc}") from exc
-    try:
-        img = Image.open(io.BytesIO(blob))
-        img.load()
-    except Exception as exc:  # noqa: BLE001 — surfaced as a 400 to the client
-        raise ValueError(f"Could not decode image: {exc}") from exc
     # Bound the decoded size. Every image-conditioned workflow (img2img / inpaint / upscale /
     # reference / edit) decodes through here, so this single guard protects init, mask, and
     # each reference image uniformly. PIL only WARNS in its 89-178MP "decompression bomb" soft
@@ -161,9 +148,19 @@ def _decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
     # well below that. 4096px covers txt2img's 2048 max, upscales, and normal outpaint canvases;
     # anything larger is rejected with a clear 400 instead of risking an OOM.
     max_side = 4096
-    w, h = img.size
-    if w > max_side or h > max_side:
-        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+    try:
+        img = Image.open(io.BytesIO(blob))
+        # Read the declared dimensions from the header (Image.open is lazy) and reject an
+        # over-limit image BEFORE img.load() decompresses its pixels, so a crafted
+        # small-payload/huge-dimension file can't spike memory before the guard runs.
+        w, h = img.size
+        if w > max_side or h > max_side:
+            raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+        img.load()
+    except ValueError:
+        raise  # the size guard's own message; don't wrap it as a decode error
+    except Exception as exc:  # noqa: BLE001 — surfaced as a 400 to the client
+        raise ValueError(f"Could not decode image: {exc}") from exc
     return img.convert(mode)
 
 
@@ -467,6 +464,14 @@ class DiffusionBackend:
         if kind in ("gguf", "single_file"):
             if not gguf_filename:
                 raise ValueError(f"a single-file checkpoint name is required for a '{kind}' load.")
+            # Fail a kind/extension mismatch here (before the route evicts chat and grabs the
+            # GPU), instead of deep in the background from_single_file: a "gguf" load needs a
+            # .gguf file, and a "single_file" load must not be handed a .gguf.
+            is_gguf_name = gguf_filename.lower().endswith(".gguf")
+            if kind == "gguf" and not is_gguf_name:
+                raise ValueError("a 'gguf' load requires a .gguf checkpoint name.")
+            if kind == "single_file" and is_gguf_name:
+                raise ValueError("a .gguf checkpoint needs model_kind 'gguf', not 'single_file'.")
             if local_root.exists():
                 resolve_local_gguf_child(local_root, gguf_filename)
             elif path_shaped:
@@ -722,6 +727,30 @@ class DiffusionBackend:
         return total
 
     @staticmethod
+    def _local_dir_weight_bytes(path: Path, *, exclude_transformer: bool) -> int:
+        """Sum the on-disk weight files under a local diffusers directory. The HF blob
+        cache is empty for a local path, so this is the only size signal for auto memory
+        planning; without it a large local model folds to zero and the planner skips
+        offload and OOMs. ``exclude_transformer`` drops the ``transformer/`` subfolder
+        for GGUF/single-file loads (their transformer is the single file, not resident
+        here); a full pipeline load keeps it (the whole repo is resident)."""
+        total = 0
+        for f in path.rglob("*"):
+            if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
+                continue
+            try:
+                rel = f.relative_to(path)
+            except ValueError:
+                continue
+            if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
+                continue
+            try:
+                total += f.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    @staticmethod
     def _companion_cache_bytes(base: str) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan.
 
@@ -732,21 +761,7 @@ class DiffusionBackend:
         weights to zero and auto planning can pick a resident placement that OOMs."""
         local = Path(base).expanduser()
         if local.is_dir():
-            total = 0
-            for f in local.rglob("*"):
-                if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
-                    continue
-                try:
-                    rel = f.relative_to(local)
-                except ValueError:
-                    continue
-                if rel.parts and rel.parts[0] == "transformer":
-                    continue  # supplied by the GGUF single-file; not resident here
-                try:
-                    total += f.stat().st_size
-                except OSError:
-                    continue
-            return total
+            return DiffusionBackend._local_dir_weight_bytes(local, exclude_transformer = True)
         return DiffusionBackend._cache_bytes(base)
 
     # ── Synchronous load / generate / unload ───────────────────────────────
@@ -997,6 +1012,17 @@ class DiffusionBackend:
                 eager_patched = False
                 compile_ctx = None
                 state_committed = False
+                # Lazy import: these patch modules import torch at module level, so
+                # importing them here (not at module load) keeps diffusion.py torch-free
+                # to import, letting get_diffusion_backend() run on a torchless native install.
+                from .diffusion_eager_patches import (
+                    install_compile_safe_patches,
+                    uninstall_patches,
+                )
+                from .diffusion_arch_patches import (
+                    install_arch_patches,
+                    uninstall_arch_patches,
+                )
                 try:
                     if effective_speed != SPEED_OFF:
                         install_compile_safe_patches()
@@ -1246,7 +1272,13 @@ class DiffusionBackend:
         if kind == "pipeline":
             # The whole repo (transformer + companions) is one cached download; the
             # cached bytes are the resident estimate (bnb-4bit / fp8 stay compressed).
-            cached = self._cache_bytes(repo_id) if repo_id else 0
+            # A LOCAL pipeline path isn't in the HF blob cache, so sum its on-disk weights
+            # (transformer included) instead of folding to zero and skipping offload.
+            local_repo = Path(repo_id).expanduser() if repo_id else None
+            if local_repo is not None and local_repo.is_dir():
+                cached = self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
+            else:
+                cached = self._cache_bytes(repo_id) if repo_id else 0
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             companion_mib = None
@@ -1475,6 +1507,15 @@ class DiffusionBackend:
                     fit = min(1.0, max_side / max(tw_f, th_f))
                     tw = max(16, int(round(tw_f * fit / 16.0)) * 16)
                     th = max(16, int(round(th_f * fit / 16.0)) * 16)
+                    # After the absolute cap, the target must still exceed the input, or
+                    # "upscale" would shrink it (e.g. a 3000px source at 2x clamps to 2048).
+                    # Reject rather than silently return a smaller image than uploaded.
+                    if max(tw, th) <= max(iw, ih):
+                        raise ValueError(
+                            f"Upscale would not enlarge this image: its longest side "
+                            f"({max(iw, ih)}px) already meets the {max_side}px output limit. "
+                            f"Use a smaller source image."
+                        )
                     init_pil = init_pil.resize((tw, th), Image.LANCZOS)
                     if strength is None:
                         # Hires-fix default: low enough to preserve content, high enough to
@@ -1671,6 +1712,10 @@ class DiffusionBackend:
         # bit-identical dequant. Idempotent.
         gguf_compile.uninstall_all()
         if state.eager_patched:
+            # Lazy import (torch at module level) to keep diffusion.py torch-free to import.
+            from .diffusion_eager_patches import uninstall_patches
+            from .diffusion_arch_patches import uninstall_arch_patches
+
             uninstall_patches()
             uninstall_arch_patches()
         # Drop the workflow pipes built around this load's modules so they don't pin the
