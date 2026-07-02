@@ -1825,6 +1825,53 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
     assert _FakeTransformer.last["path"]  # GGUF path used
 
 
+def test_transformer_quant_unsupported_scheme_skips_dense_download(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # An explicit unsupported scheme (select_transformer_quant_scheme -> None) must fail
+    # the dense path BEFORE materialising the multi-GB dense transformer, then fall back
+    # to GGUF -- otherwise the download runs under the load lock during finalization
+    # after the old model was already evicted, only to fail at quantize.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: None)
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+
+    @classmethod
+    def _fp_fail(cls, *a, **k):
+        pytest.fail("dense transformer must not download when the scheme is unsupported")
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None  # fell back to GGUF
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file used
+
+
+def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
+    # A LOCAL diffusers base: sum the on-disk VAE / text-encoder weights so auto memory
+    # planning sees the resident companions, but exclude transformer/ (the GGUF supplies
+    # it) and non-weight files. A folded-to-zero companion could OOM a resident plan.
+    (tmp_path / "vae").mkdir()
+    (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x" * 100)
+    (tmp_path / "text_encoder").mkdir()
+    (tmp_path / "text_encoder" / "model.safetensors").write_bytes(b"y" * 50)
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"z" * 9999)
+    (tmp_path / "model_index.json").write_bytes(b"{}")  # non-weight file, ignored
+    total = DiffusionBackend._companion_cache_bytes(str(tmp_path))
+    assert total == 150  # vae + text_encoder only; transformer/ and json excluded
+
+
 def test_reset_step_cache_helper_is_best_effort():
     # Calls the transformer's reset hook when present.
     calls = []

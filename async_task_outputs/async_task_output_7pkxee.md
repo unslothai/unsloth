@@ -1,0 +1,1 @@
+- Asked GGUF/diffusers CPU speed

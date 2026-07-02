@@ -1,0 +1,1 @@
+- Goal: benchmark `sd.cpp` vs ComfyUI

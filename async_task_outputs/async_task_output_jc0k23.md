@@ -1,0 +1,11 @@
+- Decision: served `wt-allprs` because branch `diffusion-all-prs` integrates stacked PRs `#6769`, `#6771`, `#6772`, `#6773` plus fixes including `e21700031`; verified HEAD is `929b8d8b3` with clean tree.
+- Decision: rebuilt frontend dist before relaunch so latest frontend commits were baked in.
+- Files changed: frontend build output regenerated under `/mnt/disks/unslothai/ubuntu/workspace_81/wt-allprs/studio/frontend/dist`, key asset `dist/assets/images--i_whlNR.js`.
+- Commands run: in `/mnt/disks/unslothai/ubuntu/workspace_81/wt-allprs`, `git branch --show-current`, `git status --porcelain`, `git log --oneline -12`; key output `diffusion-all-prs`, clean relevant status, HEAD log includes `929b8d8b3`.
+- Commands run: in `/mnt/disks/unslothai/ubuntu/workspace_81/wt-allprs/studio/frontend`, `npx vite build`; exit `0`, output `✓ built in 1.95s`.
+- Commands run: killed old `run.py --host 127.0.0.1 --port 8898` and `cloudflared`; command exit `144`, noted as `SIGURG` artifact, kill succeeded.
+- Commands run: curl readiness on `http://127.0.0.1:8898/`; before relaunch `000down`, after relaunch `200` after about `10s`.
+- Relaunched backend from `/mnt/disks/unslothai/ubuntu/workspace_81/wt-allprs/studio/backend`; log `/mnt/disks/unslothai/ubuntu/workspace_81/logs/studio_relaunch_20260701_102325.log`.
+- Verified tunnel `https://whenever-satisfaction-advertising-sunny.trycloudflare.com`; single listener on `:8898`.
+- Verified auth with `unsloth` / `diffusion-Thrg7s3tr1-UoGYq`; `login OK`, token len `127`, LoRA and ControlNet endpoints `200`, image backend `loaded = False`.
+- COMPLETED: Studio relaunched and ready with all stacked diffusion changes plus session fixes. PENDING: user testing, then next item likely SDXL or LoRA catalog.

@@ -1,0 +1,5 @@
+- Built `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/accuracy_lpips.py`; LPIPS vs bf16 satisfied 25/50% rule.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/comfy_bench.py` for `flux.2-klein,z-image`.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/outputs/FINAL_engine_comparison.md`.
+- Key results: ours GPU beats ComfyUI 3.8-7.9x; CPU `sd.cpp` 60.3s vs diffusers 98.5s vs ComfyUI 102.4s.
+- Errors: `/dev/null` and `/tmp/oi.json` blocked by sandbox; resolved with workspace paths. `pkill` exited 144 but confirmed `comfy procs: 0`.
