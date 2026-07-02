@@ -95,26 +95,31 @@ def sanitize_alias(raw: str) -> str:
 
 
 def _scan_local() -> list[LoraCatalogEntry]:
-    entries: list[LoraCatalogEntry] = []
     root = loras_dir()
     try:
         children = sorted(root.iterdir())
     except OSError:
-        return entries
-    for p in children:
-        if not p.is_file():
-            continue
+        return []
+    files = [p for p in children if p.is_file() and p.suffix.lower() in _ALL_EXTS]
+    # Two files that share a stem but differ in extension (foo.safetensors + foo.gguf)
+    # would collide on id (== stem), so the frontend select value and resolve_one's
+    # id->entry lookup could only ever address one of them. Disambiguate a colliding
+    # stem by keeping the full filename as the id; a unique stem stays the clean stem.
+    stem_counts: dict[str, int] = {}
+    for p in files:
+        stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
+    entries: list[LoraCatalogEntry] = []
+    for p in files:
         ext = p.suffix.lower()
-        if ext not in _ALL_EXTS:
-            continue
         try:
             size = p.stat().st_size
         except OSError:
             size = 0
+        entry_id = p.name if stem_counts.get(p.stem, 0) > 1 else p.stem
         entries.append(
             LoraCatalogEntry(
-                id = p.stem,
-                display_name = p.stem,
+                id = entry_id,
+                display_name = entry_id,
                 source = "local",
                 fmt = "gguf" if ext == ".gguf" else "safetensors",
                 local_path = str(p),
@@ -157,6 +162,9 @@ def resolve_one(
     shared xet-fallback helper. Raises FileNotFoundError/ValueError on an unresolvable or
     unsupported id -- the caller maps that to a clear 400.
     """
+    # An empty / whitespace token sent verbatim to HfApi triggers an auth error instead
+    # of falling back to anonymous access; normalise it to None.
+    hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
     entry = _catalog_by_id().get(spec_id)
     if entry is not None:
         if entry.source == "local":
@@ -176,6 +184,17 @@ def resolve_one(
     if "/" in spec_id:
         repo_id, _, weight_name = spec_id.partition(":")
         weight_name = weight_name or None
+        if weight_name is not None:
+            # A client-supplied weight file must stay a plain filename inside the repo:
+            # reject traversal / absolute paths so it can never resolve outside the HF
+            # cache dir once handed to the downloader.
+            if (
+                ".." in weight_name
+                or weight_name.startswith(("/", "\\", "~"))
+                or "\\" in weight_name
+                or os.path.isabs(weight_name)
+            ):
+                raise ValueError(f"invalid LoRA weight file path '{weight_name}'")
         if weight_name is None:
             weight_name = _pick_repo_weight_file(repo_id, hf_token)
         ext = os.path.splitext(weight_name)[1].lower()
@@ -218,12 +237,19 @@ def resolve_specs(
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> list[ResolvedLora]:
-    """Resolve request (id, weight) pairs, dropping zero-weight entries."""
+    """Resolve request (id, weight) pairs, dropping zero-weight entries.
+
+    A stale / unknown id raises FileNotFoundError inside resolve_one; convert it to
+    ValueError so the route (which maps only ValueError to a 400) reports bad client
+    input instead of a generic 500."""
     out: list[ResolvedLora] = []
-    for spec_id, weight in specs:
-        if weight == 0:
-            continue
-        out.append(resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event))
+    try:
+        for spec_id, weight in specs:
+            if weight == 0:
+                continue
+            out.append(resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event))
+    except FileNotFoundError as exc:
+        raise ValueError(str(exc)) from exc
     return out
 
 
@@ -265,20 +291,27 @@ _TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
 
 
 def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
-    """Append `<lora:ALIAS:WEIGHT>` tags to the prompt, skipping any the user already typed.
+    """Append `<lora:ALIAS:WEIGHT>` tags for the selected adapters, using the backend-
+    validated weights.
 
     sd-cli strips these tags before they reach the model, so appending them is safe and
-    deterministic. Duplicate protection: if the prompt already contains a tag for the same
-    alias, we don't add a second one.
+    deterministic. A selected adapter's weight is validated (0-2) and recorded in the
+    request/gallery, so the injected tag must WIN over any `<lora:ALIAS:...>` the user
+    typed for that same alias: strip a user tag whose alias matches a selected adapter,
+    then append the validated one. Tags for aliases the user typed that are NOT selected
+    are left untouched (free-form use).
     """
-    existing = {m.group(1) for m in _TAG_RE.finditer(prompt)}
-    tags = [
-        f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved if r.alias not in existing
-    ]
+    selected = {r.alias for r in resolved}
+    # Drop any user-typed tag whose alias is one of the selected adapters, so the typed
+    # weight can't override the validated weight (or slip outside the 0-2 bounds).
+    cleaned = _TAG_RE.sub(lambda m: "" if m.group(1) in selected else m.group(0), prompt)
+    # Collapse whitespace left by stripped tags without disturbing the user's text.
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
     if not tags:
-        return prompt
-    sep = "" if not prompt or prompt.endswith(" ") else " "
-    return f"{prompt}{sep}{' '.join(tags)}"
+        return cleaned
+    sep = "" if not cleaned or cleaned.endswith(" ") else " "
+    return f"{cleaned}{sep}{' '.join(tags)}"
 
 
 def _fmt_weight(w: float) -> str:
