@@ -588,7 +588,6 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
             str(SEED),
             "-c",
             "256",
-            "-no-cnv",
             "--no-warmup",
         ]
         try:
@@ -597,8 +596,8 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                 capture_output = True,
                 text = True,
                 timeout = reload_timeout,
-                # Hand llama-cli an immediate EOF so -no-cnv can't leave it blocked on stdin.
-                stdin = subprocess.DEVNULL,
+                # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
+                input = "/exit\n",
             )
         except subprocess.TimeoutExpired as exc:
 
