@@ -58,7 +58,7 @@ import {
 } from "@/features/chat/api/chat-api";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { TTS_AUDIO_TYPES, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
-import { VoiceOrb } from "@/components/assistant-ui/voice-orb";
+import { ORB_IDLE_GRADIENT, VoiceOrb, orbConfig } from "@/components/assistant-ui/voice-orb";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
@@ -142,8 +142,8 @@ import {
   GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
-  PhoneIcon,
   PlusIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -3817,22 +3817,61 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   );
 };
 
-// Phone button shown in the composer only while voice mode is being configured
-// (opened from the + menu). Clicking it enters the voice ball; VoiceEngine picks
-// up the store transition to "active" and starts the mic loop.
-const StartVoiceModeButton: FC = () => {
+// Composer voice control, shown once voice is opened from the + menu. It is a
+// mini version of the orb whose color mirrors the full orb's state:
+//   - configuring (loop not started): grey mini orb; click starts the loop.
+//   - active + minimized (chat visible): colored mini orb (listening/thinking/
+//     speaking); click re-opens the full orb.
+//   - active + full orb showing: a "back to chat" icon; click minimizes the orb
+//     so you can read/use the chat while speech-to-speech keeps running.
+const VoiceControlButton: FC = () => {
   const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
+  const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
   const setVoiceMode = useChatRuntimeStore((s) => s.setVoiceMode);
-  if (voiceMode !== "configuring") return null;
+  const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
+
+  if (voiceMode === "off") return null;
+
+  // Full orb is showing: offer to minimize it back to the chat view.
+  if (voiceMode === "active" && !collapsed) {
+    return (
+      <TooltipIconButton
+        tooltip="Back to chat"
+        aria-label="Back to chat"
+        variant="ghost"
+        className="size-8 rounded-full text-foreground"
+        onClick={() => setVoiceOrbCollapsed(true)}
+      >
+        <MessageSquareIcon className="size-5" />
+      </TooltipIconButton>
+    );
+  }
+
+  const active = voiceMode === "active";
+  const gradient =
+    active && orbState ? orbConfig[orbState].gradient : ORB_IDLE_GRADIENT;
+  const tooltip = active ? "Open voice orb" : "Start voice mode";
+
   return (
     <TooltipIconButton
-      tooltip="Start voice mode"
-      aria-label="Start voice mode"
+      tooltip={tooltip}
+      aria-label={tooltip}
       variant="ghost"
-      className="size-8 rounded-full text-primary"
-      onClick={() => setVoiceMode("active")}
+      className="size-8 rounded-full"
+      onClick={() => {
+        setVoiceOrbCollapsed(false);
+        if (!active) setVoiceMode("active");
+      }}
     >
-      <PhoneIcon className="size-5" />
+      <span
+        aria-hidden
+        className={cn(
+          "size-4 rounded-full transition-colors",
+          active && orbState === "speaking" && "animate-pulse",
+        )}
+        style={{ background: gradient }}
+      />
     </TooltipIconButton>
   );
 };
@@ -3864,7 +3903,7 @@ const ComposerRightControls: FC<{
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       <VoiceEngine />
-      <StartVoiceModeButton />
+      <VoiceControlButton />
       <ComposerPrimitive.If dictation={false}>
         <ComposerPrimitive.Dictate asChild={true}>
           <TooltipIconButton

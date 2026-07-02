@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
 import { useEffect, type FC } from "react";
 
-const orbConfig = {
+export const orbConfig = {
   listening: {
     gradient: "radial-gradient(circle at 40% 35%, #34d399, #059669)",
     animation: "voice-orb-breathe",
@@ -28,8 +28,16 @@ const orbConfig = {
   },
 } as const;
 
+// Grey gradient for the mini orb when the voice loop isn't running yet.
+export const ORB_IDLE_GRADIENT =
+  "radial-gradient(circle at 40% 35%, #9ca3af, #4b5563)";
+
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
+  // Minimized: the loop keeps running (orbState stays set, Esc still exits) but
+  // the full-screen overlay is hidden so the chat is visible underneath.
+  const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
+  const showOverlay = Boolean(orbState) && !collapsed;
 
   const cfg = orbState ? orbConfig[orbState] : null;
 
@@ -74,12 +82,12 @@ export const VoiceOrb: FC = () => {
           // clicks pass through.
           "absolute inset-0 z-30 flex items-center justify-center bg-background",
           "transition-opacity duration-500",
-          orbState
+          showOverlay
             ? "pointer-events-auto opacity-100"
             : "pointer-events-none opacity-0",
         )}
       >
-        {orbState && (
+        {showOverlay && (
           <button
             type="button"
             onClick={() => requestVoiceToggle()}

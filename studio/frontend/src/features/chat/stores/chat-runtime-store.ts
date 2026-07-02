@@ -724,6 +724,9 @@ type ChatRuntimeStore = {
   selectedMicDeviceId: string | null;
   /** Derived orb state written by VoiceToggle; consumed by VoiceOrb. */
   voiceOrbState: "listening" | "thinking" | "speaking" | null;
+  /** When voice mode is active, whether the full-screen orb is minimized so the
+   *  chat is visible while speech-to-speech keeps running. Not persisted. */
+  voiceOrbCollapsed: boolean;
   hydratePersistedSettings: () => Promise<void>;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
   setSelectedVoiceModelId: (id: string | null) => void;
@@ -731,6 +734,7 @@ type ChatRuntimeStore = {
   setSelectedSttModelId: (id: string | null) => void;
   setSelectedMicDeviceId: (id: string | null) => void;
   setVoiceOrbState: (state: "listening" | "thinking" | "speaking" | null) => void;
+  setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -1151,6 +1155,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
   selectedMicDeviceId: loadString(CHAT_MIC_DEVICE_ID_KEY, "") || null,
   voiceOrbState: null,
+  voiceOrbCollapsed: false,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1188,8 +1193,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  setVoiceMode: (voiceMode) => set({ voiceMode }),
+  setVoiceMode: (voiceMode) =>
+    // Leaving voice mode always resets the minimized/collapsed orb view so the
+    // next session starts expanded.
+    set(voiceMode === "off" ? { voiceMode, voiceOrbCollapsed: false } : { voiceMode }),
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
+  setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
   setSelectedVoiceModelId: (selectedVoiceModelId) =>
     set(() => {
       saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");
