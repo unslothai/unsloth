@@ -56,6 +56,24 @@ def test_can_resume_run_rejects_errored_run_without_checkpoint(monkeypatch):
     assert resume.can_resume_run(_stopped_run(status = "error")) is False
 
 
+def test_can_resume_run_allows_errored_run_at_final_step(monkeypatch):
+    # A save-time crash records final_step == total_steps; resuming re-runs
+    # the final-save path from the checkpoint.
+    monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
+
+    run = _stopped_run(status = "error", final_step = 10, total_steps = 10)
+
+    assert resume.can_resume_run(run) is True
+
+
+def test_can_resume_run_rejects_stopped_run_at_final_step(monkeypatch):
+    monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
+
+    run = _stopped_run(final_step = 10, total_steps = 10)
+
+    assert resume.can_resume_run(run) is False
+
+
 def test_can_resume_run_rejects_s3_dataset_source(monkeypatch):
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
