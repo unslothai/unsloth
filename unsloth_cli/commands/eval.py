@@ -273,6 +273,7 @@ def resolve_tasks(
 ) -> Tuple[List[str], List[str]]:
     names: List[str] = []
     include_paths: List[str] = []
+    sibling_names: set = set()
 
     def _add_include(directory: str) -> None:
         if directory not in include_paths:
@@ -298,7 +299,13 @@ def resolve_tasks(
             name = spec.get("task")
             if isinstance(name, list):
                 # a group file (group: suite, task: [a, b]) is registered
-                # under its group name
+                # under its group name; its child task names are taken too,
+                # so later dataset entries must not generate a clashing task
+                for child in name:
+                    if isinstance(child, str):
+                        sibling_names.add(child)
+                    elif isinstance(child, dict) and child.get("task"):
+                        sibling_names.add(str(child["task"]))
                 name = spec.get("group")
                 if not name:
                     raise ValueError(
@@ -343,9 +350,16 @@ def resolve_tasks(
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
             gen_dir = Path(tmp_dir) / "generated"
-            # names picked so far count as taken too (foo.yaml + foo.jsonl)
+            # names picked so far count as taken too (foo.yaml + foo.jsonl),
+            # as do child tasks declared by a group yaml
             names.append(
-                make_jsonl_task(path, input_key, target_key, gen_dir, reserved | frozenset(names))
+                make_jsonl_task(
+                    path,
+                    input_key,
+                    target_key,
+                    gen_dir,
+                    reserved | frozenset(names) | frozenset(sibling_names),
+                )
             )
             _add_include(str(gen_dir.resolve()))
 
@@ -462,6 +476,18 @@ def evaluate(
         # lm-eval treats a negative count as zero-shot while recording the
         # bogus value in the results metadata
         typer.echo("Error: --num-fewshot must be >= 0.", err = True)
+        raise typer.Exit(code = 2)
+
+    if limit is not None and limit <= 0:
+        # lm-eval reads values below 1 as a dataset fraction: 0 builds no
+        # requests and crashes, negatives take an unintended slice
+        typer.echo("Error: --limit must be a positive integer.", err = True)
+        raise typer.Exit(code = 2)
+
+    if max_seq_length <= 0:
+        # HFLM treats a falsy 0 as unset (silently dropping the cap) and
+        # uses negatives in truncation arithmetic
+        typer.echo("Error: --max-seq-length must be a positive integer.", err = True)
         raise typer.Exit(code = 2)
 
     if not _lm_eval_available():

@@ -274,6 +274,22 @@ def test_resolve_tasks_uniquifies_colliding_dataset_stems(tmp_path):
     assert spec_b["task"] == "qa_2"
 
 
+def test_resolve_tasks_reserves_group_child_names_for_datasets(tmp_path):
+    (tmp_path / "suite.yaml").write_text(
+        yaml.safe_dump({"group": "suite", "task": ["qa", {"task": "qa_inline"}]})
+    )
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(
+        f"{tmp_path / 'suite.yaml'},{tmp_path / 'qa.jsonl'}", "question", "answer", tmp_dir
+    )
+
+    # the dataset must not generate a task shadowing the suite's child 'qa'
+    assert names == ["suite", "qa_2"]
+    assert (tmp_dir / "generated" / "qa_2.yaml").exists()
+
+
 def test_resolve_tasks_invalid_yaml_raises(tmp_path):
     task_file = tmp_path / "broken.yaml"
     task_file.write_text("task: [unclosed")
@@ -971,6 +987,29 @@ def test_eval_hf_allows_multi_process_launch(fake_eval_env, tmp_path, monkeypatc
         ],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_eval_rejects_nonpositive_limit_and_max_seq_length(fake_eval_env, tmp_path):
+    for flag, bad, message in (
+        ("--limit", "0", "--limit must be a positive integer"),
+        ("--limit", "-5", "--limit must be a positive integer"),
+        ("--max-seq-length", "0", "--max-seq-length must be a positive integer"),
+        ("--max-seq-length", "-1", "--max-seq-length must be a positive integer"),
+    ):
+        result = CliRunner().invoke(
+            _eval_app(),
+            [
+                "fake/model",
+                "--tasks",
+                "gsm8k",
+                flag,
+                bad,
+                "--output-dir",
+                str(tmp_path / "out"),
+            ],
+        )
+        assert result.exit_code == 2, (flag, bad, result.output)
+        assert message in result.output, (flag, bad, result.output)
 
 
 def test_eval_rejects_negative_num_fewshot(fake_eval_env, tmp_path):
