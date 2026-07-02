@@ -413,7 +413,6 @@ def _make_lora_optimizer(params: list, lr: float) -> Any:
     if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") not in ("1", "true"):
         try:
             import bitsandbytes as bnb
-
             return bnb.optim.AdamW8bit(params, lr = lr)
         except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
             pass

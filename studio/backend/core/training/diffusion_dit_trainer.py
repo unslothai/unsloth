@@ -45,8 +45,14 @@ from core.training.diffusion_train_common import (
 # also carry added-kv projections; Z-Image is single-stream. Kept here (not in the generic
 # DEFAULT_LORA_TARGETS) because they are architecture-specific.
 _FLUX_TARGETS = (
-    "to_q", "to_k", "to_v", "to_out.0",
-    "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out",
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out.0",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
 )
 _QWEN_TARGETS = _FLUX_TARGETS
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
@@ -128,7 +134,6 @@ def _encoders_to_device(pipe, device) -> None:
 def _bnb_4bit_config():
     from diffusers import BitsAndBytesConfig as DiffusersBnb
     import torch
-
     return DiffusersBnb(
         load_in_4bit = True,
         bnb_4bit_quant_type = "nf4",
@@ -147,7 +152,6 @@ def _repo_is_prequantized(base_model: str) -> bool:
 def _load_quantized_transformer(transformer_cls, cfg):
     """Load ``cfg.base_model``'s transformer subfolder as a trainable nf4 QLoRA module."""
     import torch
-
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
@@ -171,7 +175,9 @@ def _flux_load(cfg, device, weight_dtype, qlora):
             token = cfg.hf_token,
         )
         pipe = FluxPipeline.from_pretrained(
-            cfg.base_model, transformer = transformer, torch_dtype = torch.bfloat16,
+            cfg.base_model,
+            transformer = transformer,
+            torch_dtype = torch.bfloat16,
             token = cfg.hf_token,
         )
     else:
@@ -191,7 +197,10 @@ def _flux_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, pooled, text_ids = pipe.encode_prompt(
-                prompt = cap, prompt_2 = cap, device = device, num_images_per_prompt = 1,
+                prompt = cap,
+                prompt_2 = cap,
+                device = device,
+                num_images_per_prompt = 1,
                 max_sequence_length = 512,
             )
             out.append((pe.cpu(), pooled.cpu(), text_ids.cpu()))
@@ -233,7 +242,6 @@ def _flux_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
 
 def _flux_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import FluxPipeline
-
     FluxPipeline.save_lora_weights(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
@@ -265,7 +273,9 @@ def _qwen_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, mask = pipe.encode_prompt(
-                prompt = cap, device = device, num_images_per_prompt = 1,
+                prompt = cap,
+                device = device,
+                num_images_per_prompt = 1,
                 max_sequence_length = 1024,
             )
             out.append((pe.cpu(), mask.cpu() if mask is not None else None))
@@ -311,7 +321,6 @@ def _qwen_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
 
 def _qwen_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import QwenImagePipeline
-
     QwenImagePipeline.save_lora_weights(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
@@ -342,7 +351,9 @@ def _zimage_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, _neg = pipe.encode_prompt(
-                prompt = cap, device = device, do_classifier_free_guidance = False,
+                prompt = cap,
+                device = device,
+                do_classifier_free_guidance = False,
                 max_sequence_length = 512,
             )
             # pe is a list of one variable-length [seq, 2560] tensor per prompt.
@@ -353,7 +364,6 @@ def _zimage_encode_prompts(pipe, captions, device):
 
 def _zimage_encode_latents(vae, pixel_values):
     import torch
-
     with torch.no_grad():
         lat = vae.encode(pixel_values.to(torch.float32)).latent_dist.mode()
     return (lat - vae.config.shift_factor) * vae.config.scaling_factor
@@ -374,7 +384,6 @@ def _zimage_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, de
 
 def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import ZImagePipeline
-
     ZImagePipeline.save_lora_weights(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
@@ -384,19 +393,34 @@ def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
 
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
-        family = "flux.1", lora_targets = _FLUX_TARGETS, force_bf16 = False,
-        load = _flux_load, encode_prompts = _flux_encode_prompts,
-        encode_latents = _flux_encode_latents, forward = _flux_forward, save = _flux_save,
+        family = "flux.1",
+        lora_targets = _FLUX_TARGETS,
+        force_bf16 = False,
+        load = _flux_load,
+        encode_prompts = _flux_encode_prompts,
+        encode_latents = _flux_encode_latents,
+        forward = _flux_forward,
+        save = _flux_save,
     ),
     "qwen-image": _FamilySpec(
-        family = "qwen-image", lora_targets = _QWEN_TARGETS, force_bf16 = True,
-        load = _qwen_load, encode_prompts = _qwen_encode_prompts,
-        encode_latents = _qwen_encode_latents, forward = _qwen_forward, save = _qwen_save,
+        family = "qwen-image",
+        lora_targets = _QWEN_TARGETS,
+        force_bf16 = True,
+        load = _qwen_load,
+        encode_prompts = _qwen_encode_prompts,
+        encode_latents = _qwen_encode_latents,
+        forward = _qwen_forward,
+        save = _qwen_save,
     ),
     "z-image": _FamilySpec(
-        family = "z-image", lora_targets = _ZIMAGE_TARGETS, force_bf16 = True,
-        load = _zimage_load, encode_prompts = _zimage_encode_prompts,
-        encode_latents = _zimage_encode_latents, forward = _zimage_forward, save = _zimage_save,
+        family = "z-image",
+        lora_targets = _ZIMAGE_TARGETS,
+        force_bf16 = True,
+        load = _zimage_load,
+        encode_prompts = _zimage_encode_prompts,
+        encode_latents = _zimage_encode_latents,
+        forward = _zimage_forward,
+        save = _zimage_save,
     ),
 }
 
@@ -499,8 +523,9 @@ def run_dit_lora_training(
     _emit(on_event, "model_load_started", num_images = len(pairs))
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
-        _emit(on_event, "complete", output_dir = str(out_dir), lora_path = None,
-              stopped = True, steps_run = 0)
+        _emit(
+            on_event, "complete", output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0
+        )
         return str(out_dir)
 
     # QLoRA by default for the big DiTs (nf4 transformer). The prequant Qwen/Z-Image repos
@@ -537,7 +562,6 @@ def run_dit_lora_training(
         # inputs do not require grad, which happens with a frozen 4-bit base).
         import functools
         import torch.utils.checkpoint as _ckpt
-
         transformer.enable_gradient_checkpointing(
             gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
         )
@@ -562,9 +586,13 @@ def run_dit_lora_training(
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
             i = rng.randrange(len(image_paths))
-            px = _load_pixel_tensor(
-                image_paths[i], cfg.resolution, cfg.center_crop, cfg.random_flip, rng
-            ).unsqueeze(0).to(device)
+            px = (
+                _load_pixel_tensor(
+                    image_paths[i], cfg.resolution, cfg.center_crop, cfg.random_flip, rng
+                )
+                .unsqueeze(0)
+                .to(device)
+            )
             latents = spec.encode_latents(vae, px).to(weight_dtype)
 
             noise = torch.randn_like(latents)
@@ -574,7 +602,8 @@ def run_dit_lora_training(
 
             emb = caption_embeds[captions[i]]
             emb_dev = tuple(
-                t.to(device = device, dtype = weight_dtype) if (t is not None and t.is_floating_point())
+                t.to(device = device, dtype = weight_dtype)
+                if (t is not None and t.is_floating_point())
                 else (t.to(device) if t is not None else None)
                 for t in emb
             )
@@ -607,12 +636,18 @@ def run_dit_lora_training(
                 peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
             sps = round(
                 (done * cfg.train_batch_size * cfg.gradient_accumulation_steps)
-                / max(time.time() - t_start, 1e-6), 3,
+                / max(time.time() - t_start, 1e-6),
+                3,
             )
             _emit(
-                on_event, "progress", step = done, total_steps = cfg.train_steps,
-                loss = round(step_loss, 5), avg_loss = round(running_loss / done, 5),
-                learning_rate = cfg.learning_rate, samples_per_second = sps,
+                on_event,
+                "progress",
+                step = done,
+                total_steps = cfg.train_steps,
+                loss = round(step_loss, 5),
+                avg_loss = round(running_loss / done, 5),
+                learning_rate = cfg.learning_rate,
+                samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,
             )
         if _check_stop():
@@ -629,9 +664,15 @@ def run_dit_lora_training(
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         catalog_path = _publish_to_lora_catalog(lora_path, cfg)
     _emit(
-        on_event, "complete", output_dir = str(out_dir), lora_path = lora_path,
-        catalog_path = catalog_path, family = cfg.resolved_family, base_model = cfg.base_model,
-        stopped = stopped, steps_run = done if cfg.train_steps else 0,
+        on_event,
+        "complete",
+        output_dir = str(out_dir),
+        lora_path = lora_path,
+        catalog_path = catalog_path,
+        family = cfg.resolved_family,
+        base_model = cfg.base_model,
+        stopped = stopped,
+        steps_run = done if cfg.train_steps else 0,
     )
     return str(out_dir)
 
@@ -640,10 +681,8 @@ def _make_optimizer(params, lr):
     """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy
     regression for LoRA -- else the torch AdamW fallback."""
     import torch
-
     try:
         import bitsandbytes as bnb
-
         return bnb.optim.AdamW8bit(params, lr = lr)
     except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
         return torch.optim.AdamW(params, lr = lr)
@@ -652,8 +691,14 @@ def _make_optimizer(params, lr):
 def _free_text_encoders(pipe) -> None:
     """Drop every text-encoder / tokenizer the pipeline holds, so the (large) encoders do
     not sit in VRAM during training. The embeddings are already precomputed."""
-    for attr in ("text_encoder", "text_encoder_2", "text_encoder_3", "tokenizer",
-                 "tokenizer_2", "tokenizer_3"):
+    for attr in (
+        "text_encoder",
+        "text_encoder_2",
+        "text_encoder_3",
+        "tokenizer",
+        "tokenizer_2",
+        "tokenizer_3",
+    ):
         if getattr(pipe, attr, None) is not None:
             try:
                 setattr(pipe, attr, None)
