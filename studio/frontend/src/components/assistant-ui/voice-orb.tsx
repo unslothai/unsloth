@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { requestVoiceToggle } from "@/components/assistant-ui/thread";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
@@ -40,26 +39,29 @@ export const ORB_IDLE_GRADIENT =
 
 export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
-  // Minimized: the loop keeps running (orbState stays set, Esc still exits) but
-  // the full-screen overlay is hidden so the chat is visible underneath.
+  // Minimized: the loop keeps running (orbState stays set) but the full-screen
+  // overlay is hidden so the chat is visible underneath.
   const collapsed = useChatRuntimeStore((s) => s.voiceOrbCollapsed);
+  const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const showOverlay = Boolean(orbState) && !collapsed;
 
   const cfg = orbState ? orbConfig[orbState] : null;
 
-  // Esc disables voice mode, but only while the orb is active — the listener is
-  // attached only when orbState is set, so it never fires globally.
+  // Esc only minimizes the orb back to chat -- it does NOT stop voice mode. The
+  // single place to turn voice off is the + menu's Voice toggle, so exiting the
+  // orb view is never confused with ending the session. Listener attached only
+  // while the overlay is showing.
   useEffect(() => {
-    if (!orbState) return;
+    if (!showOverlay) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        requestVoiceToggle();
+        setVoiceOrbCollapsed(true);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [orbState]);
+  }, [showOverlay, setVoiceOrbCollapsed]);
 
   return (
     <>
@@ -96,8 +98,9 @@ export const VoiceOrb: FC = () => {
         {showOverlay && (
           <button
             type="button"
-            onClick={() => requestVoiceToggle()}
-            aria-label="Exit voice mode"
+            onClick={() => setVoiceOrbCollapsed(true)}
+            aria-label="Back to chat"
+            title="Back to chat (voice keeps running)"
             className={cn(
               "pointer-events-auto absolute right-4 top-4 flex size-9 items-center justify-center",
               "rounded-full text-foreground/90 transition-colors",
