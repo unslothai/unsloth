@@ -365,7 +365,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                   <Checkbox
                     checked={fitOnDeviceOnly}
                     onCheckedChange={(v) => onFitOnDeviceOnlyChange(v === true)}
-                    className="size-3.5"
+                    className="size-3.5 rounded-full [&_svg]:!size-2.5"
                     aria-label="Only show models that fit"
                   />
                   Only show models that fit

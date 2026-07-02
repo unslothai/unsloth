@@ -2331,7 +2331,7 @@ export function HubModelPicker({
       <Checkbox
         checked={fitOnDeviceOnly}
         onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
-        className="size-3.5"
+        className="size-3.5 rounded-full [&_svg]:!size-2.5"
         aria-label="Only show models that fit"
       />
       Only show models that fit
