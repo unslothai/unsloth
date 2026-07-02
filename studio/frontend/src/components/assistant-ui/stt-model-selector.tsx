@@ -144,7 +144,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="menu-soft-surface w-[300px] rounded-lg border-0 p-1.5 ring-0"
+        className="menu-soft-surface w-[300px] gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
         <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Listen with
