@@ -48,6 +48,7 @@ export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
 const CHAT_STT_ENGINE_KEY = "unsloth_chat_stt_engine";
 const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
+const CHAT_MIC_DEVICE_ID_KEY = "unsloth_chat_mic_device_id";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -717,6 +718,10 @@ type ChatRuntimeStore = {
   /** Which on-device Whisper model id to transcribe with when sttEngine is
    *  "whisper"; null falls back to the backend's default. Persisted. */
   selectedSttModelId: string | null;
+  /** mediaDevices deviceId the voice loop's mic capture should use; null lets the
+   *  browser pick the default input. Set it to a headset mic so the loop doesn't
+   *  listen to a speaker/loopback device (e.g. Discord bleed). Persisted. */
+  selectedMicDeviceId: string | null;
   /** Derived orb state written by VoiceToggle; consumed by VoiceOrb. */
   voiceOrbState: "listening" | "thinking" | "speaking" | null;
   hydratePersistedSettings: () => Promise<void>;
@@ -724,6 +729,7 @@ type ChatRuntimeStore = {
   setSelectedVoiceModelId: (id: string | null) => void;
   setSttEngine: (engine: "browser" | "whisper") => void;
   setSelectedSttModelId: (id: string | null) => void;
+  setSelectedMicDeviceId: (id: string | null) => void;
   setVoiceOrbState: (state: "listening" | "thinking" | "speaking" | null) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1143,6 +1149,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   sttEngine:
     loadString(CHAT_STT_ENGINE_KEY, "browser") === "whisper" ? "whisper" : "browser",
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
+  selectedMicDeviceId: loadString(CHAT_MIC_DEVICE_ID_KEY, "") || null,
   voiceOrbState: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
@@ -1197,6 +1204,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId ?? "");
       return { selectedSttModelId };
+    }),
+  setSelectedMicDeviceId: (selectedMicDeviceId) =>
+    set(() => {
+      saveString(CHAT_MIC_DEVICE_ID_KEY, selectedMicDeviceId ?? "");
+      return { selectedMicDeviceId };
     }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>

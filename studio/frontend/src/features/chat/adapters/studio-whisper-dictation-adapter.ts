@@ -203,8 +203,17 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
 
     void (async () => {
       try {
+        // Pin capture to the user-chosen input device when set, so the loop
+        // listens to their headset mic and not a loopback / "Stereo Mix" /
+        // default-communications device that mixes in system/app audio (e.g.
+        // Discord). null -> browser default.
+        const micDeviceId = useChatRuntimeStore.getState().selectedMicDeviceId;
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
+          },
         });
         if (ended) {
           teardown();

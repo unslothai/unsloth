@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, CloudIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MicIcon } from "lucide-react";
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { splitRepoLabel } from "./model-selector/row-meta";
@@ -30,6 +30,60 @@ interface SttModelSelectorProps {
 
 const BROWSER_ENGINE_ID = null;
 const BROWSER_ENGINE_LABEL = "Browser";
+
+// Input-device picker: pins the voice-loop mic to a specific device so it
+// captures the user's headset mic and not a loopback / "Stereo Mix" / default-
+// communications device that mixes in system/app audio (e.g. a Discord call).
+// Applies to the Whisper capture path; the browser Web Speech API can't target a
+// device, so it's a no-op there. Device labels are only populated once mic
+// permission has been granted; before that they read as generic names.
+const MicDevicePicker: FC = () => {
+  const selectedMicDeviceId = useChatRuntimeStore((s) => s.selectedMicDeviceId);
+  const setSelectedMicDeviceId = useChatRuntimeStore((s) => s.setSelectedMicDeviceId);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const enumerate = () => {
+      navigator.mediaDevices
+        ?.enumerateDevices()
+        .then((all) => {
+          if (cancelled) return;
+          setDevices(all.filter((d) => d.kind === "audioinput"));
+        })
+        .catch(() => {});
+    };
+    enumerate();
+    navigator.mediaDevices?.addEventListener?.("devicechange", enumerate);
+    return () => {
+      cancelled = true;
+      navigator.mediaDevices?.removeEventListener?.("devicechange", enumerate);
+    };
+  }, []);
+
+  if (devices.length === 0) return null;
+
+  return (
+    <>
+      <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+      <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Microphone
+      </div>
+      <select
+        value={selectedMicDeviceId ?? ""}
+        onChange={(e) => setSelectedMicDeviceId(e.target.value || null)}
+        className="mx-1 mb-1 w-[calc(100%-0.5rem)] rounded-md bg-transparent px-2 py-1.5 text-sm outline-none ring-1 ring-black/[0.12] focus:ring-black/25 dark:ring-white/[0.12] dark:focus:ring-white/25"
+      >
+        <option value="">Default input</option>
+        {devices.map((d, i) => (
+          <option key={d.deviceId || i} value={d.deviceId}>
+            {d.label || `Microphone ${i + 1}`}
+          </option>
+        ))}
+      </select>
+    </>
+  );
+};
 
 // Speech-to-text picker, split out from the TTS ("Speak with") picker so each
 // can grey out independently -- listening stays available even when the
@@ -169,6 +223,8 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
             No Whisper models on device. Download one from the model dropdown.
           </p>
         )}
+
+        <MicDevicePicker />
       </PopoverContent>
     </Popover>
   );
