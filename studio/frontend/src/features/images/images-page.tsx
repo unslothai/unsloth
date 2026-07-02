@@ -1015,7 +1015,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
-        if (!cancelled) setAvailableLoras([]);
+        if (cancelled) return;
+        // Clear the SELECTED adapters too, not just the options: leaving a stale `loras`
+        // selection in state (with the picker now hidden/empty) would still be posted by
+        // handleGenerate and could apply adapters from the previous model, or fail.
+        setAvailableLoras([]);
+        setLoras([]);
       });
     return () => {
       cancelled = true;
@@ -2074,7 +2079,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 )}
                 {loras.map((sel, i) => (
                   <div
-                    key={i}
+                    key={sel.id || i}
                     className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                   >
                     <div className="flex items-center gap-2">
@@ -2148,7 +2153,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
             >
               <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
-                <Select value={controlnetId} onValueChange={setControlnetId}>
+                <Select value={controlnetId || undefined} onValueChange={setControlnetId}>
                   <SelectTrigger className="h-8 w-full text-xs">
                     <SelectValue placeholder="Select a ControlNet" />
                   </SelectTrigger>

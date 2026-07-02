@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from core.inference import diffusion_lora
 from core.inference.diffusion import (
     DiffusionBackend,
@@ -70,7 +72,8 @@ def test_sdxl_base_repos_are_trusted_non_gguf():
     # Official safetensors-only base repos are allowlisted so their catalog entries load.
     assert _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-base-1.0")
     assert _is_trusted_diffusion_repo("stabilityai/sdxl-turbo")
-    assert _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-refiner-1.0")
+    # The refiner is img2img-only and is intentionally NOT allowlisted (see
+    # test_sdxl_refiner_not_trusted).
     # Case-insensitive match.
     assert _is_trusted_diffusion_repo("StabilityAI/SDXL-Turbo")
     # A random repo (even one that detects as SDXL) is NOT trusted for a non-GGUF load.
@@ -100,9 +103,11 @@ class _FakeVae:
 
 def test_align_vae_dtype_uses_unet_denoiser():
     # For SDXL the denoiser lives at pipe.unet; _align_vae_dtype must read it (a pipe
-    # with only .unet and no .transformer) and cast the VAE to the U-Net's dtype.
+    # with only .unet and no .transformer) and cast the VAE to the U-Net's dtype. The
+    # dtype is read from a parameter (denoiser has no .dtype), so use a _FakeVae denoiser.
     vae = _FakeVae(dtype = "float32")
-    pipe = types.SimpleNamespace(unet = types.SimpleNamespace(dtype = "bfloat16"), vae = vae)
+    unet = _FakeVae(dtype = "bfloat16")
+    pipe = types.SimpleNamespace(unet = unet, vae = vae)
     DiffusionBackend._align_vae_dtype(pipe, "unet")
     assert vae.moved_to == "bfloat16"
 
@@ -110,7 +115,8 @@ def test_align_vae_dtype_uses_unet_denoiser():
 def test_align_vae_dtype_transformer_default_unchanged():
     # DiT default: reads pipe.transformer; a pipe with no transformer is a safe no-op.
     vae = _FakeVae(dtype = "float32")
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = "bfloat16"), vae = vae)
+    transformer = _FakeVae(dtype = "bfloat16")
+    pipe = types.SimpleNamespace(transformer = transformer, vae = vae)
     DiffusionBackend._align_vae_dtype(pipe)
     assert vae.moved_to == "bfloat16"
     # No denoiser attribute -> no-op (does not raise, does not move the VAE).
@@ -147,3 +153,39 @@ def test_pipeline_prefetch_skips_non_torch_artifacts():
     assert not keep("unet/flax_model.msgpack")
     assert not keep("vae_decoder/model.onnx_data")
     assert not keep("assets/preview.png")
+
+
+def test_sdxl_refiner_not_trusted():
+    # The refiner is an img2img-only pipeline; the sdxl family loads every repo as the
+    # base txt2img pipeline, so the refiner must NOT be allowlisted for a non-GGUF load.
+    assert not _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-refiner-1.0")
+    # The base and turbo remain trusted.
+    assert _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-base-1.0")
+    assert _is_trusted_diffusion_repo("stabilityai/sdxl-turbo")
+
+
+def test_sdxl_gguf_load_rejected_up_front():
+    # SDXL has no transformer-only GGUF variant (its single file is the whole pipeline),
+    # so a GGUF request must fail cheap validation before the GPU handoff.
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "no GGUF"):
+        backend.validate_load_request(
+            "some-org/my-sdxl.gguf", gguf_filename = "my-sdxl.gguf", family_override = "sdxl"
+        )
+
+
+def test_base_config_filter_skips_weights():
+    # For a whole-pipeline single file, the base repo supplies only config/tokenizer, not
+    # its (unused) weight tensors.
+    from core.inference.diffusion import _base_config_file_downloaded as keep
+
+    assert keep("model_index.json")
+    assert keep("text_encoder/config.json")
+    assert keep("tokenizer/vocab.json")
+    assert keep("scheduler/scheduler_config.json")
+    assert not keep("unet/diffusion_pytorch_model.safetensors")
+    assert not keep("vae/diffusion_pytorch_model.bin")
+    assert not keep("text_encoder/model.onnx")
+    # transformer/ and assets/ stay excluded (inherited from _base_file_downloaded).
+    assert not keep("transformer/config.json")
+    assert not keep("assets/x.png")
