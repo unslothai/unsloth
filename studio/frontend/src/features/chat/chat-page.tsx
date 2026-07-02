@@ -1296,7 +1296,7 @@ export function ChatPage({
   );
   const [voiceSlotLoading, setVoiceSlotLoading] = useState(false);
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
-  const [cachedSpeechT5Models, setCachedSpeechT5Models] = useState<LoraModelOption[]>([]);
+  const [cachedQwenTtsModels, setCachedQwenTtsModels] = useState<LoraModelOption[]>([]);
   const [cachedWhisperModels, setCachedWhisperModels] = useState<LoraModelOption[]>([]);
   const cachedGgufsFetchedRef = useRef(false);
   const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
@@ -1437,10 +1437,10 @@ export function ChatPage({
     // model picker, not here. GGUF-only: spark's a safetensors LLM checkpoint
     // and could never load via /voice/load anyway.
     const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts"];
-    // SpeechT5 is safetensors (not GGUF) but has its own in-process transformers
-    // voice backend (speecht5_backend.py), so it's listed separately from the
+    // Qwen3-TTS is safetensors (not GGUF) but has its own in-process transformers
+    // voice backend (qwen_tts_backend.py), so it's listed separately from the
     // GGUF set from the cached-models (safetensors) scan.
-    const SPEECHT5_REPO_KEYWORDS = ["speecht5", "speech-t5", "speech_t5"];
+    const QWEN_TTS_REPO_KEYWORDS = ["qwen3-tts", "qwen3_tts", "qwen-tts"];
     const WHISPER_REPO_KEYWORDS = ["whisper"];
     const lower = (s: string) => s.toLowerCase();
     const toOption = (repoId: string, isGguf: boolean): LoraModelOption => ({
@@ -1464,9 +1464,9 @@ export function ChatPage({
       .then((r) => (r.ok ? r.json() : { cached: [] }))
       .then((data: { cached: { repo_id: string }[] }) => {
         const cached = data.cached ?? [];
-        setCachedSpeechT5Models(
+        setCachedQwenTtsModels(
           cached
-            .filter((c) => SPEECHT5_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            .filter((c) => QWEN_TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
             .map((c) => toOption(c.repo_id, false)),
         );
         setCachedWhisperModels(
@@ -2472,16 +2472,36 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
-  // GGUF TTS voices (llama-server voice slot) + SpeechT5 (its own in-process
+  // GGUF TTS voices (llama-server voice slot) + Qwen3-TTS (its own in-process
   // transformers backend). A safetensors-only repo like a freshly-downloaded
   // Spark-TTS checkpoint is still excluded -- /voice/load can't run it, it
-  // needs a GGUF variant first -- but SpeechT5 has a real backend so it's in.
+  // needs a GGUF variant first -- but Qwen3-TTS has a real backend so it's in.
+  // The canonical 0.6B Qwen3-TTS checkpoints are always offered (downloaded on
+  // first load if not cached): CustomVoice has premade speakers and works out
+  // of the box; Base is voice-cloning and needs a configured reference clip.
   const ttsModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = loraModels.filter((m) =>
       STANDALONE_TTS_AUDIO_TYPES.has(m.audioType ?? ""),
     );
-    return [...fromLoras, ...cachedGgufs, ...cachedSpeechT5Models];
-  }, [loraModels, cachedGgufs, cachedSpeechT5Models]);
+    const QWEN_TTS_DEFAULTS: LoraModelOption[] = [
+      {
+        id: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        name: "Qwen3-TTS-0.6B-CustomVoice",
+        isGguf: false,
+      },
+      {
+        id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        name: "Qwen3-TTS-0.6B-Base (voice clone)",
+        isGguf: false,
+      },
+    ];
+    const cachedIds = new Set(cachedQwenTtsModels.map((m) => m.id));
+    const qwenTts = [
+      ...cachedQwenTtsModels,
+      ...QWEN_TTS_DEFAULTS.filter((d) => !cachedIds.has(d.id)),
+    ];
+    return [...fromLoras, ...cachedGgufs, ...qwenTts];
+  }, [loraModels, cachedGgufs, cachedQwenTtsModels]);
 
   const sttModels = useMemo<LoraModelOption[]>(
     () => cachedWhisperModels,

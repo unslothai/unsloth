@@ -2261,6 +2261,27 @@ def _is_speecht5_identifier(model_identifier: str) -> bool:
     return any(kw in lower for kw in _SPEECHT5_REPO_KEYWORDS)
 
 
+# Voice slot — in-process Qwen3-TTS (transformers speech-LLM via qwen-tts pkg)
+_qwen_tts_voice_backend = None
+
+# repo_id keyword match for routing /voice/load to the in-process Qwen3-TTS
+# backend (e.g. Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice).
+_QWEN_TTS_REPO_KEYWORDS = ("qwen3-tts", "qwen3_tts", "qwen-tts")
+
+
+def get_qwen_tts_backend():
+    global _qwen_tts_voice_backend
+    if _qwen_tts_voice_backend is None:
+        from core.inference.qwen_tts_backend import QwenTTSVoiceBackend
+        _qwen_tts_voice_backend = QwenTTSVoiceBackend()
+    return _qwen_tts_voice_backend
+
+
+def _is_qwen_tts_identifier(model_identifier: str) -> bool:
+    lower = model_identifier.lower()
+    return any(kw in lower for kw in _QWEN_TTS_REPO_KEYWORDS)
+
+
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
     16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
@@ -3362,13 +3383,42 @@ async def voice_load_model(
 
     model_identifier = request.model_path.strip()
 
-    # SpeechT5 is a transformers TTS model (not GGUF) with its own in-process
+    # Qwen3-TTS is a transformers speech-LLM (not GGUF) with its own in-process
     # backend; route it before the GGUF-only resolution below.
-    if _is_speecht5_identifier(model_identifier):
-        # Mutually exclusive with the GGUF voice slot -- one voice model at a time.
+    if _is_qwen_tts_identifier(model_identifier):
+        # Mutually exclusive with the other voice slots -- one voice at a time.
         gguf_voice_backend = get_voice_llama_backend()
         if gguf_voice_backend.is_active:
             await asyncio.to_thread(gguf_voice_backend.unload_model)
+        speecht5_backend = get_speecht5_backend()
+        if speecht5_backend.is_loaded:
+            await asyncio.to_thread(speecht5_backend.unload_model)
+
+        qwen_tts_backend = get_qwen_tts_backend()
+        try:
+            await asyncio.to_thread(qwen_tts_backend.load_model, model_identifier)
+        except Exception as e:
+            logger.error("Qwen3-TTS voice load error: %s", e, exc_info = True)
+            raise HTTPException(
+                status_code = 500, detail = f"Failed to load Qwen3-TTS voice model: {e}"
+            )
+        logger.info("Voice slot loaded (Qwen3-TTS): %s", model_identifier)
+        return {
+            "status": "loaded",
+            "model": model_identifier,
+            "audio_type": "qwen3_tts",
+        }
+
+    # SpeechT5 is a transformers TTS model (not GGUF) with its own in-process
+    # backend; route it before the GGUF-only resolution below.
+    if _is_speecht5_identifier(model_identifier):
+        # Mutually exclusive with the other voice slots -- one voice at a time.
+        gguf_voice_backend = get_voice_llama_backend()
+        if gguf_voice_backend.is_active:
+            await asyncio.to_thread(gguf_voice_backend.unload_model)
+        qwen_tts_backend = get_qwen_tts_backend()
+        if qwen_tts_backend.is_loaded:
+            await asyncio.to_thread(qwen_tts_backend.unload_model)
 
         speecht5_backend = get_speecht5_backend()
         try:
@@ -3385,10 +3435,13 @@ async def voice_load_model(
             "audio_type": "speecht5",
         }
 
-    # Mutually exclusive with the SpeechT5 voice slot -- unload it before a GGUF load.
+    # Mutually exclusive with the in-process voice slots -- unload before a GGUF load.
     speecht5_backend = get_speecht5_backend()
     if speecht5_backend.is_loaded:
         await asyncio.to_thread(speecht5_backend.unload_model)
+    qwen_tts_backend = get_qwen_tts_backend()
+    if qwen_tts_backend.is_loaded:
+        await asyncio.to_thread(qwen_tts_backend.unload_model)
 
     voice_backend = get_voice_llama_backend()
 
@@ -3486,7 +3539,14 @@ async def voice_load_model(
 
 @router.post("/voice/unload")
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
-    """Unload whatever model is in the voice slot (GGUF or SpeechT5)."""
+    """Unload whatever model is in the voice slot (GGUF, SpeechT5, or Qwen3-TTS)."""
+    qwen_tts_backend = get_qwen_tts_backend()
+    if qwen_tts_backend.is_loaded:
+        model_id = qwen_tts_backend.model_identifier
+        qwen_tts_backend.unload_model()
+        logger.info("Voice slot unloaded (Qwen3-TTS): %s", model_id)
+        return {"status": "unloaded", "model": model_id}
+
     speecht5_backend = get_speecht5_backend()
     if speecht5_backend.is_loaded:
         model_id = speecht5_backend.model_identifier
@@ -3509,7 +3569,16 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
 
 @router.get("/voice/status")
 async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
-    """Return the current state of the voice slot (GGUF or SpeechT5)."""
+    """Return the current state of the voice slot (GGUF, SpeechT5, or Qwen3-TTS)."""
+    qwen_tts_backend = get_qwen_tts_backend()
+    if qwen_tts_backend.is_loaded:
+        return {
+            "loaded": True,
+            "loading": False,
+            "model": qwen_tts_backend.model_identifier,
+            "audio_type": "qwen3_tts",
+        }
+
     speecht5_backend = get_speecht5_backend()
     if speecht5_backend.is_loaded:
         return {

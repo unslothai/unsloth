@@ -78,6 +78,7 @@ async def create_speech(
     """
     from routes.inference import (
         get_llama_cpp_backend,
+        get_qwen_tts_backend,
         get_speecht5_backend,
         get_voice_llama_backend,
     )
@@ -87,12 +88,16 @@ async def create_speech(
     if not text:
         raise HTTPException(status_code = 400, detail = "input must not be empty.")
 
-    # Priority: SpeechT5 voice slot → GGUF voice slot → main llama slot → transformers backend
+    # Priority: in-process voice slots (Qwen3-TTS, SpeechT5) → GGUF voice slot
+    # → main llama slot → transformers backend
+    qwen_tts_backend = get_qwen_tts_backend()
     speecht5_backend = get_speecht5_backend()
     voice_backend = get_voice_llama_backend()
     llama_backend = get_llama_cpp_backend()
 
-    if speecht5_backend.is_loaded:
+    if qwen_tts_backend.is_loaded:
+        gen = lambda: qwen_tts_backend.generate_audio_response(text = text)
+    elif speecht5_backend.is_loaded:
         gen = lambda: speecht5_backend.generate_audio_response(text = text)
     elif voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
         gen = lambda: voice_backend.generate_audio_response(
