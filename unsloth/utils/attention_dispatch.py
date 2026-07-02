@@ -34,11 +34,31 @@ if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
 
-# xformers kernels (FA3, FA2, cutlass) only support compute capability <= 9.0.
-# Disable xformers on newer GPUs (e.g. RTX 5070 Ti / sm_120) and fall back to SDPA.
+
+def _xformers_runs_on_device() -> bool:
+    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    try:
+        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = torch.bfloat16)
+        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+        xformers_attention(q, q, q, attn_bias = attn_bias)
+        return True
+    except Exception:
+        return False
+
+
+def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+    # The shipped xformers wheels carry no native kernels for the newest GPUs (sm_120,
+    # e.g. RTX 50-series); there the op runs only if its cutlass kernel JIT-compiles
+    # forward from PTX, which some builds manage and some don't. Below sm_120 xformers
+    # is always supported, so skip the probe; at sm_120+ run one real forward and fall
+    # back to SDPA only when it genuinely can't run, instead of guessing by version.
+    if capability[0] < 12:
+        return False
+    return not probe()
+
+
 if HAS_XFORMERS and torch.cuda.is_available():
-    _cc = torch.cuda.get_device_capability()
-    if _cc[0] >= 12:
+    if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
