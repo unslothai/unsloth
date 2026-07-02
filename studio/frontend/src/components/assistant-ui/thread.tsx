@@ -2772,17 +2772,20 @@ const VoiceEngine: FC = () => {
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
+  const voiceTranscribing = useChatRuntimeStore((s) => s.voiceTranscribing);
   useEffect(() => {
     if (voiceMode !== "active")     { setVoiceOrbState(null); return; }
     // Voice slot still loading (can take a while) -> lilac so it's clearly not
     // ready to listen yet.
     if (voiceSlotLoading)           { setVoiceOrbState("synthesizing"); return; }
-    if (isThreadRunning)            { setVoiceOrbState("thinking"); return; }
+    // Transcribing your speech, or the LLM writing its reply -> amber (working),
+    // so the orb isn't sitting green while Whisper churns.
+    if (voiceTranscribing || isThreadRunning) { setVoiceOrbState("thinking"); return; }
     // TTS session active but no clip playing yet = still synthesizing (lilac).
     if (isSpeaking && !isPlaying)   { setVoiceOrbState("synthesizing"); return; }
     if (isSpeaking)                 { setVoiceOrbState("speaking"); return; }
     setVoiceOrbState("listening");
-  }, [voiceMode, voiceSlotLoading, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
+  }, [voiceMode, voiceSlotLoading, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
 
   // Helper: transition to "active" and start the mic.
   const activateLoop = useCallback(() => {

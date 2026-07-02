@@ -213,14 +213,23 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         form.append("file", wav, "speech.wav");
         const modelId = useChatRuntimeStore.getState().selectedSttModelId;
         if (modelId) form.append("model", modelId);
-        const response = await authFetch("/api/audio/transcribe", {
-          method: "POST",
-          body: form,
-        });
-        if (ended) return;
-        if (!response.ok) throw new Error(`Transcription failed (${response.status})`);
-        const data = (await response.json()) as { text?: string };
-        const transcript = (data.text ?? "").trim();
+        // Flag transcribing so the orb shows a processing state (not idle green)
+        // while Whisper runs -- the first call can take many seconds on ROCm.
+        const store = useChatRuntimeStore.getState();
+        store.setVoiceTranscribing(true);
+        let transcript = "";
+        try {
+          const response = await authFetch("/api/audio/transcribe", {
+            method: "POST",
+            body: form,
+          });
+          if (ended) return;
+          if (!response.ok) throw new Error(`Transcription failed (${response.status})`);
+          const data = (await response.json()) as { text?: string };
+          transcript = (data.text ?? "").trim();
+        } finally {
+          store.setVoiceTranscribing(false);
+        }
         if (transcript) {
           // Fake a streaming reveal: replay the transcript as growing interim
           // results so the composer types it out char-by-char (like Web Speech),
