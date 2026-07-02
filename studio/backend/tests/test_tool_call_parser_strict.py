@@ -402,7 +402,7 @@ def test_final_strip_removes_magistral_think_reasoning():
     text = "[THINK]The user greeted me, I should say hi.[/THINK]Hello! How can I help?"
     assert strip_tool_markup(text, final = True) == "Hello! How can I help?"
     # A ``[TOOL_CALLS]`` living inside the reasoning goes with it.
-    with_call = "[THINK]Maybe I should search.[/THINK][TOOL_CALLS]search{\"q\":\"x\"}"
+    with_call = '[THINK]Maybe I should search.[/THINK][TOOL_CALLS]search{"q":"x"}'
     assert strip_tool_markup(with_call, final = True) == ""
 
 
