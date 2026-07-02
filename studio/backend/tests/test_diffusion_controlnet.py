@@ -45,6 +45,26 @@ def test_resolve_controlnet_rejects_filesystem_like_ids():
             dc.resolve_controlnet(bad)
 
 
+def test_resolve_controlnet_enforces_family_match():
+    # A curated entry tagged for another family must be rejected before download so it
+    # never reaches the wrong ControlNet pipeline class.
+    with pytest.raises(ValueError, match = "not the"):
+        dc.resolve_controlnet("qwen-union", family = "flux.1")
+    # The matching family resolves fine, and no family (unfiltered) is permissive.
+    assert dc.resolve_controlnet("qwen-union", family = "qwen-image").path
+    assert dc.resolve_controlnet("qwen-union").path
+
+
+def test_union_control_mode_maps_only_union_entries():
+    # Union entries map a known control type to its integer mode; passthrough / unknown
+    # types and non-union ids return None so the caller omits control_mode.
+    assert dc.union_control_mode("flux-union-pro", "canny") == 0
+    assert dc.union_control_mode("flux-union-pro", "depth") == 2
+    assert dc.union_control_mode("flux-union-pro", "pose") == 4
+    assert dc.union_control_mode("flux-union-pro", "passthrough") is None
+    assert dc.union_control_mode("some/bare-repo", "canny") is None
+
+
 def test_resolve_controlnet_local(tmp_path, monkeypatch):
     d = tmp_path / "controlnets"
     d.mkdir()
