@@ -225,12 +225,26 @@ class _FakeService:
         }
 
 
+class _FakeLLMBackend:
+    def __init__(self, active = False):
+        self._active = active
+
+    def is_training_active(self):
+        return self._active
+
+
 @pytest.fixture
 def client(monkeypatch):
     fake = _FakeService()
     monkeypatch.setattr(
         "core.training.diffusion_training_service.get_diffusion_training_service", lambda: fake
     )
+    # Neutralize the LLM interlock + GPU-free for the wiring tests (their own tests below
+    # exercise those behaviors). The route imports get_training_backend at module scope.
+    import routes.training as tr
+
+    monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = False))
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
@@ -239,10 +253,11 @@ def client(monkeypatch):
     return c
 
 
+# Studio-relative paths: the route resolves/contains them before spawn.
 _BODY = {
     "base_model": "stabilityai/sdxl-turbo",
-    "data_dir": "/data",
-    "output_dir": "/out",
+    "data_dir": "uploads/my-images",
+    "output_dir": "my-lora-run",
     "train_steps": 10,
 }
 
@@ -252,6 +267,35 @@ def test_route_start_ok(client):
     assert r.status_code == 200, r.text
     assert r.json() == {"job_id": "job-123", "status": "running"}
     assert client._fake.started_with["base_model"] == "stabilityai/sdxl-turbo"
+    # Paths were resolved to absolute Studio-contained locations before spawn.
+    from pathlib import Path
+
+    assert Path(client._fake.started_with["data_dir"]).is_absolute()
+    assert Path(client._fake.started_with["output_dir"]).is_absolute()
+
+
+def test_route_start_forwards_extra_training_knobs(client):
+    # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
+    body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
+    r = client.post("/api/train/diffusion/start", json = body)
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["max_grad_norm"] == 0.5
+    assert client._fake.started_with["lora_target_modules"] == ["to_q", "to_v"]
+
+
+def test_route_start_rejects_uncontained_paths(client):
+    # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
+    assert r.status_code == 400
+
+
+def test_route_start_blocked_by_active_llm_training(client, monkeypatch):
+    import routes.training as tr
+
+    monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = True))
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 409
+    assert "LLM training" in r.json()["detail"]
 
 
 def test_route_start_missing_required_is_422(client):

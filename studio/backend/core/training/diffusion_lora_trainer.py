@@ -43,7 +43,9 @@ _CAPTION_EXTS = (".txt", ".caption")
 DEFAULT_LORA_FILENAME = "pytorch_lora_weights.safetensors"
 
 EventCb = Callable[[dict[str, Any]], None]
-StopCb = Callable[[], bool]
+# Returns a falsy value to keep training, or a truthy stop signal: bare True, or a dict
+# that may carry ``save=False`` to cancel without saving a partial adapter.
+StopCb = Callable[[], Any]
 
 
 @dataclass
@@ -83,7 +85,10 @@ class DiffusionLoraConfig:
 
     def normalized(self) -> "DiffusionLoraConfig":
         """Return a copy with derived/validated fields filled in. Raises ValueError on a
-        request that cannot train (bad numbers, or no caption source)."""
+        request that cannot train (bad numbers, or no caption source).
+
+        Also coerces values that arrive as strings/blanks through the Studio config path
+        (``learning_rate`` is preserved as a string there; ``hf_token`` defaults to "")."""
         if self.train_steps < 1:
             raise ValueError("train_steps must be >= 1")
         if self.train_batch_size < 1:
@@ -92,13 +97,35 @@ class DiffusionLoraConfig:
             raise ValueError("gradient_accumulation_steps must be >= 1")
         if self.lora_rank < 1:
             raise ValueError("lora_rank must be >= 1")
+        if self.lora_alpha is not None and self.lora_alpha < 1:
+            raise ValueError(
+                "lora_alpha must be >= 1 (a zero/negative alpha scales the adapter to nothing)"
+            )
         if self.resolution < 64 or self.resolution % 8 != 0:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
+        # learning_rate can arrive as a string ("1e-4") from the Studio config path, which
+        # preserves it as a string after validation; coerce so AdamW receives a float.
+        try:
+            learning_rate = float(self.learning_rate)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"learning_rate must be a number, got {self.learning_rate!r}") from exc
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
-        return replace(self, lora_alpha = alpha, lora_target_modules = targets)
+        # A blank Hub token (the Studio default when none is configured) must load
+        # anonymously, not as an explicit empty credential.
+        token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
+        return replace(
+            self,
+            learning_rate = learning_rate,
+            lora_alpha = alpha,
+            lora_target_modules = targets,
+            max_grad_norm = float(self.max_grad_norm),
+            hf_token = token or None,
+        )
 
 
 def discover_image_caption_pairs(
@@ -172,7 +199,8 @@ def discover_image_caption_pairs(
 def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int, int]:
     """SDXL micro-conditioning ``add_time_ids`` for a square ``resolution`` train crop:
     (original_h, original_w, crop_top, crop_left, target_h, target_w). Pure; the trainer
-    turns it into a tensor. No crop offset is applied (top-left = 0)."""
+    turns it into a tensor. No crop offset is applied (top-left = 0). The training loop
+    derives per-image time-ids from the actual crop instead; this is the square default."""
     return (resolution, resolution, 0, 0, resolution, resolution)
 
 
@@ -183,30 +211,42 @@ def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
 
 def _load_image_tensor(
     path: str, resolution: int, center_crop: bool, random_flip: bool, rng: random.Random
-) -> Any:
+) -> tuple[Any, tuple[int, int, int, int, int, int]]:
     """Load an image to a normalised CxHxW tensor in [-1, 1] (resize shorter side to
-    ``resolution``, crop to a square, optional horizontal flip). No torchvision."""
+    ``resolution``, crop to a square, optional horizontal flip). No torchvision.
+
+    Returns ``(tensor, add_time_ids)`` where add_time_ids is the SDXL micro-conditioning
+    (original_h, original_w, crop_top, crop_left, target_h, target_w) for THIS sample, so
+    the U-Net is told the real original size and crop offset (not a fixed uncropped
+    square). EXIF orientation is applied first so rotated phone photos train upright."""
     import numpy as np
     import torch
-    from PIL import Image
+    from PIL import Image, ImageOps
 
-    img = Image.open(path).convert("RGB")
-    w, h = img.size
-    scale = resolution / min(w, h)
-    img = img.resize(
-        (max(resolution, round(w * scale)), max(resolution, round(h * scale))), Image.LANCZOS
-    )
-    w, h = img.size
+    # Honour EXIF orientation before any geometry, or rotated camera/phone photos would
+    # train in their stored (sideways) orientation, mismatched to their captions.
+    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    original_w, original_h = img.size
+    scale = resolution / min(original_w, original_h)
+    resized_w = max(resolution, round(original_w * scale))
+    resized_h = max(resolution, round(original_h * scale))
+    img = img.resize((resized_w, resized_h), Image.LANCZOS)
     if center_crop:
-        left, top = (w - resolution) // 2, (h - resolution) // 2
+        left, top = (resized_w - resolution) // 2, (resized_h - resolution) // 2
     else:
-        left = rng.randint(0, max(0, w - resolution))
-        top = rng.randint(0, max(0, h - resolution))
+        left = rng.randint(0, max(0, resized_w - resolution))
+        top = rng.randint(0, max(0, resized_h - resolution))
     img = img.crop((left, top, left + resolution, top + resolution))
+    crop_left = left
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        # A horizontal flip mirrors the crop's left origin, so report the mirrored offset
+        # (diffusers' SDXL training scripts do the same) to keep the conditioning honest.
+        crop_left = max(0, resized_w - resolution - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
-    return torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
+    tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
+    time_ids = (original_h, original_w, top, crop_left, resolution, resolution)
+    return tensor, time_ids
 
 
 def _encode_sdxl_prompts(
@@ -236,6 +276,19 @@ def _encode_sdxl_prompts(
     return prompt_embeds, pooled
 
 
+def _assert_trusted_base_model(base_model: str) -> None:
+    """Gate the training base model the same way the inference backend gates non-GGUF loads:
+    a local path or a trusted repo (``unsloth/*`` or an allowlisted official base). This runs
+    BEFORE ``from_pretrained`` so an untrusted remote repo (which could ship pickle weights)
+    is never fetched or deserialised."""
+    from core.inference.diffusion import _is_trusted_diffusion_repo
+    if not _is_trusted_diffusion_repo(base_model):
+        raise ValueError(
+            f"Refusing to train from untrusted base model '{base_model}'. Use a local path or "
+            f"a trusted repo (an unsloth/* repo or an official SDXL base)."
+        )
+
+
 def run_diffusion_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -246,7 +299,8 @@ def run_diffusion_lora_training(
 
     Emits ``model_load_started`` / ``model_load_completed`` / ``progress`` (step, loss) /
     ``complete`` (output_dir, lora_path) events via ``on_event``; ``error`` is emitted by
-    the process adapter. Honours ``should_stop`` between optimizer steps (partial save)."""
+    the process adapter. Honours ``should_stop`` (checked before model load and between
+    optimizer steps); a stop saves a partial adapter unless it carries ``save=False``."""
     import torch
     import torch.nn.functional as F
     from diffusers import DDPMScheduler, StableDiffusionXLPipeline
@@ -260,6 +314,21 @@ def run_diffusion_lora_training(
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
 
+    # A stop signal may be a bare truthy value or a dict carrying save=False (cancel without
+    # saving a partial adapter). ``save_on_stop`` records that decision for the export step.
+    save_on_stop = True
+
+    def _check_stop() -> bool:
+        nonlocal save_on_stop
+        if should_stop is None:
+            return False
+        sig = should_stop()
+        if not sig:
+            return False
+        if isinstance(sig, dict) and sig.get("save") is False:
+            save_on_stop = False
+        return True
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     precision = cfg.mixed_precision if device == "cuda" else "no"
     if precision == "bf16" and device == "cuda" and not torch.cuda.is_bf16_supported():
@@ -268,10 +337,27 @@ def run_diffusion_lora_training(
         precision = "fp16"
     weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
+    # Preflight the base model against the same trust gate as inference, before any fetch.
+    _assert_trusted_base_model(cfg.base_model)
+
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
     _emit(on_event, "model_load_started", num_images = len(pairs))
+
+    # Honour a stop requested before the (potentially large / slow) base model loads, the
+    # same way the LLM training worker checks its stop thread around model load.
+    if _check_stop():
+        out_dir = Path(cfg.output_dir).expanduser()
+        _emit(
+            on_event,
+            "complete",
+            output_dir = str(out_dir),
+            lora_path = None,
+            stopped = True,
+            steps_run = 0,
+        )
+        return str(out_dir)
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
         cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
@@ -312,9 +398,6 @@ def run_diffusion_lora_training(
         num_training_steps = cfg.train_steps * cfg.gradient_accumulation_steps,
     )
 
-    add_time_ids = torch.tensor(
-        [compute_sdxl_add_time_ids(cfg.resolution)], device = device, dtype = weight_dtype
-    )
     vae_scale = vae.config.scaling_factor
     prediction_type = noise_scheduler.config.prediction_type
 
@@ -334,12 +417,15 @@ def run_diffusion_lora_training(
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
             img_paths, captions = _next_batch()
-            pixel_values = torch.stack(
-                [
-                    _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
-                    for p in img_paths
-                ]
-            ).to(device, dtype = torch.float32)
+            loaded = [
+                _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
+                for p in img_paths
+            ]
+            pixel_values = torch.stack([t for t, _ in loaded]).to(device, dtype = torch.float32)
+            # Per-sample SDXL micro-conditioning from the actual crop (original size + offset).
+            batch_time_ids = torch.tensor(
+                [tid for _, tid in loaded], device = device, dtype = weight_dtype
+            )
 
             with torch.no_grad():
                 latents = vae.encode(pixel_values).latent_dist.sample() * vae_scale
@@ -357,7 +443,7 @@ def run_diffusion_lora_training(
             )
             prompt_embeds = prompt_embeds.to(dtype = weight_dtype)
             pooled = pooled.to(dtype = weight_dtype)
-            added = {"text_embeds": pooled, "time_ids": add_time_ids.repeat(bsz, 1)}
+            added = {"text_embeds": pooled, "time_ids": batch_time_ids}
 
             model_pred = unet(
                 noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
@@ -384,7 +470,10 @@ def run_diffusion_lora_training(
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
             micro += 1
 
-        torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
+        # max_grad_norm <= 0 means "disable clipping" (the Studio payload sends 0.0 for that);
+        # passing 0.0 to clip_grad_norm_ would scale every gradient to zero (no learning).
+        if cfg.max_grad_norm and cfg.max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
         optimizer.step()
         lr_sched.step()
 
@@ -404,30 +493,60 @@ def run_diffusion_lora_training(
                 learning_rate = lr_sched.get_last_lr()[0],
             )
 
-        if should_stop is not None and should_stop():
+        if _check_stop():
             stopped = True
             break
 
-    # Export the trained LoRA in diffusers format (loadable via load_lora_weights).
+    # Export the trained LoRA in diffusers format (loadable via load_lora_weights), unless
+    # the run was cancelled with save disabled -- then leave no partial adapter behind.
     out_dir = Path(cfg.output_dir).expanduser()
-    out_dir.mkdir(parents = True, exist_ok = True)
-    unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
-    StableDiffusionXLPipeline.save_lora_weights(
-        save_directory = str(out_dir),
-        unet_lora_layers = unet_lora,
-        safe_serialization = True,
-        weight_name = DEFAULT_LORA_FILENAME,
-    )
-    lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+    lora_path: Optional[str] = None
+    catalog_path: Optional[str] = None
+    if not (stopped and not save_on_stop):
+        out_dir.mkdir(parents = True, exist_ok = True)
+        unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+        StableDiffusionXLPipeline.save_lora_weights(
+            save_directory = str(out_dir),
+            unet_lora_layers = unet_lora,
+            safe_serialization = True,
+            weight_name = DEFAULT_LORA_FILENAME,
+        )
+        lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+        # Mirror into the Studio diffusion LoRA directory so the Images picker discovers it
+        # (its scan lists only files directly under loras/diffusion, not subdirectories).
+        catalog_path = _publish_to_lora_catalog(lora_path, cfg)
     _emit(
         on_event,
         "complete",
         output_dir = str(out_dir),
         lora_path = lora_path,
+        catalog_path = catalog_path,
         stopped = stopped,
         steps_run = done if cfg.train_steps else 0,
     )
     return str(out_dir)
+
+
+def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Optional[str]:
+    """Best-effort copy of the trained adapter into the Studio diffusion LoRA directory so
+    the Images LoRA picker (which scans only files directly under ``loras/diffusion``) finds
+    it without the user moving files. Returns the published path, or None on any failure."""
+    try:
+        import shutil
+
+        from core.inference.diffusion_lora import loras_dir, sanitize_alias
+
+        base = (
+            cfg.adapter_name
+            if cfg.adapter_name and cfg.adapter_name != "default"
+            else Path(cfg.output_dir).name
+        )
+        dest = loras_dir() / f"{sanitize_alias(base)}.safetensors"
+        if Path(lora_path).resolve() != dest.resolve():
+            shutil.copy2(lora_path, dest)
+        return str(dest)
+    except Exception:  # noqa: BLE001 -- the catalog mirror is best-effort, never fatal
+        return None
 
 
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -439,29 +558,72 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
     def on_event(ev: dict) -> None:
         event_queue.put(ev)
 
-    def should_stop() -> bool:
+    def should_stop() -> Any:
+        # Drain the queue and return the last stop message (bool True, or a dict that may
+        # carry save=False for cancel-without-save); False when nothing was requested.
+        got: Any = None
+        saw = False
         try:
             while not stop_queue.empty():
-                stop_queue.get_nowait()
-                return True
+                got = stop_queue.get_nowait()
+                saw = True
         except Exception:  # noqa: BLE001 -- an empty/closed queue just means "keep going"
             pass
-        return False
+        return got if saw else False
 
     try:
         cfg = _config_from_dict(config)
         run_diffusion_lora_training(cfg, on_event = on_event, should_stop = should_stop)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the parent as an error event
-        event_queue.put({"type": "error", "message": str(exc), "ts": time.time()})
+        # Emit both keys: the diffusion service reads ``message``, but the generic Studio
+        # training worker reads ``error``; carrying both keeps the real failure visible on
+        # either path instead of surfacing as "Unknown error".
+        event_queue.put(
+            {"type": "error", "message": str(exc), "error": str(exc), "ts": time.time()}
+        )
+
+
+# Aliases from the generic Studio training payload onto DiffusionLoraConfig fields, so the
+# diffusion trainer can also be driven by the shared training request shape (not only its
+# own request model whose keys already match).
+_CONFIG_ALIASES = {
+    "model_name": "base_model",
+    "max_steps": "train_steps",
+    "batch_size": "train_batch_size",
+    "lora_r": "lora_rank",
+    "lr_scheduler_type": "lr_scheduler",
+    "random_seed": "seed",
+    "lr": "learning_rate",
+}
+
+
+def _coerce_gradient_checkpointing(value: Any) -> bool:
+    """Studio sends gradient_checkpointing as a string ("none" / "true" / "unsloth"); the
+    disable words are False, anything else truthy is True. A real bool passes through."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "none", "false", "0", "no", "off")
+    return bool(value)
 
 
 def _config_from_dict(config: dict) -> DiffusionLoraConfig:
-    """Build a DiffusionLoraConfig from a plain dict, ignoring unknown keys so a richer
-    request payload (UI form) does not break construction."""
+    """Build a DiffusionLoraConfig from a plain dict. Unknown keys are ignored so a richer
+    request payload (UI form) does not break construction; a small set of generic Studio
+    training keys are aliased onto the diffusion field names, and string flags are coerced."""
     valid = DiffusionLoraConfig.__dataclass_fields__.keys()
-    kwargs = {k: v for k, v in config.items() if k in valid}
-    if "lora_target_modules" in kwargs and kwargs["lora_target_modules"]:
+    kwargs: dict[str, Any] = {}
+    # Aliases first (lowest priority); a canonical key present in the payload overrides.
+    for src, dst in _CONFIG_ALIASES.items():
+        if src in config and config[src] is not None and dst in valid:
+            kwargs[dst] = config[src]
+    for k, v in config.items():
+        if k in valid:
+            kwargs[k] = v
+    if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
+    if "gradient_checkpointing" in kwargs:
+        kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
+            kwargs["gradient_checkpointing"]
+        )
     return DiffusionLoraConfig(**kwargs)
 
 

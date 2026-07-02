@@ -991,24 +991,42 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [images, hasMore, selectedId, quant]);
 
   // Refresh the LoRA picker's suggestions when the loaded model (family) changes. A LoRA is
-  // trained for a specific base family, so a model swap invalidates the current selection --
-  // clear it (the user re-adds a suggestion or types a Hub repo id for the new family). We do
+  // trained for a specific base family, so a real model SWAP invalidates the current selection
+  // -- clear it then (the user re-adds a suggestion or types a Hub repo id for the new family).
+  // But do NOT clear on the first load or an unload: a user can restore a saved recipe (which
+  // sets loras) BEFORE the model finishes loading, and clearing on that load->capable
+  // transition would silently drop the restored adapters. We track the previously-loaded
+  // family in a ref and clear only when it changes to a different loaded family. We also do
   // NOT filter the selection against the discovered catalog: a valid pick can be a free-text
   // Hugging Face repo id that is not in the (often empty) curated list.
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
+  const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (!loraCapable) {
+      // Options are gone with the model, but keep the selection: it may have just been
+      // restored while the model is (re)loading. It is only SENT when loraCapable, and a
+      // real family swap below clears it.
       setAvailableLoras([]);
-      setLoras([]);
       return;
     }
-    setLoras([]);
+    const fam = status?.family ?? null;
+    const prev = prevLoraFamilyRef.current;
+    if (prev != null && prev !== fam) {
+      setLoras([]);
+    }
+    prevLoraFamilyRef.current = fam;
     let cancelled = false;
     listDiffusionLoras(status?.family ?? undefined)
       .then((list) => {
         if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
+        // Clear only the OPTIONS on a failed catalog refresh. Unlike the catalog-only
+        // picker below the stack, this free-text picker holds selections (bare HF repo
+        // ids) that are valid without being in the catalog; a transient refresh failure
+        // must not wipe them. Stale cross-family selections are already cleared by the
+        // family-swap check above, and hidden LoRAs are never sent (handleGenerate is
+        // gated on loraCapable).
         if (!cancelled) setAvailableLoras([]);
       });
     return () => {
@@ -1570,7 +1588,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           reference_images: condRefImages,
           // Drop empty (no id typed yet) and zero-weight rows, and trim hand-typed repo ids,
           // so the recipe records only adapters that actually applied. Empty -> omit entirely.
+          // Gate on loraCapable: a restore can leave adapters in state while the loaded model
+          // does not support LoRA (picker hidden), and sending them would fail generation with
+          // no visible row to remove.
           loras: (() => {
+            if (!loraCapable) return undefined;
             const active = loras
               .map((l) => ({ id: l.id.trim(), weight: l.weight }))
               .filter((l) => l.id && l.weight > 0);
@@ -2091,7 +2113,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 )}
                 {loras.map((sel, i) => (
                   <div
-                    key={i}
+                    key={sel.id || i}
                     className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                   >
                     <div className="flex items-center gap-2">
@@ -2165,7 +2187,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
             >
               <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
-                <Select value={controlnetId} onValueChange={setControlnetId}>
+                <Select value={controlnetId || undefined} onValueChange={setControlnetId}>
                   <SelectTrigger className="h-8 w-full text-xs">
                     <SelectValue placeholder="Select a ControlNet" />
                   </SelectTrigger>

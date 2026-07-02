@@ -159,6 +159,20 @@ async def start_training(
                 error = "Training already active",
             )
 
+        # A diffusion (SDXL) LoRA job runs in its own subprocess on the same GPU, so an
+        # LLM start must also refuse while one is active -- otherwise the two trainers
+        # contend for VRAM and both fail. Symmetric with the check in start_diffusion_training.
+        if _diffusion_training_active():
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    "A diffusion (Images) LoRA training job is already running. "
+                    "Stop it before starting an LLM training run."
+                ),
+                error = "Diffusion training already active",
+            )
+
         # Job ID; start_training() sets it on the backend only after the old
         # pump thread is dead.
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
@@ -1031,6 +1045,59 @@ async def stream_training_progress(
 # lifecycle (DB run rows, plots, transfer-to-chat-inference).
 
 
+def _diffusion_training_active() -> bool:
+    """Whether a diffusion (SDXL) LoRA job is currently running. Best-effort so the
+    interlock never blocks a start just because the service could not be imported."""
+    try:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        return get_diffusion_training_service().is_active()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _free_gpu_for_diffusion_training() -> None:
+    """Free GPU residents before the diffusion trainer spawns its own SDXL pipeline.
+
+    The trainer subprocess loads a full SDXL pipeline; an export worker, a resident
+    Images pipeline, or loaded chat models would otherwise keep their VRAM allocated and
+    OOM the run. Mirrors the LLM start path's pre-spawn cleanup (export + diffusion
+    pipeline + chat). Best-effort: a failure to free one resident never blocks the start."""
+    try:
+        from core.export import get_export_backend
+        exp_backend = get_export_backend()
+        if exp_backend.current_checkpoint or exp_backend.is_export_active():
+            logger.info("Shutting down export subprocess to free GPU memory for diffusion training")
+            exp_backend._shutdown_subprocess()
+            exp_backend.current_checkpoint = None
+            exp_backend.is_vision = False
+            exp_backend.is_peft = False
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not shut down export subprocess: %s", e)
+
+    try:
+        from core.inference import gpu_arbiter
+        from core.inference.diffusion import get_diffusion_backend
+
+        diffusion = get_diffusion_backend()
+        if diffusion.is_loaded:
+            logger.info("Unloading resident Images pipeline to free GPU memory for training")
+        diffusion.unload()  # no-op when nothing is loaded; also preempts an in-flight load
+        gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
+
+    try:
+        # The SDXL trainer's footprint can't be cheaply sized against a resident chat
+        # model, so free chat unconditionally (same conservative choice the LLM path
+        # makes for an in-flight chat load) rather than risk an OOM.
+        from routes.training_vram import free_chat_models_for_training, summarize_resident_chat
+        if summarize_resident_chat()["any"]:
+            freed = free_chat_models_for_training(reason = "diffusion training starting")
+            logger.info("Freed chat model(s) for diffusion training: %s", freed)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not free chat models for diffusion training: %s", e)
+
+
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
     body: DiffusionTrainingStartRequest, current_subject: str = Depends(get_current_subject)
@@ -1038,9 +1105,40 @@ async def start_diffusion_training(
     """Start an SDXL LoRA training job from an image + caption dataset."""
     from core.training.diffusion_training_service import get_diffusion_training_service
 
+    # Interlock: refuse while an LLM training run holds the GPU (symmetric with the
+    # diffusion check in start_training), so the two trainers never contend for VRAM.
+    try:
+        if get_training_backend().is_training_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An LLM training job is already running. "
+                    "Stop it before starting diffusion (Images) training."
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 -- backend import/health issue must not block a start
+        pass
+
+    # Resolve + contain the dataset and output paths BEFORE spawning, so Studio-relative
+    # names ("uploads/my-images") work and absolute paths stay under a Studio root -- the
+    # trainer subprocess otherwise resolves them relative to its own cwd.
+    config = body.model_dump()
+    try:
+        from utils.paths import resolve_dataset_path, resolve_output_dir
+        config["data_dir"] = str(resolve_dataset_path(config["data_dir"]))
+        config["output_dir"] = str(resolve_output_dir(config["output_dir"]))
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+
+    # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
+    # loads its own SDXL pipeline.
+    _free_gpu_for_diffusion_training()
+
     service = get_diffusion_training_service()
     try:
-        job_id = service.start(body.model_dump())
+        job_id = service.start(config)
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except RuntimeError as e:
