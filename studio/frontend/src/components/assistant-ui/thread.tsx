@@ -2953,6 +2953,10 @@ const VoiceEngine: FC = () => {
     useChatRuntimeStore.getState().setVoiceMode(next);
 
     if (next === "configuring") {
+      // Open each voice session with no TTS pre-selected (Browser voice) so a
+      // previously-remembered pick doesn't silently auto-load; the user chooses
+      // a voice explicitly from the "Speak with" dropdown.
+      useChatRuntimeStore.getState().setSelectedVoiceModelId(null);
       primeAudio();
     }
 
