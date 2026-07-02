@@ -54,7 +54,8 @@ export function HubOptionMenu<T extends string>({
   footer?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
+  // -1 = nothing highlighted (no hover, no keyboard nav yet).
+  const [activeIndex, setActiveIndex] = useState(-1);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const listboxRef = useRef<HTMLDivElement | null>(null);
   const idBase = useId();
@@ -66,9 +67,9 @@ export function HubOptionMenu<T extends string>({
   }, [options, value]);
   const selected = options[selectedIndex];
   const resolvedActiveIndex =
-    options.length === 0
+    options.length === 0 || activeIndex < 0
       ? -1
-      : Math.min(Math.max(activeIndex, 0), options.length - 1);
+      : Math.min(activeIndex, options.length - 1);
   const activeOptionId =
     resolvedActiveIndex >= 0 ? `${idBase}-option-${resolvedActiveIndex}` : undefined;
 
@@ -95,11 +96,13 @@ export function HubOptionMenu<T extends string>({
     (nextOpen: boolean) => {
       setOpen(nextOpen);
       if (nextOpen) {
-        activateIndex(selectedIndex);
+        // Nothing highlighted until the user hovers or uses the keyboard;
+        // keyboard nav anchors on the selected option (handleContentKeyDown).
+        activateIndex(-1);
         requestAnimationFrame(() => listboxRef.current?.focus());
       }
     },
-    [activateIndex, selectedIndex],
+    [activateIndex],
   );
 
   const handleContentKeyDown = useCallback(
@@ -115,12 +118,21 @@ export function HubOptionMenu<T extends string>({
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setActiveIndex((currentIndex + 1) % options.length);
+        // First arrow press highlights the selected option, then steps.
+        setActiveIndex(
+          resolvedActiveIndex < 0
+            ? selectedIndex
+            : (currentIndex + 1) % options.length,
+        );
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setActiveIndex((currentIndex - 1 + options.length) % options.length);
+        setActiveIndex(
+          resolvedActiveIndex < 0
+            ? selectedIndex
+            : (currentIndex - 1 + options.length) % options.length,
+        );
         return;
       }
       if (event.key === "Home") {
@@ -200,6 +212,7 @@ export function HubOptionMenu<T extends string>({
           aria-activedescendant={activeOptionId}
           tabIndex={0}
           onKeyDown={handleContentKeyDown}
+          onPointerLeave={() => activateIndex(-1)}
           className="outline-none"
         >
           {options.map((option, index) => {
