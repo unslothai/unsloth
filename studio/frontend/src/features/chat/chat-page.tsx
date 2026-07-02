@@ -1494,11 +1494,12 @@ export function ChatPage({
   useEffect(() => {
     if (voiceMode === "off" || cachedGgufsFetchedRef.current) return;
     cachedGgufsFetchedRef.current = true;
-    // Standalone TTS voices only -- excludes orpheus/csm/spark, which are
-    // speech-LLMs that speak with their own voice and belong in the chat
-    // model picker, not here. GGUF-only: spark's a safetensors LLM checkpoint
-    // and could never load via /voice/load anyway.
-    const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts"];
+    // TTS-capable GGUFs for the voice slot: standalone TTS (bicodec/dac) plus the
+    // speech-LLMs (orpheus/snac, csm) -- those can double as a plain voice for a
+    // *different* chat model when picked here, in which case they only synthesize
+    // its replies rather than acting as the LLM. GGUF-only: the voice slot is a
+    // llama-server, so safetensors-only checkpoints (e.g. Spark's LLM) can't load.
+    const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts", "orpheus", "csm"];
     // Qwen3-TTS is safetensors (not GGUF) but has its own in-process transformers
     // voice backend (qwen_tts_backend.py), so it's listed separately from the
     // GGUF set from the cached-models (safetensors) scan.
@@ -2562,7 +2563,22 @@ export function ChatPage({
       ...cachedQwenTtsModels,
       ...QWEN_TTS_DEFAULTS.filter((d) => !cachedIds.has(d.id)),
     ];
-    return [...fromLoras, ...cachedGgufs, ...qwenTts];
+    // Speech-LLMs that can double as a plain voice. Picking one here loads it in
+    // the voice slot (GGUF llama-server) so it only synthesizes a separate chat
+    // model's replies. Orpheus (snac) is a real GGUF and works; downloaded on
+    // first load if not cached. (Spark's LLM is safetensors -> can't load here.)
+    const SPEECH_LLM_VOICE_DEFAULTS: LoraModelOption[] = [
+      {
+        id: "unsloth/orpheus-3b-0.1-ft-GGUF",
+        name: "orpheus-3b-0.1-ft (voice)",
+        isGguf: true,
+      },
+    ];
+    const ggufIds = new Set(cachedGgufs.map((m) => m.id));
+    const speechLlmVoices = SPEECH_LLM_VOICE_DEFAULTS.filter(
+      (d) => !ggufIds.has(d.id),
+    );
+    return [...fromLoras, ...cachedGgufs, ...speechLlmVoices, ...qwenTts];
   }, [loraModels, cachedGgufs, cachedQwenTtsModels]);
 
   const sttModels = useMemo<LoraModelOption[]>(
