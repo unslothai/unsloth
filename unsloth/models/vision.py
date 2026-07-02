@@ -1884,8 +1884,9 @@ class FastBaseModel:
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
-            def _gc_enable_reentrant(**kwargs):
-                gc_kwargs = kwargs.get("gradient_checkpointing_kwargs", {}) or {}
+            def _gc_enable_reentrant(gradient_checkpointing_kwargs = None, **kwargs):
+                # TRL's disable_gradient_checkpointing re-enables this positionally; HF/PEFT/notebooks by keyword.
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
                 gc_kwargs["use_reentrant"] = True
                 kwargs["gradient_checkpointing_kwargs"] = gc_kwargs
                 return _original_gc_enable(**kwargs)
