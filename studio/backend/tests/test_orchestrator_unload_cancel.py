@@ -143,3 +143,34 @@ def test_generation_bails_when_unload_pending(monkeypatch):
     # It released (or never held) the lock, so the pending unload can proceed.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
+
+
+def test_dispatched_generation_bails_when_unload_pending(monkeypatch):
+    # Compare-mode bypasses _gen_lock, so it must early-out on a pending switch or
+    # it enqueues a generate on the outgoing model and delays the unload.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_start_dispatcher", lambda: pytest.fail("must not start a generation mid-switch")
+    )
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send generate mid-switch"))
+    o._unload_pending = True
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+
+
+def test_audio_input_generation_bails_when_unload_pending(monkeypatch):
+    # The audio path takes _gen_lock but must also skip the outgoing model mid-switch.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send generate mid-switch"))
+    o._unload_pending = True
+
+    out = list(o._generate_audio_input_inner(audio_array = [0.0, 0.1]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    # Lock released so the pending unload can proceed.
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()

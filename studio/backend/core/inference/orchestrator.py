@@ -612,6 +612,13 @@ class InferenceOrchestrator:
             yield "Error: No active model"
             return
 
+        # A model switch is in flight (unload waiting on _gen_lock). This path
+        # bypasses _gen_lock, so without this early-out a compare-mode request
+        # would enqueue a generate on the outgoing model and delay the switch.
+        if self._unload_pending:
+            yield "Error: model is being unloaded"
+            return
+
         # Ensure dispatcher is running
         self._start_dispatcher()
 
@@ -1305,6 +1312,10 @@ class InferenceOrchestrator:
             return
 
         with self._gen_lock:
+            if self._unload_pending:
+                # Won the lock handoff during a switch; don't start on the outgoing model.
+                yield "Error: model is being unloaded"
+                return
             request_id = str(uuid.uuid4())
 
             # numpy array -> list for mp.Queue serialization
