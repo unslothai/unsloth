@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
+import { openModelsDir } from "@/features/native-intents";
 import { emitTrainingRunsChanged } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
@@ -22,6 +23,7 @@ import {
 } from "@/hooks/use-llama-update-pref";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -32,6 +34,7 @@ import {
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
+import { type ModelsFolder, loadModelsFolder } from "../api/models-folder";
 import {
   type PreviewSharingSettings,
   loadPreviewSharing,
@@ -39,13 +42,20 @@ import {
   updatePreviewSharing,
 } from "../api/preview-sharing";
 import {
+  type EmbeddingModelSettings,
+  EmbeddingModelVerificationError,
+  loadEmbeddingModelSettings,
+  resetEmbeddingModelSettings,
+  updateEmbeddingModelSettings,
+} from "../api/embedding-model";
+import {
   DEFAULT_UPLOAD_LIMIT_MB,
   type UploadLimitSettings,
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
-import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
+import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -161,6 +171,17 @@ export function GeneralTab() {
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
+  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
+  const [embeddingModel, setEmbeddingModel] =
+    useState<EmbeddingModelSettings | null>(null);
+  const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
+  const [embeddingModelError, setEmbeddingModelError] = useState<string | null>(
+    null,
+  );
+  // Set after a 409 (unverifiable model); offers "Save anyway".
+  const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
+    useState(false);
+  const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -255,6 +276,64 @@ export function GeneralTab() {
     };
   }, [t]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadEmbeddingModelSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setEmbeddingModel(settings);
+        setDraftEmbeddingModel(settings.embeddingModel);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setEmbeddingModelError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.rag.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadModelsFolder()
+      .then((folder) => {
+        if (cancelled) return;
+        setModelsFolder(folder);
+      })
+      .catch(() => {
+        // Non-critical: leave the row hidden if the path can't be resolved.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Desktop opens the folder in the OS file manager; the browser can't, so it
+  // falls back to copying the path (which is the info users actually want).
+  const handleModelsFolder = async () => {
+    const folder = modelsFolder;
+    if (!folder) return;
+    if (isTauri) {
+      try {
+        await openModelsDir(folder.path);
+      } catch (error) {
+        toast.error(t("settings.general.storage.openError"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+      return;
+    }
+    if (await copyToClipboard(folder.path)) {
+      toast.success(t("settings.general.storage.copied"));
+    } else {
+      toast.error(t("settings.general.storage.copyError"));
+    }
+  };
+
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
     setHelperPrecacheError(null);
@@ -307,6 +386,58 @@ export function GeneralTab() {
       });
     } finally {
       setIsRevokingPreview(false);
+    }
+  };
+
+  const saveEmbeddingModel = async (force: boolean) => {
+    const trimmed = draftEmbeddingModel.trim();
+    if (!trimmed) {
+      setEmbeddingModelError(t("settings.general.rag.emptyError"));
+      return;
+    }
+    setIsSavingEmbeddingModel(true);
+    setEmbeddingModelError(null);
+    try {
+      const settings = await updateEmbeddingModelSettings(trimmed, {
+        hfToken: hfToken || undefined,
+        force,
+      });
+      setEmbeddingModel(settings);
+      setDraftEmbeddingModel(settings.embeddingModel);
+      setEmbeddingModelNeedsForce(false);
+      toast.success(t("settings.general.rag.saved"), {
+        description: t("settings.general.rag.reindexWarning"),
+      });
+    } catch (error) {
+      if (error instanceof EmbeddingModelVerificationError) {
+        setEmbeddingModelNeedsForce(true);
+      }
+      setEmbeddingModelError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.rag.saveError"),
+      );
+    } finally {
+      setIsSavingEmbeddingModel(false);
+    }
+  };
+
+  const resetEmbeddingModel = async () => {
+    setIsSavingEmbeddingModel(true);
+    setEmbeddingModelError(null);
+    setEmbeddingModelNeedsForce(false);
+    try {
+      const settings = await resetEmbeddingModelSettings();
+      setEmbeddingModel(settings);
+      setDraftEmbeddingModel(settings.embeddingModel);
+    } catch (error) {
+      setEmbeddingModelError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.rag.saveError"),
+      );
+    } finally {
+      setIsSavingEmbeddingModel(false);
     }
   };
 
@@ -410,6 +541,33 @@ export function GeneralTab() {
         )}
       </SettingsSection>
 
+      {modelsFolder ? (
+        <SettingsSection title={t("settings.general.storage.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.storage.modelsFolder")}
+            description={t("settings.general.storage.modelsFolderDescription")}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                title={modelsFolder.path}
+                className="max-w-[280px] truncate font-mono text-xs text-muted-foreground"
+              >
+                {modelsFolder.path}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleModelsFolder()}
+              >
+                {isTauri
+                  ? t("settings.general.storage.openAction")
+                  : t("settings.general.storage.copyAction")}
+              </Button>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.general.autoTitleNewChats")}
@@ -432,38 +590,6 @@ export function GeneralTab() {
           />
         </SettingsRow>
       </SettingsSection>
-
-      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.helperLlm.preloadOnStartup")}
-          description={t(
-            "settings.general.helperLlm.preloadOnStartupDescription",
-          )}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={helperPrecache?.enabled ?? false}
-              disabled={
-                !helperPrecache ||
-                isSavingHelperPrecache ||
-                helperPrecache.disabledByEnv
-              }
-              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
-            />
-            {helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
-                {t("settings.general.helperLlm.disabledByEnv")}
-              </span>
-            ) : helperPrecacheError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
-                {helperPrecacheError}
-              </span>
-            ) : null}
-          </div>
-        </SettingsRow>
-      </SettingsSection>
-
-      <ModelAutoSwitchSection />
 
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
@@ -498,6 +624,77 @@ export function GeneralTab() {
           >
             {t("settings.general.previewSharing.revokeAction")}
           </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.rag.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.rag.embeddingModel")}
+          description={t("settings.general.rag.embeddingModelDescription", {
+            defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
+          })}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <EmbeddingModelCombobox
+                value={draftEmbeddingModel}
+                onChange={(next) => {
+                  setDraftEmbeddingModel(next);
+                  setEmbeddingModelNeedsForce(false);
+                  setEmbeddingModelError(null);
+                }}
+                accessToken={hfToken || undefined}
+                disabled={!embeddingModel}
+                placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
+                ariaLabel={t("settings.general.rag.embeddingModel")}
+                className="w-[220px]"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  !embeddingModel ||
+                  isSavingEmbeddingModel ||
+                  draftEmbeddingModel.trim() === embeddingModel.embeddingModel
+                }
+                onClick={() => void saveEmbeddingModel(false)}
+              >
+                {isSavingEmbeddingModel
+                  ? t("common.saving")
+                  : t("common.save")}
+              </Button>
+            </div>
+            {embeddingModelError ? (
+              <span className="max-w-[300px] text-right text-xs text-destructive">
+                {embeddingModelError}
+              </span>
+            ) : null}
+            <div className="flex items-center gap-2">
+              {embeddingModelNeedsForce ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isSavingEmbeddingModel}
+                  onClick={() => void saveEmbeddingModel(true)}
+                >
+                  {t("settings.general.rag.saveAnyway")}
+                </Button>
+              ) : null}
+              {embeddingModel?.isCustom ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={isSavingEmbeddingModel}
+                  onClick={() => void resetEmbeddingModel()}
+                >
+                  {t("settings.general.rag.resetAction")}
+                </Button>
+              ) : null}
+            </div>
+            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
+              {t("settings.general.rag.reindexWarning")}
+            </span>
+          </div>
         </SettingsRow>
       </SettingsSection>
 
@@ -565,6 +762,36 @@ export function GeneralTab() {
           </SettingsRow>
         </SettingsSection>
       )}
+
+      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.helperLlm.preloadOnStartup")}
+          description={t(
+            "settings.general.helperLlm.preloadOnStartupDescription",
+          )}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={helperPrecache?.enabled ?? false}
+              disabled={
+                !helperPrecache ||
+                isSavingHelperPrecache ||
+                helperPrecache.disabledByEnv
+              }
+              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+            />
+            {helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                {t("settings.general.helperLlm.disabledByEnv")}
+              </span>
+            ) : helperPrecacheError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {helperPrecacheError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection
         title={t("settings.general.resetPreferences.sectionTitle")}
