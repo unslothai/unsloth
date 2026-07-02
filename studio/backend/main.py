@@ -1132,7 +1132,6 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
         return gpu_info
 
 
-
 @app.get("/api/system")
 def get_system_info(current_subject: str = Depends(get_current_subject)):
     """Get system information.
