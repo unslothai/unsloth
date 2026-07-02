@@ -409,7 +409,6 @@ def test_start_aborted_by_concurrent_stop(patched):
 
     def _stop_soon():
         import time as _t
-
         _t.sleep(0.2)
         s.stop()
 
