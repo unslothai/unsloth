@@ -368,6 +368,12 @@ class MLXInferenceBackend:
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
+        from core.inference.chat_template_helpers import detect_think_prefill
+
+        # An open <think> prefilled by the template lives in the prompt, not
+        # the generated tokens; re-emit it so the frontend renders the block.
+        think_prefix = detect_think_prefill(prompt)
+
         sampler = make_sampler(
             temp = temperature,
             top_p = top_p,
@@ -415,7 +421,7 @@ class MLXInferenceBackend:
                         token_ids,
                         skip_special_tokens = True,
                     )
-                    yield cumulative
+                    yield think_prefix + cumulative
 
                     if cancel_event and cancel_event.is_set():
                         break
@@ -479,7 +485,10 @@ class MLXInferenceBackend:
         # mlx_vlm's stream_generate handles pixel_values (None for text-only)
         images = [image] if image is not None else None
 
-        cumulative = ""
+        from core.inference.chat_template_helpers import detect_think_prefill
+
+        # Re-emit an open <think> prefill from the prompt (see _generate_text).
+        cumulative = detect_think_prefill(prompt)
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),

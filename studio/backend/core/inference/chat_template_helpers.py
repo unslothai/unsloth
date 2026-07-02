@@ -8,6 +8,36 @@ fallback for templates that reject reasoning/tools args.
 
 from typing import Optional
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def detect_think_prefill(prompt: Optional[str]) -> str:
+    """Return the trailing open ``<think>`` prefill of a rendered prompt.
+
+    Reasoning templates (Qwen3.6, DeepSeek-R1-style) end the generation
+    prompt with ``<think>\\n`` so the model starts reasoning immediately.
+    Because that opening tag is part of the *prompt*, skip_prompt streaming
+    never emits it, and the frontend's ``<think>``/``</think>`` parser shows
+    the reasoning as plain text instead of a thinking block. (The GGUF path
+    is unaffected: llama-server's reasoning parser returns
+    ``reasoning_content``, which gets re-wrapped in think tags.)
+
+    Returns the exact prompt tail to re-emit at the start of the generated
+    stream (e.g. ``"<think>\\n"``), or ``""`` when the prompt does not end
+    with an open think block, including the ``enable_thinking=False`` case
+    where templates prefill an already-closed ``<think>\\n\\n</think>``.
+    """
+    if not prompt:
+        return ""
+    open_idx = prompt.rfind(_THINK_OPEN)
+    if open_idx == -1:
+        return ""
+    tail = prompt[open_idx:]
+    if _THINK_CLOSE in tail or tail.strip() != _THINK_OPEN:
+        return ""
+    return tail
+
 
 def apply_chat_template_for_generation(
     tokenizer,
