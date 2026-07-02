@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .evaluations import score_dataframe, score_parquet_dir
+from .evaluations import apply_document_score, score_parquet_dir
 from .jsonable import to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
@@ -354,7 +354,9 @@ def _attach_studio_evaluations(designer: Any, evaluations: list[dict[str, Any]])
     def patched_preview(config_builder, *, num_records):
         results = original_preview(config_builder, num_records = num_records)
         if results.dataset is not None:
-            score_dataframe(results.dataset, evaluations)
+            for evaluation in evaluations:
+                if evaluation.get("processor_type") == "json_document_score":
+                    apply_document_score(results.dataset, evaluation)
         return results
 
     def patched_create(

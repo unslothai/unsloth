@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from core.data_recipe.evaluations import score_dataframe, score_parquet_dir
+from core.data_recipe.evaluations import apply_document_score, score_parquet_dir
 
 
 def _doc_score_eval(**overrides) -> dict:
@@ -121,9 +121,9 @@ def test_score_parquet_dir_uses_schema_field_comparators(tmp_path: Path) -> None
     assert out["doc_score"].iloc[0] == pytest.approx(1.0)
 
 
-def test_score_dataframe_ignores_unknown_processor_type(parquet_dir: Path) -> None:
+def test_score_parquet_dir_ignores_unknown_processor_type(parquet_dir: Path) -> None:
+    score_parquet_dir(parquet_dir, [{"processor_type": "unknown_score", "name": "x"}])
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")
-    score_dataframe(df, [{"processor_type": "unknown_score", "name": "x"}])
     assert list(df.columns) == ["prediction", "reference"]
 
 
@@ -157,14 +157,14 @@ def test_score_parquet_dir_runs_in_declaration_order(tmp_path: Path) -> None:
     assert "score_b" in out.columns
 
 
-def test_score_dataframe_adds_score_column() -> None:
+def test_apply_document_score_adds_score_column() -> None:
     df = pd.DataFrame(
         {
             "prediction": [json.dumps({"a": 1})],
             "reference": [{"a": 1}],
         }
     )
-    score_dataframe(df, [_doc_score_eval(default_comparator = "categorical")])
+    apply_document_score(df, _doc_score_eval(default_comparator = "categorical"))
     assert "doc_score" in df.columns
     assert df["doc_score"].iloc[0] == pytest.approx(1.0)
 
