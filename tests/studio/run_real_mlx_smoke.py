@@ -403,10 +403,14 @@ def cmd_train(args) -> int:
     metrics["gguf_dir"] = str(gguf_dir)
     with Phase("save_gguf", metrics):
         try:
+            # q8_0 (the exporter default), not bf16: llama.cpp has optimized q8_0
+            # CPU kernels, whereas bf16 CPU decode is unusably slow on the runner
+            # and made the fresh-process llama-cli reload below time out. q8_0 is
+            # also what users deploy by default.
             model.save_pretrained_gguf(
                 str(gguf_dir),
                 tokenizer = tokenizer,
-                quantization_method = "not_quantized",
+                quantization_method = "fast_quantized",
             )
             gguf_files = sorted(gguf_dir.glob("*.gguf"))
             if not gguf_files:
@@ -565,12 +569,10 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(f"no .gguf files in {save_dir}")
     gguf_path = gguf_files[0]
 
-    # Save/reload-integrity smoke (assert below only needs a few chars). Earlier this
-    # timed out even at 8 tokens (>420s), i.e. a fixed hang, not per-token cost: on the
-    # paravirtual macOS runner GPU, llama.cpp's Metal backend stalls, and the gemma3
-    # GGUF advertises a 32768 context that llama-cli would otherwise fully allocate.
-    # Force CPU (-ngl 0), cap the context (-c 256), and keep generation short; all
-    # env-tunable.
+    # Save/reload-integrity smoke (assert below only needs a few chars). The GGUF is
+    # exported q8_0 (see save_gguf) because llama.cpp bf16 CPU decode is unusably slow
+    # on the runner. Run CPU-only (-ngl 0), cap the context (-c 256, the model
+    # advertises 32768), and keep generation short; all env-tunable.
     n_predict = os.environ.get("UNSLOTH_GGUF_RELOAD_N", "8")
     n_threads = os.environ.get("UNSLOTH_GGUF_RELOAD_THREADS", str(os.cpu_count() or 4))
     n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
