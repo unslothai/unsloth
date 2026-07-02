@@ -36,9 +36,12 @@ const BROWSER_VOICE_ID = null;
 const BROWSER_VOICE_LABEL = "Browser voice";
 
 // How many sentence chunks a GGUF voice slot synthesizes at once (llama-server
-// --parallel N). Applied when the voice slot next loads. In-process voices
-// (Qwen3-TTS, SpeechT5) ignore it.
-const ParallelVoicesPicker: FC = () => {
+// --parallel N). If a GGUF voice is loaded, changing it hot-reloads that slot so
+// backend and UI stay in sync. In-process voices (Qwen3-TTS, SpeechT5) ignore it.
+const ParallelVoicesPicker: FC<{
+  reloadVoiceId: string | null;
+  onReload: (id: string) => void;
+}> = ({ reloadVoiceId, onReload }) => {
   const value = useChatRuntimeStore((s) => s.voiceParallelN);
   const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
   return (
@@ -53,7 +56,12 @@ const ParallelVoicesPicker: FC = () => {
             <button
               key={n}
               type="button"
-              onClick={() => setValue(n)}
+              onClick={() => {
+                if (n === value) return;
+                setValue(n);
+                // Hot-reload the active GGUF voice so its --parallel matches now.
+                if (reloadVoiceId) onReload(reloadVoiceId);
+              }}
               className={cn(
                 "flex size-6 items-center justify-center rounded-md text-[13px] transition-colors",
                 value === n
@@ -68,7 +76,7 @@ const ParallelVoicesPicker: FC = () => {
         </div>
       </div>
       <p className="px-2 pb-1 text-[10px] leading-tight text-muted-foreground/70">
-        GGUF voices only. Applied on next load.
+        GGUF voices only.
       </p>
     </>
   );
@@ -275,7 +283,10 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
           </p>
         )}
 
-        <ParallelVoicesPicker />
+        <ParallelVoicesPicker
+          reloadVoiceId={value && selectedModel?.isGguf ? value : null}
+          onReload={(id) => onValueChange(id)}
+        />
       </PopoverContent>
     </Popover>
   );

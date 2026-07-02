@@ -1346,6 +1346,7 @@ class LlamaCppBackend:
         # Set when THIS instance called init_audio_codec(); guards codec teardown
         # so the voice slot's codec survives main-slot unloads.
         self._owns_codec: bool = False
+        self._n_parallel: int = 1  # --parallel slots the current server launched with
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
@@ -4585,6 +4586,9 @@ class LlamaCppBackend:
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
+            # Remember the launched --parallel so callers can detect a change and
+            # force a reload (the voice slot exposes this to hot-swap slot count).
+            self._n_parallel = n_parallel
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)

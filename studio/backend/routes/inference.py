@@ -3467,12 +3467,14 @@ async def voice_load_model(
             detail = "Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
         )
 
-    # Already loaded with the same resolved config — skip reload.
+    # Already loaded with the same resolved config — skip reload. Include the
+    # --parallel slot count so changing it in the UI forces a relaunch.
     if (
         voice_backend.is_loaded
         and voice_backend.model_identifier
         and voice_backend.model_identifier.lower() == config.identifier.lower()
         and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
+        and getattr(voice_backend, "_n_parallel", 1) == request.parallel
         and getattr(voice_backend, "_is_audio", False)
     ):
         return {
