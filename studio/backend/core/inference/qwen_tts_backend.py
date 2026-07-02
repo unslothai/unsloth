@@ -47,12 +47,15 @@ _DEFAULT_LANGUAGE = os.environ.get("UNSLOTH_QWEN_TTS_LANGUAGE") or None
 
 
 def _ensure_qwen_tts_installed() -> None:
-    try:
-        import qwen_tts  # noqa: F401
+    # Check presence with find_spec, NOT `import qwen_tts`: importing it eagerly
+    # pulls in transformers' AutoProcessor -> torchao, which crashes on Windows
+    # ROCm until the stub is installed (done in load_model before the real
+    # import). find_spec only resolves the module, it doesn't execute it, so a
+    # genuinely-installed-but-not-yet-stubbed package isn't misread as missing.
+    import importlib.util
 
+    if importlib.util.find_spec("qwen_tts") is not None:
         return
-    except ImportError:
-        pass
 
     logger.info("Installing 'qwen-tts' package (first Qwen3-TTS voice load)...")
     result = subprocess.run(
@@ -66,10 +69,8 @@ def _ensure_qwen_tts_installed() -> None:
             "manually with: pip install --no-deps qwen-tts sox\n\n"
             + (result.stderr or result.stdout or "")[-2000:]
         )
-    try:
-        import qwen_tts  # noqa: F401
-    except ImportError as e:
-        raise RuntimeError(f"'qwen-tts' installed but failed to import: {e}")
+    if importlib.util.find_spec("qwen_tts") is None:
+        raise RuntimeError("'qwen-tts' installed but is not importable.")
 
 
 def _checkpoint_kind(repo_id: str) -> str:

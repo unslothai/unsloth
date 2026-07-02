@@ -20,3 +20,12 @@ kernels==0.12.1
 # kernels<3.11 imports tomli as its tomllib fallback; --no-deps skips its own
 # marker dep, so list it here (no-op on the 3.12/3.13 default installs).
 tomli; python_version < "3.11"
+
+# Qwen3-TTS in-process voice backend. --no-deps: qwen-tts hard-pins
+# transformers/accelerate and pulls in gradio, none of which we want; it runs
+# fine against the venv's existing stack. sox (pysox) is its only real runtime
+# dep, imported by the unused 25Hz tokenizer path (12Hz models never hit it).
+# Installing here means a fresh install ships it -- the backend's runtime
+# pip-install is only a dev fallback.
+qwen-tts==0.1.1
+sox
