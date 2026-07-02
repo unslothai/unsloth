@@ -2604,6 +2604,14 @@ export function requestVoiceToggle() {
   _voiceToggle?.();
 }
 
+// Read by the stable chat-page thread-switch watcher to gate the reset: it must
+// only drive requestVoiceToggle() when voice isn't already off, since toggling
+// from "off" would turn voice ON. Module-level, so it survives the first-send
+// remount that makes VoiceEngine's own subscription unreliable.
+export function getVoiceMode() {
+  return _voiceMode;
+}
+
 // Registered by the mounted VoiceEngine so the dictation adapter can re-arm the
 // mic after a recoverable "no-speech" timeout, without killing the voice loop.
 let _voiceResume: (() => void) | null = null;
@@ -2654,8 +2662,6 @@ const VoiceEngine: FC = () => {
   });
   const selectedVoiceModelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
   const voiceSlotLoaded = voiceMode === "active" && selectedVoiceModelId !== null;
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const prevThreadIdRef = useRef(activeThreadId);
 
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
@@ -2668,6 +2674,13 @@ const VoiceEngine: FC = () => {
     const RETRY_MS = 50;
 
     const clickDictate = () => {
+      // Proactively clear any stale text on a FRESH handle before re-arming, in
+      // case the deferred post-send clear hadn't landed before this re-arm got
+      // here. Without it, turn 2's dictation appends onto turn 1's leftover text.
+      const fresh = auiRef.current.composer();
+      if (fresh.getState().text) {
+        fresh.setText("");
+      }
       document
         .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
         ?.click();
@@ -2824,6 +2837,23 @@ const VoiceEngine: FC = () => {
         // composer remount, leaving the utterance as a prefix on the next
         // message. Clear explicitly to guard against that.
         composer.setText("");
+        // The synchronous clear above lands on the pre-remount composer instance,
+        // which the FIRST send unmounts a few ms later (ComposerActionWrapper
+        // remount) — so on turn 1 it has no effect. Re-clear against a FRESH
+        // composer handle (auiRef.current.composer(), never the captured `composer`)
+        // across a few frames until it takes, or voice turns off.
+        const DEFERRED_CLEAR_MAX = 5;
+        const DEFERRED_CLEAR_MS = 50;
+        const deferredClear = (n: number) => {
+          if (voiceModeRef.current !== "active") return;
+          const fresh = auiRef.current.composer();
+          if (!fresh.getState().text) {
+            return;
+          }
+          fresh.setText("");
+          if (n < DEFERRED_CLEAR_MAX) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+        };
+        setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
       } else {
         // No speech this window: stopDictation ends the session but nothing
         // re-arms it, so the loop would die while voiceMode stays "active"
@@ -2898,16 +2928,11 @@ const VoiceEngine: FC = () => {
     };
   }, [resumeListen]);
 
-  // Thread switch resets voice entirely: toggle() exits voice mode (hiding the
-  // orb), and the unload-on-off effect in chat-page then unloads the voice slot.
-  // Fires only on an actual change, never on mount.
-  useEffect(() => {
-    if (prevThreadIdRef.current === activeThreadId) return;
-    prevThreadIdRef.current = activeThreadId;
-    if (voiceModeRef.current !== "off") {
-      toggle();
-    }
-  }, [activeThreadId, toggle]);
+  // Thread-switch voice reset moved OUT of VoiceEngine: this component remounts
+  // across the ThreadWelcome → ThreadComposerDock (first-send) boundary and loses
+  // its prev-thread subscription, so it never sees null → __LOCALID_xxx. The reset
+  // now lives in SingleContent (chat-page.tsx), which is stable across that remount,
+  // and drives requestVoiceToggle() via the module-level bridge.
 
   // Headless: the visible control now lives in the plus menu (ComposerToolsMenu).
   // This component stays mounted only to keep the voice loop's hooks/effects alive.

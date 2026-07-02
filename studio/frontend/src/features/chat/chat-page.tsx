@@ -17,7 +17,12 @@ import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-select
 import { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
 import { authFetch } from "@/features/auth";
 import { STANDALONE_TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
-import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  getVoiceMode,
+  ProjectComposer,
+  requestVoiceToggle,
+  Thread,
+} from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   ResizableHandle,
@@ -294,6 +299,35 @@ const SingleContent = memo(function SingleContent({
       window.clearTimeout(timeoutId);
     };
   }, [showArtifactPanel]);
+
+  // Thread-switch voice reset. Lives here (not in VoiceEngine) because SingleContent
+  // is stable across the ThreadWelcome → ThreadComposerDock remount that fires on
+  // first-send; VoiceEngine remounts there and never observes null → __LOCALID_xxx,
+  // leaving its prev-thread ref stale so the later New Chat (→ null) reset is missed.
+  // We drive the module-level toggle bridge, gated on getVoiceMode() so a plain
+  // thread switch while voice is OFF can't accidentally toggle voice ON.
+  const prevVoiceThreadIdRef = useRef(activeThreadId);
+  useEffect(() => {
+    const current = activeThreadId;
+    const prev = prevVoiceThreadIdRef.current;
+    if (prev === current) {
+      prevVoiceThreadIdRef.current = current;
+      return;
+    }
+    // Thread birth (null → __LOCALID_xxx on first send) is the initial thread being
+    // created, not a real switch, so it must NOT kill voice mid-conversation. Skip
+    // the reset but still advance the ref, so the later New Chat (__LOCALID_xxx → null)
+    // is still detected as a genuine switch. Real switches — non-null → null (New Chat)
+    // and non-null → different non-null (sidebar) — fall through below.
+    if (prev === null && current !== null) {
+      prevVoiceThreadIdRef.current = current;
+      return;
+    }
+    if (getVoiceMode() !== "off") {
+      requestVoiceToggle();
+    }
+    prevVoiceThreadIdRef.current = current;
+  }, [activeThreadId]);
 
   const threadPane = (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
