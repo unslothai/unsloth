@@ -85,6 +85,20 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([view], { type: "audio/wav" });
 }
 
+// Whisper hallucinates a repeated word/phrase on non-speech audio (noise,
+// breath, silence) -- e.g. "Ha, ha, ha..." or "Thank you. Thank you...". Reject
+// a transcript dominated by one repeated token (very low unique-word ratio) so
+// it isn't sent as a prompt. Short utterances (< 6 words) are always allowed.
+function isHallucinatedTranscript(text: string): boolean {
+  const words = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length < 6) return false;
+  return new Set(words).size / words.length < 0.3;
+}
+
 export class StudioWhisperDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
@@ -229,6 +243,12 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           transcript = (data.text ?? "").trim();
         } finally {
           store.setVoiceTranscribing(false);
+        }
+        if (transcript && isHallucinatedTranscript(transcript)) {
+          // Whisper invents a repeated token ("Ha, ha, ha...", "Thank you.
+          // Thank you...") from noise/breath/silence. Drop it and keep listening
+          // rather than sending garbage as a prompt.
+          transcript = "";
         }
         if (transcript) {
           // Fake a streaming reveal: replay the transcript as growing interim
