@@ -1792,6 +1792,14 @@ class DiffusionLoadRequest(BaseModel):
         "shifts the residual distribution).",
     )
 
+    @field_validator("attention_backend", mode = "before")
+    @classmethod
+    def _normalize_attention_backend(cls, value):
+        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the
+        # Literal above is validated before any normaliser runs, so fold a string to its
+        # canonical lower/stripped form here -- otherwise valid casing gets a 422.
+        return value.strip().lower() if isinstance(value, str) else value
+
 
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""

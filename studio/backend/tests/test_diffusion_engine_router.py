@@ -159,6 +159,31 @@ def test_force_sd_cpp_without_binary_falls_back(monkeypatch):
     assert _select() == ENGINE_DIFFUSERS
 
 
+@pytest.mark.parametrize(
+    "backend, expected",
+    [("rocm", "rocm"), ("cuda", "cuda"), ("xpu", "vulkan"), ("cpu", "auto"), ("mps", "auto")],
+)
+def test_install_accelerator_maps_backend(backend, expected):
+    assert r._install_accelerator_for(backend) == expected
+
+
+def test_force_native_install_uses_gpu_accelerator(monkeypatch):
+    # Forcing sd_cpp on a ROCm host with no binary must install the ROCm build, not the
+    # default CPU one -- otherwise the forced-native generation silently runs on CPU.
+    _set_device(monkeypatch, "rocm")
+    _set_runnable(monkeypatch)
+    seen = {}
+
+    def _fake_ensure(**kwargs):
+        seen.update(kwargs)
+        return "/usr/bin/sd-cli"
+
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", _fake_ensure)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+    assert _select() == ENGINE_SD_CPP
+    assert seen.get("accelerator") == "rocm"
+
+
 # ── active_status annotation ──────────────────────────────────────────────────
 
 
