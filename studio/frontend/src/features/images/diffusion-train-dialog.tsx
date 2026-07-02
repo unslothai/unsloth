@@ -166,8 +166,9 @@ export function DiffusionTrainDialog({
           <DialogTitle>Train a LoRA (SDXL)</DialogTitle>
           <DialogDescription>
             Fine-tune an SDXL LoRA on a folder of images. Captions come from a metadata.jsonl,
-            per-image .txt sidecars, or the instance prompt below. The adapter is saved to the
-            output folder shown after the run.
+            per-image .txt sidecars, or the instance prompt below. Folders resolve inside the
+            Studio home: datasets under its datasets folder, the adapter under its outputs
+            folder (the exact save path is shown after the run).
           </DialogDescription>
         </DialogHeader>
 
@@ -182,20 +183,20 @@ export function DiffusionTrainDialog({
             />
           </div>
           <div className="grid gap-1.5">
-            <Label className="text-xs">Dataset folder</Label>
+            <Label className="text-xs">Dataset folder (name under the Studio datasets folder)</Label>
             <Input
               value={dataDir}
-              placeholder="/path/to/images"
+              placeholder="my-dataset"
               spellCheck={false}
               onChange={(e) => setDataDir(e.target.value)}
               className="h-8 text-xs"
             />
           </div>
           <div className="grid gap-1.5">
-            <Label className="text-xs">Output folder (LoRA .safetensors)</Label>
+            <Label className="text-xs">Output folder (LoRA .safetensors, saved under Studio outputs)</Label>
             <Input
               value={outputDir}
-              placeholder="/path/to/output-lora"
+              placeholder="my-lora"
               spellCheck={false}
               onChange={(e) => setOutputDir(e.target.value)}
               className="h-8 text-xs"
