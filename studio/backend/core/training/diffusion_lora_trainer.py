@@ -28,6 +28,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -41,6 +42,18 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
 # diffusers' canonical single-file LoRA name, so load_lora_weights(dir) finds it.
 DEFAULT_LORA_FILENAME = "pytorch_lora_weights.safetensors"
+
+# Families Studio can LOAD but not train (DiT architectures). A base-model name that
+# clearly belongs to one is refused in normalized(), so a wrong pick fails at start
+# (an instant HTTP 400 through the API) instead of minutes later inside
+# StableDiffusionXLPipeline.from_pretrained. Single tokens match on word boundaries;
+# hyphenated markers match as substrings of the hyphen-condensed name.
+_NON_SDXL_TOKENS = frozenset({"flux", "sd3", "kontext", "pixart", "sana", "lumina", "cogview"})
+_NON_SDXL_PHRASES = ("qwen-image", "z-image", "stable-diffusion-3", "hunyuan-dit")
+_ONLY_SDXL_HINT = (
+    "Only SDXL bases can be trained right now (e.g. stabilityai/stable-diffusion-xl-base-1.0 "
+    "or stabilityai/sdxl-turbo). Other families can load LoRAs but not train them yet."
+)
 
 EventCb = Callable[[dict[str, Any]], None]
 # Returns a falsy value to keep training, or a truthy stop signal: bare True, or a dict
@@ -89,6 +102,7 @@ class DiffusionLoraConfig:
 
         Also coerces values that arrive as strings/blanks through the Studio config path
         (``learning_rate`` is preserved as a string there; ``hf_token`` defaults to "")."""
+        assert_trainable_base_model(self.base_model)
         if self.train_steps < 1:
             raise ValueError("train_steps must be >= 1")
         if self.train_batch_size < 1:
@@ -274,6 +288,32 @@ def _encode_sdxl_prompts(
         embeds_list.append(out.hidden_states[-2])
     prompt_embeds = torch.concat(embeds_list, dim = -1)
     return prompt_embeds, pooled
+
+
+def assert_trainable_base_model(base_model: str) -> None:
+    """Refuse base models that are recognisably not SDXL, before anything is downloaded.
+
+    Purely name-based: a GGUF filename or a known DiT-family name (FLUX / Qwen-Image /
+    Z-Image / SD3 / ...) can never train on the SDXL U-Net trainer, so failing here turns
+    a confusing mid-run crash into an immediate, actionable error. Names this cannot
+    classify pass through; from_pretrained still fails cleanly on a genuinely wrong pick."""
+    name = str(base_model or "").strip().lower()
+    if name.endswith(".gguf"):
+        raise ValueError(
+            f"'{base_model}' is a GGUF checkpoint, which can't be trained. {_ONLY_SDXL_HINT}"
+        )
+    condensed = re.sub(r"[^a-z0-9]+", "-", name)
+    hit = next(
+        (p for p in _NON_SDXL_PHRASES if p in condensed),
+        None,
+    ) or next(
+        (t for t in condensed.split("-") if t in _NON_SDXL_TOKENS),
+        None,
+    )
+    if hit:
+        raise ValueError(
+            f"'{base_model}' looks like a {hit} model, which isn't trainable. {_ONLY_SDXL_HINT}"
+        )
 
 
 def _assert_trusted_base_model(base_model: str) -> None:
