@@ -1,0 +1,2 @@
+- PENDING: Verify from `conversation history jsonl` whether CPU `sd.cpp` is fastest vs alternatives including `ComfyUI`; if confirmed, wire it into studio when GPUs are absent.
+- PENDING: Check and benchmark `https://github.com/sgl-project/sglang-omni`, `https://docs.sglang.io/docs/sglang-diffusion/index`, `https://docs.nvidia.com/dynamo/dev/backends/sg-lang/diffusion`, `https://developer.nvidia.com/blog/accelerating-diffusion-models-with-an-open-plug-and-play-offering/`, `https://github.com/NVlabs/FastGen`, `https://github.com/vllm-project/vllm-omni`.

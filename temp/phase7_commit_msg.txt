@@ -1,0 +1,59 @@
+Studio diffusion (Phase 7): accuracy-preserving speed pass
+
+Re-review of the diffusion stack (#6675/#6679/#6680) surfaced one real accuracy
+bug and a dead-on-arrival speed path; this fixes both and adds the lossless /
+near-lossless wins, all measured on a B200.
+
+Correctness:
+- TF32 global-state leak (fix). speed_mode=max flipped torch.backends.*.allow_tf32
+  process-wide and never restored them, so a later `off` load silently inherited
+  TF32 and was no longer bit-identical. Added snapshot_backend_flags /
+  restore_backend_flags (TF32 + cudnn.benchmark), captured before the speed layer
+  runs and restored on unload. Verified: load max -> unload -> load off is now
+  byte-identical (PSNR inf) to a fresh off.
+- sd-cli timeout could hang forever. _run() blocked in `for line in stdout` and
+  only checked the timeout after EOF, so a child stuck in model load / GPU init
+  with no output ignored the timeout. Drained stdout on a reader thread with a
+  wall-clock deadline. Added a silent-hang regression test.
+
+Speed (diffusers path), near-lossless, opt-in tiers:
+- Regional torch.compile now runs on the GGUF transformer. The is_gguf gate (and
+  Z-Image's supports_torch_compile=False) were stale: compile_repeated_blocks
+  compiles and runs ~2.2x faster on the GGUF Z-Image transformer on
+  torch 2.9.1 / diffusers 0.38 (the per-op dequant stays eager, the rest of the
+  block compiles). Measured: off 1.80s -> default 0.82s/gen (+54.7%), PSNR 37.7 dB
+  vs eager -- far above the Q4 quant noise floor (~21 dB), so it does not move
+  output quality. Gate relaxed; default tier delivers it.
+- cudnn.benchmark added to the default tier (autotunes the fixed-shape VAE convs).
+- torch.inference_mode() around the pipeline call (lossless, strictly faster than
+  the no_grad diffusers uses internally).
+
+Memory path:
+- VAE tiling (not bit-identical >1MP) restricted to the model/sequential/CPU tiers;
+  the balanced (group) tier keeps exact slicing only, so it is now bit-identical to
+  the resident image (verified PSNR inf) and slightly faster.
+- Group offload adds non_blocking + record_stream on the CUDA stream path to
+  overlap each block's H2D copy with compute (lossless; gated on the installed
+  diffusers signature so older versions still work).
+
+Native (sd.cpp) path:
+- native_speed_flags: a first-class speed knob (default -> --diffusion-fa, a
+  near-lossless CUDA win that was previously only added on offload tiers; max also
+  -> --diffusion-conv-direct). conv-direct stays opt-in: measured +45% on CUDA, so
+  it is never auto-on. Engine generate() merges it, de-duped against offload flags.
+
+Default profile: a GGUF model with no explicit speed_mode now resolves to the
+`default` profile (resolve_speed_mode), since compile's perturbation sits below the
+quantisation noise floor and so does not reduce quality versus the dense reference;
+out of the box a GGUF Z-Image generation drops from 1.80s to 0.81s. Dense models
+stay `off` / bit-identical, and an explicit speed_mode -- including "off" -- is
+always honored, so the byte-identical path remains one flag away and is the
+regression reference.
+
+Tooling: scripts/compile_probe.py (eager vs compiled GGUF probe), scripts/
+perf_verify.py (the B200 verification above), and diffusion_bench.py gains
+--speed-mode so the speed tiers are benchmarkable.
+
+Tests: 183 passing (was 166); new coverage for the backend-flag snapshot/restore,
+GGUF compile eligibility, the balanced tiling/slicing split, native_speed_flags +
+the engine de-dup, and the sd-cli silent-hang timeout.

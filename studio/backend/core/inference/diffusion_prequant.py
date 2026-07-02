@@ -136,6 +136,7 @@ def load_prequantized_transformer(
     hf_token: Optional[str] = None,
     scheme: str,
     min_features: Optional[int] = None,
+    fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
@@ -171,7 +172,9 @@ def load_prequantized_transformer(
         # a torch.save pickle. weights_only=False is required to rebuild those subclasses.
         # The local-path branch is gated above; the repo branch is a first-party artifact.
         ckpt = torch.load(path, weights_only = False, map_location = "cpu")
-        if not _validate_checkpoint(ckpt, scheme, base, logger, min_features = min_features):
+        if not _validate_checkpoint(
+            ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
+        ):
             return None
         state_dict = ckpt["state_dict"]
 
@@ -223,7 +226,12 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
-        return source.location if os.path.isfile(source.location) else None
+
+        # Expand ~ once: the allowlist gate (_local_prequant_path_allowed) already
+        # expands it, so a "~/..." path that passed the gate must be expanded here too
+        # or os.path.isfile() sees the literal "~" and silently skips a real checkpoint.
+        expanded = os.path.expanduser(source.location)
+        return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
         return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
@@ -236,13 +244,20 @@ def _validate_checkpoint(
     base: str,
     logger: Any,
     min_features: Optional[int] = None,
+    fast_accum: Optional[bool] = None,
 ) -> bool:
     """Reject a checkpoint that is the wrong format / scheme / base model / filter.
 
     ``min_features`` (when given) is the runtime Linear-feature threshold: a checkpoint
     built with a different ``--min-features`` quantises a different set of Linear layers,
     so ``load_state_dict(assign=True)`` would silently install a model that does not match
-    what the dense path produces while status still reports the requested scheme. Reject it."""
+    what the dense path produces while status still reports the requested scheme. Reject it.
+
+    ``fast_accum`` (fp8 only) is the runtime accumulate choice: when the caller forces it
+    explicitly (not None) and the checkpoint recorded a different baked value, the loaded
+    fp8 kernels would ignore the request while status still reports fp8, so reject and let
+    the dense path honor it. A checkpoint that predates the metadata (field absent) is
+    accepted unchanged for backward compatibility."""
     if not isinstance(ckpt, dict) or ckpt.get("format") != PREQUANT_FORMAT:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
@@ -254,9 +269,23 @@ def _validate_checkpoint(
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
     ckpt_base = meta.get("base_model_id")
-    if ckpt_base and base and not _same_base_model(ckpt_base, base):
-        _warn(logger, scheme, ValueError(f"checkpoint base {ckpt_base!r} != {base!r}"))
-        return False
+    if base:
+        # A checkpoint whose keys happen to match a different base can load strict=True and
+        # then generate from the wrong weights while status reports the requested scheme.
+        # Our builder always records base_model_id, so a checkpoint that omits it against a
+        # requested base is untrustworthy -- refuse rather than silently accept it.
+        if not ckpt_base:
+            _warn(
+                logger,
+                scheme,
+                ValueError(
+                    f"checkpoint metadata missing base_model_id; refusing for base {base!r}"
+                ),
+            )
+            return False
+        if not _same_base_model(ckpt_base, base):
+            _warn(logger, scheme, ValueError(f"checkpoint base {ckpt_base!r} != {base!r}"))
+            return False
     if min_features is not None:
         ckpt_min = meta.get("min_features")
         if ckpt_min is not None and int(ckpt_min) != int(min_features):
@@ -264,6 +293,34 @@ def _validate_checkpoint(
                 logger,
                 scheme,
                 ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
+            )
+            return False
+    # The int8 exclusion set (M=1 modulation / conditioning-embedder projections) is derived
+    # from the scheme, but a future change to that token list would leave older checkpoints
+    # with a stale baked set that still passes scheme+min_features and then crashes at the
+    # first denoise step. When the checkpoint records the set, reject a mismatch; absent
+    # (older artifact) is accepted since scheme+min_features already pin today's filter.
+    ckpt_excludes = meta.get("exclude_name_tokens")
+    if ckpt_excludes is not None:
+        from .diffusion_transformer_quant import exclude_tokens_for_scheme
+        expected = tuple(exclude_tokens_for_scheme(scheme))
+        if tuple(ckpt_excludes) != expected:
+            _warn(
+                logger,
+                scheme,
+                ValueError(
+                    f"checkpoint exclude_name_tokens {tuple(ckpt_excludes)!r} != {expected!r}"
+                ),
+            )
+            return False
+    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.
+    if fast_accum is not None:
+        ckpt_fa = meta.get("fast_accum")
+        if ckpt_fa is not None and bool(ckpt_fa) != bool(fast_accum):
+            _warn(
+                logger,
+                scheme,
+                ValueError(f"checkpoint fast_accum {ckpt_fa!r} != requested {bool(fast_accum)!r}"),
             )
             return False
     return True
