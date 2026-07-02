@@ -585,9 +585,7 @@ def test_eval_hf_honors_base_model_for_remote_adapter(fake_eval_env, tmp_path):
 
 
 def test_eval_cuda_index_keeps_auto_batch_size(fake_eval_env, tmp_path):
-    sys.modules["torch"].cuda = SimpleNamespace(
-        is_available = lambda: True, device_count = lambda: 1
-    )
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
     result = CliRunner().invoke(
         _eval_app(),
         [
@@ -650,9 +648,7 @@ def test_eval_rejects_unknown_backend(fake_eval_env, tmp_path):
 
 
 def test_eval_hf_cuda_without_bnb_loads_full_precision(fake_eval_env, tmp_path, monkeypatch):
-    sys.modules["torch"].cuda = SimpleNamespace(
-        is_available = lambda: True, device_count = lambda: 1
-    )
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
     monkeypatch.setattr(evalmod, "_bitsandbytes_available", lambda: False)
     result = CliRunner().invoke(
         _eval_app(),
@@ -725,9 +721,7 @@ def test_eval_hf_rejects_cuda_when_unavailable(fake_eval_env, tmp_path):
 
 
 def test_eval_hf_rejects_out_of_range_cuda_index(fake_eval_env, tmp_path):
-    sys.modules["torch"].cuda = SimpleNamespace(
-        is_available = lambda: True, device_count = lambda: 1
-    )
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
     result = CliRunner().invoke(
         _eval_app(),
         [

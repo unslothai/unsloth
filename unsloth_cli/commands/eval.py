@@ -93,7 +93,6 @@ def _hf_device_error(device: str) -> Optional[str]:
     # string it doesn't recognise (e.g. cuda:1 on a one-GPU host), so reject
     # unavailable devices instead of letting the run land somewhere else
     import torch
-
     if device.startswith("cuda"):
         if not torch.cuda.is_available():
             return f"--device {device} requested but CUDA is not available."
@@ -106,8 +105,7 @@ def _hf_device_error(device: str) -> Optional[str]:
             count = torch.cuda.device_count()
             if not 0 <= idx < count:
                 return (
-                    f"--device {device} requested but only {count} CUDA "
-                    "device(s) are available."
+                    f"--device {device} requested but only {count} CUDA device(s) are available."
                 )
     elif device.startswith("mps"):
         mps = getattr(torch.backends, "mps", None)
