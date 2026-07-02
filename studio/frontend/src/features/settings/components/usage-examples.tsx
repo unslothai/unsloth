@@ -27,6 +27,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
+import {
+  type OpenAIAutoSwitchSettings,
+  loadOpenAIAutoSwitchSettings,
+  updateOpenAIAutoSwitchSettings,
+} from "../api/openai-auto-switch";
 
 // API call type; OS axis applies to curl only (Python is OS-identical).
 type ExampleType =
@@ -68,6 +73,13 @@ const OS_AWARE: Record<ExampleType, boolean> = {
 const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
 
 const PROMPT = "Can Unsloth Studio do API calling?";
+// Auto-switch demo: a second call naming a different downloaded GGUF so the
+// example shows that the model field selects which model serves.
+// A placeholder the user replaces with one of their downloaded GGUFs. A fixed
+// repo is usually not one they have, so the resolver would fall through and the
+// demo would keep serving the current model instead of switching.
+const SWITCH_MODEL = "your-other-downloaded-GGUF";
+const SWITCH_PROMPT = "Now answer as a different model.";
 // web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
 // Sampling/thinking knobs for the "+ advanced" examples.
@@ -163,13 +175,19 @@ function winBody(model: string, variant: Variant): string {
   return JSON.stringify(body);
 }
 
+// A leading comment (valid in both bash and PowerShell) noting the model field
+// selects the served model when auto-switch is on.
+const SWITCH_NOTE =
+  '# "Switch model by request" is on: set "model" to any downloaded GGUF to switch.\n';
+
 function curlUnix(
   base: string,
   key: string,
   model: string,
   variant: Variant,
+  autoSwitch: boolean,
 ): string {
-  return `curl ${base}/v1/chat/completions \\
+  return `${autoSwitch ? SWITCH_NOTE : ""}curl ${base}/v1/chat/completions \\
   -H "Authorization: Bearer ${key}" \\
   -H "Content-Type: application/json" \\
   -d '${shSingle(curlBodyPretty(model, variant))}'`;
@@ -181,8 +199,9 @@ function curlWindows(
   key: string,
   model: string,
   variant: Variant,
+  autoSwitch: boolean,
 ): string {
-  return `$body = '${psSingle(winBody(model, variant))}'
+  return `${autoSwitch ? SWITCH_NOTE : ""}$body = '${psSingle(winBody(model, variant))}'
 Set-Content -Path body.json -Value $body -Encoding ascii
 curl.exe ${base}/v1/chat/completions \`
   -H "Authorization: Bearer ${key}" \`
@@ -190,11 +209,29 @@ curl.exe ${base}/v1/chat/completions \`
   -d "@body.json"`;
 }
 
+// A second OpenAI call naming a different downloaded GGUF: with auto-switch on,
+// Studio loads it before serving, so the model field selects the served model.
+function pythonSwitchDemo(): string {
+  return `
+
+# "Switch model by request" is on: replace the model below with another GGUF you
+# have downloaded and Studio loads it before serving. Unknown names keep serving
+# the current model.
+response = client.chat.completions.create(
+    model=${j(SWITCH_MODEL)},
+    messages=[{"role": "user", "content": ${j(SWITCH_PROMPT)}}],
+    stream=True,
+)
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="")`;
+}
+
 function pythonSnippet(
   base: string,
   key: string,
   model: string,
   variant: Variant,
+  autoSwitch: boolean,
 ): string {
   // Standard OpenAI args are named; Unsloth extensions go through extra_body.
   const named =
@@ -241,7 +278,7 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": ${j(PROMPT)}}],${named}${extraBody}
     stream=True,
 )
-${loop}`;
+${loop}${autoSwitch ? pythonSwitchDemo() : ""}`;
 }
 
 function buildSnippets(
@@ -249,15 +286,16 @@ function buildSnippets(
   key: string,
   model: string,
   os: Os,
+  autoSwitch: boolean,
 ): Record<ExampleType, string> {
   const curl = os === "windows" ? curlWindows : curlUnix;
   return {
-    curl: curl(base, key, model, "plain"),
-    python: pythonSnippet(base, key, model, "plain"),
-    curlTools: curl(base, key, model, "tools"),
-    pythonTools: pythonSnippet(base, key, model, "tools"),
-    curlAdvanced: curl(base, key, model, "advanced"),
-    pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
+    curl: curl(base, key, model, "plain", autoSwitch),
+    python: pythonSnippet(base, key, model, "plain", autoSwitch),
+    curlTools: curl(base, key, model, "tools", autoSwitch),
+    pythonTools: pythonSnippet(base, key, model, "tools", autoSwitch),
+    curlAdvanced: curl(base, key, model, "advanced", autoSwitch),
+    pythonAdvanced: pythonSnippet(base, key, model, "advanced", autoSwitch),
   };
 }
 
@@ -346,10 +384,29 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
+  // null while loading; the same setting the General tab exposes (shared cache).
+  const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
+    null,
+  );
+  const [savingAutoSwitch, setSavingAutoSwitch] = useState(false);
 
   // Tunnel may start after the first /api/health read; refresh so it surfaces here.
   useEffect(() => {
     void fetchDeviceType({ force: true });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadOpenAIAutoSwitchSettings()
+      .then((s) => {
+        if (!cancelled) setAutoSwitch(s);
+      })
+      .catch(() => {
+        // Best-effort: leave the toggle off if the setting can't be read.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const model = useLoadedModelName();
@@ -361,9 +418,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
 
+  const autoSwitchOn = autoSwitch?.enabled ?? false;
   const snippets = useMemo(
-    () => buildSnippets(base, key, model, os),
-    [base, key, model, os],
+    () => buildSnippets(base, key, model, os, autoSwitchOn),
+    [base, key, model, os, autoSwitchOn],
   );
 
   const osAware = OS_AWARE[lang];
@@ -385,6 +443,20 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     writeUseTunnelPref(next);
   };
 
+  // Same setting as the General tab; persist optimistically and revert on failure
+  // so the examples reflect the live model-switch behavior.
+  const handleToggleAutoSwitch = (next: boolean) => {
+    const idle = autoSwitch?.autoUnloadIdleSeconds ?? 0;
+    setAutoSwitch((prev) => (prev ? { ...prev, enabled: next } : prev));
+    setSavingAutoSwitch(true);
+    void updateOpenAIAutoSwitchSettings(next, idle)
+      .then(setAutoSwitch)
+      .catch(() => {
+        setAutoSwitch((prev) => (prev ? { ...prev, enabled: !next } : prev));
+      })
+      .finally(() => setSavingAutoSwitch(false));
+  };
+
   const handleCopyUrl = async () => {
     if (cloudflareUrl && (await copyToClipboard(cloudflareUrl))) {
       setCopiedUrl(true);
@@ -398,6 +470,41 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
+        {/* Same setting as the General tab; surfaced here so the request `model`
+            actually switches the served model, which the examples below show. */}
+        <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Switch
+              size="sm"
+              checked={autoSwitchOn}
+              disabled={autoSwitch === null || savingAutoSwitch}
+              onCheckedChange={handleToggleAutoSwitch}
+              aria-label={t("settings.general.modelAutoSwitch.enable")}
+            />
+            <span className="text-[11px] font-medium text-foreground">
+              {t("settings.general.modelAutoSwitch.enable")}
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={t(
+                    "settings.general.modelAutoSwitch.enableDescription",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3.5"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[260px] text-[11px] leading-snug">
+                {t("settings.general.modelAutoSwitch.enableDescription")}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
         {cloudflareUrl ? (
           <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
             <div className="flex shrink-0 items-center gap-1.5">
@@ -412,9 +519,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               </span>
               {/* Only when not launched with --secure: the raw 0.0.0.0 port is
                   still globally reachable, so point the user at --secure. */}
-              {!secure ? (
+              {secure ? null : (
                 <Tooltip>
-                  <TooltipTrigger asChild>
+                  <TooltipTrigger asChild={true}>
                     <button
                       type="button"
                       className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -430,7 +537,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>
-              ) : null}
+              )}
             </div>
             {/* Always rendered (dimmed when off) so toggling never changes the
                 row height and shifts the code block below. */}
