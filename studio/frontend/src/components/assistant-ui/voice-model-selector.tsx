@@ -53,6 +53,16 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   const selectedModel = value ? models.find((m) => m.id === value) : null;
   const displayName = selectedModel?.name ?? BROWSER_VOICE_LABEL;
 
+  // The picker is non-interactive when there's no chat model to answer (disabled)
+  // OR the chat model is a speech-LLM that speaks with its own voice
+  // (voiceOwnedByModel) -- in both cases it greys out and can't be opened.
+  const inactive = disabled || voiceOwnedByModel;
+  const triggerLabel = disabled
+    ? "Select model first"
+    : voiceOwnedByModel
+      ? "Model's own voice"
+      : displayName;
+
   const handleSelect = (id: string | null) => {
     setOpen(false);
     onValueChange(id);
@@ -60,22 +70,33 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
 
   return (
     <Popover
-      open={disabled ? false : open}
-      onOpenChange={(next) => !disabled && setOpen(next)}
+      open={inactive ? false : open}
+      onOpenChange={(next) => !inactive && setOpen(next)}
     >
       <PopoverTrigger asChild>
         <button
           type="button"
-          disabled={disabled}
+          disabled={inactive}
+          title={
+            voiceOwnedByModel
+              ? "The loaded model is a speech-LLM and speaks with its own voice."
+              : undefined
+          }
           className={cn(
             "flex min-w-0 items-center gap-2 rounded-[10px] transition-colors",
-            disabled
+            inactive
               ? "cursor-not-allowed opacity-50"
               : "hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
             "h-9 px-3.5 text-sm",
             className,
           )}
-          aria-label={disabled ? "Select a chat model first" : "Select voice model"}
+          aria-label={
+            disabled
+              ? "Select a chat model first"
+              : voiceOwnedByModel
+                ? "The chat model provides its own voice"
+                : "Select voice model"
+          }
         >
           {loading ? (
             <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
@@ -83,15 +104,18 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
-            {disabled ? "Select model first" : displayName}
+            {triggerLabel}
           </span>
-          <span className="flex size-4 shrink-0 items-center justify-center">
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              className="size-3.5 text-muted-foreground"
-              strokeWidth={2}
-            />
-          </span>
+          {/* Chevron only when the picker can actually open. */}
+          {!inactive && (
+            <span className="flex size-4 shrink-0 items-center justify-center">
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                className="size-3.5 text-muted-foreground"
+                strokeWidth={2}
+              />
+            </span>
+          )}
         </button>
       </PopoverTrigger>
       <PopoverContent
