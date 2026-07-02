@@ -2779,6 +2779,17 @@ const VoiceEngine: FC = () => {
       resumeListen();
       return;
     }
+    // Serialize turns: cancel any in-flight run first so rapid/barge-in submits
+    // supersede instead of piling up concurrent runs (a heap of responses the
+    // loop then can't prioritize). One run, one reply, latest wins.
+    const thread = auiRef.current.thread();
+    if (thread.getState().isRunning) {
+      try {
+        thread.cancelRun();
+      } catch {
+        // Run may have ended between the check and here.
+      }
+    }
     composer.send();
     composer.setText("");
     const DEFERRED_CLEAR_MAX = 5;
