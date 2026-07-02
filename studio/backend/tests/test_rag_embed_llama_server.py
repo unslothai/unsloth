@@ -373,14 +373,36 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     def fake_spawn():
         spawned["n"] += 1
         b._process = _FakeProc(alive = True)
+        # The real spawn records the repo it serves (via _resolve_model_path);
+        # _ensure_ready treats a mismatch as stale and respawns.
+        b._model_repo = config.effective_gguf_repo()
 
     monkeypatch.setattr(b, "_spawn", fake_spawn)
     b._ensure_ready()
     assert spawned["n"] == 1
     assert b._process_alive()
-    # Already alive -> no second spawn.
+    # Already alive on the current model -> no second spawn.
     b._ensure_ready()
     assert spawned["n"] == 1
+
+
+def test_ensure_ready_respawns_on_model_change(monkeypatch):
+    b = LlamaServerBackend()
+    spawned = {"n": 0}
+
+    def fake_spawn():
+        spawned["n"] += 1
+        b._process = _FakeProc(alive = True)
+        b._model_repo = config.effective_gguf_repo()
+
+    monkeypatch.setattr(b, "_spawn", fake_spawn)
+    b._ensure_ready()
+    assert spawned["n"] == 1
+    # A Settings change makes the live server stale -> respawn on next use.
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/other-GGUF")
+    b._ensure_ready()
+    assert spawned["n"] == 2
+    assert b._model_repo == "org/other-GGUF"
 
 
 def test_post_restarts_once_on_connect_error(monkeypatch):

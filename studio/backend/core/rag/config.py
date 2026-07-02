@@ -66,6 +66,35 @@ OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 # wins bulk indexing), else torch-free GGUF llama-server. Switching backends changes
 # the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
+
+
+def effective_embedding_model() -> str:
+    """The embedding model actually in use: the persisted Settings override when
+    one is stored, else ``EMBEDDING_MODEL`` (env/default). Read at call time so a
+    Settings change applies without a restart."""
+    try:
+        from utils.embedding_model_settings import get_rag_embedding_model
+
+        return get_rag_embedding_model()
+    except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
+        return EMBEDDING_MODEL
+
+
+def effective_gguf_repo() -> str:
+    """GGUF repo for the llama-server backend, tracking the effective model.
+
+    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins. Otherwise a custom model
+    maps to its ``-GGUF`` companion repo (the unsloth convention the default pair
+    follows), or is used as-is when it already names a GGUF repo.
+    """
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return EMBED_GGUF_REPO
+    model = effective_embedding_model()
+    if model == EMBEDDING_MODEL:
+        return EMBED_GGUF_REPO
+    if "gguf" in model.lower():
+        return model
+    return f"{model}-GGUF"
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
 # tiny model) and exact vs fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")

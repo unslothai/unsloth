@@ -4,7 +4,7 @@
 from typing import Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
@@ -46,6 +46,15 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.embedding_model_settings import (
+    MAX_EMBEDDING_MODEL_LENGTH,
+    default_embedding_model,
+    get_rag_embedding_model,
+    get_stored_embedding_model,
+    reset_rag_embedding_model,
+    set_rag_embedding_model,
+    validate_embedding_model,
 )
 
 router = APIRouter()
@@ -227,6 +236,86 @@ def update_openai_auto_switch_override(
             log = logger,
         ) from exc
     return ModelOverridesResponse(overrides = get_model_overrides())
+
+
+class EmbeddingModelPayload(BaseModel):
+    embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    # Token for gated/private repos during verification (not stored).
+    hf_token: Optional[str] = Field(default = None, max_length = 512)
+    # Skip HF verification (offline installs, local paths HF can't see).
+    force: bool = False
+
+
+class EmbeddingModelResponse(BaseModel):
+    embedding_model: str
+    default_embedding_model: str
+    is_custom: bool
+
+
+def _embedding_model_response() -> EmbeddingModelResponse:
+    return EmbeddingModelResponse(
+        embedding_model = get_rag_embedding_model(),
+        default_embedding_model = default_embedding_model(),
+        is_custom = get_stored_embedding_model() is not None,
+    )
+
+
+@router.get("/embedding-model", response_model = EmbeddingModelResponse)
+def get_embedding_model(
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResponse:
+    return _embedding_model_response()
+
+
+@router.put("/embedding-model", response_model = EmbeddingModelResponse)
+def update_embedding_model(
+    payload: EmbeddingModelPayload, current_subject: str = Depends(get_current_subject)
+) -> EmbeddingModelResponse:
+    """Set the RAG embedding model. Unless ``force`` is set, the repo is verified
+    to be an embedding model via HF metadata; an unverifiable model (wrong type,
+    typo, gated repo, or no network) returns 409 so the UI can offer "save anyway".
+    Documents indexed under the previous model must be re-uploaded."""
+    from utils.models import is_embedding_model
+
+    try:
+        model = validate_embedding_model(payload.embedding_model)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid embedding model."),
+            event = "settings.update_embedding_model_failed",
+            log = logger,
+        ) from exc
+    # The env/default model needs no verification; saving it is a no-op override.
+    if model != default_embedding_model() and not payload.force:
+        if not is_embedding_model(model, hf_token = payload.hf_token or None):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Could not verify {model!r} as an embedding model on "
+                    "Hugging Face (it may be the wrong model type, gated, or "
+                    "you may be offline)."
+                ),
+            )
+    set_rag_embedding_model(model)
+    logger.info(
+        "settings.embedding_model_updated subject=%s model=%s forced=%s",
+        current_subject,
+        model,
+        payload.force,
+    )
+    return _embedding_model_response()
+
+
+@router.delete("/embedding-model", response_model = EmbeddingModelResponse)
+def reset_embedding_model(
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResponse:
+    """Clear the override, returning to the env/default model."""
+    reset_rag_embedding_model()
+    logger.info("settings.embedding_model_reset subject=%s", current_subject)
+    return _embedding_model_response()
 
 
 class PreviewLinkRotateResponse(BaseModel):

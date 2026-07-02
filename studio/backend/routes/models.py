@@ -68,8 +68,8 @@ def _is_hidden_model(*values: str | None) -> bool:
     from core.rag import config as rag_config
 
     needles = (
-        rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
-        rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+        rag_config.effective_embedding_model().split("/")[-1].lower(),
+        rag_config.effective_gguf_repo().split("/")[-1].lower(),
         # The validation probe's repo (matches the cached repo id) and its exact
         # filename (matches the on-disk path). The filename carries the .gguf so
         # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
