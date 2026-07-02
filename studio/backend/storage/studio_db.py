@@ -100,6 +100,11 @@ def _contains_sensitive_path_component(path: str) -> bool:
     return any(part.lower() in _SENSITIVE_PATH_COMPONENTS for part in parts)
 
 
+def contains_sensitive_path_component(path: str) -> bool:
+    """Public predicate for the credential/config denylist (.ssh, .aws, ...)."""
+    return _contains_sensitive_path_component(path)
+
+
 _schema_lock = threading.Lock()
 _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900

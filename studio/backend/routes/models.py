@@ -1339,6 +1339,8 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
     """Resolve a requested browse path by walking from trusted allowlist roots."""
+    from storage.studio_db import contains_sensitive_path_component
+
     requested_path = _normalize_browse_request_path(path)
     resolved_roots: list[Path] = []
     seen_roots: set[str] = set()
@@ -1388,6 +1390,12 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                         "POST /api/models/scan-folders first, or pick a directory "
                         "under your home folder."
                     ),
+                )
+            # Same denylist registration enforces: keep ~/.ssh, ~/.aws, etc. unbrowseable.
+            if contains_sensitive_path_component(str(resolved_child)):
+                raise HTTPException(
+                    status_code = 403,
+                    detail = "Credential or configuration directories are not browseable.",
                 )
             current = resolved_child
 
@@ -1439,7 +1447,7 @@ async def browse_folders(
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from utils.paths.external_media import linux_run_media_mount_roots
-    from storage.studio_db import list_scan_folders
+    from storage.studio_db import contains_sensitive_path_component, list_scan_folders
 
     # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist()
@@ -1491,6 +1499,8 @@ async def browse_folders(
             name = child.name
             is_hidden = name.startswith(".")
             if is_hidden and not show_hidden:
+                continue
+            if contains_sensitive_path_component(name):
                 continue
             entries.append(
                 BrowseEntry(

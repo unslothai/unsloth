@@ -209,6 +209,7 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     model_dir = media_root / "modelsAI" / "gguf" / "qwen3.6"
     home.mkdir()
     model_dir.mkdir(parents = True)
+    (media_root / ".ssh").mkdir()
 
     fake_paths = SimpleNamespace(
         hf_default_cache_dir = lambda: tmp_path / "missing-default-hf",
@@ -219,7 +220,10 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
         exports_root = lambda: tmp_path / "missing-exports",
     )
     fake_external_media = SimpleNamespace(linux_run_media_mount_roots = lambda: [media_root])
-    fake_studio_db = SimpleNamespace(list_scan_folders = lambda: [])
+    fake_studio_db = SimpleNamespace(
+        list_scan_folders = lambda: [],
+        contains_sensitive_path_component = studio_db.contains_sensitive_path_component,
+    )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
     monkeypatch.setitem(sys.modules, "storage.studio_db", fake_studio_db)
@@ -239,3 +243,8 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
 
     assert media_root.resolve() in allowlist
     assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
+
+    # Sensitive dirs under an allowlisted media root stay unbrowseable (parity with Hub).
+    with pytest.raises(_HTTPException) as exc:
+        ns["_resolve_browse_target"](str(media_root / ".ssh"), allowlist)
+    assert exc.value.status_code == 403
