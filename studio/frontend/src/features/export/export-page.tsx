@@ -221,12 +221,17 @@ export function ExportPage() {
     hardware.exportUnsupportedMessage ??
     "Export requires a supported accelerator (NVIDIA, AMD, or Intel GPU, or Apple Silicon) with PyTorch or MLX installed.";
   const availableFormats = useMemo<MergedFormatOption[]>(
-    // Hide compressed-tensors on non-NVIDIA hosts, and portable torchao on macOS/MLX (the backend
-    // rejects quantized export there), so the UI never advertises a format the backend will refuse.
     () =>
-      MERGED_FORMATS.filter(
-        (f) => (hasNvidia || !f.needsNvidia) && !(isMacHost && f.backend === "torchao"),
-      ),
+      MERGED_FORMATS.filter((f) => {
+        // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
+        if (f.backend === "compressed") return hasNvidia;
+        // Portable torchao is the fallback for hosts without the NVIDIA compressed path, i.e. a
+        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors) and on macOS/MLX (the
+        // backend rejects quantized export there).
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // Plain 16-bit is available everywhere.
+        return true;
+      }),
     [hasNvidia, isMacHost],
   );
   const toggleFormat = useCallback((value: string) => {
