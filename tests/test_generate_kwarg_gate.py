@@ -94,12 +94,32 @@ class VisionAcceptsMM:
 
 # (model, key, expected) per gate case.
 CASES = [
-    ("prep(**kwargs)+forward(key)  -> accept", PrepHasKwargs_ForwardHasKey(), "logits_to_keep", True),
-    ("prep(no kwargs)+forward(key) -> reject", PrepNoKwargs_ForwardHasKey(), "logits_to_keep", False),
+    (
+        "prep(**kwargs)+forward(key)  -> accept",
+        PrepHasKwargs_ForwardHasKey(),
+        "logits_to_keep",
+        True,
+    ),
+    (
+        "prep(no kwargs)+forward(key) -> reject",
+        PrepNoKwargs_ForwardHasKey(),
+        "logits_to_keep",
+        False,
+    ),
     ("prep(key) direct             -> accept", PrepHasKeyDirectly(), "logits_to_keep", True),
     ("no prepare_inputs_for_gen    -> reject", NoPrepare(), "logits_to_keep", False),
-    ("num_logits_to_keep variant   -> reject", PrepNoKwargs_ForwardHasKey(), "num_logits_to_keep", False),
-    ("mm_token_type_ids not accepted -> reject (strip)", VisionRejectsMM(), "mm_token_type_ids", False),
+    (
+        "num_logits_to_keep variant   -> reject",
+        PrepNoKwargs_ForwardHasKey(),
+        "num_logits_to_keep",
+        False,
+    ),
+    (
+        "mm_token_type_ids not accepted -> reject (strip)",
+        VisionRejectsMM(),
+        "mm_token_type_ids",
+        False,
+    ),
     ("mm_token_type_ids accepted     -> keep", VisionAcceptsMM(), "mm_token_type_ids", True),
 ]
 
