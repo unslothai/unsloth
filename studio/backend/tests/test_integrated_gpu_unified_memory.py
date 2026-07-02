@@ -41,6 +41,24 @@ def _fake_torch(
     return t
 
 
+def _fake_torch_multi(devices, *, hip = None):
+    # devices: list of dicts {integrated, free_mib, total_mib}, one per ordinal.
+    t = types.ModuleType("torch")
+    t.version = types.SimpleNamespace(hip = hip)
+    t.cuda = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: len(devices),
+        mem_get_info = lambda i: (
+            devices[i]["free_mib"] * 1024 * 1024,
+            devices[i]["total_mib"] * 1024 * 1024,
+        ),
+        get_device_properties = lambda i: types.SimpleNamespace(
+            is_integrated = 1 if devices[i]["integrated"] else 0
+        ),
+    )
+    return t
+
+
 def _mock_nvidia_smi_run(fake_output: str, returncode: int = 0):
     """Patch subprocess.run so only the nvidia-smi probe is faked; on a unified
     GPU it returns [N/A] columns, which the probe skips -> torch fallback."""
@@ -109,15 +127,17 @@ def test_integrated_gpu_unknown_available_keeps_free(monkeypatch):
         assert LlamaCppBackend._get_gpu_memory() == [(0, 1590, 124610)]
 
 
-def test_integrated_gpu_override_never_lowers_free(monkeypatch):
-    # The override only ever raises the ceiling: if mem_get_info free already
-    # exceeds system-available, keep the larger figure.
+def test_integrated_gpu_clamps_down_to_budget(monkeypatch):
+    # In a capped container CUDA can report host MemFree (8 GiB) above the cgroup
+    # allowance (2 GiB). For a unified device the system budget is authoritative,
+    # so free must be clamped DOWN to it, not left at the host reading (else the
+    # fit picks a context that exceeds the container cap and gets OOM-killed).
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch(integrated = True, free_mib = 8000, total_mib = 124610)
     )
-    _fixed_avail(monkeypatch, 2000)
+    _fixed_avail(monkeypatch, 2000, total = 4096)
     with _mock_nvidia_smi_run("", returncode = 1):
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 8000, 124610)]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 2000, 4096)]
 
 
 def test_rocm_integrated_apu_not_overridden(monkeypatch):
@@ -145,6 +165,51 @@ def test_integrated_gpu_clamps_total_to_container_budget(monkeypatch):
     _fixed_avail(monkeypatch, 7000, total = 8192)
     with _mock_nvidia_smi_run("", returncode = 1):
         assert LlamaCppBackend._get_gpu_memory() == [(0, 7000, 8192)]
+
+
+# ── mixed-host dispatch: an [N/A] line must defer to torch ──
+
+
+def test_mixed_host_na_line_defers_to_torch(monkeypatch):
+    # GPU 0 discrete (normal), GPU 1 integrated ([N/A] free). nvidia-smi would
+    # return only GPU 0; we must defer to torch so the integrated GPU is included
+    # with the system-RAM budget instead of being dropped.
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch_multi(
+            [
+                {"integrated": False, "free_mib": 20000, "total_mib": 24576},
+                {"integrated": True, "free_mib": 1590, "total_mib": 124610},
+            ]
+        ),
+    )
+    _fixed_avail(monkeypatch, 50000, total = 64000)
+    with _mock_nvidia_smi_run("0, 20000, 24576\n1, [N/A], [N/A]\n"):
+        gpus = LlamaCppBackend._get_gpu_memory()
+    # Discrete GPU keeps mem_get_info; integrated GPU gets the budget.
+    assert gpus == [(0, 20000, 24576), (1, 50000, 64000)]
+
+
+def test_clean_nvidia_smi_does_not_probe_torch(monkeypatch):
+    # All-numeric nvidia-smi is the fast path: torch must not be touched.
+    boom = types.ModuleType("torch")
+
+    def _raise(*a, **k):
+        raise AssertionError("torch must not be probed on a clean nvidia-smi result")
+
+    boom.cuda = types.SimpleNamespace(is_available = _raise)
+    monkeypatch.setitem(sys.modules, "torch", boom)
+    with _mock_nvidia_smi_run("0, 20000, 24576\n"):
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 20000, 24576)]
+
+
+def test_skipped_line_keeps_smi_result_when_torch_absent(monkeypatch):
+    # nvidia-smi skipped an [N/A] line but torch is unavailable: keep the parsed
+    # discrete GPU rather than losing it.
+    monkeypatch.setitem(sys.modules, "torch", None)  # import torch -> ImportError
+    with _mock_nvidia_smi_run("0, 20000, 24576\n1, [N/A], [N/A]\n"):
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 20000, 24576)]
 
 
 # ── _gpu_is_integrated flag ──
@@ -198,15 +263,35 @@ def test_cgroup_v2_max_is_unlimited(tmp_path):
     assert LlamaCppBackend._cgroup_memory_mib(proc, root) == (None, None)
 
 
-def test_cgroup_v2_reads_process_path_not_root(tmp_path):
-    # The process's own /pod123 cgroup caps at 8 GiB; the mount root has a bogus
-    # 1 GiB. Resolving the path from /proc/self/cgroup must read the pod, not root.
-    proc, root = _make_v2(tmp_path, "/pod123", limit = 8 * 1024**3, current = 0, inactive_file = 0)
-    root_dir = tmp_path / "cgroup"
-    (root_dir / "memory.max").write_text(str(1 * 1024**3))
-    (root_dir / "memory.current").write_text("0")
-    (root_dir / "memory.stat").write_text("inactive_file 0\n")
-    assert LlamaCppBackend._cgroup_memory_mib(proc, root) == (8192, 8192)
+def _write_v2_level(root, rel, *, limit, current, inactive_file = 0):
+    d = root if rel in ("", "/") else root / rel.lstrip("/")
+    d.mkdir(parents = True, exist_ok = True)
+    (d / "memory.max").write_text(str(limit))
+    (d / "memory.current").write_text(str(current))
+    (d / "memory.stat").write_text(f"inactive_file {inactive_file}\nactive_file 8192\n")
+
+
+def test_cgroup_v2_walks_to_ancestor_limit(tmp_path):
+    # The process's own /pod/ctr cgroup is uncapped ("max"), but the parent /pod
+    # slice caps at 8 GiB (2 GiB used). The ancestor limit must still bind rather
+    # than the process being treated as uncapped.
+    root = tmp_path / "cgroup"
+    _write_v2_level(root, "/pod/ctr", limit = "max", current = 1 * 1024**3)
+    _write_v2_level(root, "/pod", limit = 8 * 1024**3, current = 2 * 1024**3)
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/pod/ctr\n")
+    assert LlamaCppBackend._cgroup_memory_mib(str(proc), str(root)) == (6144, 8192)
+
+
+def test_cgroup_v2_most_restrictive_ancestor_wins(tmp_path):
+    # child caps 4 GiB (1 GiB used -> 3 GiB), parent caps 8 GiB: the tighter child
+    # budget binds via the per-level minimum.
+    root = tmp_path / "cgroup"
+    _write_v2_level(root, "/pod/ctr", limit = 4 * 1024**3, current = 1 * 1024**3)
+    _write_v2_level(root, "/pod", limit = 8 * 1024**3, current = 2 * 1024**3)
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/pod/ctr\n")
+    assert LlamaCppBackend._cgroup_memory_mib(str(proc), str(root)) == (3072, 4096)
 
 
 def test_cgroup_v2_falls_back_to_mount_root(tmp_path):

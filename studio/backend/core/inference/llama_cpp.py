@@ -2236,7 +2236,28 @@ class LlamaCppBackend:
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable. ``total`` lets the fit reserve absolute headroom.
         """
-        # ── NVIDIA via nvidia-smi ────────────────────────────────────
+        smi_gpus, smi_skipped = LlamaCppBackend._get_gpu_memory_via_nvidia_smi()
+        # A line skipped for non-numeric memory is the integrated-GPU signal:
+        # GB10 / Jetson report [N/A] free, so on a mixed host nvidia-smi would
+        # return only the discrete cards and drop the unified-memory one. Defer to
+        # torch, which enumerates every device and gives the integrated GPU the
+        # system-RAM budget. Keep the nvidia-smi result only if torch produced
+        # nothing (e.g. torch absent), so a clean discrete host is never lost.
+        if smi_gpus and not smi_skipped:
+            return smi_gpus
+        torch_gpus = LlamaCppBackend._get_gpu_memory_via_torch()
+        if torch_gpus:
+            return torch_gpus
+        return smi_gpus
+
+    @staticmethod
+    def _get_gpu_memory_via_nvidia_smi() -> tuple[list[tuple[int, int, int]], bool]:
+        """Parse ``(index, free_mib, total_mib)`` from nvidia-smi, honoring
+        ``CUDA_VISIBLE_DEVICES``. Returns ``(gpus, skipped_nonnumeric)``; skipped
+        is True when a visible line was dropped for a non-numeric memory column --
+        the integrated-GPU ([N/A]) signal that should defer to the torch budget."""
+        gpus: list[tuple[int, int, int]] = []
+        skipped = False
         try:
             result = subprocess.run(
                 [
@@ -2250,49 +2271,65 @@ class LlamaCppBackend:
                 env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode == 0:
-                allowed: Optional[set[int]] = None
-                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if cvd is not None:
+            if result.returncode != 0:
+                return gpus, skipped
+            allowed: Optional[set[int]] = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
+                try:
+                    # `if x.strip()` filters trailing-comma masks ("0,1,").
+                    # Empty mask (CVD="") yields an empty set -> all GPUs
+                    # filtered out, per codebase convention.
+                    allowed = set(int(x.strip()) for x in cvd.split(",") if x.strip())
+                except ValueError:
+                    pass
+            for line in result.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                # Index and free required. A non-numeric free ([N/A] on an
+                # integrated GPU) flags the line skipped so the caller defers to
+                # torch rather than returning a partial discrete-only result.
+                try:
+                    idx = int(parts[0])
+                    free_mib = int(parts[1])
+                except ValueError:
+                    skipped = True
+                    continue
+                # Total parsed separately: a two-column line or a non-integer
+                # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
+                # the free*frac fallback) instead of dropping it.
+                total_mib = 0
+                if len(parts) >= 3 and parts[2]:
                     try:
-                        # `if x.strip()` filters trailing-comma masks ("0,1,").
-                        # Empty mask (CVD="") yields an empty set -> all GPUs
-                        # filtered out, per codebase convention.
-                        allowed = set(int(x.strip()) for x in cvd.split(",") if x.strip())
+                        total_mib = int(parts[2])
                     except ValueError:
-                        pass
-                gpus: list[tuple[int, int, int]] = []
-                for line in result.stdout.strip().splitlines():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) < 2:
-                        continue
-                    # Index and free required; skip a bad line rather than abandon
-                    # the probe to the torch fallback.
-                    try:
-                        idx = int(parts[0])
-                        free_mib = int(parts[1])
-                    except ValueError:
-                        continue
-                    # Total parsed separately: a two-column line or a non-integer
-                    # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
-                    # the free*frac fallback) instead of dropping it.
-                    total_mib = 0
-                    if len(parts) >= 3 and parts[2]:
-                        try:
-                            total_mib = int(parts[2])
-                        except ValueError:
-                            total_mib = 0
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib, total_mib))
-                # Match the docstring's sort-by-id guarantee (driver order isn't).
-                gpus.sort(key = lambda g: g[0])
-                if gpus:
-                    return gpus
+                        total_mib = 0
+                if allowed is not None and idx not in allowed:
+                    continue
+                gpus.append((idx, free_mib, total_mib))
+            # Match the docstring's sort-by-id guarantee (driver order isn't).
+            gpus.sort(key = lambda g: g[0])
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
+        return gpus, skipped
 
-        # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+    @staticmethod
+    def _get_gpu_memory_via_torch() -> list[tuple[int, int, int]]:
+        """``(index, free_mib, total_mib)`` via ``torch.cuda.mem_get_info`` -- AMD
+        ROCm, NVIDIA without nvidia-smi, and integrated NVIDIA where nvidia-smi
+        reports [N/A]. Empty when no GPU is reachable.
+
+        For an integrated (unified-memory) NVIDIA GPU, mem_get_info's free/total
+        describe host RAM but ignore reclaimable cache and any container cap, so
+        both are replaced by the cgroup-clamped system budget -- the real ceiling
+        (#6757). The budget is authoritative in BOTH directions: it raises a
+        misleadingly low MemFree and lowers a host-sized reading to a container's
+        cgroup cap (else selection can exceed the cap and get OOM-killed). ROCm
+        keeps mem_get_info: AMD APUs have their own unified path scoped to
+        gfx1150/gfx1151 in _amd_apu_wants_unified_memory, and lifting the budget
+        for other AMD integrated parts would desync from the launch path -> OOM.
+        """
         try:
             import torch
 
@@ -2300,32 +2337,11 @@ class LlamaCppBackend:
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
                 return []
-            # torch.cuda enumerates GPUs RELATIVE to the visibility mask. We
-            # feed these IDs back into the subprocess as CVD, so visible ordinals
-            # must be translated to physical indices first; otherwise CVD=2,3
-            # gets rewritten to 0,1 and targets the wrong GPUs.
-            # Match utils/hardware/hardware.py::_get_parent_visible_gpu_spec:
-            # treat an empty mask (HIP_VISIBLE_DEVICES="") as "no GPUs" rather
-            # than falling through. ``or`` would coerce "" to the wrong source.
-            # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
-            # with the nvidia-smi path.
+            # torch.cuda enumerates GPUs RELATIVE to the visibility mask; translate
+            # visible ordinals to physical indices (matches the nvidia-smi ids and
+            # utils/hardware/hardware.py::_get_parent_visible_gpu_spec). An empty
+            # mask yields an empty list -> no GPUs, consistent with nvidia-smi.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            # On a unified-memory GPU (integrated: CPU and GPU share one physical
-            # RAM pool -- NVIDIA GB10 / DGX Spark, Jetson) mem_get_info's "free"
-            # tracks raw MemFree and ignores reclaimable page cache, so it reads a
-            # small fraction of what is really usable and the context fit floors at
-            # min_ctx (#6757). The system RAM budget is the real ceiling there, and
-            # what the weights + KV actually draw from. Both free AND total are
-            # lifted to that budget: the fit reserves (1 - frac) * total, so leaving
-            # total at the host-wide figure while free is the container allowance
-            # would zero the budget in a capped container.
-            #
-            # NVIDIA (non-HIP) only: PyTorch also flags AMD APUs as integrated, but
-            # their unified-memory handling is scoped to gfx1150/gfx1151 in
-            # _amd_apu_wants_unified_memory (sets GGML_CUDA_ENABLE_UNIFIED_MEMORY +
-            # the RAM guard at launch). Lifting the budget for other AMD APUs here
-            # would let selection believe a model fits while the launch path leaves
-            # llama.cpp on the ROCm budget -> OOM, so leave ROCm to that path.
             is_rocm = getattr(torch.version, "hip", None) is not None
             budget_avail_mib, budget_total_mib = LlamaCppBackend._system_memory_budget_mib()
             gpus = []
@@ -2336,7 +2352,6 @@ class LlamaCppBackend:
                 if (
                     not is_rocm
                     and budget_avail_mib is not None
-                    and budget_avail_mib > free_mib
                     and LlamaCppBackend._gpu_is_integrated(ordinal)
                 ):
                     free_mib = budget_avail_mib
@@ -2360,18 +2375,19 @@ class LlamaCppBackend:
     def _cgroup_memory_mib(
         _proc_cgroup = "/proc/self/cgroup", _root = "/sys/fs/cgroup"
     ) -> tuple[Optional[int], Optional[int]]:
-        """``(available, limit)`` for the process's own memory cgroup, in MiB, or
-        ``(None, None)`` when there is no cap or it is unreadable (bare metal,
-        macOS, Windows).
+        """``(available, limit)`` for the process's effective memory cgroup, in
+        MiB, or ``(None, None)`` when nothing caps memory / it is unreadable (bare
+        metal, macOS, Windows).
 
         ``available`` discounts reclaimable file cache (``inactive_file``) from
         current usage, so a warm page cache -- e.g. right after downloading or
         loading a large GGUF -- does not shrink the budget (mirrors MemAvailable).
-        The cgroup-relative path is resolved from ``/proc/self/cgroup`` so a nested
-        cgroup under a host hierarchy is read, not the root, with a fallback to the
-        mount root for the cgroup-namespaced case. cgroup v2 first, then v1. An
-        unlimited v1 limit reads as a huge sentinel, which the caller's ``min``
-        folds back to the host figure."""
+        The cgroup-relative path is resolved from ``/proc/self/cgroup`` (nested
+        cgroup under a host hierarchy), and the process's cgroup AND every ancestor
+        up to the mount root are walked: the effective ceiling is the most
+        restrictive level, so a child with ``memory.max = max`` under a capped pod
+        is still bounded. cgroup v2 first, then v1. An unlimited v1 limit reads as
+        a huge sentinel, which the caller's ``min`` folds back to the host figure."""
 
         def _read(path: str) -> str:
             with open(path, encoding = "utf-8") as f:
@@ -2400,44 +2416,58 @@ class LlamaCppBackend:
         except Exception:
             pass
 
-        def _bases(root: str, rel: Optional[str]):
-            # Resolved path first, then the mount root (cgroup-namespaced case).
-            seen = []
-            for r in ((rel,) if rel else ()) + ("",):
-                base = root + (r if r and r != "/" else "")
-                if base not in seen:
-                    seen.append(base)
-                    yield base
-
-        # cgroup v2 (unified hierarchy at the mount root).
-        for base in _bases(_root, v2_rel):
+        def _level(base: str, limit_name: str, usage_name: str, reclaim_key: str):
+            # (available, limit) bytes for one cgroup dir; None when it sets no
+            # numeric limit (v2 "max", unreadable) so the walk continues upward.
             try:
-                raw = _read(f"{base}/memory.max")
+                raw = _read(f"{base}/{limit_name}")
             except Exception:
-                continue
+                return None
             if raw == "max":
-                return None, None  # explicit "no limit"
+                return None
             try:
                 limit = int(raw)
-                usage = int(_read(f"{base}/memory.current"))
-                reclaimable = _stat_val(f"{base}/memory.stat", "inactive_file")
+                usage = int(_read(f"{base}/{usage_name}"))
+                reclaimable = _stat_val(f"{base}/memory.stat", reclaim_key)
             except Exception:
-                continue
-            avail = max(0, limit - max(0, usage - reclaimable))
-            return avail // (1024 * 1024), limit // (1024 * 1024)
+                return None
+            return max(0, limit - max(0, usage - reclaimable)), limit
 
-        # cgroup v1 (memory controller mounted under <root>/memory).
-        for base in _bases(f"{_root}/memory", v1_rel):
-            try:
-                limit = int(_read(f"{base}/memory.limit_in_bytes"))
-                usage = int(_read(f"{base}/memory.usage_in_bytes"))
-                reclaimable = _stat_val(f"{base}/memory.stat", "total_inactive_file")
-            except Exception:
-                continue
-            avail = max(0, limit - max(0, usage - reclaimable))
-            return avail // (1024 * 1024), limit // (1024 * 1024)
+        def _walk(root, rel, limit_name, usage_name, reclaim_key):
+            # Effective (available, limit) MiB = the most restrictive level across
+            # the process's cgroup and its ancestors up to the mount root; take the
+            # min of each so any capped ancestor binds. (None, None) if none cap.
+            parts = [p for p in (rel or "").split("/") if p]
+            best_avail = best_limit = None
+            seen = set()
+            for i in range(len(parts), -1, -1):
+                sub = "/".join(parts[:i])
+                base = root + ("/" + sub if sub else "")
+                if base in seen:
+                    continue
+                seen.add(base)
+                lv = _level(base, limit_name, usage_name, reclaim_key)
+                if lv is None:
+                    continue
+                avail, limit = lv
+                best_avail = avail if best_avail is None else min(best_avail, avail)
+                best_limit = limit if best_limit is None else min(best_limit, limit)
+            if best_limit is None:
+                return None, None
+            return best_avail // (1024 * 1024), best_limit // (1024 * 1024)
 
-        return None, None
+        # cgroup v2 (unified hierarchy at the mount root), then v1 (memory
+        # controller under <root>/memory).
+        v2 = _walk(_root, v2_rel, "memory.max", "memory.current", "inactive_file")
+        if v2 != (None, None):
+            return v2
+        return _walk(
+            f"{_root}/memory",
+            v1_rel,
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+            "total_inactive_file",
+        )
 
     @staticmethod
     def _host_memory_mib() -> tuple[Optional[int], Optional[int]]:
