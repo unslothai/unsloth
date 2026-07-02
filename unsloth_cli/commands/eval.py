@@ -65,11 +65,35 @@ def _read_adapter_base(config: Path) -> Optional[str]:
     return data.get("base_model_name_or_path")
 
 
+_TOKENIZER_FILES = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+_HUB_REPO_RE = re.compile(r"[\w.\-]+/[\w.\-]+")
+
+
 def _has_tokenizer_files(model: str) -> bool:
     path = Path(model)
-    return path.is_dir() and any(
-        (path / name).exists()
-        for name in ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    if path.is_dir():
+        return any((path / name).exists() for name in _TOKENIZER_FILES)
+    if path.exists() or not _HUB_REPO_RE.fullmatch(model):
+        return False
+    try:
+        from huggingface_hub import list_repo_files
+        files = set(list_repo_files(model))
+    except Exception:
+        return False
+    return any(name in files for name in _TOKENIZER_FILES)
+
+
+def _bitsandbytes_available() -> bool:
+    from importlib.util import find_spec
+
+    return find_spec("bitsandbytes") is not None
+
+
+def _registry_names(manager) -> set:
+    return (
+        set(getattr(manager, "all_tasks", []) or [])
+        | set(getattr(manager, "all_groups", []) or [])
+        | set(getattr(manager, "all_tags", []) or [])
     )
 
 
@@ -80,7 +104,7 @@ def resolve_base_model(model: str) -> Optional[str]:
         return _read_adapter_base(config) if config.exists() else None
     # adapter-only Hub repos carry adapter_config.json but no config.json, so
     # they cannot be passed to lm-eval as `pretrained` — detect them up front
-    if path.exists() or not re.fullmatch(r"[\w.\-]+/[\w.\-]+", model):
+    if path.exists() or not _HUB_REPO_RE.fullmatch(model):
         return None
     try:
         from huggingface_hub import hf_hub_download
@@ -90,18 +114,29 @@ def resolve_base_model(model: str) -> Optional[str]:
     return _read_adapter_base(Path(config_path))
 
 
-def make_jsonl_task(data_file: Path, input_key: str, target_key: str, out_dir: Path) -> str:
+def make_jsonl_task(
+    data_file: Path,
+    input_key: str,
+    target_key: str,
+    out_dir: Path,
+    reserved: frozenset = frozenset(),
+) -> str:
     data_file = Path(data_file).resolve()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents = True, exist_ok = True)
-    # datasets sharing a stem (runs/a/qa.jsonl, runs/b/qa.jsonl) must not
-    # overwrite each other's generated task
+    # a generated task must not shadow a registered task (gsm8k.jsonl vs the
+    # gsm8k benchmark) or an earlier dataset with the same stem
     base_name = data_file.stem
     task_name = base_name
     counter = 2
-    while (out_dir / f"{task_name}.yaml").exists():
+    while task_name in reserved or (out_dir / f"{task_name}.yaml").exists():
         task_name = f"{base_name}_{counter}"
         counter += 1
+    if task_name != base_name:
+        typer.echo(
+            f"Note: task name '{base_name}' is taken — running dataset "
+            f"'{data_file.name}' as '{task_name}'."
+        )
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
     task_spec = {
         "task": task_name,
@@ -133,7 +168,11 @@ def make_jsonl_task(data_file: Path, input_key: str, target_key: str, out_dir: P
 
 
 def resolve_tasks(
-    tasks: str, input_key: str, target_key: str, tmp_dir: Path
+    tasks: str,
+    input_key: str,
+    target_key: str,
+    tmp_dir: Path,
+    reserved: frozenset = frozenset(),
 ) -> Tuple[List[str], List[str]]:
     names: List[str] = []
     include_paths: List[str] = []
@@ -168,7 +207,7 @@ def resolve_tasks(
             path = Path(entry)
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
-            names.append(make_jsonl_task(path, input_key, target_key, tmp_dir))
+            names.append(make_jsonl_task(path, input_key, target_key, tmp_dir, reserved))
             _add_include(str(Path(tmp_dir).resolve()))
 
         else:
@@ -280,6 +319,10 @@ def evaluate(
             typer.echo("Error: --batch-size must be a positive integer or 'auto'.", err = True)
             raise typer.Exit(code = 2)
 
+    if backend not in ("unsloth", "hf"):
+        typer.echo(f"Error: --backend must be 'unsloth' or 'hf', got '{backend}'.", err = True)
+        raise typer.Exit(code = 2)
+
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token  # both backends read it from the env
 
@@ -289,22 +332,34 @@ def evaluate(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:
+        # a dataset named after a registered task (gsm8k.jsonl) must not be
+        # shadowed by the built-in benchmark, so collect registry names first
+        base_manager = None
+        reserved: frozenset = frozenset()
+        if any(
+            Path(e.strip()).suffix.lower() in {".jsonl", ".json", ".csv"}
+            for e in tasks.split(",")
+        ):
+            base_manager = TaskManager()
+            reserved = frozenset(_registry_names(base_manager))
+
         try:
-            task_names, include_paths = resolve_tasks(tasks, input_key, target_key, tmp_dir)
+            task_names, include_paths = resolve_tasks(
+                tasks, input_key, target_key, tmp_dir, reserved = reserved
+            )
         except (FileNotFoundError, ValueError) as e:
             typer.echo(f"Error: {e}", err = True)
             raise typer.Exit(code = 2) from e
 
-        # build once, reuse for validation and the eval run
-        task_manager = TaskManager(include_path = include_paths or None)
+        # reuse for validation and the eval run
+        if include_paths:
+            task_manager = TaskManager(include_path = include_paths)
+        else:
+            task_manager = base_manager or TaskManager()
 
         registered = getattr(task_manager, "all_tasks", None)
         if registered:
-            known = (
-                set(registered)
-                | set(getattr(task_manager, "all_groups", []) or [])
-                | set(getattr(task_manager, "all_tags", []) or [])
-            )
+            known = _registry_names(task_manager)
             unknown = [t for t in task_names if t not in known]
             if unknown:
                 typer.echo(
@@ -367,7 +422,13 @@ def evaluate(
                 model_args = {"pretrained": model}
             model_args["max_length"] = max_seq_length
             if load_in_4bit and device.startswith("cuda"):
-                model_args["load_in_4bit"] = True
+                if _bitsandbytes_available():
+                    model_args["load_in_4bit"] = True
+                else:
+                    typer.echo(
+                        "Note: bitsandbytes is not installed — loading in full "
+                        "precision (`pip install bitsandbytes` to enable 4-bit)."
+                    )
             eval_kwargs.update(
                 model = "hf",
                 model_args = model_args,

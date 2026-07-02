@@ -106,6 +106,42 @@ def test_make_jsonl_task_honours_custom_keys(tmp_path):
     assert spec["doc_to_target"] == "{{label}}"
 
 
+def test_make_jsonl_task_avoids_reserved_names(tmp_path):
+    data = tmp_path / "gsm8k.jsonl"
+    data.write_text('{"question": "q", "answer": "a"}\n')
+
+    name = evalmod.make_jsonl_task(
+        data, "question", "answer", tmp_path / "t", reserved = frozenset({"gsm8k"})
+    )
+
+    assert name == "gsm8k_2"
+    assert (tmp_path / "t" / "gsm8k_2.yaml").exists()
+
+
+def test_has_tokenizer_files_checks_hub_repo(monkeypatch):
+    hub_mod = types.ModuleType("huggingface_hub")
+    hub_mod.list_repo_files = lambda repo_id: [
+        "adapter_config.json",
+        "tokenizer_config.json",
+        "tokenizer.json",
+    ]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_mod)
+
+    assert evalmod._has_tokenizer_files("someuser/my-lora") is True
+
+
+def test_has_tokenizer_files_false_when_hub_listing_fails(monkeypatch):
+    hub_mod = types.ModuleType("huggingface_hub")
+
+    def _fail(repo_id):
+        raise RuntimeError("offline")
+
+    hub_mod.list_repo_files = _fail
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_mod)
+
+    assert evalmod._has_tokenizer_files("someuser/my-lora") is False
+
+
 def test_resolve_tasks_builtin_names(tmp_path):
     names, includes = evalmod.resolve_tasks("mmlu, gsm8k", "question", "answer", tmp_path)
     assert names == ["mmlu", "gsm8k"]
@@ -243,12 +279,17 @@ def fake_eval_env(monkeypatch):
             calls["hflm_max_length"] = max_length
 
     class _FakeTaskManager:
-        all_tasks = ["gsm8k", "qa", "mmlu", "hellaswag"]
-        all_groups = ["mmlu"]
-        all_tags = []
-
         def __init__(self, include_path = None):
             calls["include_path"] = include_path
+            self.all_tasks = ["gsm8k", "mmlu", "hellaswag"]
+            self.all_groups = ["mmlu"]
+            self.all_tags = []
+            # mirror lm-eval: yaml tasks under include paths get registered
+            for directory in include_path or []:
+                for spec_file in sorted(Path(directory).glob("*.yaml")):
+                    spec = yaml.safe_load(spec_file.read_text())
+                    if isinstance(spec, dict) and spec.get("task"):
+                        self.all_tasks.append(str(spec["task"]))
 
     def _simple_evaluate(
         model = None,
@@ -287,6 +328,11 @@ def fake_eval_env(monkeypatch):
 
     hub_mod.hf_hub_download = _no_hub_download
 
+    def _no_repo_files(*args, **kwargs):
+        raise RuntimeError("repo not found")
+
+    hub_mod.list_repo_files = _no_repo_files
+
     lm_eval_mod = types.ModuleType("lm_eval")
     lm_eval_mod.simple_evaluate = _simple_evaluate
     models_mod = types.ModuleType("lm_eval.models")
@@ -305,6 +351,9 @@ def fake_eval_env(monkeypatch):
         "lm_eval.tasks": tasks_mod,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
+
+    # deterministic regardless of whether bitsandbytes is installed locally
+    monkeypatch.setattr(evalmod, "_bitsandbytes_available", lambda: True)
 
     return calls
 
@@ -562,6 +611,91 @@ def test_eval_unknown_task_errors(fake_eval_env, tmp_path):
     )
     assert result.exit_code == 2, result.output
     assert "unknown task" in result.output
+
+
+def test_eval_dataset_shadowing_builtin_is_renamed(fake_eval_env, tmp_path):
+    data = tmp_path / "gsm8k.jsonl"
+    data.write_text('{"question": "q", "answer": "a"}\n')
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", str(data), "--output-dir", str(tmp_path / "out")],
+    )
+
+    assert result.exit_code == 0, result.output
+    # the built-in gsm8k benchmark must not shadow the user's dataset
+    assert fake_eval_env["tasks"] == ["gsm8k_2"]
+    assert "as 'gsm8k_2'" in result.output
+
+
+def test_eval_rejects_unknown_backend(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hff",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--backend must be 'unsloth' or 'hf'" in result.output
+
+
+def test_eval_hf_cuda_without_bnb_loads_full_precision(fake_eval_env, tmp_path, monkeypatch):
+    monkeypatch.setattr(evalmod, "_bitsandbytes_available", lambda: False)
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cuda:0",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "load_in_4bit" not in fake_eval_env["model_args"]
+    assert "bitsandbytes is not installed" in result.output
+
+
+def test_eval_hf_hub_adapter_uses_hub_tokenizer(fake_eval_env, tmp_path, monkeypatch):
+    remote_config = tmp_path / "adapter_config.json"
+    remote_config.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"}))
+
+    hub_mod = types.ModuleType("huggingface_hub")
+    hub_mod.hf_hub_download = lambda repo_id, filename, **kwargs: str(remote_config)
+    hub_mod.list_repo_files = lambda repo_id: ["adapter_config.json", "tokenizer.json"]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_mod)
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "someuser/my-lora",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["model_args"] == {
+        "pretrained": "unsloth/Llama-3.2-1B",
+        "peft": "someuser/my-lora",
+        "tokenizer": "someuser/my-lora",
+        "max_length": 2048,
+    }
 
 
 def test_eval_hf_token_sets_env(fake_eval_env, tmp_path, monkeypatch):
