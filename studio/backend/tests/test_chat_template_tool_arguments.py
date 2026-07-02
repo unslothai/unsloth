@@ -90,7 +90,14 @@ class _RecordingTokenizer:
     def __init__(self):
         self.seen_arguments = None
 
-    def apply_chat_template(self, messages, *, tokenize=False, add_generation_prompt=True, **kw):
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
         for msg in messages:
             for call in msg.get("tool_calls", []) or []:
                 self.seen_arguments = call.get("function", {}).get("arguments")
