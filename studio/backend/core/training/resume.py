@@ -57,6 +57,12 @@ def normalize_resume_output_dir(path_value: str) -> str:
     return str(path)
 
 
+def resume_run_dir(resume_checkpoint: str) -> str:
+    """Run directory a resumed run continues in; new checkpoints nest under it."""
+    path = Path(resume_checkpoint)
+    return str(path.parent) if path.name.startswith("checkpoint-") else str(path)
+
+
 def find_resumable_run(resume_dir: str) -> Optional[dict]:
     """DB lookup for a resume target; a checkpoint-N path maps to its parent run dir."""
     from storage.studio_db import get_resumable_run_by_output_dir

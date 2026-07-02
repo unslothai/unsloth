@@ -73,6 +73,7 @@ def train(
         from studio.backend.core.training.resume import (
             get_resume_checkpoint_path,
             normalize_resume_output_dir,
+            resume_run_dir,
         )
         from utils.paths import outputs_root
 
@@ -98,10 +99,7 @@ def train(
             raise typer.Exit(code = 2)
 
         # New checkpoints continue in the run dir, not inside checkpoint-N/.
-        ckpt_path = Path(resume_checkpoint)
-        cfg.training.output_dir = (
-            ckpt_path.parent if ckpt_path.name.startswith("checkpoint-") else ckpt_path
-        )
+        cfg.training.output_dir = Path(resume_run_dir(resume_checkpoint))
 
     if dry_run:
         import yaml

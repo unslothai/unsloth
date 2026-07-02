@@ -273,6 +273,11 @@ def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypat
     assert studio_db.get_run("r")["output_dir"] == "/out/x"
 
 
+def test_resume_run_dir_maps_checkpoint_to_its_parent():
+    assert resume.resume_run_dir("/outputs/run_x/checkpoint-5") == "/outputs/run_x"
+    assert resume.resume_run_dir("/outputs/run_x") == "/outputs/run_x"
+
+
 def test_find_resumable_run_accepts_checkpoint_path(monkeypatch, tmp_path):
     # The DB stores the parent run dir; a checkpoint-N target must still match.
     from storage import studio_db

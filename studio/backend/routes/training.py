@@ -28,6 +28,7 @@ try:
         find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        resume_run_dir,
     )
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
@@ -42,6 +43,7 @@ except ImportError:
         find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        resume_run_dir,
     )
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
@@ -207,6 +209,8 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
+            # New files continue in the run dir even when a checkpoint-N was targeted.
+            resume_output_dir = resume_run_dir(resume_checkpoint)
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
