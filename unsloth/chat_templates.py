@@ -2163,7 +2163,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
                 _, optional_name, prompt, needed_columns = formatter_template
                 if row_values[needed_columns[0]] not in (None, ""):
-                    prompt_values = {column: row_values[column] for column in needed_columns}
+                    # Coerce missing (None) columns to "" so they do not render as the
+                    # literal string "None" in the emitted text. A [[...]] block may
+                    # reference several columns; only the first gates the block, so a
+                    # later column can still be None here.
+                    prompt_values = {
+                        column: ("" if row_values[column] is None else row_values[column])
+                        for column in needed_columns
+                    }
                     formatter_values[optional_name] = prompt.format(**prompt_values)
                 else:
                     formatter_values[optional_name] = ""
