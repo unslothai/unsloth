@@ -247,9 +247,7 @@ def resolve_specs(
         for spec_id, weight in specs:
             if weight == 0:
                 continue
-            out.append(
-                resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event)
-            )
+            out.append(resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event))
     except FileNotFoundError as exc:
         raise ValueError(str(exc)) from exc
     return out
@@ -306,9 +304,7 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     selected = {r.alias for r in resolved}
     # Drop any user-typed tag whose alias is one of the selected adapters, so the typed
     # weight can't override the validated weight (or slip outside the 0-2 bounds).
-    cleaned = _TAG_RE.sub(
-        lambda m: "" if m.group(1) in selected else m.group(0), prompt
-    )
+    cleaned = _TAG_RE.sub(lambda m: "" if m.group(1) in selected else m.group(0), prompt)
     # Collapse whitespace left by stripped tags without disturbing the user's text.
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
