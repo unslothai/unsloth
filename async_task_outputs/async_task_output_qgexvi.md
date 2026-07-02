@@ -1,0 +1,22 @@
+- Decision: implemented name-based GPU class detection so fp8 `use_fast_accum` defaults to enabled on consumer/workstation GPUs and disabled on recognized data-center GPUs; reason was user directive to maximize data-center accuracy despite measured ~8% speed loss.
+- Decision: added user override `transformer_quant_fast_accum` because user explicitly answered `Gate as I asked ... But also add it as an option for the user`; default `None` means auto, `True`/`False` force behavior.
+- Decision: token-exact GPU matching was chosen so workstation names like `A4000` are not misclassified as data-center token `A40`.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion_transformer_quant.py`: added `_is_consumer_gpu()`, tri-state fast-accum resolver, and fp8 config plumbing so `Float8MMConfig(... use_fast_accum=...)` depends on auto/override.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion.py`: threaded `transformer_quant_fast_accum` through dense quant pipeline load and `quantize_transformer(...)`.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/models/inference.py`: added request field `transformer_quant_fast_accum`.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/routes/inference.py`: forwards new request field into backend load path.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/diffusion_bench.py`: added CLI flag `--fp8-fast-accum auto|on|off` and forwards it.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_transformer_quant.py`: added consumer/data-center/workstation/unknown detector tests and resolver/quantize forwarding coverage.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_routes.py`: added route forwarding test for `transformer_quant_fast_accum`.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/temp/phase8_pr_body.md`: updated PR body to describe gating and override.
+- Ran `python -m pytest tests/test_diffusion_transformer_quant.py -q`; key output `27 passed in 0.18s`.
+- Ran B200 verification with `CUDA_VISIBLE_DEVICES=4`; key output `device='NVIDIA B200'  is_consumer=False`, `Float8MMConfig(... use_fast_accum=False ...)`, `fp8 gen: median 0.665s`.
+- Ran full AST/test check: `python -c "import ast; ..."; pytest ...`; key output `AST OK`, `187 passed, 4993 deselected, 1 warning in 15.60s`.
+- Ran B200 override verification using `scripts/diffusion_bench.py ... --fp8-fast-accum on`; key output `gen[0] 0.621s`, `gen[1] 0.608s`, `generate: median=0.6082s`, proving override enabled fast accumulate.
+- Encountered edit error `String to replace not found in file.` in `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_transformer_quant.py`; resolved by locating reformatted test with `grep -n` and editing the current text.
+- Initial push rejected with non-fast-forward hints `hint: the same ref. If you want to integrate the remote changes, use` and `hint: 'git pull' before pushing again.`; resolved by fetch/rebase/push fallback.
+- Ran sync verification: `git fetch origin diffusion-phase8-quant`; key output `ahead/behind: 1 1`, then `Successfully rebased and updated refs/heads/diffusion-phase8-quant.`, pushed `244124d74..10db6a477`, final output `=== final sync === 0 0`.
+- Ran PR update/confirmation: `gh pr edit 6694 --body-file temp/phase8_pr_body.md`; emitted GraphQL deprecation warning about `Projects (classic)`. Then `gh pr view 6694 --json mergeable,state,commits`; key output `state=OPEN mergeable=MERGEABLE commits=7`.
+- COMPLETED: consumer/data-center auto-gating, user override, bench CLI flag, backend/request/route plumbing, PR body update, GPU verification, tests, commit/rebase/push to PR `#6694`.
+- COMPLETED: PR `#6694` is open, mergeable, branch synced (`0 0` ahead/behind), and latest pushed commit includes the changes.
+- PENDING: none noted at end of span.

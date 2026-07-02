@@ -684,6 +684,34 @@ class DiffusionBackend:
             return 0  # repo not in cache yet
         return total
 
+    @staticmethod
+    def _companion_cache_bytes(base: str) -> int:
+        """Resident companion (VAE + text-encoder) size for the memory plan.
+
+        For a hub base repo this is the cached blob total (``_cache_bytes``). For a
+        LOCAL diffusers base directory the blob cache is empty, so sum the on-disk
+        component weights instead, excluding ``transformer/`` (the GGUF supplies the
+        transformer). Without this a local base folds its multi-GB VAE / text-encoder
+        weights to zero and auto planning can pick a resident placement that OOMs."""
+        local = Path(base).expanduser()
+        if local.is_dir():
+            total = 0
+            for f in local.rglob("*"):
+                if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
+                    continue
+                try:
+                    rel = f.relative_to(local)
+                except ValueError:
+                    continue
+                if rel.parts and rel.parts[0] == "transformer":
+                    continue  # supplied by the GGUF single-file; not resident here
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    continue
+            return total
+        return DiffusionBackend._cache_bytes(base)
+
     # ── Synchronous load / generate / unload ───────────────────────────────
 
     def load_pipeline(
@@ -1095,7 +1123,14 @@ class DiffusionBackend:
         compile -> placement."""
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = select_transformer_quant_scheme(target, mode)
-        if scheme is not None and fam is not None:
+        if scheme is None:
+            # Bail BEFORE the (multi-GB) dense download: an explicit unsupported scheme
+            # (e.g. fp8 on Ampere, nvfp4 off Blackwell) would otherwise materialise the
+            # dense transformer and move the pipe to CUDA only to fail at quantize below --
+            # a long finalization under the load lock after the old model was already
+            # evicted. load_pipeline catches this and builds the GGUF pipeline instead.
+            raise RuntimeError("transformer quant unsupported for this device/scheme")
+        if fam is not None:
             source = resolve_prequant_source(fam, scheme, path_override = prequant_path)
             if source is not None:
                 transformer = load_prequantized_transformer(
@@ -1109,6 +1144,10 @@ class DiffusionBackend:
                     # Reject a checkpoint built with a different Linear filter than the
                     # dense path uses, so the prequant and runtime-quant models match.
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    # Only enforced when the caller forces fp8 fast-accum: a checkpoint that
+                    # baked the other choice would ignore the request, so fall to the dense
+                    # path (which applies it) instead of silently using the baked kernels.
+                    fast_accum = fast_accum,
                     logger = logger,
                 )
                 if transformer is not None:
@@ -1183,13 +1222,29 @@ class DiffusionBackend:
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # The companion components (VAE + text encoders) load near their on-disk
-            # size; sum whatever the prefetch already placed in the base-repo cache.
-            companion = self._cache_bytes(base)
+            # size; sum whatever the prefetch placed in the base-repo cache, or -- for a
+            # LOCAL diffusers base -- the on-disk component weights (the blob cache is
+            # empty for a local path, which would otherwise fold multi-GB companions to 0
+            # and let auto planning pick a resident placement that OOMs).
+            companion = self._companion_cache_bytes(base)
             companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
-        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
+        # Feed the variant hint (single-file basename + base/repo) next to the family name
+        # so estimate_image_runtime_mib sees distilled markers ("turbo"/"schnell") that
+        # detect_family normalizes out of fam.name -- distilled models need ~15% less
+        # activation headroom, and over-reserving can force needless offload / tiling.
+        variant_hint = " ".join(
+            p
+            for p in (
+                fam.name,
+                Path(single_file_path).name if single_file_path else "",
+                repo_id or base or "",
+            )
+            if p
+        )
+        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
         return plan_diffusion_memory(
             target = target,
             device_memory = device_memory,

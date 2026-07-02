@@ -1,0 +1,4 @@
+- User requested a list of all PRs made by the assistant that were moved from the stack of `https://github.com/unslothai/unsloth/pull/6658`.
+- No decisions, file edits, commands, or errors occurred in this span.
+- COMPLETED: request captured for continuation.
+- PENDING: inspect GitHub/local branch or PR metadata to identify the relevant PRs and report them.

@@ -1,0 +1,1 @@
+- Wrote `outputs/threeway/SUMMARY.md`; pending Z/Flux2, LPIPS, CPU.

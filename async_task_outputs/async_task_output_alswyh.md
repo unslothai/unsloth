@@ -1,0 +1,2 @@
+- Done: `sd.cpp` CUDA
+- Pending: accuracy, ComfyUI, CPU

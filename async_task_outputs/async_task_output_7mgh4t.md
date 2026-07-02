@@ -1,0 +1,2 @@
+- #149 done: suite+5 GIFs pass
+- #148 hardened; #152 blocked
