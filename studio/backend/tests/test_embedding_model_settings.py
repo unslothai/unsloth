@@ -115,7 +115,7 @@ def test_effective_gguf_repo_env_wins(settings_store, monkeypatch):
 
 
 def test_effective_gguf_repo_ignores_gguf_substring(settings_store, monkeypatch):
-    """"gguf" must match as a whole name segment, not inside a word."""
+    """ "gguf" must match as a whole name segment, not inside a word."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems.set_rag_embedding_model("org/bigguf-model")
     assert rag_config.effective_gguf_repo() == "org/bigguf-model-GGUF"
