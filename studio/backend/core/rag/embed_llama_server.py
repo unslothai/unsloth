@@ -117,12 +117,39 @@ class LlamaServerBackend:
                 "RAG_EMBED_BACKEND=llama-server requires an embeddings-capable build"
             )
 
+    @staticmethod
+    def _resolve_local_gguf(model: str) -> str | None:
+        """A custom model may be a local .gguf file or a directory holding one;
+        resolve it without the hub. None when the value is not a local path."""
+        p = Path(model).expanduser()
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            return str(p)
+        if p.is_dir():
+            files = [
+                f
+                for f in p.iterdir()
+                if f.suffix.lower() == ".gguf" and "mmproj" not in f.name.lower()
+            ]
+            if not files:
+                raise RuntimeError(f"no .gguf file found in local model dir {model!r}")
+            variant = config.EMBED_GGUF_VARIANT.lower()
+            match = [f for f in files if variant in f.name.lower()] or files
+            return str(sorted(match, key = lambda f: len(f.name))[0])
+        return None
+
     def _resolve_model_path(self) -> str:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
         returning its local path. Re-resolves when the effective repo changed (a
         custom model was saved in Settings)."""
         repo = config.effective_gguf_repo()
         if self._model_path is not None and self._model_repo == repo:
+            return self._model_path
+        local = self._resolve_local_gguf(config.effective_embedding_model())
+        if local is not None:
+            self._model_path = local
+            self._model_repo = repo
+            with self._dim_lock:
+                self._dim = None
             return self._model_path
         from huggingface_hub import hf_hub_download, list_repo_files
 

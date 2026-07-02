@@ -85,7 +85,10 @@ def set_rag_embedding_model(value: Any) -> str:
     parsed = validate_embedding_model(value)
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings({EMBEDDING_MODEL_SETTING_KEY: parsed})
+    # Saving the default is not an override; keeps is_custom (and the UI's
+    # reset affordance) honest.
+    stored = parsed if parsed != default_embedding_model() else None
+    upsert_app_settings({EMBEDDING_MODEL_SETTING_KEY: stored})
     _invalidate_cache()
     return parsed
 

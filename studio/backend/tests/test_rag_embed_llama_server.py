@@ -386,6 +386,36 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     assert spawned["n"] == 1
 
 
+def test_resolve_model_path_local_dir(monkeypatch, tmp_path):
+    """A local directory saved as the model resolves its .gguf without the hub."""
+    local = tmp_path / "my-embedder"
+    local.mkdir()
+    (local / "my-embedder-Q8_0.gguf").write_bytes(b"GGUF")
+    (local / "my-embedder-F16.gguf").write_bytes(b"GGUF")
+    (local / "mmproj-F16.gguf").write_bytes(b"GGUF")
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: str(local))
+    b = LlamaServerBackend()
+    assert b._resolve_model_path() == str(local / "my-embedder-F16.gguf")
+
+
+def test_resolve_model_path_local_gguf_file(monkeypatch, tmp_path):
+    f = tmp_path / "embedder.gguf"
+    f.write_bytes(b"GGUF")
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: str(f))
+    b = LlamaServerBackend()
+    assert b._resolve_model_path() == str(f)
+
+
+def test_resolve_model_path_local_dir_without_gguf(monkeypatch, tmp_path):
+    local = tmp_path / "st-model"
+    local.mkdir()
+    (local / "modules.json").write_text("{}")
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: str(local))
+    b = LlamaServerBackend()
+    with pytest.raises(RuntimeError, match = "gguf"):
+        b._resolve_model_path()
+
+
 def test_ensure_ready_respawns_on_model_change(monkeypatch):
     b = LlamaServerBackend()
     spawned = {"n": 0}

@@ -52,6 +52,12 @@ def test_set_get_roundtrip(settings_store):
     assert ems.get_rag_embedding_model() == "org/my-embedder"
 
 
+def test_saving_default_is_not_an_override(settings_store):
+    ems.set_rag_embedding_model(rag_config.EMBEDDING_MODEL)
+    assert ems.get_stored_embedding_model() is None
+    assert ems.get_rag_embedding_model() == rag_config.EMBEDDING_MODEL
+
+
 def test_reset_clears_override(settings_store):
     ems.set_rag_embedding_model("org/my-embedder")
     assert ems.reset_rag_embedding_model() == rag_config.EMBEDDING_MODEL
@@ -186,6 +192,8 @@ def test_put_default_model_skips_verification(client):
     r = c.put("/embedding-model", json = {"embedding_model": rag_config.EMBEDDING_MODEL})
     assert r.status_code == 200
     assert "checked" not in calls
+    # Saving the default does not flip the setting to custom.
+    assert r.json()["is_custom"] is False
 
 
 def test_put_embedding_model_rejects_blank(client):
