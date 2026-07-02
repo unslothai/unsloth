@@ -201,7 +201,7 @@ def test_resolve_tasks_include_yaml_keeps_parent_dir(tmp_path):
     assert includes == [str(tmp_path.resolve())]
 
 
-def test_resolve_tasks_yaml_with_function_tag(tmp_path):
+def test_resolve_tasks_yaml_with_function_tag_keeps_parent_dir(tmp_path):
     task_file = tmp_path / "custom.yaml"
     task_file.write_text(
         "task: fn_task\noutput_type: generate_until\n"
@@ -209,12 +209,28 @@ def test_resolve_tasks_yaml_with_function_tag(tmp_path):
     )
     tmp_dir = tmp_path / "gen"
 
-    names, _ = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
+    names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
 
     assert names == ["fn_task"]
-    # the copy keeps the tag verbatim for lm-eval's own loader
-    copied = (tmp_dir / "custom" / "fn_task.yaml").read_text()
-    assert "!function utils.process_docs" in copied
+    # !function imports resolve relative to the yaml, so utils.py must stay
+    # next to it — no copy into the temp dir
+    assert includes == [str(tmp_path.resolve())]
+    assert not (tmp_dir / "custom" / "fn_task.yaml").exists()
+
+
+def test_resolve_tasks_task_name_from_included_base(tmp_path):
+    (tmp_path / "base.yaml").write_text(
+        yaml.safe_dump({"task": "from_base", "output_type": "generate_until"})
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(yaml.safe_dump({"include": "base.yaml", "dataset_path": "json"}))
+
+    names, includes = evalmod.resolve_tasks(str(child), "question", "answer", tmp_path / "gen")
+
+    # lm-eval resolves include: during indexing, so the name from the base
+    # config counts
+    assert names == ["from_base"]
+    assert includes == [str(tmp_path.resolve())]
 
 
 def test_resolve_tasks_rejects_yml_group_config(tmp_path):
@@ -866,6 +882,28 @@ def test_eval_custom_yaml_shadowing_builtin_errors(fake_eval_env, tmp_path):
     )
     assert result.exit_code == 2, result.output
     assert "redefines 'gsm8k'" in result.output
+
+
+def test_eval_fewshot_with_raw_key_dataset_errors(fake_eval_env, tmp_path):
+    data = tmp_path / "qa.jsonl"
+    data.write_text('{"expected answer": "2", "question": "1+1?"}\n')
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            str(data),
+            "--target-key",
+            "expected answer",
+            "--num-fewshot",
+            "2",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "plain-identifier column names" in result.output
 
 
 def test_eval_custom_yaml_survives_broken_sibling(fake_eval_env, tmp_path):

@@ -164,6 +164,31 @@ _TaskYamlLoader.add_multi_constructor(
 )
 
 
+def _load_task_spec(path: Path, depth: int = 0) -> dict:
+    # the task/group name may live in an included base config, which lm-eval
+    # resolves during indexing — mirror that (child keys override the base);
+    # depth-limited in case of include cycles
+    spec = yaml.load(path.read_text(encoding = "utf-8"), Loader = _TaskYamlLoader) or {}
+    includes = spec.get("include") if isinstance(spec, dict) else None
+    if not includes or depth >= 3:
+        return spec
+    if isinstance(includes, str):
+        includes = [includes]
+    merged: dict = {}
+    for include in includes:
+        include_path = Path(include)
+        if not include_path.is_file():
+            include_path = path.parent / include
+        try:
+            base = _load_task_spec(include_path, depth + 1)
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(base, dict):
+            merged.update(base)
+    merged.update(spec)
+    return merged
+
+
 def _doc_column(key: str) -> str:
     # a jinja template stringifies the value (needed e.g. for numeric answer
     # columns in few-shot prompts), but jinja can't parse keys that aren't
@@ -256,8 +281,9 @@ def resolve_tasks(
             path = Path(entry)
             if not path.exists():
                 raise FileNotFoundError(f"Custom task file not found: {entry}")
+            text = path.read_text(encoding = "utf-8")
             try:
-                spec = yaml.load(path.read_text(encoding = "utf-8"), Loader = _TaskYamlLoader) or {}
+                spec = _load_task_spec(path) or {}
             except yaml.YAMLError as e:
                 raise ValueError(f"Invalid YAML in custom task file '{entry}': {e}") from e
             if not isinstance(spec, dict):
@@ -282,15 +308,17 @@ def resolve_tasks(
                 )
             if name in names:
                 raise ValueError(f"Duplicate task name '{name}' in --tasks.")
-            if "include" in spec or isinstance(spec.get("task"), list):
-                # include-bearing and group configs reference sibling files,
-                # so their directory must stay on the include path — which
+            if "include" in spec or isinstance(spec.get("task"), list) or "!function" in text:
+                # include-bearing, group and !function configs reference
+                # sibling files (base yaml, subtasks, helper modules), so
+                # their directory must stay on the include path — which
                 # only works for .yaml, the sole extension lm-eval indexes
                 if suffix == ".yml":
                     raise ValueError(
-                        f"Custom task file '{entry}' is a .yml group/include config — "
-                        "lm-eval only indexes .yaml files, so it would never register. "
-                        "Rename it (and the files it references) to .yaml."
+                        f"Custom task file '{entry}' references sibling files "
+                        "(include:/group/!function) but is a .yml file — lm-eval only "
+                        "indexes .yaml files, so it would never register. Rename it "
+                        "(and the files it references) to .yaml."
                     )
                 _add_include(str(path.resolve().parent))
             else:
@@ -514,6 +542,17 @@ def evaluate(
                 raise typer.Exit(code = 2)
 
         if num_fewshot and any((tmp_dir / "generated" / f"{t}.yaml").exists() for t in task_names):
+            raw_keys = [k for k in dict.fromkeys((input_key, target_key)) if _doc_column(k) == k]
+            if raw_keys:
+                # raw column lookups feed unstringified values into lm-eval's
+                # few-shot prompt builder, which fails on non-string data
+                typer.echo(
+                    "Error: --num-fewshot needs plain-identifier column names for a "
+                    f"dataset task; rename column(s) {', '.join(map(repr, raw_keys))} "
+                    "or drop --num-fewshot.",
+                    err = True,
+                )
+                raise typer.Exit(code = 2)
             typer.echo(
                 "Note: few-shot examples for a generated task come from the same "
                 "file (no held-out split)."
