@@ -11051,12 +11051,10 @@ async def load_diffusion_model(
     from core.inference.diffusion import get_diffusion_backend, resolve_model_kind
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_engine_router import (
-        active_engine_name,
         annotate_status,
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
-    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -11084,12 +11082,15 @@ async def load_diffusion_model(
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
         )
-        # Take the GPU from the chat backend only when this load will actually use it.
-        # diffusers always does; a *force-native* sd.cpp load on a CUDA/XPU/MPS box does
-        # too. But a native sd.cpp load on a pure-CPU host never touches the GPU, so
-        # acquiring would evict the resident chat model for nothing -- skip the handoff.
+        # Take the GPU from the chat backend only when this load will actually use it,
+        # which is exactly the resolved device being non-CPU. diffusers on an accelerator
+        # and a force-native sd.cpp load on CUDA/XPU/MPS both resolve to that device; a
+        # native sd.cpp load on a pure-CPU host does not. Crucially, a CPU-only host with
+        # no usable sd-cli falls back to diffusers ON CPU -- that also never touches GPU
+        # memory, so keying off the engine name (not the device) would wrongly evict a
+        # resident chat model for a load that cannot use the GPU. Gate on the device.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
-        needs_gpu = active_engine_name() != ENGINE_SD_CPP or device != "cpu"
+        needs_gpu = device != "cpu"
         if needs_gpu:
             # Then kick the (slow) load onto a background thread and return at once --
             # the client polls images/load-progress.
@@ -11212,8 +11213,13 @@ async def generate_diffusion_image(
                     {
                         "prompt": request.prompt,
                         "negative_prompt": request.negative_prompt,
-                        "width": request.width,
-                        "height": request.height,
+                        # Persist the ACTUAL output size, not the request sliders: Transform/
+                        # Inpaint/Edit derive it from the uploaded image, Extend grows the
+                        # canvas, and Upscale resizes it, so request.width/height would record
+                        # (and later restore) the wrong dimensions for those workflows. For
+                        # plain txt2img the image size equals the sliders anyway.
+                        "width": getattr(image, "width", None) or request.width,
+                        "height": getattr(image, "height", None) or request.height,
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,
@@ -11230,7 +11236,10 @@ async def generate_diffusion_image(
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"
                             f"{request.controlnet.strength:g}"
-                            if request.controlnet
+                            # strength 0 is treated as disabled and skipped before loading /
+                            # conditioning, so the image is unconditioned; don't claim a
+                            # ControlNet was applied in the recipe/metadata.
+                            if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
                         "created_at": created_at,
@@ -11254,6 +11263,8 @@ async def list_gallery_images(
     offset: int = 0,
     current_subject: str = Depends(get_current_subject),
 ):
+    from pydantic import ValidationError
+
     from core.inference import image_gallery
 
     limit = max(1, min(limit, 200))
@@ -11261,10 +11272,18 @@ async def list_gallery_images(
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(image_gallery.list_images, limit + 1, offset)
     has_more = len(records) > limit
-    return GalleryListResponse(
-        images = [GalleryImage(**r) for r in records[:limit]],
-        has_more = has_more,
-    )
+    # Build the response per record and drop any that fail schema validation: a PNG
+    # whose recipe chunk has all required keys but a wrong value type (e.g. a
+    # hand-dropped or corrupted file) passes the presence-only read but would raise
+    # inside GalleryImage(**r). Skipping it keeps one bad file from 500-ing the whole
+    # gallery listing.
+    images = []
+    for r in records[:limit]:
+        try:
+            images.append(GalleryImage(**r))
+        except ValidationError:
+            continue
+    return GalleryListResponse(images = images, has_more = has_more)
 
 
 @studio_router.get("/images/gallery/{image_id}/file")
