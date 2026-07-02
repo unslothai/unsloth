@@ -20,6 +20,14 @@ const SILENCE_RMS = 0.012;       // RMS below this counts as silence
 const SILENCE_HANG_MS = 1000;    // silence after speech ends the utterance
 const MAX_UTTERANCE_MS = 30000;  // hard cap so a stuck mic can't record forever
 const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
+// Minimum total voiced audio required to treat a window as real speech and
+// transcribe it. Coughs, clicks, a blip of the model's own voice, or ambient
+// noise fall under this and are dropped -- this is what stops Whisper being fed
+// junk (and hallucinating repeated tokens) during barge-in / idle listening.
+const MIN_SPEECH_MS = 350;
+// Silence trimmed around the voiced span before sending to Whisper (Whisper
+// hallucinates on long leading/trailing silence). Keep a little context.
+const SILENCE_PAD_MS = 200;
 
 type AudioContextCtor = typeof AudioContext;
 
@@ -85,6 +93,10 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
     let processor: ScriptProcessorNode | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
     const chunks: Float32Array[] = [];
+    // Parallel to chunks: whether each frame was above the silence floor, used to
+    // measure voiced duration and to trim silence before transcription.
+    const chunkVoiced: boolean[] = [];
+    let voicedMs = 0;
     let sampleRate = 16000;
     let heardSpeech = false;
     let lastVoiceAt = 0;
@@ -150,18 +162,30 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
       finalizing = true;
       teardown();
 
-      if (!heardSpeech || chunks.length === 0) {
-        // Nothing said this window -- end quietly and re-arm, mirroring the Web
-        // Speech "no-speech" path so the voice loop keeps listening.
+      if (!heardSpeech || chunks.length === 0 || voicedMs < MIN_SPEECH_MS) {
+        // Nothing said this window (or only a sub-threshold blip: cough, click,
+        // a bit of the model's own voice, ambient noise). End quietly and re-arm,
+        // mirroring the Web Speech "no-speech" path so the loop keeps listening
+        // without feeding Whisper junk to hallucinate on.
         finish("stopped");
         setTimeout(() => requestVoiceResume(), 0);
         return;
       }
 
-      const total = chunks.reduce((n, c) => n + c.length, 0);
+      // Trim to the voiced span (+ a little padding) so Whisper isn't handed long
+      // leading/trailing silence, which it tends to hallucinate words from.
+      const frameMs = chunks[0] ? (chunks[0].length / sampleRate) * 1000 : 0;
+      const padFrames = frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
+      const firstVoiced = chunkVoiced.indexOf(true);
+      const lastVoiced = chunkVoiced.lastIndexOf(true);
+      const start = Math.max(0, firstVoiced - padFrames);
+      const end = Math.min(chunks.length - 1, lastVoiced + padFrames);
+      const span = chunks.slice(start, end + 1);
+
+      const total = span.reduce((n, c) => n + c.length, 0);
       const merged = new Float32Array(total);
       let offset = 0;
-      for (const c of chunks) {
+      for (const c of span) {
         merged.set(c, offset);
         offset += c.length;
       }
@@ -237,7 +261,10 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           const rms = Math.sqrt(sumSquares / input.length);
           const now = performance.now();
 
-          if (rms >= SILENCE_RMS) {
+          const voiced = rms >= SILENCE_RMS;
+          chunkVoiced.push(voiced);
+          if (voiced) {
+            voicedMs += (input.length / sampleRate) * 1000;
             lastVoiceAt = now;
             if (!heardSpeech) {
               heardSpeech = true;

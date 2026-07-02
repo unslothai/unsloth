@@ -2840,19 +2840,19 @@ const VoiceEngine: FC = () => {
       return;
     }
     speakRef.current(text);
-    // Streaming STT (Web Speech) arms the mic DURING TTS so barge-in can fire on
-    // transcript growth (debounced, so blips are ignored). Whisper is batch and
-    // hallucinates on near-silence/echo (repeated tokens, "Thank you."), so
-    // listening while the model speaks feeds that junk straight back as the next
-    // turn -> the model loops and fills context. Whisper is therefore half-duplex:
-    // don't listen while speaking; resumeListen (onPlaybackEnd) re-arms the mic
-    // once TTS finishes.
-    if (!isWhisperStt && !auiRef.current.composer().getState().dictation) {
+    // Arm the mic DURING TTS so barge-in works for both engines. Web Speech
+    // barges via the transcript-growth debounce in the silence-timer effect;
+    // Whisper barges via submitTranscript (a finalized utterance while TTS plays
+    // stops the speech, then sends). Whisper's own guards keep this from feeding
+    // back on itself: noise suppression, a min-voiced-duration gate, and silence
+    // trimming in the adapter mean the model's own audio / room noise / silence
+    // don't reach Whisper as a spurious turn.
+    if (!auiRef.current.composer().getState().dictation) {
       document
         .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
         ?.click();
     }
-  }, [isThreadRunning, resumeListen, isWhisperStt]);
+  }, [isThreadRunning, resumeListen]);
 
   // Silence timer: only fires in "active" state. Streaming STT only — Whisper
   // (batch) has no interim transcript for this to watch and detects end-of-
