@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Orchestrator unload cancels an in-flight generation instead of waiting it out.
+"""unload_model cancels an in-flight generation instead of waiting it out.
 
-A model switch during a long generation used to queue the ``unload`` command
-behind the running ``generate`` (the subprocess is sequential), hanging the UI
-for the full generation. ``unload_model`` now cancels the generation first (the
-mp.Event the worker checks each token) and takes ``_gen_lock`` before the unload
-round-trip, so the switch is near-instant -- matching the GGUF backend.
+The sequential subprocess used to queue ``unload`` behind a running ``generate``,
+hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker checks
+each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 import threading
 import time
@@ -17,14 +15,14 @@ from core.inference.orchestrator import InferenceOrchestrator
 
 
 def _bare_orchestrator():
-    """An orchestrator instance without the real __init__ subprocess/network."""
+    """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     o._gen_lock = threading.Lock()
-    o._cancel_event = threading.Event()  # stands in for the mp.Event (set/is_set/clear)
-    o._proc = object()  # truthy so _ensure_subprocess_alive can report alive
+    o._cancel_event = threading.Event()  # stands in for the mp.Event
+    o._proc = object()  # truthy so _ensure_subprocess_alive reports alive
     o._cmd_queue = object()
     o._resp_queue = object()
-    o._dispatcher_thread = None  # no compare-mode dispatcher in these tests
+    o._dispatcher_thread = None
     o._unload_pending = False
     o.active_model_name = "m"
     o.models = {"m": {}}
@@ -40,8 +38,7 @@ def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
-    # A generation holds _gen_lock and only releases it once cancelled -- exactly
-    # what _consume_token_stream does when the worker aborts on the cancel event.
+    # A generation holds _gen_lock and releases it only once cancelled.
     o._gen_lock.acquire()
 
     def releaser():
@@ -61,7 +58,7 @@ def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     assert {"type": "unload", "model_name": "m"} in sent
     assert o.active_model_name is None
     assert "m" not in o.models
-    # It waited on the (released-after-cancel) lock, not a full generation.
+    # Waited on the released-after-cancel lock, not a full generation.
     assert elapsed < 2.0
 
 
@@ -73,7 +70,7 @@ def test_unload_no_active_generation_unloads_normally(monkeypatch):
     monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
-    ok = o.unload_model("m")  # _gen_lock free
+    ok = o.unload_model("m")
 
     assert ok is True
     assert {"type": "unload", "model_name": "m"} in sent
@@ -91,7 +88,7 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send unload when wedged"))
 
-    # A wedged worker never releases _gen_lock even after the cancel.
+    # A wedged worker never releases _gen_lock, even after the cancel.
     o._gen_lock.acquire()
 
     ok = o.unload_model("m")
@@ -102,9 +99,9 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
 
 
 def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
-    # After the wedged-worker teardown a fresh load swaps _proc/_resp_queue. The
-    # still-live generation thread must bail (not re-block on the new queue while
-    # holding _gen_lock), so it detects the swap and returns.
+    # After a wedged-worker teardown a fresh load swaps _proc/_resp_queue; the
+    # still-live generation thread must detect the swap and bail, not re-block on
+    # the new queue while holding _gen_lock.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_subprocess_crash_message", lambda ctx: "inference subprocess restarted")
@@ -130,14 +127,12 @@ def test_unload_pending_clears_after_unload(monkeypatch):
 
     o.unload_model("m")
 
-    # The pending flag must not leak past a completed unload, else every later
-    # generation would bail forever.
+    # The flag must not leak past the unload, else every later generation bails.
     assert o._unload_pending is False
 
 
 def test_generation_bails_when_unload_pending(monkeypatch):
-    # A generation that wins the _gen_lock handoff while a switch is pending must
-    # not start on the outgoing model.
+    # Winning the _gen_lock handoff mid-switch must not start on the outgoing model.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     o._unload_pending = True

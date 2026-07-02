@@ -46,8 +46,8 @@ _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
 # How long unload_model waits for a cancelled generation to release _gen_lock
-# before falling back to tearing the subprocess down. A cancel aborts within a
-# token (~0.1s in practice); this only bounds a wedged worker.
+# before tearing the subprocess down. A cancel aborts within a token; this only
+# bounds a wedged worker.
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
@@ -66,8 +66,8 @@ class InferenceOrchestrator:
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
         self._gen_lock = threading.Lock()  # Serializes generation
-        # Set while unload_model is switching models so a generation that wins
-        # the _gen_lock handoff bails instead of starting on the outgoing model.
+        # Set during a model switch so a generation that wins the _gen_lock
+        # handoff bails instead of starting on the outgoing model.
         self._unload_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
@@ -464,9 +464,9 @@ class InferenceOrchestrator:
         cancel ack from that same source so stale events don't leak into the
         next request.
         """
-        # Latch the subprocess/queue this stream belongs to. If unload_model tears
-        # a wedged worker down and a later load spawns a fresh one, bail instead of
-        # re-blocking on the new queue while still holding _gen_lock (deadlock).
+        # Latch the subprocess/queue this stream belongs to. If a wedged worker is
+        # torn down and a later load spawns a fresh one, bail instead of re-blocking
+        # on the new queue while holding _gen_lock (deadlock).
         initial_proc = self._proc
         initial_resp_queue = self._resp_queue
         while True:
@@ -873,13 +873,10 @@ class InferenceOrchestrator:
                 self.active_model_name = None
             return True
 
-        # This subprocess runs commands sequentially, so a bare unload queues
-        # behind a running generate (a 2-3 min hang on long answers). Cancel the
-        # generation first (instant, via the mp.Event the worker polls each
-        # token), then take _gen_lock to be the sole resp_queue reader, matching
-        # the GGUF backend which cancels and kills its process on unload.
-        # _unload_pending makes a generation that wins the lock handoff bail
-        # instead of starting on the outgoing model.
+        # The subprocess runs commands sequentially, so a bare unload queues behind
+        # a running generate (a 2-3 min hang). Cancel first (via the mp.Event the
+        # worker polls each token), then take _gen_lock to be the sole resp_queue
+        # reader, matching the GGUF backend.
         self._unload_pending = True
         try:
             self._cancel_generation()
@@ -899,11 +896,10 @@ class InferenceOrchestrator:
                 return True
 
             try:
-                # Stop any compare-mode dispatcher so it can't consume the
+                # Stop the compare-mode dispatcher so it can't consume the
                 # "unloaded" reply off the shared resp_queue before we read it.
                 self._wait_dispatcher_idle()
-                # Drop stale tokens from the cancelled generation so they can't
-                # be read as the unload reply.
+                # Drop stale tokens so they can't be read as the unload reply.
                 self._drain_queue()
                 self._send_cmd(
                     {
@@ -1126,8 +1122,7 @@ class InferenceOrchestrator:
         # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
             if self._unload_pending:
-                # A model switch won the lock handoff; do not start a new
-                # generation on the outgoing model.
+                # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield "Error: model is being unloaded"
                 return
             request_id = str(uuid.uuid4())
