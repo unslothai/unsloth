@@ -17,11 +17,13 @@ Checkpoint kinds differ in how a voice is chosen:
   UNSLOTH_QWEN_TTS_INSTRUCT.
 
 The `qwen-tts` pip package hard-pins transformers/accelerate and drags in
-gradio, so it is installed --no-deps against the venv's existing stack. Its
-only missing runtime deps are `sox` (imported by the 25Hz tokenizer module at
-package import; never *used* on the 12Hz path, and the pysox package imports
-fine without the sox binary) -- einops/onnxruntime/librosa/torchaudio are
-already in the Studio venv.
+gradio, so it is installed --no-deps against the venv's existing stack. It is
+NOT part of the base install: `_ensure_qwen_tts_installed()` installs it (and
+`sox`) on demand the first time a Qwen3-TTS voice is loaded, so machines that
+never use this voice don't carry it. Its only missing runtime dep is `sox`
+(imported by the 25Hz tokenizer module at package import; never *used* on the
+12Hz path, and pysox imports fine without the sox binary) --
+einops/onnxruntime/librosa/torchaudio are already in the Studio venv.
 """
 
 import os
