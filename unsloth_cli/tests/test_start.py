@@ -438,7 +438,9 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     content_line = next(
         ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
     )
-    inline = json.loads(shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0])
+    inline = json.loads(
+        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
+    )
     assert inline["model"] == f"unsloth/{MODEL['id']}"
     assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
     assert "sk-unsloth" not in content_line  # key stays in the private file
@@ -450,7 +452,9 @@ def test_opencode_inline_config_omits_permissions_without_yolo(fake_studio):
     content_line = next(
         ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
     )
-    inline = json.loads(shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0])
+    inline = json.loads(
+        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
+    )
     assert inline == {"model": f"unsloth/{MODEL['id']}"}
 
 
@@ -463,9 +467,7 @@ def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
     monkeypatch.setattr(
         start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True)
     )
-    result = CliRunner().invoke(
-        start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"]
-    )
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
     assert result.exit_code == 1
     assert "No running Studio server" in result.output
     assert started["called"] is False
@@ -474,6 +476,7 @@ def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
 def test_connect_alias_still_works(fake_studio):
     # `unsloth connect` remains a compat alias for `unsloth start`.
     from unsloth_cli import app
+
     result = CliRunner().invoke(app, ["connect", "claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])

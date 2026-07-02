@@ -369,7 +369,13 @@ def _require_studio(
     # only for a plain-HTTP loopback target: never stand in for an explicit remote
     # UNSLOTH_STUDIO_URL, and never for an https:// one -- `unsloth run` serves plain
     # HTTP, so the health poll against https would spin until the startup timeout.
-    if serve and launch and model and is_loopback_url(expected) and urlparse(expected).scheme == "http":
+    if (
+        serve
+        and launch
+        and model
+        and is_loopback_url(expected)
+        and urlparse(expected).scheme == "http"
+    ):
         # Normalize to the port unsloth run actually binds, so the health poll and the
         # returned base hit the same server we launch (not a portless :80).
         expected = _effective_base(expected)
