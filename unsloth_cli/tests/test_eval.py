@@ -43,6 +43,42 @@ def test_resolve_base_model_none_for_missing_path():
     assert evalmod.resolve_base_model("/no/such/dir") is None
 
 
+def test_resolve_base_model_none_for_non_dict_config(tmp_path):
+    (tmp_path / "adapter_config.json").write_text(json.dumps(["not", "a", "dict"]))
+    assert evalmod.resolve_base_model(str(tmp_path)) is None
+
+
+def test_resolve_base_model_finds_hub_adapter(tmp_path, monkeypatch):
+    remote_config = tmp_path / "adapter_config.json"
+    remote_config.write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"})
+    )
+
+    hub_mod = types.ModuleType("huggingface_hub")
+
+    def fake_download(repo_id, filename, **kwargs):
+        assert repo_id == "someuser/my-lora"
+        assert filename == "adapter_config.json"
+        return str(remote_config)
+
+    hub_mod.hf_hub_download = fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_mod)
+
+    assert evalmod.resolve_base_model("someuser/my-lora") == "unsloth/Llama-3.2-1B"
+
+
+def test_resolve_base_model_none_when_hub_lookup_fails(monkeypatch):
+    hub_mod = types.ModuleType("huggingface_hub")
+
+    def fake_download(*args, **kwargs):
+        raise RuntimeError("no adapter_config.json in repo")
+
+    hub_mod.hf_hub_download = fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_mod)
+
+    assert evalmod.resolve_base_model("someuser/full-model") is None
+
+
 def test_make_jsonl_task_generates_expected_spec(tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "1+1?", "answer": "2"}\n')
@@ -98,6 +134,41 @@ def test_resolve_tasks_jsonl_generates_task(tmp_path):
     assert names == ["qa"]
     assert includes == [str(gen_dir.resolve())]
     assert (gen_dir / "qa.yaml").exists()
+
+
+def test_resolve_tasks_uniquifies_colliding_dataset_stems(tmp_path):
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    (dir_a / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    (dir_b / "qa.jsonl").write_text('{"question": "q2", "answer": "a2"}\n')
+    gen_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(
+        f"{dir_a / 'qa.jsonl'},{dir_b / 'qa.jsonl'}", "question", "answer", gen_dir
+    )
+
+    assert names == ["qa", "qa_2"]
+    spec_a = yaml.safe_load((gen_dir / "qa.yaml").read_text())
+    spec_b = yaml.safe_load((gen_dir / "qa_2.yaml").read_text())
+    assert spec_a["dataset_kwargs"]["data_files"] == str((dir_a / "qa.jsonl").resolve())
+    assert spec_b["dataset_kwargs"]["data_files"] == str((dir_b / "qa.jsonl").resolve())
+    assert spec_b["task"] == "qa_2"
+
+
+def test_resolve_tasks_invalid_yaml_raises(tmp_path):
+    task_file = tmp_path / "broken.yaml"
+    task_file.write_text("task: [unclosed")
+    with pytest.raises(ValueError, match = "Invalid YAML"):
+        evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path)
+
+
+def test_resolve_tasks_yaml_list_raises(tmp_path):
+    task_file = tmp_path / "list.yaml"
+    task_file.write_text(yaml.safe_dump(["not", "a", "mapping"]))
+    with pytest.raises(ValueError, match = "YAML mapping"):
+        evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path)
 
 
 def test_resolve_tasks_yaml_without_task_name_raises(tmp_path):
@@ -163,12 +234,11 @@ def fake_eval_env(monkeypatch):
 
     class _FakeHFLM:
         def __init__(
-            self,
-            pretrained = None,
-            tokenizer = None,
-            batch_size = None,
+            self, pretrained = None, tokenizer = None, batch_size = None, max_length = None
         ):
             calls["batch_size"] = batch_size
+            calls["hflm_tokenizer"] = tokenizer
+            calls["hflm_max_length"] = max_length
 
     class _FakeTaskManager:
         all_tasks = ["gsm8k", "qa", "mmlu", "hellaswag"]
@@ -207,6 +277,14 @@ def fake_eval_env(monkeypatch):
     torch_mod.cuda = SimpleNamespace(is_available = lambda: False)
     torch_mod.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False))
 
+    # no adapter_config.json on the fake Hub, and no network access in tests
+    hub_mod = types.ModuleType("huggingface_hub")
+
+    def _no_hub_download(*args, **kwargs):
+        raise RuntimeError("adapter_config.json not found")
+
+    hub_mod.hf_hub_download = _no_hub_download
+
     lm_eval_mod = types.ModuleType("lm_eval")
     lm_eval_mod.simple_evaluate = _simple_evaluate
     models_mod = types.ModuleType("lm_eval.models")
@@ -218,6 +296,7 @@ def fake_eval_env(monkeypatch):
     for name, mod in {
         "unsloth": unsloth_mod,
         "torch": torch_mod,
+        "huggingface_hub": hub_mod,
         "lm_eval": lm_eval_mod,
         "lm_eval.models": models_mod,
         "lm_eval.models.huggingface": hf_mod,
@@ -238,6 +317,7 @@ def test_eval_success_writes_results(fake_eval_env, tmp_path):
     assert result.exit_code == 0, result.output
     assert "Saved results to" in result.output
     assert fake_eval_env["tasks"] == ["gsm8k"]
+    assert fake_eval_env["hflm_max_length"] == 2048
     assert fake_eval_env["simple_evaluate_kwargs"]["task_manager"] is not None
     assert fake_eval_env["simple_evaluate_kwargs"]["log_samples"] is False
     assert fake_eval_env["include_path"] is None
@@ -336,6 +416,85 @@ def test_eval_hf_forwards_max_seq_length(fake_eval_env, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert fake_eval_env["model_args"] == {"pretrained": "fake/model", "max_length": 1024}
+
+
+def test_eval_unsloth_forwards_max_seq_length_to_hflm(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model", "--tasks", "gsm8k",
+            "--max-seq-length", "512",
+            "--output-dir", str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["hflm_max_length"] == 512
+
+
+def test_eval_hf_local_adapter_uses_adapter_tokenizer(fake_eval_env, tmp_path):
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"})
+    )
+    (adapter / "tokenizer_config.json").write_text("{}")
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            str(adapter), "--tasks", "gsm8k",
+            "--backend", "hf", "--device", "cpu",
+            "--output-dir", str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["model_args"] == {
+        "pretrained": "unsloth/Llama-3.2-1B",
+        "peft": str(adapter),
+        "tokenizer": str(adapter),
+        "max_length": 2048,
+    }
+
+
+def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path, monkeypatch):
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"})
+    )
+    (adapter / "tokenizer_config.json").write_text("{}")
+
+    peft_mod = types.ModuleType("peft")
+
+    class _FakePeftModel:
+        @staticmethod
+        def from_pretrained(model, adapter_path):
+            fake_eval_env["peft_adapter"] = adapter_path
+            return model
+
+    peft_mod.PeftModel = _FakePeftModel
+    monkeypatch.setitem(sys.modules, "peft", peft_mod)
+
+    transformers_mod = types.ModuleType("transformers")
+
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(path, **kwargs):
+            fake_eval_env["tokenizer_from"] = path
+            return SimpleNamespace(name = "adapter-tok")
+
+    transformers_mod.AutoTokenizer = _FakeAutoTokenizer
+    monkeypatch.setitem(sys.modules, "transformers", transformers_mod)
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [str(adapter), "--tasks", "gsm8k", "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["model_name"] == "unsloth/Llama-3.2-1B"
+    assert fake_eval_env["peft_adapter"] == str(adapter)
+    assert fake_eval_env["tokenizer_from"] == str(adapter)
+    assert fake_eval_env["hflm_tokenizer"].name == "adapter-tok"
 
 
 def test_eval_hf_honors_base_model_for_remote_adapter(fake_eval_env, tmp_path):

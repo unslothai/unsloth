@@ -4,6 +4,7 @@
 import contextlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -53,21 +54,60 @@ def _silence():
         real.close()
 
 
-def resolve_base_model(model: str) -> Optional[str]:
-    path = Path(model)
-    config = path / "adapter_config.json"
-    if not (path.is_dir() and config.exists()):
-        return None
+def _read_adapter_base(config: Path) -> Optional[str]:
+    # ValueError covers both JSONDecodeError and UnicodeDecodeError
     try:
         data = json.loads(config.read_text(encoding = "utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
+        return None
+    if not isinstance(data, dict):
         return None
     return data.get("base_model_name_or_path")
 
 
-def make_jsonl_task(data_file: Path, input_key: str, target_key: str, out_dir: Path) -> str:
+def _has_tokenizer_files(model: str) -> bool:
+    path = Path(model)
+    return path.is_dir() and any(
+        (path / name).exists()
+        for name in ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    )
+
+
+def resolve_base_model(model: str) -> Optional[str]:
+    path = Path(model)
+    if path.is_dir():
+        config = path / "adapter_config.json"
+        return _read_adapter_base(config) if config.exists() else None
+    # adapter-only Hub repos carry adapter_config.json but no config.json, so
+    # they cannot be passed to lm-eval as `pretrained` — detect them up front
+    if path.exists() or not re.fullmatch(r"[\w.\-]+/[\w.\-]+", model):
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+
+        config_path = hf_hub_download(model, "adapter_config.json")
+    except Exception:
+        return None
+    return _read_adapter_base(Path(config_path))
+
+
+def make_jsonl_task(
+    data_file: Path,
+    input_key: str,
+    target_key: str,
+    out_dir: Path,
+) -> str:
     data_file = Path(data_file).resolve()
-    task_name = data_file.stem
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents = True, exist_ok = True)
+    # datasets sharing a stem (runs/a/qa.jsonl, runs/b/qa.jsonl) must not
+    # overwrite each other's generated task
+    base_name = data_file.stem
+    task_name = base_name
+    counter = 2
+    while (out_dir / f"{task_name}.yaml").exists():
+        task_name = f"{base_name}_{counter}"
+        counter += 1
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
     task_spec = {
         "task": task_name,
@@ -92,8 +132,6 @@ def make_jsonl_task(data_file: Path, input_key: str, target_key: str, out_dir: P
             {"metric": "exact_match", "aggregation": "mean", "higher_is_better": True},
         ],
     }
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents = True, exist_ok = True)
     (out_dir / f"{task_name}.yaml").write_text(
         yaml.safe_dump(task_spec, sort_keys = False), encoding = "utf-8"
     )
@@ -120,7 +158,12 @@ def resolve_tasks(
             path = Path(entry)
             if not path.exists():
                 raise FileNotFoundError(f"Custom task file not found: {entry}")
-            spec = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+            try:
+                spec = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+            except yaml.YAMLError as e:
+                raise ValueError(f"Invalid YAML in custom task file '{entry}': {e}") from e
+            if not isinstance(spec, dict):
+                raise ValueError(f"Custom task file '{entry}' must define a YAML mapping.")
             name = spec.get("task")
             if not name:
                 raise ValueError(f"Custom task file '{entry}' is missing a 'task:' name.")
@@ -246,9 +289,9 @@ def evaluate(
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token  # both backends read it from the env
 
-    detected_base = resolve_base_model(model)
-    # --base-model => treat <model> as an adapter on this base
-    effective_base = base_model or detected_base
+    # --base-model => treat <model> as an adapter on this base (and skip the
+    # local/Hub adapter_config.json lookup)
+    effective_base = base_model or resolve_base_model(model)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:
@@ -321,6 +364,10 @@ def evaluate(
             # dict form: a comma in a path can't corrupt key=value parsing
             if effective_base:
                 model_args = {"pretrained": effective_base, "peft": model}
+                # adapters that saved their own tokenizer (added tokens etc.)
+                # must not be scored with the base tokenizer
+                if _has_tokenizer_files(model):
+                    model_args["tokenizer"] = model
                 typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
             else:
                 model_args = {"pretrained": model}
@@ -349,6 +396,12 @@ def evaluate(
                     )
                     from peft import PeftModel
                     lmodel = PeftModel.from_pretrained(lmodel, model)
+                    # adapters that saved their own tokenizer (added tokens
+                    # etc.) must not be scored with the base tokenizer
+                    if _has_tokenizer_files(model):
+                        from transformers import AutoTokenizer
+
+                        tokenizer = AutoTokenizer.from_pretrained(model)
             else:
                 typer.echo(f"Loading model: {model}")
                 with _silence():
@@ -357,7 +410,12 @@ def evaluate(
                     )
             with _silence():
                 FastLanguageModel.for_inference(lmodel)
-                lm = HFLM(pretrained = lmodel, tokenizer = tokenizer, batch_size = bs)
+                lm = HFLM(
+                    pretrained = lmodel,
+                    tokenizer = tokenizer,
+                    batch_size = bs,
+                    max_length = max_seq_length,
+                )
             eval_kwargs["model"] = lm
 
         with _silence() as ui, _spinner(ui, f"Evaluating {', '.join(task_names)}…"):
