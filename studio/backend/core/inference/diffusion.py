@@ -489,6 +489,9 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        # A blank token (the Studio default when none is configured) must mean
+        # "anonymous", not an explicit empty credential the Hub rejects with 401.
+        hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -617,6 +620,18 @@ class DiffusionBackend:
         fraction = min(downloaded / expected, 1.0) if expected > 0 else 0.0
         return _progress("downloading", downloaded, expected, fraction)
 
+    def loading_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids an in-flight background load is downloading (empty when idle).
+
+        The delete-cached guard needs this: during a load ``status()["loaded"]`` is
+        still False, but deleting the target repo (or its companion base) would yank
+        blobs and snapshot files from under the download/assembly."""
+        with self._lock:
+            loading = self._loading
+            if loading is None or loading.error is not None:
+                return ()
+            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+
     @staticmethod
     def _estimate_download_bytes(
         repo_id: str,
@@ -702,7 +717,10 @@ class DiffusionBackend:
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
-        # family fails with ValueError even in a no-diffusers runtime.
+        # family fails with ValueError even in a no-diffusers runtime. Sanitize the
+        # token here too (direct callers bypass begin_load): a blank string must
+        # load anonymously, not 401 as an explicit empty credential.
+        hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -726,12 +744,18 @@ class DiffusionBackend:
         # The cancel makes that wait ~one step (or the rest of the denoise for a
         # pipeline that ignores the step callback).
         with self._lock:
+            # Bail BEFORE signalling any cancel if this load was already superseded (an
+            # unload/eviction or a newer load bumped the token while we were resolving /
+            # downloading). Otherwise a stale worker would abort an unrelated, still-live
+            # generation from the CURRENT model and only then discover it has nothing to do.
+            if _load_token is not None and _load_token != self._load_token:
+                raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
         with self._generate_lock:
             with self._lock:
-                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
-                # newer load superseded this one while we were resolving/downloading.
+                # Re-check under the generate lock: a newer load/unload may have superseded
+                # this one while we waited for the in-flight denoise to exit.
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Diffusion load was cancelled.")
 
@@ -800,6 +824,12 @@ class DiffusionBackend:
                         )
                         pipe = None
                         transformer_quant_engaged = None
+                        # Drop the exception (and its traceback) BEFORE clearing the cache:
+                        # exc.__traceback__ keeps _load_dense_quant_pipeline's frame -- and
+                        # thus its partially-built dense bf16 transformer/pipe -- alive, so
+                        # clear_gpu_cache() could not otherwise reclaim that VRAM before the
+                        # GGUF build (the OOM-fallback path this cleanup exists for).
+                        del exc
                         clear_gpu_cache()
 
                 if pipe is None:
@@ -1363,6 +1393,26 @@ class DiffusionBackend:
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
 
+    @staticmethod
+    def _reset_step_cache(pipe: Any) -> None:
+        """Clear the transformer's stateful step cache (FBCache) before a generation.
+
+        diffusers keys FBCache residuals by cache context ("cond"/"uncond") on the
+        long-lived transformer, and neither the pipeline nor the context exit resets
+        them (``StateManager`` only clears via ``reset_stateful_hooks``, which no
+        pipeline calls). This backend reuses one resident pipe across generations, so
+        without a reset the next generation's first step compares its first-block
+        residual against the PREVIOUS request's -- a tensor-shape mismatch when the
+        resolution/batch changed, or a stale-cache reuse otherwise. Best-effort: a
+        transformer without the hook (uncached load) is a silent no-op."""
+        transformer = getattr(pipe, "transformer", None)
+        reset = getattr(transformer, "reset_stateful_hooks", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception:  # noqa: BLE001 — reset is best-effort, never fail a generation
+                pass
+
     def generate(
         self,
         *,
@@ -1670,6 +1720,13 @@ class DiffusionBackend:
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+
+                # Start each generation from a clean step cache: FBCache residuals from
+                # a prior request on this resident pipe would otherwise be compared
+                # against this generation's first step (shape mismatch on a resolution/
+                # batch change, or stale reuse). No-op when no cache is engaged.
+                if state.transformer_cache:
+                    self._reset_step_cache(state.pipe)
 
                 self._gen = gen
                 try:

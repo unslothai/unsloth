@@ -207,8 +207,15 @@ def build_sd_cpp_command(
     """
     if not files.diffusion_model:
         raise ValueError("diffusion_model path is required")
-    if not str(params.prompt).strip():
+    # ``(prompt or "")`` so a None prompt is rejected here rather than slipping past
+    # ``str(None)`` == "None" (truthy) and landing in argv as a literal "None".
+    if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
+    # sd-cli inpaint needs the source image too: a --mask with no --init-img is an
+    # invalid invocation (sd-cli has nothing to inpaint into), so reject it here with a
+    # clear error instead of emitting a command that fails deep in sd-cli.
+    if params.mask and not params.init_img:
+        raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
     cmd: list[str] = [binary, "--mode", DEFAULT_MODE, "--diffusion-model", files.diffusion_model]
     for flag, value in (
