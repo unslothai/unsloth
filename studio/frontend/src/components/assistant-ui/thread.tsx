@@ -143,6 +143,7 @@ import {
   GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
+  PhoneIcon,
   PlusIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -3816,6 +3817,26 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   );
 };
 
+// Phone button shown in the composer only while voice mode is being configured
+// (opened from the + menu). Clicking it enters the voice ball; VoiceEngine picks
+// up the store transition to "active" and starts the mic loop.
+const StartVoiceModeButton: FC = () => {
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const setVoiceMode = useChatRuntimeStore((s) => s.setVoiceMode);
+  if (voiceMode !== "configuring") return null;
+  return (
+    <TooltipIconButton
+      tooltip="Start voice mode"
+      aria-label="Start voice mode"
+      variant="ghost"
+      className="size-8 rounded-full text-primary"
+      onClick={() => setVoiceMode("active")}
+    >
+      <PhoneIcon className="size-5" />
+    </TooltipIconButton>
+  );
+};
+
 const ComposerRightControls: FC<{
   disabled?: boolean;
   queueDisabled?: boolean;
@@ -3843,6 +3864,7 @@ const ComposerRightControls: FC<{
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       <VoiceEngine />
+      <StartVoiceModeButton />
       <ComposerPrimitive.If dictation={false}>
         <ComposerPrimitive.Dictate asChild={true}>
           <TooltipIconButton
