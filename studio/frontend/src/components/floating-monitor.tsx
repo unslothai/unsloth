@@ -41,12 +41,12 @@ export function FloatingMonitor() {
 
   if (!isOpen) return null;
 
-  const ramTotal = systemInfo.memory.total_gb ?? 0;
-  const ramAvailable = systemInfo.memory.available_gb ?? 0;
+  const ramTotal = systemInfo.memory?.total_gb ?? 0;
+  const ramAvailable = systemInfo.memory?.available_gb ?? 0;
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
-  const ramPercent = clampPercent(systemInfo.memory.percent_used ?? 0);
+  const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
 
-  const devices = systemInfo.gpu.devices ?? [];
+  const devices = systemInfo.gpu?.devices ?? [];
   const vramTotal = devices.reduce(
     (sum, device) => sum + (device.memory_total_gb ?? 0),
     0,
@@ -59,7 +59,7 @@ export function FloatingMonitor() {
     vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
   );
 
-  const hasGpu = (systemInfo.gpu.available ?? false) && devices.length > 0;
+  const hasGpu = (systemInfo.gpu?.available ?? false) && devices.length > 0;
 
   return (
     <div

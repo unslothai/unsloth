@@ -174,12 +174,12 @@ export function ResourcesTab() {
   }, []);
 
   const metrics = useMemo(() => {
-    const devices = systemInfo.gpu.devices ?? [];
-    const ramTotal = systemInfo.memory.total_gb ?? 0;
-    const ramAvailable = systemInfo.memory.available_gb ?? 0;
+    const devices = systemInfo.gpu?.devices ?? [];
+    const ramTotal = systemInfo.memory?.total_gb ?? 0;
+    const ramAvailable = systemInfo.memory?.available_gb ?? 0;
     const ramUsed = Math.max(0, ramTotal - ramAvailable);
-    const diskTotal = systemInfo.disk.total_gb ?? 0;
-    const diskFree = systemInfo.disk.free_gb ?? 0;
+    const diskTotal = systemInfo.disk?.total_gb ?? 0;
+    const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const vramTotal = devices.reduce(
       (sum, device) => sum + (device.memory_total_gb ?? 0),
@@ -232,15 +232,18 @@ export function ResourcesTab() {
     }
   };
 
-  const cpuCoresLabel = t("settings.resources.liveMonitor.cpuCores", {
-    logical: systemInfo.cpu.logical_count,
-    physical: systemInfo.cpu.physical_count,
-  });
-  const cpuFrequencyLabel = formatFrequency(systemInfo.cpu.frequency_mhz);
+  const cpuCoresLabel =
+    systemInfo.cpu?.logical_count && systemInfo.cpu?.physical_count
+      ? t("settings.resources.liveMonitor.cpuCores", {
+          logical: systemInfo.cpu.logical_count,
+          physical: systemInfo.cpu.physical_count,
+        })
+      : t("settings.resources.environment.unknown");
+  const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
-    (systemInfo.gpu.available ?? false) && metrics.devices.length > 0;
+    (systemInfo.gpu?.available ?? false) && metrics.devices.length > 0;
   const backendLabel = (
-    systemInfo.gpu.backend ?? systemInfo.device_backend
+    systemInfo.gpu?.backend ?? systemInfo.device_backend ?? "cpu"
   ).toUpperCase();
   const modelsFolderPath = modelsFolder
     ? modelsFolder.path
@@ -293,15 +296,15 @@ export function ResourcesTab() {
                 ? cpuCoresLabel
                 : t("settings.resources.liveMonitor.currentLoad")
             }
-            percent={systemInfo.cpu.usage_percent}
+            percent={systemInfo.cpu?.usage_percent ?? 0}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
             value={`${formatGb(metrics.ramUsed)} / ${formatGb(metrics.ramTotal)}`}
             detail={t("settings.resources.liveMonitor.free", {
-              value: formatGb(systemInfo.memory.available_gb),
+              value: formatGb(systemInfo.memory?.available_gb),
             })}
-            percent={systemInfo.memory.percent_used}
+            percent={systemInfo.memory?.percent_used ?? 0}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
@@ -309,7 +312,7 @@ export function ResourcesTab() {
             detail={t("settings.resources.liveMonitor.free", {
               value: formatGb(metrics.diskFree),
             })}
-            percent={systemInfo.disk.percent_used}
+            percent={systemInfo.disk?.percent_used ?? 0}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}
@@ -466,7 +469,7 @@ export function ResourcesTab() {
         />
         <InfoRow
           label={t("settings.resources.environment.processMemory")}
-          value={formatMb(systemInfo.memory.process_used_mb)}
+          value={formatMb(systemInfo.memory?.process_used_mb)}
         />
       </SettingsSection>
     </div>

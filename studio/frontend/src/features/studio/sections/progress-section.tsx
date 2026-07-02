@@ -43,7 +43,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
@@ -375,11 +375,18 @@ function LiveGpuPanel({
   const t = useT();
   const [selectedGpu, setSelectedGpu] = useState(0);
   const gpuData = useGpuUtilization(isTrainingRunning);
-  const gpus: GpuUtilization[] = Array.isArray(gpuData?.devices) && gpuData.devices.length > 0
-    ? gpuData.devices
-    : gpuData && Object.keys(gpuData).length > 0
-      ? [gpuData]
-      : [];
+  const gpus: GpuUtilization[] =
+    Array.isArray(gpuData?.devices) && gpuData.devices.length > 0
+      ? gpuData.devices
+      : gpuData && Object.keys(gpuData).length > 0
+        ? [gpuData]
+        : [];
+
+  useEffect(() => {
+    if (selectedGpu > 0 && selectedGpu >= gpus.length) {
+      setSelectedGpu(0);
+    }
+  }, [gpus.length, selectedGpu]);
 
   const gpuCount = gpus.length;
   const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
@@ -582,8 +589,8 @@ function TrainingHeaderActions({
           <HugeiconsIcon icon={StopIcon} className="size-3" />
           {stopRequested ? t("studio.training.stopping") : t("studio.training.stopAction")}
         </Button>
-        <AlertDialogContent 
-          style={{ width: "max-content", maxWidth: "95vw" }}
+        <AlertDialogContent
+          className="w-max max-w-[95vw]"
           overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
         >
           <AlertDialogHeader>
