@@ -35,6 +35,45 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+# Canonical assistant-turn-end markers across chat families. Some tokenizers set
+# eos_token_id to a bare document terminator (Qwen's config uses <|endoftext|>
+# even though chat turns end with <|im_end|>); loaders that sync eos to the model
+# config then leave the real turn-end token out of the stop set, so generation
+# runs past the turn and loops -- re-emitting tool calls or hallucinating
+# <|im_start|> turns. Stopping on every turn-end token the vocab defines fixes
+# that and is a no-op when eos is already the turn-ender (the id just dedups).
+_CHAT_TURN_END_TOKENS = (
+    "<|im_end|>",     # ChatML: Qwen, Yi
+    "<|eot_id|>",     # Llama 3.x
+    "<|eom_id|>",     # Llama 3.x tool turns
+    "<end_of_turn>",  # Gemma
+    "<|end|>",        # Phi
+    "<|return|>",     # gpt-oss harmony
+)
+
+
+def _chat_turn_end_eos_ids(tokenizer) -> list[int]:
+    """tokenizer.eos plus any canonical chat turn-end markers in the vocab; unk /
+    missing tokens dropped. Empty only if the tokenizer exposes no usable ids."""
+    ids: set[int] = set()
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos, (list, tuple)):
+        ids.update(int(t) for t in eos if t is not None)
+    elif eos is not None:
+        ids.add(int(eos))
+    try:
+        vocab = tokenizer.get_vocab()
+    except Exception:
+        vocab = {}
+    unk = getattr(tokenizer, "unk_token_id", None)
+    for tok_str in _CHAT_TURN_END_TOKENS:
+        if tok_str in vocab:
+            tid = tokenizer.convert_tokens_to_ids(tok_str)
+            if tid is not None and tid != unk:
+                ids.add(int(tid))
+    return sorted(ids)
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -1382,7 +1421,7 @@ class InferenceBackend:
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 do_sample = temperature > 0,
-                eos_token_id = tokenizer.eos_token_id,
+                eos_token_id = _chat_turn_end_eos_ids(tokenizer) or tokenizer.eos_token_id,
                 pad_token_id = tokenizer.eos_token_id
                 if tokenizer.pad_token_id is None
                 else tokenizer.pad_token_id,
