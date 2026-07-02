@@ -578,7 +578,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
     n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
     n_gpu_layers = os.environ.get("UNSLOTH_GGUF_RELOAD_NGL", "0")
     reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
-    llama_cli_cmd = [
+    argv = [
         str(llama_cli),
         "-m",
         str(gguf_path),
@@ -596,27 +596,28 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         "0",
         "--seed",
         str(SEED),
-        "-no-cnv",
         "--no-warmup",
     ]
     with Phase("reload_gguf", metrics):
         try:
             proc = subprocess.run(
-                llama_cli_cmd,
+                argv,
                 capture_output = True,
                 text = True,
                 timeout = reload_timeout,
-                # Hand llama-cli an immediate EOF; without it -no-cnv can still leave
-                # the process blocked reading stdin, which times out instead of
-                # generating.
-                stdin = subprocess.DEVNULL,
+                # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
+                input = "/exit\n",
             )
         except subprocess.TimeoutExpired as exc:
-            # Surface llama.cpp's partial output so a hang (Metal init, context
-            # allocation, ...) is diagnosable instead of an opaque timeout.
-            print(f"  [reload:gguf] TIMEOUT running: {' '.join(llama_cli_cmd)}", flush = True)
-            print(f"  [reload:gguf] stdout head:\n{(exc.stdout or '')[:800]}", flush = True)
-            print(f"  [reload:gguf] stderr head:\n{(exc.stderr or '')[:800]}", flush = True)
+
+            def _decode(stream) -> str:
+                if isinstance(stream, bytes):
+                    return stream.decode("utf-8", errors = "replace")
+                return stream or ""
+
+            print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
+            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
+            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
             raise
 
     metrics["llama_cli_returncode"] = proc.returncode

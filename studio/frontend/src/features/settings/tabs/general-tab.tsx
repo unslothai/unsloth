@@ -104,6 +104,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_monitor_overlay",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
