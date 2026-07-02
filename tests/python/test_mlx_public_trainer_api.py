@@ -917,8 +917,8 @@ def test_mlx_trl_shim_preserves_existing_trl_module(monkeypatch):
 def test_mlx_trl_shim_installs_real_trl_or_stub(monkeypatch):
     """The MLX TRL shim should prefer real TRL and stub only if unavailable."""
     unsloth = _import_mlx_unsloth()
-    real_trl_available = importlib.util.find_spec("trl") is not None
     monkeypatch.delitem(sys.modules, "trl", raising = False)
+    real_trl_available = importlib.util.find_spec("trl") is not None
 
     unsloth._install_mlx_trl_sft_shim()
     trl = importlib.import_module("trl")
