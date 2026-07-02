@@ -1557,7 +1557,16 @@ export function ChatPage({
         );
         setCachedWhisperModels(
           cached
-            .filter((c) => WHISPER_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            .filter(
+              (c) =>
+                WHISPER_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)) &&
+                // Exclude CTranslate2 (faster-whisper) repos: they ship a
+                // model.bin that passes the weights filter but the transformers
+                // ASR pipeline can't load them, so /transcribe 500s.
+                !lower(c.repo_id).includes("faster-whisper") &&
+                !lower(c.repo_id).includes("faster_whisper") &&
+                !lower(c.repo_id).includes("ctranslate2"),
+            )
             .map((c) => toOption(c.repo_id, false, c.size_bytes)),
         );
       })
