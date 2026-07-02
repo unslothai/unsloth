@@ -273,6 +273,44 @@ def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypat
     assert studio_db.get_run("r")["output_dir"] == "/out/x"
 
 
+def test_find_resumable_run_accepts_checkpoint_path(monkeypatch, tmp_path):
+    # The DB stores the parent run dir; a checkpoint-N target must still match.
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    out = tmp_path / "outputs" / "run_x"
+    ckpt = out / "checkpoint-10"
+    ckpt.mkdir(parents = True)
+    (ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
+
+    studio_db.create_run(
+        id = "run-ckpt",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 20,
+    )
+    studio_db.update_run_output_dir("run-ckpt", str(out))
+    studio_db.finish_run(
+        id = "run-ckpt",
+        status = "stopped",
+        ended_at = "2026-01-01T00:05:00Z",
+        final_step = 10,
+        final_loss = None,
+        duration_seconds = 1,
+        loss_sparkline = "[]",
+        output_dir = str(out),
+        error_message = None,
+    )
+
+    assert resume.find_resumable_run(str(out))["id"] == "run-ckpt"
+    assert resume.find_resumable_run(str(ckpt))["id"] == "run-ckpt"
+    assert resume.find_resumable_run(str(out / "checkpoint-99"))["id"] == "run-ckpt"
+
+
 def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
     from storage import studio_db
 

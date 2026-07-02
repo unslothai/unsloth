@@ -25,10 +25,10 @@ try:
     from core.training import get_training_backend
     from core.training.resume import (
         can_resume_run,
+        find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -39,10 +39,10 @@ except ImportError:
     from core.training import get_training_backend
     from core.training.resume import (
         can_resume_run,
+        find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -194,7 +194,7 @@ async def start_training(
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
-            resume_run = get_resumable_run_by_output_dir(resume_output_dir)
+            resume_run = find_resumable_run(resume_output_dir)
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,

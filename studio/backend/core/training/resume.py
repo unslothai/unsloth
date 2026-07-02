@@ -57,6 +57,18 @@ def normalize_resume_output_dir(path_value: str) -> str:
     return str(path)
 
 
+def find_resumable_run(resume_dir: str) -> Optional[dict]:
+    """DB lookup for a resume target; a checkpoint-N path maps to its parent run dir."""
+    from storage.studio_db import get_resumable_run_by_output_dir
+
+    run = get_resumable_run_by_output_dir(resume_dir)
+    if run is None:
+        path = Path(resume_dir)
+        if path.name.startswith("checkpoint-"):
+            run = get_resumable_run_by_output_dir(str(path.parent))
+    return run
+
+
 def _run_config(run: dict) -> dict:
     raw_config = run.get("config_json")
     if isinstance(raw_config, dict):
