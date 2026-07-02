@@ -45,7 +45,6 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     # kill leaves this trainer holding the GPU. Tests inject their own target, so this
     # binding only runs for the real production spawn.
     from utils.native_path_leases import run_without_native_path_secret
-
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
