@@ -1216,11 +1216,30 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            cn_model = (
-                getattr(diffusers, model_cls_name)
-                .from_pretrained(resolved_cn.path, torch_dtype = state.dtype, token = state.hf_token)
-                .to(state.device)
+            import torch
+
+            # state.dtype is the display string saved at load ("bfloat16"), NOT a
+            # torch.dtype; pass the real dtype so diffusers loads the ControlNet at the
+            # base compute dtype instead of silently defaulting to float32 (extra VRAM).
+            cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
+            cn_model = getattr(diffusers, model_cls_name).from_pretrained(
+                resolved_cn.path,
+                torch_dtype = cn_dtype,
+                # An empty / malformed token means anonymous access; the HF client can
+                # raise on a blank credential instead of falling back, so coerce to None.
+                token = state.hf_token or None,
             )
+            # Placement must follow the base model's offload policy. A resident base moves
+            # the ControlNet resident too; an offloaded (low-VRAM) base streams it through
+            # the device with group offloading instead of forcing the whole module onto the
+            # GPU, which would defeat the offload and risk an OOM. Best-effort: any failure
+            # falls back to the resident placement (the prior behaviour).
+            if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and (
+                _offload_controlnet_module(cn_model, state.device, logger)
+            ):
+                pass
+            else:
+                cn_model = cn_model.to(state.device)
             if cancel.is_set():
                 # An unload raced the blocking download above and already cleared the
                 # ControlNet caches; caching now would pin the module past the unload.
@@ -1401,7 +1420,7 @@ class DiffusionBackend:
                 pipe = state.pipe
                 init_pil = mask_pil = None
                 control_pil = None
-                cn_scale = cn_gstart = cn_gend = None
+                cn_scale = cn_gstart = cn_gend = cn_mode = None
                 ref_extra: list = []
                 if getattr(state.family, "edit", False):
                     # Instruction editing: the loaded pipe is the edit pipeline. It always
@@ -1472,40 +1491,55 @@ class DiffusionBackend:
                 if controlnet is not None:
                     from core.inference import diffusion_controlnet
 
-                    if workflow != "txt2img":
-                        raise ValueError(
-                            "ControlNet currently combines with plain text-to-image only, not the "
-                            f"{workflow} workflow."
-                        )
-                    if not diffusion_controlnet.supports_controlnet(
-                        engine = "diffusers",
-                        family = state.family.name,
-                        has_controlnet_pipeline = bool(
-                            getattr(state.family, "controlnet_pipeline_class", None)
-                        ),
-                        model_kind = state.kind,
-                        transformer_quant = state.transformer_quant,
-                    ):
-                        raise ValueError(
-                            "ControlNet is not supported for this model/quantisation on the "
-                            "diffusers engine (needs a bf16 or bnb-4bit load of a family with a "
-                            "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
-                        )
                     cn_id, cn_image_b64, cn_type, cn_strength, cn_gs, cn_ge = controlnet
-                    resolved_cn = diffusion_controlnet.resolve_controlnet(
-                        cn_id,
-                        family = state.family.name,
-                        hf_token = state.hf_token,
-                        cancel_event = cancel,
-                    )
-                    pipe = self._controlnet_pipe(state, resolved_cn, cancel)
-                    workflow = "controlnet"
-                    src = _decode_b64_image(cn_image_b64, mode = "RGB")
-                    # Control map at the OUTPUT size so it aligns with the generated latents.
-                    control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
-                        (width, height), Image.LANCZOS
-                    )
-                    cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
+                    # strength 0 disables ControlNet (documented on the request model, and the
+                    # frontend slider allows it): skip the whole path so a no-op selection never
+                    # pays the multi-GB ControlNet download / VRAM cost.
+                    if cn_strength in (None, 0, 0.0):
+                        controlnet = None
+                    else:
+                        if workflow != "txt2img":
+                            raise ValueError(
+                                "ControlNet currently combines with plain text-to-image only, not "
+                                f"the {workflow} workflow."
+                            )
+                        if not diffusion_controlnet.supports_controlnet(
+                            engine = "diffusers",
+                            family = state.family.name,
+                            has_controlnet_pipeline = bool(
+                                getattr(state.family, "controlnet_pipeline_class", None)
+                            ),
+                            model_kind = state.kind,
+                            transformer_quant = state.transformer_quant,
+                        ):
+                            raise ValueError(
+                                "ControlNet is not supported for this model/quantisation on the "
+                                "diffusers engine (needs a bf16 or bnb-4bit load of a family with a "
+                                "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
+                            )
+                        # Decode + preprocess the control image FIRST so a malformed / unsupported
+                        # image fails as a clean 400 BEFORE any ControlNet download or pipe build,
+                        # rather than after paying that cost. Control map at the OUTPUT size so it
+                        # aligns with the generated latents.
+                        src = _decode_b64_image(cn_image_b64, mode = "RGB")
+                        control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
+                            (width, height), Image.LANCZOS
+                        )
+                        try:
+                            resolved_cn = diffusion_controlnet.resolve_controlnet(
+                                cn_id, family = state.family.name
+                            )
+                        except FileNotFoundError as exc:
+                            # An unknown / missing ControlNet id is a bad selection -> 400, not a
+                            # generic 500 (the route maps ValueError, not FileNotFoundError).
+                            raise ValueError(str(exc)) from exc
+                        pipe = self._controlnet_pipe(state, resolved_cn, cancel)
+                        workflow = "controlnet"
+                        cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
+                        # Flux Union ControlNet selects the active mode by an integer
+                        # ``control_mode`` (canny/depth/pose/...); map the chosen control type so
+                        # the union model applies the right head instead of a default/wrong one.
+                        cn_mode = diffusion_controlnet.union_control_mode(cn_id, cn_type)
                 # Auto-resize odd-sized inputs to a multiple of 16 for the workflows whose
                 # OUTPUT size is taken from the input image (img2img / inpaint / extend / edit),
                 # so an upload like 186px tall no longer fails the pipeline's divisibility check.
@@ -1580,6 +1614,10 @@ class DiffusionBackend:
                         kwargs["control_guidance_start"] = cn_gstart
                     if "control_guidance_end" in call_params and cn_gend is not None:
                         kwargs["control_guidance_end"] = cn_gend
+                    # Union ControlNet mode index (Flux); only when the pipe accepts it and the
+                    # selected control type maps to a known mode.
+                    if "control_mode" in call_params and cn_mode is not None:
+                        kwargs["control_mode"] = cn_mode
 
                 gen = _GenState(total_steps = steps)
 
@@ -1819,6 +1857,34 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     if isinstance(base, list):
         base = base[0] if base else None
     return base if isinstance(base, str) and base.strip() else None
+
+
+def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
+    """Stream a ControlNet module through ``device`` via diffusers group offloading.
+
+    Used when the base model was loaded with an offload policy: forcing the ControlNet
+    fully resident with ``.to(device)`` would defeat that low-VRAM placement and can OOM.
+    Group offloading is applied to this single module (it does not touch the base pipe's
+    existing hooks), so it is isolated and reversible. Returns True on success; on any
+    failure the caller falls back to a resident placement, so this never blocks a load."""
+    try:
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        onload = torch.device(device)
+        apply_group_offloading(
+            cn_model,
+            onload_device = onload,
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+            use_stream = onload.type == "cuda",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — offload is best-effort; resident is the fallback
+        if logger is not None:
+            logger.warning("diffusion.controlnet: group offload failed (%s); loading resident", exc)
+        return False
 
 
 def _base_file_downloaded(rfilename: str) -> bool:
