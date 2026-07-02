@@ -282,7 +282,6 @@ def _assert_trusted_base_model(base_model: str) -> None:
     BEFORE ``from_pretrained`` so an untrusted remote repo (which could ship pickle weights)
     is never fetched or deserialised."""
     from core.inference.diffusion import _is_trusted_diffusion_repo
-
     if not _is_trusted_diffusion_repo(base_model):
         raise ValueError(
             f"Refusing to train from untrusted base model '{base_model}'. Use a local path or "
@@ -351,8 +350,12 @@ def run_diffusion_lora_training(
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
-            on_event, "complete",
-            output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0,
+            on_event,
+            "complete",
+            output_dir = str(out_dir),
+            lora_path = None,
+            stopped = True,
+            steps_run = 0,
         )
         return str(out_dir)
 

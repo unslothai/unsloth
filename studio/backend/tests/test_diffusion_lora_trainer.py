@@ -123,9 +123,7 @@ def test_config_from_dict_ignores_unknown_and_tuples_targets():
 def test_config_rejects_zero_lora_alpha():
     # An explicit zero alpha would scale the adapter to nothing; reject it.
     with pytest.raises(ValueError, match = "lora_alpha"):
-        DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", lora_alpha = 0
-        ).normalized()
+        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", lora_alpha = 0).normalized()
 
 
 def test_config_coerces_string_learning_rate():
