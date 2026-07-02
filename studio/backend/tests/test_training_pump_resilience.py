@@ -332,7 +332,9 @@ def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
     assert finalized.get("clear_output_dir") is True
 
 
-def test_interrupted_stop_and_save_keeps_in_memory_output_dir(monkeypatch):
+def test_interrupted_stop_and_save_finalizes_as_error_with_output_dir(monkeypatch):
+    # The stop checkpoint never completed, so the run must not claim a clean
+    # stop; 'error' keeps any older checkpoint on crash-recovery terms.
     b = TrainingBackend()
     finalized: dict = {}
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
@@ -348,7 +350,8 @@ def test_interrupted_stop_and_save_keeps_in_memory_output_dir(monkeypatch):
     b._pump_loop()
 
     assert b._output_dir == "/out/x"
-    assert finalized.get("status") == "stopped"
+    assert finalized.get("status") == "error"
+    assert "stop checkpoint" in finalized.get("error_message")
     assert finalized.get("output_dir") == "/out/x"
     assert finalized.get("clear_output_dir") is False
 

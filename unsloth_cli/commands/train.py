@@ -74,11 +74,18 @@ def train(
             get_resume_checkpoint_path,
             normalize_resume_output_dir,
         )
+        from utils.paths import outputs_root
 
         try:
             resume_dir = normalize_resume_output_dir(resume_target)
         except ValueError as e:
-            typer.echo(f"Error: {e}", err = True)
+            # The trainer only writes inside the outputs root, so checkpoints
+            # can only exist (and resume) there.
+            typer.echo(
+                f"Error: {e} Training runs write checkpoints under "
+                f"'{outputs_root()}'; pass a directory beneath it.",
+                err = True,
+            )
             raise typer.Exit(code = 2)
 
         resume_checkpoint = get_resume_checkpoint_path(resume_dir)

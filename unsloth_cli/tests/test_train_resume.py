@@ -67,6 +67,17 @@ def test_resume_without_checkpoint_errors(tmp_path, monkeypatch):
     assert "no resumable checkpoint" in result.output
 
 
+def test_resume_from_outside_outputs_root_explains_constraint(outputs_home, tmp_path_factory):
+    # The trainer only writes under the outputs root; the error must say so.
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    result = CliRunner().invoke(
+        _app(),
+        ["--dry-run", "--resume-from-checkpoint", str(elsewhere)],
+    )
+    assert result.exit_code == 2, result.output
+    assert "write checkpoints under" in result.output
+
+
 def test_resume_dry_run_resolves_latest_checkpoint(outputs_home):
     result = CliRunner().invoke(_app(), ["--dry-run", "--resume"])
     assert result.exit_code == 0, result.output

@@ -877,11 +877,19 @@ class TrainingBackend:
                     if interrupted_clear_output_dir:
                         # /status serializes _output_dir; a cancelled run must not expose it.
                         self._output_dir = None
+                # A stop-and-save that died before its complete event is a crash,
+                # not a clean stop: 'error' keeps resume on crash-recovery terms.
+                if self._cancel_requested:
+                    interrupted_status, interrupted_error = "stopped", None
+                elif self._should_stop:
+                    interrupted_status = "error"
+                    interrupted_error = "Training interrupted before the stop checkpoint completed"
+                else:
+                    interrupted_status = "error"
+                    interrupted_error = "Training process terminated unexpectedly"
                 self._finalize_run_in_db(
-                    status = "stopped" if self._should_stop else "error",
-                    error_message = None
-                    if self._should_stop
-                    else "Training process terminated unexpectedly",
+                    status = interrupted_status,
+                    error_message = interrupted_error,
                     output_dir = interrupted_output_dir,
                     clear_output_dir = interrupted_clear_output_dir,
                 )
