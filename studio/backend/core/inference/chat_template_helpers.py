@@ -63,7 +63,6 @@ def apply_chat_template_for_generation(
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
     propagate."""
-    messages = _normalize_tool_call_arguments(messages)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
@@ -81,21 +80,35 @@ def apply_chat_template_for_generation(
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
 
-    last_exc: Optional[Exception] = None
-    for kwargs in attempts:
-        try:
-            return tokenizer.apply_chat_template(
-                messages,
-                tokenize = False,
-                add_generation_prompt = True,
-                **kwargs,
-            )
-        except TypeError as e:
-            last_exc = e
-            continue
-        except Exception as e:
-            last_exc = e
-            break
-    if last_exc is not None:
-        raise last_exc
-    raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
+    def _render(msgs: list) -> str:
+        last_exc: Optional[Exception] = None
+        for kwargs in attempts:
+            try:
+                return tokenizer.apply_chat_template(
+                    msgs,
+                    tokenize = False,
+                    add_generation_prompt = True,
+                    **kwargs,
+                )
+            except TypeError as e:
+                last_exc = e
+                continue
+            except Exception as e:
+                last_exc = e
+                break
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
+
+    try:
+        return _render(messages)
+    except TypeError:
+        # Some strict tool templates iterate ``arguments.items()`` and raise
+        # ``TypeError: Can only get item pairs from a mapping.`` on the OpenAI
+        # JSON-string arg form. Retry once with arguments coerced to dicts. The
+        # original messages are tried first, so any template that already renders
+        # is byte-identical (this fallback never runs for it).
+        normalized = _normalize_tool_call_arguments(messages)
+        if normalized is messages:
+            raise
+        return _render(normalized)

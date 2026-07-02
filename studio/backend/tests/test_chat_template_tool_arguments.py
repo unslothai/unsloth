@@ -84,6 +84,28 @@ def test_render_succeeds_on_strict_template_with_string_arguments():
     assert result == "RENDERED"
 
 
+class _RecordingTokenizer:
+    """Lenient template: renders whatever arguments it is given (string or dict)."""
+
+    def __init__(self):
+        self.seen_arguments = None
+
+    def apply_chat_template(self, messages, *, tokenize=False, add_generation_prompt=True, **kw):
+        for msg in messages:
+            for call in msg.get("tool_calls", []) or []:
+                self.seen_arguments = call.get("function", {}).get("arguments")
+        return "RENDERED"
+
+
+def test_lenient_template_receives_original_string_untouched():
+    # A template that renders string args must see the exact original string
+    # (the dict-coercion fallback must not run for it). Guards against emitting a
+    # Python dict repr instead of the OpenAI JSON string.
+    tok = _RecordingTokenizer()
+    apply_chat_template_for_generation(tok, _conv('{"query": "x"}'))
+    assert tok.seen_arguments == '{"query": "x"}'
+
+
 def test_messages_without_tool_calls_pass_through_unchanged():
     conv = [{"role": "user", "content": "hi"}]
     assert _normalize_tool_call_arguments(conv) is conv
