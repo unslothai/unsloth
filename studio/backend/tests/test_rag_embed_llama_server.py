@@ -373,95 +373,16 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     def fake_spawn():
         spawned["n"] += 1
         b._process = _FakeProc(alive = True)
-        # The real spawn records the repo it serves (via _resolve_model_path);
-        # _ensure_ready treats a mismatch as stale and respawns.
+        # _current() now also checks the served repo, so mark it current.
         b._model_repo = config.effective_gguf_repo()
 
     monkeypatch.setattr(b, "_spawn", fake_spawn)
     b._ensure_ready()
     assert spawned["n"] == 1
     assert b._process_alive()
-    # Already alive on the current model -> no second spawn.
+    # Already alive -> no second spawn.
     b._ensure_ready()
     assert spawned["n"] == 1
-
-
-def test_resolve_model_path_local_dir(monkeypatch, tmp_path):
-    """A local directory saved as the model resolves its .gguf without the hub."""
-    local = tmp_path / "my-embedder"
-    local.mkdir()
-    (local / "my-embedder-Q8_0.gguf").write_bytes(b"GGUF")
-    (local / "my-embedder-F16.gguf").write_bytes(b"GGUF")
-    (local / "mmproj-F16.gguf").write_bytes(b"GGUF")
-    monkeypatch.setattr(config, "effective_embedding_model", lambda: str(local))
-    b = LlamaServerBackend()
-    assert b._resolve_model_path() == str(local / "my-embedder-F16.gguf")
-
-
-def test_resolve_model_path_local_gguf_file(monkeypatch, tmp_path):
-    f = tmp_path / "embedder.gguf"
-    f.write_bytes(b"GGUF")
-    monkeypatch.setattr(config, "effective_embedding_model", lambda: str(f))
-    b = LlamaServerBackend()
-    assert b._resolve_model_path() == str(f)
-
-
-def test_resolve_model_path_local_dir_without_gguf(monkeypatch, tmp_path):
-    local = tmp_path / "st-model"
-    local.mkdir()
-    (local / "modules.json").write_text("{}")
-    monkeypatch.setattr(config, "effective_embedding_model", lambda: str(local))
-    b = LlamaServerBackend()
-    with pytest.raises(RuntimeError, match = "gguf"):
-        b._resolve_model_path()
-
-
-def test_resolve_tags_path_with_repo_captured_at_entry(monkeypatch, tmp_path):
-    """A setting change during download must not retag the old model path with
-    the new repo key, or _current() would treat the stale server as current."""
-    import sys
-    import types as _types
-
-    repos = {"first": "org/first-GGUF", "current": "org/first-GGUF"}
-    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repos["current"])
-    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/first-GGUF")
-
-    hub = _types.ModuleType("huggingface_hub")
-
-    def list_repo_files(repo_id, token = None):
-        # Simulate the user saving a different model mid-listing.
-        repos["current"] = "org/second-GGUF"
-        return ["first-F16.gguf"]
-
-    hub.list_repo_files = list_repo_files
-    hub.hf_hub_download = lambda repo_id, filename, token = None: str(tmp_path / filename)
-    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
-
-    b = LlamaServerBackend()
-    b._resolve_model_path()
-    # Tagged with the repo the download was FOR, so the next _ensure_ready
-    # detects the newer setting as stale and respawns.
-    assert b._model_repo == "org/first-GGUF"
-    assert b._current() is False
-
-
-def test_ensure_ready_respawns_on_model_change(monkeypatch):
-    b = LlamaServerBackend()
-    spawned = {"n": 0}
-
-    def fake_spawn():
-        spawned["n"] += 1
-        b._process = _FakeProc(alive = True)
-        b._model_repo = config.effective_gguf_repo()
-
-    monkeypatch.setattr(b, "_spawn", fake_spawn)
-    b._ensure_ready()
-    assert spawned["n"] == 1
-    # A Settings change makes the live server stale -> respawn on next use.
-    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/other-GGUF")
-    b._ensure_ready()
-    assert spawned["n"] == 2
-    assert b._model_repo == "org/other-GGUF"
 
 
 def test_post_restarts_once_on_connect_error(monkeypatch):

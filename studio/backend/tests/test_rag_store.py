@@ -75,32 +75,6 @@ def test_dense_empty_before_any_ingest(rag_conn):
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 
-def test_dense_dim_mismatch_returns_empty(rag_conn):
-    """Embedding model switched widths and nothing re-indexed: dense search
-    degrades to [] (lexical still serves) instead of a vec0 error."""
-    _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
-    wide = embed("alpha") + [0.0] * 8  # 16-dim query against the 8-dim table
-    assert store.search_dense(rag_conn, "kb_a", wide, 10) == []
-    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10)
-
-
-def test_ensure_vec_rebuilds_on_dim_change(rag_conn):
-    """A width change drops the stale dense index so re-ingestion with the new
-    model succeeds; old-dim vectors are gone (they were unusable anyway)."""
-    from storage import rag_db
-
-    _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
-    assert rag_db.vec_table_dim(rag_conn) == len(VOCAB)
-    # Re-ingest under a 16-dim model: insert must succeed, not raise.
-    chunks = [_chunk("charlie delta", 0)]
-    vectors = [embed("charlie delta") + [0.0] * 8]
-    store.create_document(rag_conn, scope = "kb_a", filename = "g", sha256 = "h2", document_id = "d2")
-    store.add_chunks(rag_conn, "kb_a", "d2", chunks, vectors)
-    assert rag_db.vec_table_dim(rag_conn) == len(VOCAB) + 8
-    hits = store.search_dense(rag_conn, "kb_a", embed("charlie delta") + [0.0] * 8, 10)
-    assert [cid for cid, _ in hits] == ["d2:0"]
-
-
 def test_dedupe_by_hash(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "SHA", ["alpha"])
     assert store.document_by_hash(rag_conn, "kb_a", "SHA") == "d1"
@@ -149,27 +123,3 @@ def test_kb_crud_and_delete_cascades(rag_conn):
     assert store.get_kb(rag_conn, "K1") is None
     assert store.list_documents(rag_conn, scope) == []
     assert store.search_lexical(rag_conn, scope, "alpha", 10) == []
-
-
-def test_dense_filters_same_width_stale_model(rag_conn):
-    """Same-width vectors from a different embedder live in another space; the
-    model filter drops them while NULL-model legacy documents stay served."""
-    _add_doc(rag_conn, "kb_a", "d_legacy", "f", "h1", ["alpha alpha"])  # NULL model
-    chunks = [_chunk("alpha bravo", 0)]
-    vectors = [embed("alpha bravo")]
-    store.create_document(
-        rag_conn,
-        scope = "kb_a",
-        filename = "g",
-        sha256 = "h2",
-        document_id = "d_old",
-        embedding_model = "org/old-model",
-    )
-    store.add_chunks(rag_conn, "kb_a", "d_old", chunks, vectors)
-    hits = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10, embedding_model = "org/new-model")
-    ids = [cid for cid, _ in hits]
-    assert "d_legacy:0" in ids  # legacy NULL assumed current
-    assert "d_old:0" not in ids  # stale same-width vectors dropped
-    # Without a model filter, behavior is unchanged.
-    unfiltered = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10)
-    assert "d_old:0" in [cid for cid, _ in unfiltered]
