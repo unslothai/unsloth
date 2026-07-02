@@ -910,6 +910,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
   // "Train a LoRA" dialog (SDXL). Independent of the loaded generation model.
   const [trainOpen, setTrainOpen] = useState(false);
+  // Bumped when a training run completes, to force the LoRA discovery effect to rescan so
+  // a freshly-trained adapter appears in the picker without a model reload.
+  const [loraRefreshKey, setLoraRefreshKey] = useState(0);
   // ControlNet for the next generation: the chosen model id, a control image (data URL),
   // how to derive the control map, and the conditioning strength. Available models refresh
   // per loaded family; applied at generate time only when a model + control image are set.
@@ -1011,7 +1014,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [loraCapable, status?.family]);
+  }, [loraCapable, status?.family, loraRefreshKey]);
 
   // Refresh the ControlNet picker's options when the loaded model (family) changes, and clear
   // a stale selection the new model can't use so an incompatible ControlNet is never sent.
@@ -1768,9 +1771,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </div>
       </div>
       <DiffusionTrainDialog
-        open={trainOpen}
+        open={active && trainOpen}
         onOpenChange={setTrainOpen}
-        defaultBaseModel={status?.family === "sdxl" ? status?.repo_id ?? undefined : undefined}
+        defaultBaseModel={
+          status?.family === "sdxl"
+            ? // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF or
+              // single-file SDXL load repo_id is the checkpoint path, which the trainer's
+              // from_pretrained cannot open. base_repo is the companion pipeline.
+              status?.base_repo ?? status?.repo_id ?? undefined
+            : undefined
+        }
+        onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
       />
 
       {/* ── Controls rail + preview canvas. Padding mirrors the other tabs

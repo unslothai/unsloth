@@ -269,10 +269,14 @@ export interface DiffusionTrainingStartRequest {
   gradient_accumulation_steps?: number;
   lora_rank?: number;
   lora_alpha?: number | null;
+  lora_target_modules?: string[];
+  max_grad_norm?: number;
   seed?: number;
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
   lr_scheduler?: string;
+  // Forwarded to StableDiffusionXLPipeline.from_pretrained for a gated/private base repo.
+  hf_token?: string | null;
 }
 
 // A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
