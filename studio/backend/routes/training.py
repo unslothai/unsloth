@@ -1162,6 +1162,7 @@ async def start_diffusion_training(
     # then refused (bad numbers, a non-SDXL base model) never tears down the user's
     # loaded chat/Images model. service.start() re-runs this cheaply before spawn.
     from core.training.diffusion_lora_trainer import _config_from_dict
+
     try:
         _config_from_dict(config).normalized()
     except ValueError as e:
