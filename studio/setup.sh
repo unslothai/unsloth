@@ -947,6 +947,23 @@ print(version(sys.argv[1]))
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PKG_NAME itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        if "$VENV_DIR/bin/python" -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>/dev/null; then
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then

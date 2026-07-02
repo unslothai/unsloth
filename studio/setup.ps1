@@ -2645,6 +2645,28 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PkgName itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        $_anyioBad = $false
+        try {
+            & python -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>$null
+            if ($LASTEXITCODE -eq 0) { $_anyioBad = $true }
+        } catch {}
+        if ($_anyioBad) {
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
