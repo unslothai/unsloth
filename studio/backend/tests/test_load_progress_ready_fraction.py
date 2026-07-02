@@ -108,6 +108,18 @@ def test_mmap_phase_reports_raw_rss_fraction(tmp_path, monkeypatch):
     assert p["bytes_total"] == 10000
 
 
+def test_progress_fraction_is_monotonic(tmp_path, monkeypatch):
+    # RSS peaks during page-in, then drops after -ngl offload; the bar must hold
+    # its high-water mark instead of collapsing back to ~8% (#5740).
+    be = _backend(_gguf(tmp_path, 10000), healthy = False)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 9000))
+    assert be.load_progress()["fraction"] == 0.9
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 800))
+    p = be.load_progress()
+    assert p["fraction"] == 0.9
+    assert p["bytes_loaded"] == 9000
+
+
 def test_ready_without_shard_size_still_completes(tmp_path, monkeypatch):
     # bytes_total unknown (file unstattable): fraction must still read complete.
     monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 800))
