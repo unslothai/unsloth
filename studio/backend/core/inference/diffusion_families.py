@@ -262,14 +262,26 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 
 
+def _token_in_needle(token: str, needle: str) -> bool:
+    """True when ``token`` appears in ``needle`` as a whole path/name segment, i.e.
+    delimited by a separator (``- _ . / \\``) or a string boundary, not merely as a
+    raw substring. This keeps multi-part tokens matching where they should
+    ('qwen-image-edit' in 'qwen-image-edit-2511') while preventing a short token from
+    matching inside an unrelated word ('kontext' must not match 'kontextual', 'edit'
+    must not match 'edition')."""
+    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+
+
 def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
-    """The family whose name/alias is the LONGEST substring of ``needle``. Longest =
-    most specific, so an edit checkpoint ('...qwen-image-edit-2511...') matches the
-    'qwen-image-edit' family rather than the generic 'qwen-image' one."""
+    """The family whose name/alias is the LONGEST whole-segment token of ``needle``.
+    Longest = most specific, so an edit checkpoint ('...qwen-image-edit-2511...')
+    matches the 'qwen-image-edit' family rather than the generic 'qwen-image' one.
+    Segment matching (not raw substring) stops a short alias like 'kontext' from
+    hijacking an unrelated path such as '.../kontextual/z-image-...gguf'."""
     best: Optional[tuple[DiffusionFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if token in needle and (best is None or len(token) > best[1]):
+            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
                 best = (fam, len(token))
     return best[0] if best else None
 
@@ -295,9 +307,16 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         # Don't let a generic base family (e.g. qwen-image) swallow a variant it can't run
         # (qwen-image-LAYERED, ...-Inpaint): if the id still carries a reject keyword the
         # matched family does not itself declare, reject so the load fails fast + clearly.
+        # Scope the keyword check to the LAST path component (the model id or
+        # filename), not arbitrary parent directories: a valid file selected as
+        # repo_id `/models/edit` + filename `Z-Image-Turbo-Q4.gguf` must not be
+        # rejected because a parent folder happens to be named `edit`. The
+        # combined `repo_id/gguf_filename` fallback passes the filename last.
+        basename = re.split(r"[/\\]+", needle)[-1]
         matched_tokens = (match.name, *match.aliases)
         if any(
-            kw in needle and not any(kw in tok for tok in matched_tokens) for kw in _EDIT_KEYWORDS
+            _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
+            for kw in _EDIT_KEYWORDS
         ):
             return None
         return match

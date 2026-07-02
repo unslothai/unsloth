@@ -1072,11 +1072,19 @@ const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
 // hidden even though their id contains an edit keyword. Mirrors the backend's
 // qwen-image-edit family in diffusion_families.py.
 const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
+// Match a keyword as a whole path/name segment (bounded by a separator or a string
+// edge), not a raw substring, so "edit" does not hide ".../edited/..." or an
+// "*-edition" repo and "kontext" does not hide ".../kontextual/...". These keywords
+// are literals of [a-z-], so no regex escaping is needed. Mirrors _token_in_needle in
+// diffusion_families.py.
+function idHasSegment(id: string, keyword: string): boolean {
+  return new RegExp(`(?:^|[-_./\\\\])${keyword}(?:$|[-_./\\\\])`).test(id);
+}
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
   const id = repoId.toLowerCase();
-  if (SUPPORTED_EDIT_KEYWORDS.some((kw) => id.includes(kw))) return false;
-  return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
+  if (SUPPORTED_EDIT_KEYWORDS.some((kw) => idHasSegment(id, kw))) return false;
+  return IMAGE_EDIT_KEYWORDS.some((kw) => idHasSegment(id, kw));
 }
 
 // Gate an on-device model by the picker's task scope. With a filter (the Images
