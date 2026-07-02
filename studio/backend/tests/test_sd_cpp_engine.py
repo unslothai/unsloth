@@ -188,6 +188,25 @@ def test_runtime_env_handles_missing_lib_path():
     assert env[var] == "/opt/sdcpp/bin"
 
 
+def test_terminate_reaps_killed_child():
+    # Cancellation/timeout paths call _terminate then immediately raise, so it must
+    # reap the killed child itself -- otherwise a burst of image cancellations leaves
+    # zombies until a later Popen cleanup. After _terminate the returncode is set
+    # (the child has been waited on), so nothing lingers.
+    import subprocess
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session = (os.name == "posix"),
+    )
+    try:
+        eng._terminate(proc)
+        assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
 # ── generate (fake subprocess) ──────────────────────────────────────────────
 
 

@@ -83,6 +83,11 @@ const CHAT_ONLY_ALLOWED = new Set([
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
+  // Images runs on CPU/MPS via the native sd.cpp engine, which is exactly the
+  // no-GPU (chat-only) setup it was added for. The generic chat-only flag is about
+  // training/export needing a GPU, so it must not redirect /images away here or the
+  // native image path is unreachable on the hosts that need it.
+  if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   return false;
 }
 
@@ -159,6 +164,13 @@ function RootLayout() {
     setImagesMounted(true);
   }
   const shouldMountImages = isImagesRoute || imagesMounted;
+  // Chat and Images both render their own full-height shell (a fixed top rail + an
+  // internally-scrolling body), so both want the chat-style layout: no outer pt-14
+  // inset and no outer scroll. Keying the layout off isChatRoute alone gave /images
+  // the non-chat pt-14 + outer overflow, pushing its picker down and clipping the
+  // bottom gallery. Treat them the same for the container padding/overflow only; the
+  // keep-alive mounts below stay keyed to each specific route.
+  const isChatLike = isChatRoute || isImagesRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -251,10 +263,10 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
-          <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
+          <SidebarInset className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}>
             <Navbar />
             <div
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
@@ -280,7 +292,7 @@ function RootLayout() {
                 <div
                   className={
                     isImagesRoute
-                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
                       : "hidden"
                   }
                   inert={!isImagesRoute || undefined}

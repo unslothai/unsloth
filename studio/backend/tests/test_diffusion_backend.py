@@ -56,6 +56,20 @@ def test_detect_family_from_repo_id():
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
+def test_detect_family_edit_keyword_scoped_to_basename():
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    # A parent directory named `edit`/`kontext`/`inpaint` must NOT reject a valid
+    # text-to-image file: only the model id / filename basename is scanned for the
+    # edit keyword. A direct local pick arrives as (parent_dir, filename).
+    assert detect_family("/models/edit") is None  # dir alone is ambiguous
+    assert detect_family_for_pick("/models/edit", "Z-Image-Turbo-Q4.gguf").name == "z-image"
+    assert detect_family_for_pick("/models/kontext", "qwen-image-2512-Q4.gguf").name == "qwen-image"
+    # But a genuine editing checkpoint (keyword in the id/filename) is still rejected.
+    assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF") is None
+    assert detect_family_for_pick("/models/misc", "Qwen-Image-Edit-2511-Q4.gguf") is None
+
+
 def test_detect_family_override():
     assert detect_family("local/path", override = "z-image").name == "z-image"
     assert detect_family("local/path", override = "zimage").name == "z-image"
@@ -760,6 +774,11 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF")
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
+    # A family-looking repo paired with a non-GGUF single-file name is rejected here,
+    # BEFORE the route evicts chat and hands over the GPU (the background load would
+    # otherwise be the first to notice README.md is not a checkpoint).
+    with pytest.raises(ValueError, match = r"\.gguf"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "README.md")
     assert (
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
         == "z-image"
