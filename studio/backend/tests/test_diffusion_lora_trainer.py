@@ -251,7 +251,6 @@ def test_get_trainer_unknown_family_raises():
 def test_get_trainer_resolves_dit_families():
     from core.training.diffusion_dit_trainer import run_dit_lora_training
     from core.training.diffusion_lora_trainer import get_trainer
-
     for fam in ("flux.1", "qwen-image", "z-image"):
         assert get_trainer(fam) is run_dit_lora_training
 

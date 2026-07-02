@@ -1136,7 +1136,12 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
 
     repo = (base_model or "").strip()
     # Only remote 'org/name' repos are gated; skip local paths and single-file names.
-    if not repo or repo.count("/") != 1 or repo.startswith((".", "/", "~")) or repo.endswith(".gguf"):
+    if (
+        not repo
+        or repo.count("/") != 1
+        or repo.startswith((".", "/", "~"))
+        or repo.endswith(".gguf")
+    ):
         return
     url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
