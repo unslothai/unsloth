@@ -1368,6 +1368,38 @@ def install_python_non_blocking(packages = []):
 # bump deliberately. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7; torch pinned below).
 _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
+# Highest transformers release llm-compressor 0.10.x/0.12.x can run against (its metadata pins
+# transformers<=4.57.6). Models that require a newer-transformers sidecar (e.g. Qwen3.5 needs
+# transformers 5.3.0) cannot be quantized by llm-compressor at all: it imports
+# transformers.modeling_utils.TORCH_INIT_FUNCTIONS, which was removed in transformers 5.x, so the
+# compressed-export subprocess dies with a cryptic ImportError AFTER the expensive 16bit merge.
+# Detect that up front and fail fast with an actionable message. Bump this in lockstep with a
+# llm-compressor release that supports newer transformers.
+_LLM_COMPRESSOR_MAX_TRANSFORMERS = "4.57.6"
+
+
+def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
+    """Return (exceeds, active_version) comparing the active transformers to the llm-compressor ceiling.
+
+    `exceeds` is True only when we can parse both versions and the active transformers is strictly
+    newer than `_LLM_COMPRESSOR_MAX_TRANSFORMERS`. Any parse failure returns False (fail open) so a
+    real quantization attempt still surfaces the underlying error rather than a false positive.
+    """
+    if transformers_version is None:
+        try:
+            import transformers as _tf
+            transformers_version = _tf.__version__
+        except Exception:
+            return False, "unknown"
+    try:
+        from packaging.version import parse as _parse
+        # Drop any local build suffix ("4.57.6+abc") so it does not skew the comparison.
+        active = _parse(str(transformers_version).split("+", 1)[0])
+        ceiling = _parse(_LLM_COMPRESSOR_MAX_TRANSFORMERS)
+        return active > ceiling, str(transformers_version)
+    except Exception:
+        return False, str(transformers_version)
+
 
 def install_llm_compressor():
     """Import llm-compressor, installing it on first use for FP8/FP4 export.
@@ -4113,6 +4145,18 @@ def _unsloth_save_compressed_tensors(
     # save path); other ranks return at once so they neither race on dirs nor run pip installs.
     if not is_main_process:
         return None
+
+    # llm-compressor cannot run under a newer transformers than its ceiling: the quantization
+    # subprocess would die with a cryptic ImportError (TORCH_INIT_FUNCTIONS) only AFTER the costly
+    # 16bit merge. Detect and fail fast with an actionable message BEFORE installing llm-compressor
+    # or merging, so a model that can never be quantized this way does no wasted work.
+    _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
+    if _exceeds:
+        raise RuntimeError(
+            f"Unsloth: FP8/FP4 compressed-tensors export is not available for this model. It runs "
+            f"under transformers {_tf_ver}, but llm-compressor supports transformers "
+            f"<= {_LLM_COMPRESSOR_MAX_TRANSFORMERS}. Export to GGUF or 16-bit instead."
+        )
 
     # 1) Install llm-compressor and gate on scheme availability BEFORE merging, so an unsupported
     #    scheme (e.g. mxfp8) fails fast instead of writing a full 16bit checkpoint first.
