@@ -191,9 +191,18 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     on an arbitrary repo, which fetches and deserialises third-party weights. So the
     non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models) and
     to local paths the user explicitly pointed at (already on their disk). The GGUF path
-    is unchanged and stays open to any repo, as before."""
-    if Path(repo_id).expanduser().exists():
-        return True
+    is unchanged and stays open to any repo, as before.
+
+    A bare ``owner/name`` HF id is never a real filesystem path, and an id with invalid
+    characters makes ``Path.exists()`` raise OSError; treat any such failure as "not a
+    local path" so the trust decision falls through to the unsloth/ check (the loader's
+    validate_load_request raises the clear FileNotFoundError for a genuinely missing
+    local pick)."""
+    try:
+        if Path(repo_id).expanduser().exists():
+            return True
+    except OSError:
+        pass
     return repo_id.strip().lower().startswith("unsloth/")
 
 
@@ -1362,6 +1371,22 @@ class DiffusionBackend:
                 pipe = state.pipe
                 init_pil = mask_pil = None
                 ref_extra: list = []
+                # Validate parameter dependencies up front: mask / upscale / reference all
+                # need an input image, and reference conditioning needs a family that
+                # supports it. Without these guards an unsupported combination would be
+                # silently ignored and quietly fall back to txt2img / img2img.
+                if init_image is None:
+                    if mask_image is not None:
+                        raise ValueError("mask_image requires an input image (init_image).")
+                    if upscale is not None and upscale > 1.0:
+                        raise ValueError("upscale requires an input image (init_image).")
+                    if reference_images:
+                        raise ValueError("reference_images require an input image (init_image).")
+                if reference_images and not getattr(state.family, "reference", False):
+                    raise ValueError(
+                        f"Reference images are not supported for the '{state.family.name}' "
+                        "model family."
+                    )
                 if getattr(state.family, "edit", False):
                     # Instruction editing: the loaded pipe is the edit pipeline. It always
                     # needs an input image; the prompt is the edit instruction. No mask, no
