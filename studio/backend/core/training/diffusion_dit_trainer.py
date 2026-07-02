@@ -25,6 +25,7 @@ from __future__ import annotations
 import gc
 import random
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -577,11 +578,21 @@ def run_dit_lora_training(
                 else (t.to(device) if t is not None else None)
                 for t in emb
             )
-            model_pred = spec.forward(
-                transformer, noisy, timesteps, sigmas, emb_dev, cfg, device, weight_dtype
+            # bf16 autocast around the forward + loss, matching the diffusers dreambooth
+            # scripts' accelerator.autocast: it reconciles the fp32 LoRA params with the
+            # bnb 4-bit base matmuls in one compute dtype. Without it the 4-bit backward
+            # on FLUX dies with an illegal-address / CUBLAS failure.
+            autocast = (
+                torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
+                if device == "cuda"
+                else nullcontext()
             )
-            target = noise - latents
-            loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+            with autocast:
+                model_pred = spec.forward(
+                    transformer, noisy, timesteps, sigmas, emb_dev, cfg, device, weight_dtype
+                )
+                target = noise - latents
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
             (loss / cfg.gradient_accumulation_steps).backward()
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
 
