@@ -722,8 +722,9 @@ type ChatRuntimeStore = {
    *  browser pick the default input. Set it to a headset mic so the loop doesn't
    *  listen to a speaker/loopback device (e.g. Discord bleed). Persisted. */
   selectedMicDeviceId: string | null;
-  /** Derived orb state written by VoiceToggle; consumed by VoiceOrb. */
-  voiceOrbState: "listening" | "thinking" | "speaking" | null;
+  /** Derived orb state written by VoiceToggle; consumed by VoiceOrb.
+   *  "synthesizing" = TTS is generating audio but nothing is playing yet. */
+  voiceOrbState: "listening" | "thinking" | "synthesizing" | "speaking" | null;
   /** When voice mode is active, whether the full-screen orb is minimized so the
    *  chat is visible while speech-to-speech keeps running. Not persisted. */
   voiceOrbCollapsed: boolean;
@@ -733,7 +734,9 @@ type ChatRuntimeStore = {
   setSttEngine: (engine: "browser" | "whisper") => void;
   setSelectedSttModelId: (id: string | null) => void;
   setSelectedMicDeviceId: (id: string | null) => void;
-  setVoiceOrbState: (state: "listening" | "thinking" | "speaking" | null) => void;
+  setVoiceOrbState: (
+    state: "listening" | "thinking" | "synthesizing" | "speaking" | null,
+  ) => void;
   setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;

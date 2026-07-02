@@ -30,11 +30,16 @@ export function useTtsPlayer(
   voiceSlotLoaded = false,
 ): {
   isSpeaking: boolean;
+  /** True only while an audio clip is actually playing (not during synthesis). */
+  isPlaying: boolean;
   speak(text: string): void;
   stop(): void;
   primeAudio(): void;
 } {
   const [isSpeaking, setIsSpeaking] = useState(false);
+  // Distinct from isSpeaking: true only while a clip is audibly playing, so the
+  // orb can show a separate "synthesizing" state during the (slow) synth gaps.
+  const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   // Bumped on every stop()/new speak()/unmount so an in-flight /api/audio/speech
@@ -95,6 +100,7 @@ export function useTtsPlayer(
     stopTts();
     stopSynth();
     setIsSpeaking(false);
+    setIsPlaying(false);
   }, [stopTts, stopSynth]);
 
   // Play a single audio blob; resolves when it ends, errors, or is superseded by
@@ -120,11 +126,19 @@ export function useTtsPlayer(
         }
         audio.onended = null;
         audio.onerror = null;
+        audio.onplaying = null;
+        // Between chunks we're synthesizing again, not playing.
+        if (requestIdRef.current === reqId) setIsPlaying(false);
         resolve();
       };
       playResolveRef.current = done;
       audio.onended = done;
       audio.onerror = done;
+      // Flip to "playing" only once audio actually starts, so the gap before it
+      // (synthesis) stays in the synthesizing state.
+      audio.onplaying = () => {
+        if (requestIdRef.current === reqId) setIsPlaying(true);
+      };
       audio.src = url;
       // play() returns a promise that can reject (autoplay policy, decode error)
       // without ever firing onerror; settle so the loop can't stall.
@@ -192,11 +206,14 @@ export function useTtsPlayer(
           if (utteranceRef.current === null) return;
           utteranceRef.current = null;
           setIsSpeaking(false);
+          setIsPlaying(false);
           onPlaybackEndRef.current?.();
         };
         const utterances = sentences.map((sentence) => {
           const utterance = new SpeechSynthesisUtterance(sentence);
+          utterance.onstart = () => setIsPlaying(true);
           utterance.onend = () => {
+            setIsPlaying(false);
             remaining -= 1;
             if (remaining <= 0) finish();
           };
@@ -222,5 +239,5 @@ export function useTtsPlayer(
     };
   }, [stopTts, stopSynth]);
 
-  return { isSpeaking, speak, stop, primeAudio };
+  return { isSpeaking, isPlaying, speak, stop, primeAudio };
 }

@@ -20,6 +20,12 @@ export const orbConfig = {
     duration: "1s",
     shadow: "0 0 32px 8px rgba(251,191,36,0.35)",
   },
+  synthesizing: {
+    gradient: "radial-gradient(circle at 40% 35%, #c4b5fd, #8b5cf6)",
+    animation: "voice-orb-pulse",
+    duration: "1.4s",
+    shadow: "0 0 32px 8px rgba(167,139,250,0.35)",
+  },
   speaking: {
     gradient: "radial-gradient(circle at 40% 35%, #38bdf8, #0284c7)",
     animation: "voice-orb-speak",

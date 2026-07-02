@@ -2734,7 +2734,7 @@ const VoiceEngine: FC = () => {
     attempt(1);
   }, []);
 
-  const { isSpeaking, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
+  const { isSpeaking, isPlaying, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
   isSpeakingRef.current = isSpeaking;
   const speakRef = useRef(speak);
   speakRef.current = speak;
@@ -2772,11 +2772,13 @@ const VoiceEngine: FC = () => {
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
   useEffect(() => {
-    if (voiceMode !== "active") { setVoiceOrbState(null); return; }
-    if (isThreadRunning)        { setVoiceOrbState("thinking"); return; }
-    if (isSpeaking)             { setVoiceOrbState("speaking"); return; }
+    if (voiceMode !== "active")     { setVoiceOrbState(null); return; }
+    if (isThreadRunning)            { setVoiceOrbState("thinking"); return; }
+    // TTS session active but no clip playing yet = still synthesizing (lilac).
+    if (isSpeaking && !isPlaying)   { setVoiceOrbState("synthesizing"); return; }
+    if (isSpeaking)                 { setVoiceOrbState("speaking"); return; }
     setVoiceOrbState("listening");
-  }, [voiceMode, isThreadRunning, isSpeaking, setVoiceOrbState]);
+  }, [voiceMode, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
 
   // Helper: transition to "active" and start the mic.
   const activateLoop = useCallback(() => {
