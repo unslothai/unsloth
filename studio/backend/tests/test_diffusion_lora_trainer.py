@@ -16,6 +16,7 @@ import pytest
 from core.training.diffusion_lora_trainer import (
     DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
+    _coerce_gradient_checkpointing,
     _config_from_dict,
     compute_sdxl_add_time_ids,
     discover_image_caption_pairs,
@@ -117,3 +118,80 @@ def test_config_from_dict_ignores_unknown_and_tuples_targets():
     )
     assert cfg.lora_target_modules == ("to_q", "to_v")
     assert not hasattr(cfg, "unknown_field")
+
+
+def test_config_rejects_zero_lora_alpha():
+    # An explicit zero alpha would scale the adapter to nothing; reject it.
+    with pytest.raises(ValueError, match = "lora_alpha"):
+        DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", lora_alpha = 0
+        ).normalized()
+
+
+def test_config_coerces_string_learning_rate():
+    # The Studio config path preserves learning_rate as a string; normalize to float.
+    cfg = DiffusionLoraConfig(
+        base_model = "b", data_dir = "d", output_dir = "o", learning_rate = "1e-4"
+    ).normalized()
+    assert cfg.learning_rate == 1e-4
+    with pytest.raises(ValueError, match = "learning_rate"):
+        DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", learning_rate = "abc"
+        ).normalized()
+
+
+def test_config_blank_hf_token_is_anonymous():
+    cfg = DiffusionLoraConfig(
+        base_model = "b", data_dir = "d", output_dir = "o", hf_token = "   "
+    ).normalized()
+    assert cfg.hf_token is None
+
+
+def test_config_from_dict_aliases_generic_studio_keys():
+    # The generic Studio training payload uses different key names; alias them.
+    cfg = _config_from_dict(
+        {
+            "model_name": "b",
+            "data_dir": "d",
+            "output_dir": "o",
+            "max_steps": 25,
+            "batch_size": 3,
+            "lora_r": 8,
+            "lr_scheduler_type": "cosine",
+            "random_seed": 7,
+        }
+    )
+    assert cfg.base_model == "b"
+    assert cfg.train_steps == 25
+    assert cfg.train_batch_size == 3
+    assert cfg.lora_rank == 8
+    assert cfg.lr_scheduler == "cosine"
+    assert cfg.seed == 7
+
+
+def test_config_from_dict_canonical_key_beats_alias():
+    cfg = _config_from_dict(
+        {"base_model": "canon", "model_name": "alias", "data_dir": "d", "output_dir": "o"}
+    )
+    assert cfg.base_model == "canon"
+
+
+def test_gradient_checkpointing_string_coercion():
+    # Studio sends a string; the disable words are False, everything else truthy True.
+    for off in ("none", "None", "false", "0", "no", "off", ""):
+        assert _coerce_gradient_checkpointing(off) is False
+    for on in ("true", "unsloth", "yes"):
+        assert _coerce_gradient_checkpointing(on) is True
+    assert _coerce_gradient_checkpointing(True) is True
+    assert _coerce_gradient_checkpointing(False) is False
+    cfg = _config_from_dict(
+        {"base_model": "b", "data_dir": "d", "output_dir": "o", "gradient_checkpointing": "none"}
+    )
+    assert cfg.gradient_checkpointing is False
+
+
+def test_config_rejects_nonpositive_learning_rate():
+    with pytest.raises(ValueError, match = "learning_rate"):
+        DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", learning_rate = 0
+        ).normalized()
