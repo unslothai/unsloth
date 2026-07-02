@@ -27,70 +27,13 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.runtime_context import runtime_context_length
 from core.inference.message_content import content_to_text
+from core.inference.chat_eos import chat_eos_repair, resolve_chat_turn_end_eos_ids
 from io import StringIO
 import structlog
 from loggers import get_logger
 
 
 logger = get_logger(__name__)
-
-
-# Canonical assistant-turn-end markers across chat families. Some tokenizers set
-# eos_token_id to a bare document terminator (Qwen's config uses <|endoftext|>
-# even though chat turns end with <|im_end|>); loaders that sync eos to the model
-# config then leave the real turn-end token out of the stop set, so generation
-# runs past the turn and loops -- re-emitting tool calls or hallucinating
-# <|im_start|> turns. Stopping on every turn-end token the vocab defines fixes
-# that and is a no-op when eos is already the turn-ender (the id just dedups).
-_CHAT_TURN_END_TOKENS = (
-    "<|im_end|>",  # ChatML: Qwen, Yi
-    "<|eot_id|>",  # Llama 3.x
-    "<|eom_id|>",  # Llama 3.x tool turns
-    "<end_of_turn>",  # Gemma
-    "<|end|>",  # Phi
-    "<|return|>",  # gpt-oss harmony
-)
-
-
-def _chat_turn_end_eos_ids(tokenizer) -> list[int]:
-    """tokenizer.eos plus any canonical chat turn-end markers in the vocab; unk /
-    missing tokens dropped. Empty only if the tokenizer exposes no usable ids."""
-    ids: set[int] = set()
-    eos = getattr(tokenizer, "eos_token_id", None)
-    if isinstance(eos, (list, tuple)):
-        ids.update(int(t) for t in eos if t is not None)
-    elif eos is not None:
-        ids.add(int(eos))
-    try:
-        vocab = tokenizer.get_vocab()
-    except Exception:
-        vocab = {}
-    unk = getattr(tokenizer, "unk_token_id", None)
-    for tok_str in _CHAT_TURN_END_TOKENS:
-        if tok_str in vocab:
-            tid = tokenizer.convert_tokens_to_ids(tok_str)
-            if tid is not None and tid != unk:
-                ids.add(int(tid))
-    return sorted(ids)
-
-
-def _chat_eos_repair(current_eos, eos_token, eos_token_id) -> Optional[list]:
-    """Repaired ``generation_config.eos_token_id`` list, or None if no change.
-
-    Only acts when the tokenizer's own eos is a chat turn-end marker (so base
-    models, whose eos is a plain document terminator, are skipped) and that id is
-    not already in the current eos set."""
-    if eos_token not in _CHAT_TURN_END_TOKENS or eos_token_id is None:
-        return None
-    if isinstance(current_eos, (list, tuple)):
-        current_set = set(current_eos)
-    elif current_eos is not None:
-        current_set = {current_eos}
-    else:
-        current_set = set()
-    if eos_token_id in current_set:
-        return None
-    return sorted(current_set | {eos_token_id})
 
 
 class HarmonyTextStreamer:
@@ -268,42 +211,44 @@ class InferenceBackend:
         # API uses -1 to disable top-k; transformers uses 0.
         return 0 if top_k < 0 else top_k
 
-    def _repair_chat_eos_in_generation_config(self, model_name: str) -> None:
-        """Ensure a chat model's generation_config stops at the real turn-end token.
+    def _resolve_chat_eos(self, model_name: str) -> None:
+        """Resolve this chat model's assistant-turn-end stop tokens once at load,
+        cache them in model_info, and repair generation_config so every
+        ``.generate()`` path stops at the turn boundary.
 
-        Some checkpoints declare the chat turn-end as ``tokenizer.eos_token``
-        (e.g. Qwen3.5 / Qwen3.6 small chat models use ``<|im_end|>``) but ship
-        ``config.eos_token_id = <|endoftext|>`` and no ``generation_config.json``,
-        so ``.generate()`` paths that read ``generation_config`` (the vision path,
-        tool loops) never stop at the turn boundary and loop. Add the tokenizer's
-        turn-end id to ``generation_config.eos_token_id`` when it is missing.
-
-        No-op for base models (their eos is a plain ``<|endoftext|>``-style
-        terminator, not a turn-end marker) and for already-correct configs.
+        Some checkpoints (e.g. Qwen3.5 / Qwen3.6 small chat models) end turns with
+        ``<|im_end|>`` but ship ``config.eos_token_id = <|endoftext|>`` and no
+        ``generation_config.json``, so paths that read ``generation_config`` (the
+        vision path, tool loops) run past the turn and loop. Turn-end markers are
+        derived from the chat_template (see chat_eos.resolve_chat_turn_end_eos_ids),
+        so base/coder models and harmony templates are left untouched.
         """
         info = self.models.get(model_name) or {}
         model = info.get("model")
         tokenizer = info.get("tokenizer")
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)  # unwrap processors
-        gen = getattr(model, "generation_config", None)
-        if model is None or tokenizer is None or gen is None:
+        if model is None or tokenizer is None:
             return
-        repaired = _chat_eos_repair(
-            gen.eos_token_id,
-            getattr(tokenizer, "eos_token", None),
-            getattr(tokenizer, "eos_token_id", None),
-        )
+        try:
+            turn_end_ids = resolve_chat_turn_end_eos_ids(tokenizer)
+        except Exception as e:  # never block a load on eos resolution
+            logger.warning("Chat turn-end eos resolution failed for %s: %s", model_name, e)
+            return
+        info["chat_turn_end_eos_ids"] = turn_end_ids
+
+        gen = getattr(model, "generation_config", None)
+        if gen is None:
+            return
+        repaired = chat_eos_repair(gen.eos_token_id, turn_end_ids)
         if repaired is None:
             return
         previous = gen.eos_token_id
         gen.eos_token_id = repaired
         logger.info(
-            "Repaired generation_config.eos_token_id for %s: %s -> %s "
-            "(tokenizer turn-end %r was missing)",
+            "Repaired generation_config.eos_token_id for %s: %s -> %s",
             model_name,
             previous,
             repaired,
-            tokenizer.eos_token,
         )
 
     def load_model(
@@ -592,7 +537,7 @@ class InferenceBackend:
                 max_seq_length,
             )
 
-            self._repair_chat_eos_in_generation_config(model_name)
+            self._resolve_chat_eos(model_name)
             self._load_chat_template_info(model_name)
 
             self.active_model_name = model_name
@@ -1479,7 +1424,8 @@ class InferenceBackend:
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 do_sample = temperature > 0,
-                eos_token_id = _chat_turn_end_eos_ids(tokenizer) or tokenizer.eos_token_id,
+                # Resolved once at load (chat_template-derived turn-end tokens).
+                eos_token_id = model_info.get("chat_turn_end_eos_ids") or tokenizer.eos_token_id,
                 pad_token_id = tokenizer.eos_token_id
                 if tokenizer.pad_token_id is None
                 else tokenizer.pad_token_id,
