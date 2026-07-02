@@ -262,6 +262,10 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
     print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
     try:
         _download(cudart["browser_download_url"], dest)
+        # Verify integrity BEFORE extracting, like the main sd-cli archive: these DLLs are
+        # loaded into sd-cli.exe at runtime, so a corrupt/tampered runtime archive must be
+        # rejected rather than extracted next to the binary.
+        _verify_sha256(dest, cudart.get("digest"))
         with zipfile.ZipFile(dest) as zf:
             _safe_extractall(zf, target)
     finally:

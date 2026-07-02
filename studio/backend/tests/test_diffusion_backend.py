@@ -22,6 +22,14 @@ from core.inference.diffusion import (
     _base_file_downloaded,
     _resolve_diffusion_compute_dtype,
 )
+
+# diffusion.py imports the compile/arch patch modules LAZILY (they pull torch at module
+# level, and diffusion.py must stay importable on a torchless native install). Import them
+# here at collection time -- under the real torch -- so they are cached in sys.modules
+# before the fake-torch fixtures swap it out; otherwise the lazy import inside load_pipeline
+# would try to build them against the incomplete stub torch.
+import core.inference.diffusion_eager_patches  # noqa: E402,F401
+import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
     detect_family,
     resolve_base_repo,
@@ -75,6 +83,34 @@ def test_detect_family_from_repo_id():
     # A plain Qwen-Image checkpoint must still resolve to the base family, not edit.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
     assert detect_family("meta-llama/Llama-3-8B") is None
+
+
+def test_detect_family_matches_reject_and_alias_by_segment():
+    # Reject keywords and short aliases must match whole path/name segments, not raw
+    # substrings, so an unrelated word that merely CONTAINS one does not misroute a
+    # valid base model (regression: substring matching broke these).
+    assert detect_family("/models/edited/z-image-turbo-Q4_K_M.gguf").name == "z-image"
+    assert detect_family("unsloth/Z-Image-Edition-GGUF").name == "z-image"
+    assert detect_family("/models/kontextual/z-image-turbo-Q4_K_M.gguf").name == "z-image"
+    # Supported edit families still resolve (edit / kontext are whole tokens there).
+    assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF").name == "qwen-image-edit"
+    assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF").name == "flux.1-kontext"
+    # Unsupported variants sharing only a base arch keyword are still rejected.
+    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
+    assert detect_family("unsloth/Qwen-Image-2512-Inpaint") is None
+
+
+def test_detect_family_edit_keyword_scoped_to_basename():
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    # A parent directory named `edit`/`inpaint` must NOT poison a valid pick: only
+    # the model id / filename basename is scanned for reject keywords. A direct
+    # local pick arrives as (parent_dir, filename).
+    assert detect_family("/models/edit") is None  # the dir alone is ambiguous
+    assert detect_family_for_pick("/models/edit", "Z-Image-Turbo-Q4.gguf").name == "z-image"
+    assert detect_family_for_pick("/models/inpaint", "qwen-image-2512-Q4.gguf").name == "qwen-image"
+    # A genuinely unsupported variant keyword in the FILENAME still rejects.
+    assert detect_family_for_pick("/models/misc", "Qwen-Image-Layered-Q4.gguf") is None
 
 
 def test_detect_family_override():
@@ -1489,10 +1525,30 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request("some-org/Z-Image", gguf_filename = "model.safetensors")
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
+    # A family-looking repo paired with a non-GGUF single-file name is rejected here,
+    # BEFORE the route evicts chat and hands over the GPU (the background load would
+    # otherwise be the first to notice README.md is not a checkpoint).
+    with pytest.raises(ValueError, match = r"\.gguf"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "README.md")
     assert (
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
         == "z-image"
     )
+    # A kind/extension mismatch fails fast here, before the route evicts chat + grabs the
+    # GPU only to fail in the background from_single_file path.
+    with pytest.raises(ValueError, match = ".gguf"):
+        backend.validate_load_request(
+            "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "model.safetensors", model_kind = "gguf"
+        )
+    with pytest.raises(ValueError, match = "gguf"):
+        backend.validate_load_request(
+            "unsloth/Qwen-Image-2512-FP8", gguf_filename = "q.gguf", model_kind = "single_file"
+        )
+    # A remote "*-GGUF" repo loaded as a full pipeline (no single-file name) is a single-file
+    # GGUF repo, so from_pretrained would find no pipeline manifest and fail after chat is
+    # already evicted; reject it here before the GPU handoff.
+    with pytest.raises(ValueError, match = "GGUF"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", model_kind = "pipeline")
     # A local path with a missing child fails here (before any GPU/network work).
     with pytest.raises(FileNotFoundError):
         backend.validate_load_request(
