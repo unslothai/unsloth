@@ -236,14 +236,12 @@ def test_config_accepts_sdxl_and_unknown_base_models():
 # ── trainer registry + family resolution + metadata sidecar (PR A platform) ──
 def test_get_trainer_resolves_sdxl():
     from core.training.diffusion_lora_trainer import get_trainer, run_diffusion_lora_training
-
     assert get_trainer("sdxl") is run_diffusion_lora_training
     assert get_trainer("SDXL") is run_diffusion_lora_training  # case-insensitive
 
 
 def test_get_trainer_unknown_family_raises():
     from core.training.diffusion_lora_trainer import get_trainer
-
     with pytest.raises(ValueError, match = "No trainer"):
         get_trainer("flux.2-dev")  # a real family with no registered trainer
 
@@ -251,7 +249,6 @@ def test_get_trainer_unknown_family_raises():
 def test_get_trainer_resolves_dit_families():
     from core.training.diffusion_dit_trainer import run_dit_lora_training
     from core.training.diffusion_lora_trainer import get_trainer
-
     for fam in ("flux.1", "qwen-image", "z-image"):
         assert get_trainer(fam) is run_dit_lora_training
 
@@ -261,7 +258,9 @@ def test_normalized_sets_resolved_family():
         base_model = "stabilityai/stable-diffusion-xl-base-1.0", data_dir = "d", output_dir = "o"
     ).normalized()
     assert cfg.resolved_family == "sdxl"
-    cfg2 = DiffusionLoraConfig(base_model = "my-custom-thing", data_dir = "d", output_dir = "o").normalized()
+    cfg2 = DiffusionLoraConfig(
+        base_model = "my-custom-thing", data_dir = "d", output_dir = "o"
+    ).normalized()
     assert cfg2.resolved_family == "sdxl"  # unknown -> default SDXL trainer
 
 

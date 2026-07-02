@@ -28,7 +28,11 @@ def _png_bytes(color = (200, 100, 50), size = (8, 8)) -> bytes:
     return buf.getvalue()
 
 
-def _write_png(path, color = (200, 100, 50), size = (8, 8)) -> None:
+def _write_png(
+    path,
+    color = (200, 100, 50),
+    size = (8, 8),
+) -> None:
     Image.new("RGB", size, color).save(path, format = "PNG")
 
 
@@ -104,9 +108,7 @@ def test_get_image_and_thumbnail_excluded_from_listing(client, ds_root):
 
 def test_get_image_missing_404(client, ds_root):
     (ds_root / "pics").mkdir()
-    assert (
-        client.get("/api/train/diffusion/dataset/pics/image/ghost.png").status_code == 404
-    )
+    assert client.get("/api/train/diffusion/dataset/pics/image/ghost.png").status_code == 404
 
 
 # ── caption write / clear ────────────────────────────────────────────────────
@@ -133,9 +135,7 @@ def test_put_caption_roundtrip_and_clear(client, ds_root):
 
 def test_put_caption_missing_image_404(client, ds_root):
     (ds_root / "cap").mkdir()
-    r = client.put(
-        "/api/train/diffusion/dataset/cap/caption/ghost.png", json = {"caption": "hi"}
-    )
+    r = client.put("/api/train/diffusion/dataset/cap/caption/ghost.png", json = {"caption": "hi"})
     assert r.status_code == 404
 
 
@@ -143,9 +143,7 @@ def test_put_caption_too_long_400(client, ds_root):
     folder = ds_root / "cap"
     folder.mkdir()
     _write_png(folder / "x.png")
-    r = client.put(
-        "/api/train/diffusion/dataset/cap/caption/x.png", json = {"caption": "z" * 2001}
-    )
+    r = client.put("/api/train/diffusion/dataset/cap/caption/x.png", json = {"caption": "z" * 2001})
     assert r.status_code == 400
 
 
@@ -188,7 +186,6 @@ def test_image_filename_validation_rejects_traversal():
 
 def test_clean_dataset_name_rejects_dotdot():
     from routes.training import _clean_diffusion_dataset_name
-
     for bad in ("../x", "a/b", "..", " "):
         with pytest.raises(HTTPException) as exc:
             _clean_diffusion_dataset_name(bad)
@@ -273,20 +270,20 @@ def test_import_example_writes_images_and_captions(client, ds_root, monkeypatch)
 
 def test_import_example_respects_cap(client, ds_root, monkeypatch):
     _install_fake_load_dataset(monkeypatch, n_rows = 5)
-    entry = next(e for e in __import__("routes.training", fromlist = ["_DATASET_EXAMPLES"])._DATASET_EXAMPLES if e["id"] == "tuxemon")
-    monkeypatch.setitem(entry, "image_cap", 2)
-    r = client.post(
-        "/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"}
+    entry = next(
+        e
+        for e in __import__("routes.training", fromlist = ["_DATASET_EXAMPLES"])._DATASET_EXAMPLES
+        if e["id"] == "tuxemon"
     )
+    monkeypatch.setitem(entry, "image_cap", 2)
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
     assert r.status_code == 200, r.text
     assert r.json()["imported"] == 2
     assert r.json()["image_count"] == 2
 
 
 def test_import_example_unknown_id_404(client, ds_root):
-    r = client.post(
-        "/api/train/diffusion/dataset/import-example", json = {"id": "does-not-exist"}
-    )
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "does-not-exist"})
     assert r.status_code == 404
 
 
@@ -297,8 +294,6 @@ def test_import_example_load_failure_maps_to_502(client, ds_root, monkeypatch):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(datasets, "load_dataset", boom)
-    r = client.post(
-        "/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"}
-    )
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
     assert r.status_code == 502
     assert "Could not import" in r.json()["detail"]
