@@ -120,6 +120,22 @@ class SpeechT5VoiceBackend:
         self._repo_id = repo_id
         self._is_audio = True
         self._audio_type = "speecht5"
+
+        # Warmup: MIOpen (ROCm) tunes conv kernels on the first forward pass,
+        # which can take ~25s on consumer GPUs. Absorb that here, while the user
+        # is already waiting on the load, so the first real utterance is fast.
+        try:
+            inputs = self._processor(text = "Warm up.", return_tensors = "pt")
+            with torch.no_grad():
+                self._model.generate_speech(
+                    inputs["input_ids"].to(device),
+                    self._speaker_embeddings,
+                    vocoder = self._vocoder,
+                )
+            logger.info("SpeechT5 warmup complete")
+        except Exception as e:
+            # Warmup is an optimization only; never fail the load over it.
+            logger.warning("SpeechT5 warmup failed (non-fatal): %s", e)
         return True
 
     def unload_model(self) -> None:

@@ -2770,7 +2770,11 @@ const VoiceEngine: FC = () => {
     if (!_prevRunning) return;
     _prevRunning = false;
 
-    if (voiceModeRef.current !== "active" || isSpeakingRef.current) return;
+    if (voiceModeRef.current !== "active") return;
+    // Note: no isSpeaking guard here. If a stale utterance is still speaking
+    // (or a slow synth is still in flight) when a newer reply lands, the newest
+    // reply wins — speak() below supersedes the old one via stop(). Skipping
+    // instead would silently drop the new reply and dead-end the voice loop.
 
     const messages = auiRef.current.thread().getState().messages;
     let text = "";
