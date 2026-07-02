@@ -16,9 +16,8 @@ Checkpoint kinds differ in how a voice is chosen:
 - VoiceDesign: builds a voice from a text description via
   UNSLOTH_QWEN_TTS_INSTRUCT.
 
-The `qwen-tts` pip package hard-pins transformers/accelerate and drags in
-gradio, so it is installed --no-deps against the venv's existing stack. It is
-NOT part of the base install: `_ensure_qwen_tts_installed()` installs it (and
+The `qwen-tts` pip package hard-pins transformers/accelerate, so it is installed
+--no-deps against the venv's existing stack. It is NOT part of the base install: `_ensure_qwen_tts_installed()` installs it (and
 `sox`) on demand the first time a Qwen3-TTS voice is loaded, so machines that
 never use this voice don't carry it. Its only missing runtime dep is `sox`
 (imported by the 25Hz tokenizer module at package import; never *used* on the
