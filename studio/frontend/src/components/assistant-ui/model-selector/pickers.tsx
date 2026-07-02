@@ -1966,23 +1966,6 @@ export function HubModelPicker({
     [visibleCachedModelRows],
   );
 
-  // Recommended models that match the current search query
-  const filteredRecommendedIds = useMemo(() => {
-    if (!showHfSection) return [];
-    const q = normalizeForSearch(debouncedQuery.trim());
-    return recommendedIds
-      .filter((id) => normalizeForSearch(id).includes(q))
-      .filter((id) =>
-        matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
-      );
-  }, [
-    showHfSection,
-    debouncedQuery,
-    recommendedIds,
-    formatFilter,
-    isKnownGgufRepo,
-  ]);
-
   // Param counts come straight off the unsloth listings the picker already
   // loaded, so no extra per-id fetch is needed for the VRAM badges.
   const recommendedParamCountById = useMemo(() => {
@@ -1992,6 +1975,42 @@ export function HubModelPicker({
     }
     return map;
   }, [results, recommendedSearch.results]);
+
+  // Recommended models that match the current search query
+  const filteredRecommendedIds = useMemo(() => {
+    if (!showHfSection) return [];
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return recommendedIds
+      .filter((id) => normalizeForSearch(id).includes(q))
+      .filter((id) =>
+        matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+      )
+      // Curated defaults obey the fit toggle like the live HF rows, else large
+      // defaults resurface in search results with the filter on.
+      .filter(
+        (id) =>
+          !fitOnDeviceOnly ||
+          downloadedSet.has(id.toLowerCase()) ||
+          hfModelFitsDevice(
+            {
+              id,
+              totalParams: recommendedParamCountById.get(id),
+              isGguf: isKnownGgufRepo(id),
+            },
+            gpu,
+          ),
+      );
+  }, [
+    showHfSection,
+    debouncedQuery,
+    recommendedIds,
+    formatFilter,
+    isKnownGgufRepo,
+    fitOnDeviceOnly,
+    downloadedSet,
+    recommendedParamCountById,
+    gpu,
+  ]);
 
   const recommendedSet = useMemo(
     () => new Set(filteredRecommendedIds),
@@ -2324,18 +2343,23 @@ export function HubModelPicker({
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle lives inside the sort menu (shared with the Hub page).
   const fitOnDeviceFooter = (
-    <label
-      className="flex cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      title="Hides models larger than this device's memory budget. Downloaded models stay visible."
-    >
-      <Checkbox
-        checked={fitOnDeviceOnly}
-        onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
-        className="size-3.5 rounded-full [&_svg]:!size-2.5"
-        aria-label="Only show models that fit"
-      />
-      Only show models that fit
-    </label>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <label className="flex cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+          <Checkbox
+            checked={fitOnDeviceOnly}
+            onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
+            className="size-3.5 rounded-full [&_svg]:!size-2.5"
+            aria-label="Only show models that fit"
+          />
+          Only show models that fit
+        </label>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        Hides models larger than this device's memory budget. Downloaded models
+        stay visible.
+      </TooltipContent>
+    </Tooltip>
   );
   const sectionSortDropdown =
     section === "recommended" ? (

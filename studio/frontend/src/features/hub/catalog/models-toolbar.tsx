@@ -358,18 +358,25 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             className={cn(triggerBase, "w-[128px]")}
             footer={
               isDataset ? undefined : (
-                <label
-                  className="flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
-                  title="Hides models larger than this device's memory budget. Downloaded models stay visible."
-                >
-                  <Checkbox
-                    checked={fitOnDeviceOnly}
-                    onCheckedChange={(v) => onFitOnDeviceOnlyChange(v === true)}
-                    className="size-3.5 rounded-full [&_svg]:!size-2.5"
-                    aria-label="Only show models that fit"
-                  />
-                  Only show models that fit
-                </label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label className="flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground">
+                      <Checkbox
+                        checked={fitOnDeviceOnly}
+                        onCheckedChange={(v) =>
+                          onFitOnDeviceOnlyChange(v === true)
+                        }
+                        className="size-3.5 rounded-full [&_svg]:!size-2.5"
+                        aria-label="Only show models that fit"
+                      />
+                      Only show models that fit
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    Hides models larger than this device's memory budget.
+                    Downloaded models stay visible.
+                  </TooltipContent>
+                </Tooltip>
               )
             }
           />
