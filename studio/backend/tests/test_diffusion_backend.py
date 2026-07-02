@@ -1857,6 +1857,52 @@ def test_transformer_quant_unsupported_scheme_skips_dense_download(
     assert _FakeTransformer.last["path"]  # GGUF from_single_file used
 
 
+def test_base_file_downloaded_include_transformer_flag():
+    # Default: transformer/ shards are the GGUF's job, so they are excluded from
+    # the prefetch list; the dense transformer-quant path opts them back in.
+    from core.inference.diffusion import _base_file_downloaded
+
+    assert _base_file_downloaded("transformer/diffusion_pytorch_model-00001.safetensors") is False
+    assert (
+        _base_file_downloaded(
+            "transformer/diffusion_pytorch_model-00001.safetensors", include_transformer = True
+        )
+        is True
+    )
+    # The flag must not admit anything else that is normally excluded.
+    assert _base_file_downloaded("assets/teaser.png", include_transformer = True) is False
+    assert _base_file_downloaded("README.md", include_transformer = True) is False
+
+
+def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
+    # The transformer/ prefetch only widens when the dense quant path can really
+    # run: quant requested + device supported + scheme resolvable + no prequant
+    # checkpoint shortcutting the dense build.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is True
+    # No quant requested -> never widen.
+    assert backend._dense_quant_prefetch_needed(fam, {}) is False
+    # A resolvable pre-quantized checkpoint shortcuts the dense download.
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+    # Unsupported scheme bails before the dense path (and so must the prefetch).
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: None)
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+    # Device without dense support (e.g. non-CUDA) never widens.
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+
+
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
     # A LOCAL diffusers base: sum the on-disk VAE / text-encoder weights so auto memory
     # planning sees the resident companions, but exclude transformer/ (the GGUF supplies
