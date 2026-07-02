@@ -222,6 +222,25 @@ def test_build_inpaint_adds_mask():
     assert _pair(cmd, "--init-img") == "/in/src.png"
 
 
+def test_build_inpaint_mask_without_init_img_rejected():
+    # sd-cli inpaint needs a source image; a --mask with no --init-img is invalid argv,
+    # so the builder must reject it up front instead of emitting a doomed command.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    params = SdCppGenParams(prompt = "x", mask = "/in/mask.png")
+    with pytest.raises(ValueError, match = "init_img is required"):
+        build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
+
+
+def test_build_rejects_none_prompt():
+    # A None prompt must be rejected, not coerced to the literal string "None" and
+    # forwarded into argv.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    with pytest.raises(ValueError, match = "prompt is required"):
+        build_sd_cpp_command(
+            "/bin/sd-cli", files, SdCppGenParams(prompt = None), output_path = "/o.png"
+        )
+
+
 def test_build_edit_repeats_ref_image():
     files = SdCppModelFiles(diffusion_model = "/m/flux.gguf")
     params = SdCppGenParams(prompt = "add a hat", ref_images = ("/r/a.png", "/r/b.png"))
