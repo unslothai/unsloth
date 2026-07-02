@@ -629,9 +629,7 @@ def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path,
     assert fake_eval_env["events"] == [("peft", str(adapter))]
 
 
-def test_eval_unsloth_adapter_resizes_embeddings_before_peft(
-    fake_eval_env, tmp_path, monkeypatch
-):
+def test_eval_unsloth_adapter_resizes_embeddings_before_peft(fake_eval_env, tmp_path, monkeypatch):
     adapter = _make_local_adapter(tmp_path)
     # adapter tokenizer grew past the fake base vocab (32000)
     _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len = 32005)

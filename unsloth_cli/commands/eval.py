@@ -104,9 +104,7 @@ def _hf_device_error(device: str) -> Optional[str]:
                 return f"invalid --device '{device}'."
             count = torch.cuda.device_count()
             if not 0 <= idx < count:
-                return (
-                    f"--device {device} requested but only {count} CUDA device(s) are available."
-                )
+                return f"--device {device} requested but only {count} CUDA device(s) are available."
     elif device.startswith("mps"):
         mps = getattr(torch.backends, "mps", None)
         if not (mps and mps.is_available()):
@@ -146,7 +144,6 @@ def _doc_column(key: str) -> str:
     # with its keywords/literals — lm-eval treats a raw column name as a
     # direct lookup, so fall back to that for such keys
     import keyword
-
     if key.isidentifier() and not keyword.iskeyword(key) and key not in ("true", "false", "none"):
         return "{{" + key + "}}"
     return key
@@ -529,6 +526,7 @@ def evaluate(
                     # weights are applied or PEFT fails on a size mismatch
                     if _has_tokenizer_files(model):
                         from transformers import AutoTokenizer
+
                         tokenizer = AutoTokenizer.from_pretrained(model)
                         embeddings = lmodel.get_input_embeddings()
                         if embeddings is not None and embeddings.weight.shape[0] != len(tokenizer):
