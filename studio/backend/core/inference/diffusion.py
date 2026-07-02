@@ -290,6 +290,14 @@ class DiffusionBackend:
             raise ValueError(
                 "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
             )
+        # Reject a non-GGUF single-file name (e.g. README.md, config.json) here, before
+        # the route hands the GPU over: without this a family-looking repo_id paired with
+        # a non-GGUF filename passes preflight, evicts the chat model, and only fails in
+        # the background from_single_file -- exactly the eviction this validation prevents.
+        if not gguf_filename.lower().endswith(".gguf"):
+            raise ValueError(
+                f"gguf_filename must name a .gguf single-file checkpoint; got '{gguf_filename}'."
+            )
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
