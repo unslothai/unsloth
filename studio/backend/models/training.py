@@ -772,15 +772,25 @@ class DiffusionDatasetSummary(BaseModel):
     caption_count: int
 
 
-class DiffusionTrainingInfoResponse(BaseModel):
-    """Where diffusion training reads/writes on this Studio, plus usable datasets.
+class DiffusionTrainableFamily(BaseModel):
+    """A base-model family the diffusion trainer supports, with UI-facing metadata."""
 
-    Lets the UI show real on-disk locations and offer existing dataset folders,
-    instead of asking users to know the Studio home layout."""
+    name: str
+    label: str
+    default_base: str
+    base_repos: List[str] = Field(default_factory = list)
+    defaults: dict = Field(default_factory = dict)
+    vram_note: str = ""
+
+
+class DiffusionTrainingInfoResponse(BaseModel):
+    """Where diffusion training reads/writes on this Studio, plus usable datasets and the
+    trainable model families (so the UI can offer a base picker with realistic guidance)."""
 
     datasets_root: str
     outputs_root: str
     datasets: List[DiffusionDatasetSummary]
+    families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 
 class DiffusionDatasetUploadResponse(BaseModel):
