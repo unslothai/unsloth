@@ -530,7 +530,9 @@ class TestOpenaiNonStreamingRoute:
     def test_mixed_declared_and_undeclared_relays_verbatim(self, monkeypatch):
         async def _run():
             mixed = f'{LOOKUP_XML} also <tool_call>{{"name":"rogue","arguments":{{}}}}</tool_call>'
-            _, data = await _drive_non_streaming(monkeypatch, _payload(), [_upstream_message(mixed)])
+            _, data = await _drive_non_streaming(
+                monkeypatch, _payload(), [_upstream_message(mixed)]
+            )
             choice = data["choices"][0]
             assert choice["message"]["content"] == mixed
             assert "tool_calls" not in choice["message"]
