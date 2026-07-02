@@ -2358,8 +2358,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cgroup_memory_mib(
-        _proc_cgroup = "/proc/self/cgroup",
-        _root = "/sys/fs/cgroup",
+        _proc_cgroup = "/proc/self/cgroup", _root = "/sys/fs/cgroup"
     ) -> tuple[Optional[int], Optional[int]]:
         """``(available, limit)`` for the process's own memory cgroup, in MiB, or
         ``(None, None)`` when there is no cap or it is unreadable (bare metal,

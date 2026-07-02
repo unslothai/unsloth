@@ -62,7 +62,11 @@ def _clear_visibility_masks(monkeypatch):
         monkeypatch.delenv(_m, raising = False)
 
 
-def _fixed_avail(monkeypatch, mib, total = None):
+def _fixed_avail(
+    monkeypatch,
+    mib,
+    total = None,
+):
     # Pin the unified-memory budget (available, total) that _get_gpu_memory reads.
     monkeypatch.setattr(
         LlamaCppBackend, "_system_memory_budget_mib", staticmethod(lambda: (mib, total))
@@ -197,9 +201,7 @@ def test_cgroup_v2_max_is_unlimited(tmp_path):
 def test_cgroup_v2_reads_process_path_not_root(tmp_path):
     # The process's own /pod123 cgroup caps at 8 GiB; the mount root has a bogus
     # 1 GiB. Resolving the path from /proc/self/cgroup must read the pod, not root.
-    proc, root = _make_v2(
-        tmp_path, "/pod123", limit = 8 * 1024**3, current = 0, inactive_file = 0
-    )
+    proc, root = _make_v2(tmp_path, "/pod123", limit = 8 * 1024**3, current = 0, inactive_file = 0)
     root_dir = tmp_path / "cgroup"
     (root_dir / "memory.max").write_text(str(1 * 1024**3))
     (root_dir / "memory.current").write_text("0")
