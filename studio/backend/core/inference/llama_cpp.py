@@ -3004,21 +3004,6 @@ class LlamaCppBackend:
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
     _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
 
-    # A --parallel N serving config needs free VRAM headroom to decode at full speed: each
-    # slot's compute graph must fit at its preferred size, or llama.cpp shrinks the compute
-    # buffer under pressure and throughput collapses (~2.4x slower at the memory edge;
-    # measured Qwen3.6-27B-MTP: --parallel 4 needs ~8 GiB free after load, --parallel 1
-    # ~1.5 GiB, i.e. ~2 GiB per slot, which recovers full speed). The per-slot headroom
-    # scales with the model's forward compute (n_embd x n_layers): 6554 B/(embd*layer)
-    # calibrates Qwen3.6-27B (n_embd 5120 x n_layers 64) to ~2 GiB/slot and Qwen3.5-9B
-    # (4096 x 32) to ~0.86 GiB/slot, so small models are not over-constrained. Speculative
-    # decode (MTP) inflates it (par4+MTP is ~half par4-no-MTP at the edge). This headroom is
-    # used ONLY to cap the effective slot count on a memory-tight card (keeping the chosen
-    # context); it never spills, and roomy cards keep every configured slot unchanged.
-    _DECODE_WORKSPACE_BYTES_PER_EMBD_LAYER = 6554  # per slot, per (n_embd * n_layers)
-    _DECODE_WORKSPACE_MTP_MULT = 1.5  # speculative decode inflates the workspace
-    _DECODE_WORKSPACE_FLOOR_BYTES = 256 * 1024 * 1024  # per-slot floor for tiny models
-
     def _estimate_compute_buffer_bytes(
         self,
         *,
@@ -3083,105 +3068,49 @@ class LlamaCppBackend:
             per_tok = ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY
         return int(per_tok * n_ctx)
 
-    def _estimate_decode_workspace_bytes(
-        self,
-        n_parallel: int,
-        *,
-        mtp_active: bool = False,
-    ) -> int:
-        """Per-device free-VRAM headroom (bytes) a ``--parallel n_parallel`` serving config
-        needs to decode at full speed. On a memory-tight card the slots' compute graph
-        cannot reach its preferred size and llama.cpp shrinks it, collapsing throughput
-        (~2.4x at the edge); this headroom keeps it full-size. Scales with the model's
-        forward compute (n_embd x n_layers) and the slot count; a speculative (MTP) decode
-        inflates it. Used only to CAP the effective slot count (never to expand it or to
-        spill). Returns 0 for <= 1 slot (a single stream is covered by the fit cushion) or
-        when dims are missing (then a conservative flat floor)."""
-        slots = max(1, int(n_parallel))
-        if slots <= 1:
-            return 0
-        n_embd = self._embedding_length or 0
-        n_layers = self._n_layers or 0
-        if n_embd <= 0 or n_layers <= 0:
-            per_slot = self._DECODE_WORKSPACE_FLOOR_BYTES * 4  # conservative unknown-dims
-        else:
-            per_slot = max(
-                self._DECODE_WORKSPACE_FLOOR_BYTES,
-                self._DECODE_WORKSPACE_BYTES_PER_EMBD_LAYER * n_embd * n_layers,
-            )
-        if mtp_active:
-            per_slot = int(per_slot * self._DECODE_WORKSPACE_MTP_MULT)
-        return int(per_slot * slots)
-
-    def _cap_serving_slots(
+    def _slots_that_fit_on_gpu(
         self,
         n_parallel: int,
         effective_ctx: int,
-        gpu_indices: Optional[list[int]],
         gpus: list[tuple[int, int]],
         total_by_idx: Optional[dict[int, int]],
-        model_size: int,
-        mmproj_bytes: int,
+        base_footprint_bytes: int,
         cache_type_kv: Optional[str],
-        mtp_overhead_fn: Optional[Callable[[int], int]],
-        mtp_active: bool,
+        pin_fraction: float,
+        per_device_overhead_bytes: int,
+        min_gpus: int,
         n_ubatch: Optional[int] = None,
-    ) -> int:
-        """Reduce the effective ``--parallel`` slot count so the decode workspace for every
-        slot fits the free VRAM WITHOUT shrinking the chosen context. Only ever reduces;
-        floors at 1; returns the input unchanged on a roomy card (byte-identical behavior)
-        or when no GPU was pinned. Gated by the TIGHTEST device: in a layer split the
-        static buffers + decode workspace replicate on every GPU, so each must clear its
-        share of the weights/KV plus the full per-device workspace. Pure and deterministic
-        (unit-testable with synthetic VRAM maps)."""
-        slots = max(1, int(n_parallel))
-        if slots <= 1 or not gpu_indices:
-            return slots
-        try:
-            n_dev = max(1, len(gpu_indices))
-            free_by_idx = {i: f for i, f in gpus}
-            frac = self._GPU_PIN_VRAM_FRACTION
-            mtp_total = (
-                mtp_overhead_fn(effective_ctx)
-                if (mtp_active and mtp_overhead_fn is not None)
-                else 0
+    ) -> tuple[Optional[list[int]], bool, int]:
+        """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
+        so Studio keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
+        to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
+        slot-independent footprint (weights + soft overhead + MTP + context-linear compute,
+        minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
+        and KV, then re-selects GPUs like the explicit-context path. Returns (gpu_indices,
+        use_fit=False, slots) for the largest fitting count, else (None, True, n_parallel).
+        Only ever reduces; deterministic and unit-testable with synthetic VRAM maps."""
+        for slots in range(n_parallel - 1, 0, -1):
+            cb = self._estimate_compute_buffer_bytes(
+                n_ubatch = n_ubatch, n_parallel = slots, per_device_tensor = False
             )
-            cuda_reserve = self._CUDA_CONTEXT_RESERVE_BYTES
-
-            def _fits(k: int) -> bool:
-                kv_total = (
-                    self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = k)
-                    if self._can_estimate_kv()
-                    else 0
-                )
-                static = self._estimate_compute_buffer_bytes(
-                    n_ubatch = n_ubatch, n_parallel = k, per_device_tensor = False
-                )
-                workspace = self._estimate_decode_workspace_bytes(k, mtp_active = mtp_active)
-                for idx in gpu_indices:
-                    free_mib = free_by_idx.get(idx, 0)
-                    total_mib = total_by_idx.get(idx, 0) if total_by_idx else 0
-                    usable_mib = (
-                        free_mib - (1.0 - frac) * total_mib if total_mib > 0 else free_mib * frac
-                    )
-                    usable_b = usable_mib * 1024 * 1024
-                    # Weights + KV + MTP split across the layer-split devices; the compute
-                    # buffer and decode workspace replicate on every device.
-                    per_device_load = (
-                        (model_size + kv_total + mtp_total + mmproj_bytes) / n_dev
-                        + static
-                        + cuda_reserve
-                    )
-                    if usable_b - per_device_load < workspace:
-                        return False
-                return True
-
-            k = slots
-            while k > 1 and not _fits(k):
-                k -= 1
-            return k
-        except Exception:
-            return slots
+            if cb <= 0:
+                cb = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+            total = (
+                base_footprint_bytes
+                + cb
+                + self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = slots)
+            )
+            gpu_indices, use_fit = self._select_gpus(
+                total,
+                gpus,
+                usable_fraction = pin_fraction,
+                total_by_idx = total_by_idx,
+                per_device_overhead_bytes = per_device_overhead_bytes,
+                min_gpus = min_gpus,
+            )
+            if not use_fit:
+                return gpu_indices, False, slots
+        return None, True, n_parallel
 
     def _fit_context_to_vram(
         self,
@@ -5765,6 +5694,48 @@ class LlamaCppBackend:
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
 
+                    # Prefer fewer serving slots on GPU over --fit on offload: when the extra
+                    # --parallel slots push the footprint past the pin budget, llama-server
+                    # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
+                    # at fewer slots, keeping the largest count that stays fully on GPU and the
+                    # chosen context. Skips tensor mode / Metal / KV-inestimable paths.
+                    if (
+                        use_fit
+                        and n_parallel > 1
+                        and gpus
+                        and self._can_estimate_kv()
+                        and effective_ctx > 0
+                    ):
+                        # Slot-independent footprint (folded compute buffer swapped out so the
+                        # helper re-adds a slot-sized one per candidate).
+                        _base_footprint = (
+                            model_size_fit
+                            - _compute_buffer_pipeline
+                            + _mtp_bytes(effective_ctx)
+                            + _cc_bytes(effective_ctx)
+                        )
+                        _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
+                            n_parallel,
+                            effective_ctx,
+                            gpus,
+                            total_by_idx,
+                            _base_footprint,
+                            cache_type_kv,
+                            _pin_fraction,
+                            _pipeline_overhead_bytes + _cc_bytes(effective_ctx),
+                            _layer_min_gpus,
+                            _effective_ubatch,
+                        )
+                        if not _uf_slots:
+                            logger.info(
+                                "Serving slots reduced %d -> %d to keep the model on GPU "
+                                "(avoid --fit offload) at context %d.",
+                                n_parallel,
+                                _slots,
+                                effective_ctx,
+                            )
+                            gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
+
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
                     if _mtp_will_engage:
@@ -5833,35 +5804,6 @@ class LlamaCppBackend:
                         )
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
-
-                # Cap the effective serving slots to what this VRAM budget can decode at
-                # full speed, KEEPING the chosen context. On a memory-tight card the extra
-                # --parallel slots (which a single chat never uses) leave too little free
-                # VRAM for the slots' compute graph, so llama.cpp shrinks it and throughput
-                # collapses ~2.4x. Only reduces; roomy cards keep every configured slot.
-                if gpu_indices and not use_fit and n_parallel > 1:
-                    _capped_parallel = self._cap_serving_slots(
-                        n_parallel,
-                        effective_ctx,
-                        gpu_indices,
-                        gpus,
-                        total_by_idx,
-                        model_size or 0,
-                        (mmproj_size if effective_is_vision else 0) or 0,
-                        cache_type_kv,
-                        mtp_overhead_fn,
-                        _mtp_reserves_gpu,
-                        _effective_ubatch,
-                    )
-                    if _capped_parallel < n_parallel:
-                        logger.info(
-                            "Serving slots reduced %d -> %d to keep decode at full speed on "
-                            "this VRAM budget (context %d kept; a single chat uses one slot).",
-                            n_parallel,
-                            _capped_parallel,
-                            effective_ctx,
-                        )
-                        n_parallel = _capped_parallel
 
                 cmd = [
                     binary,
