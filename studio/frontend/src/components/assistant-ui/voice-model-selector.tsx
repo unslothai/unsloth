@@ -92,7 +92,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                 : "Select voice model"
           }
         >
-          {loading ? (
+          {loading && !voiceOwnedByModel ? (
             <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
           ) : (
             <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />

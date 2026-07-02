@@ -1419,16 +1419,16 @@ export function ChatPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
 
-  // Ensure the backend voice slot actually matches the selected voice when voice
-  // mode is entered. selectedVoiceModelId is persisted and shows "Active", but
-  // the backend slot is empty after a restart (and the unload effect above clears
-  // it on mount) -- so without this, /api/audio/speech has no TTS slot loaded and
-  // 400s, and the model never speaks. Keyed on voiceMode (not the selection) so
-  // it fires on entering the ball, not on every pick (handleVoiceModelChange
-  // already loads on pick); the /voice/status check makes a redundant load a
-  // no-op, so the two never double-load.
+  // Ensure the backend voice slot matches the selected voice once voice mode is
+  // actually STARTED (active), not merely being configured -- otherwise just
+  // opening the voice picker would kick off the (slow) TTS load. selectedVoiceModelId
+  // is persisted and shows "Active", but the backend slot is empty after a restart
+  // (and the unload effect above clears it on mount), so without this /api/audio/speech
+  // has no TTS slot loaded and 400s. Keyed on voiceMode (not the selection) so it
+  // fires on entering the ball, not on every pick (handleVoiceModelChange already
+  // loads on pick); the /voice/status check makes a redundant load a no-op.
   useEffect(() => {
-    if (voiceMode === "off") return;
+    if (voiceMode !== "active") return;
     // Speech-LLM chat models (Orpheus etc.) speak with their own voice, so the
     // separate TTS slot is greyed out and must not be auto-loaded -- doing so
     // wastes VRAM/time loading a voice that never gets used.
