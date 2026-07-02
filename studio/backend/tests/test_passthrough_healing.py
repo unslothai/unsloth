@@ -115,20 +115,44 @@ class TestHealOpenaiMessage:
         args = json.loads(msg["tool_calls"][0]["function"]["arguments"])
         assert args == {"query": "echo hi"}
 
-    def test_mixed_declared_and_undeclared_relays_verbatim(self):
-        # All-or-nothing: promoting Bash would strip ALL markup, silently
-        # deleting the undeclared Nuke call's text. Decline the heal instead.
+    def test_mixed_declared_and_undeclared_promotes_declared_keeps_undeclared_text(self):
+        # Span-exact removal: only the promoted Bash markup is dropped; the
+        # undeclared Nuke call's text stays in the content byte-intact.
         content = f"pre {XML_BASH} mid {XML_UNDECLARED} post"
         msg = {"role": "assistant", "content": content}
-        assert heal_openai_message(msg, {"Bash"}) is False
-        assert msg["content"] == content
-        assert "tool_calls" not in msg
+        assert heal_openai_message(msg, {"Bash"}) is True
+        (call,) = msg["tool_calls"]
+        assert call["function"]["name"] == "Bash"
+        assert XML_UNDECLARED in msg["content"]
+        assert "pre" in msg["content"] and "post" in msg["content"]
+        assert XML_BASH not in msg["content"]
 
     def test_multiple_declared_calls_all_promoted(self):
         content = f"{XML_BASH} and {XML_BASH}"
         msg = {"role": "assistant", "content": content}
         assert heal_openai_message(msg, {"Bash"}) is True
         assert len(msg["tool_calls"]) == 2
+
+    def test_mixed_format_suppressed_function_block_not_deleted(self):
+        # parse_tool_calls_from_text only parses <function=...> blocks when no
+        # JSON/Gemma call parsed, so the Read call below is never promoted.
+        # Its markup must then SURVIVE in the content, not be stripped away.
+        func_read = "<function=Read><parameter=path>a.txt</parameter></function>"
+        content = f"{XML_BASH} then {func_read}"
+        msg = {"role": "assistant", "content": content}
+        assert heal_openai_message(msg, {"Bash", "Read"}) is True
+        (call,) = msg["tool_calls"]
+        assert call["function"]["name"] == "Bash"
+        assert func_read in msg["content"]
+
+    def test_unparseable_closed_block_not_deleted(self):
+        # A closed <tool_call> block whose body never parses is model output,
+        # not a promotable call; it must survive promotion of its neighbor.
+        garbage = "<tool_call>not json at all</tool_call>"
+        content = f"{XML_BASH} {garbage}"
+        msg = {"role": "assistant", "content": content}
+        assert heal_openai_message(msg, {"Bash"}) is True
+        assert garbage in msg["content"]
 
 
 class TestStreamHealer:
@@ -168,14 +192,38 @@ class TestStreamHealer:
         events += healer.finalize()
         assert _events_text(events) == "trailing <tool"
 
-    def test_mixed_calls_in_one_buffer_flush_raw(self):
-        # Declared + undeclared complete in the same hold window: all-or-nothing,
-        # the whole buffer flushes verbatim so no markup is silently deleted.
+    def test_mixed_calls_promote_declared_flush_undeclared_in_order(self):
+        # Declared + undeclared in the same buffer: the declared call is
+        # promoted, the undeclared markup flushes as text, and event order
+        # follows document order (call first here, since it came first).
         healer = StreamToolCallHealer({"Bash"})
-        text = f"{XML_BASH} then {XML_UNDECLARED}"
+        text = f"{XML_BASH} then {XML_UNDECLARED} post"
         events = healer.feed(text) + healer.finalize()
-        assert _events_text(events) == text
-        assert not _events_calls(events)
+        assert [k for k, _ in events if k == "tool_call"] == ["tool_call"]
+        assert events[0][0] == "tool_call"
+        joined = _events_text(events)
+        assert XML_UNDECLARED in joined
+        assert "then" in joined and "post" in joined
+
+    def test_text_between_two_healed_calls_keeps_document_order(self):
+        # call A, " middle ", call B in ONE buffer must stream as
+        # call A -> text -> call B, never both calls then the text.
+        healer = StreamToolCallHealer({"Bash"})
+        events = healer.feed(f"{XML_BASH} middle {XML_BASH}") + healer.finalize()
+        kinds = [k for k, _ in events]
+        assert kinds == ["tool_call", "text", "tool_call"]
+        assert events[1][1] == " middle "
+
+    def test_undeclared_then_declared_keeps_document_order(self):
+        # The undeclared block precedes the declared call; its raw text must
+        # be emitted BEFORE the promoted call event, never after.
+        healer = StreamToolCallHealer({"Bash"})
+        events = healer.feed(f"{XML_UNDECLARED} then {XML_BASH}") + healer.finalize()
+        kinds = [k for k, _ in events]
+        assert kinds.index("tool_call") == len(kinds) - 1
+        (call,) = _events_calls(events)
+        assert call["function"]["name"] == "Bash"
+        assert XML_UNDECLARED in _events_text(events)
 
     def test_declared_promoted_then_late_undeclared_flushes_raw(self):
         # Streaming causality: the declared call completed and was already
@@ -268,6 +316,18 @@ class TestNudgeHelpers:
         assert [m["role"] for m in suffix] == ["assistant", "user"]
         assert suffix[0]["content"] == "<tool_call>garbage"
         assert "`Bash` or `Read`" in suffix[1]["content"]
+
+    def test_retry_with_undeclared_structured_call_is_not_an_improvement(self):
+        # The retry replaces the original only when it carries a USABLE call:
+        # a structured call naming an undeclared tool must not count.
+        undeclared = [
+            {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}}
+        ]
+        declared = [
+            {"id": "y", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}
+        ]
+        assert response_has_promotable_calls(self._resp("", undeclared), {"Bash"}) is False
+        assert response_has_promotable_calls(self._resp("", declared), {"Bash"}) is True
 
     @pytest.mark.parametrize(
         "data",
@@ -527,16 +587,47 @@ class TestOpenaiNonStreamingRoute:
 
         asyncio.run(_run())
 
-    def test_mixed_declared_and_undeclared_relays_verbatim(self, monkeypatch):
+    def test_mixed_declared_and_undeclared_promotes_and_keeps_text(self, monkeypatch):
         async def _run():
-            mixed = f'{LOOKUP_XML} also <tool_call>{{"name":"rogue","arguments":{{}}}}</tool_call>'
+            rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
+            mixed = f"{LOOKUP_XML} also {rogue}"
             _, data = await _drive_non_streaming(
                 monkeypatch, _payload(), [_upstream_message(mixed)]
             )
             choice = data["choices"][0]
-            assert choice["message"]["content"] == mixed
-            assert "tool_calls" not in choice["message"]
-            assert choice["finish_reason"] == "stop"
+            (call,) = choice["message"]["tool_calls"]
+            assert call["function"]["name"] == "lookup"
+            assert rogue in choice["message"]["content"]
+            assert choice["finish_reason"] == "tool_calls"
+
+        asyncio.run(_run())
+
+    def test_healed_then_native_stream_indexes_disjoint(self, monkeypatch):
+        async def _run():
+            # A healed text-form call goes out first (index 0); a native
+            # structured delta follows. Clients merge deltas by index, so the
+            # native call must be shifted off index 0 or the two would merge.
+            native_line = (
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
+                '[{"index":0,"id":"call_native","type":"function","function":'
+                '{"name":"lookup","arguments":"{}"}}]}}]}'
+            )
+            lines = [
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"content":'
+                + json.dumps(LOOKUP_XML)
+                + "}}]}",
+                native_line,
+                'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(stream = True), lines)
+            indexes = {}
+            for payload_data in _stream_payloads(chunks):
+                for ch in payload_data.get("choices", []):
+                    for tc in (ch.get("delta") or {}).get("tool_calls") or []:
+                        indexes.setdefault(tc["index"], tc.get("id"))
+            assert indexes.get(0, "").startswith("call_") and indexes[0] != "call_native"
+            assert indexes.get(1) == "call_native"
 
         asyncio.run(_run())
 

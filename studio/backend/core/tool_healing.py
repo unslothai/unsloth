@@ -301,15 +301,22 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
-) -> list[dict]:
+    with_spans: bool = False,
+):
     """Parse OpenAI-format tool calls from model text.
 
     Handles formats like:
       <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
       <|tool_call>call:web_search{query:"..."}<tool_call|>
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
+
+    With ``with_spans=True`` returns ``(tool_calls, spans)`` where ``spans[i]``
+    is the half-open ``(start, end)`` byte range of ``tool_calls[i]``'s markup
+    in ``content`` (including its close tag when present), so a caller can
+    remove exactly the parsed markup and keep every other byte intact.
     """
     tool_calls: list[dict] = []
+    call_spans: list[tuple] = []
     # Collect JSON- and Gemma-format candidates with their byte spans, then
     # accept them in document order. Both order and spans matter:
     #   * tools execute in returned order, so a call appearing earlier in the
@@ -369,6 +376,15 @@ def parse_tool_calls_from_text(
                 "function": {"name": name, "arguments": arguments},
             }
         )
+        # Markup span: opening marker through the balanced brace, extended over
+        # the close tag when it follows (whitespace allowed in between).
+        span_end = end + 1
+        close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
+        ws = len(content[span_end:]) - len(content[span_end:].lstrip())
+        close_m = close_re.match(content, span_end + ws)
+        if close_m:
+            span_end = close_m.end()
+        call_spans.append((start, span_end))
 
     if not tool_calls:
         func_starts = [
@@ -440,6 +456,22 @@ def parse_tool_calls_from_text(
                 },
             }
             tool_calls.append(tc)
+            # Markup span: the <function=...> block plus an immediately
+            # enclosing <tool_call>...</tool_call> wrapper when present
+            # (docstring format 3), so removal leaves no dangling wrapper tags.
+            span_start = fm.start()
+            if not allow_incomplete:
+                span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
+            else:
+                span_end = body_end
+            wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
+            wrap_close = re.match(r"\s*</tool_call>", content[span_end:])
+            if wrap_open and wrap_close:
+                span_start = wrap_open.start()
+                span_end += wrap_close.end()
+            call_spans.append((span_start, span_end))
+    if with_spans:
+        return tool_calls, call_spans
     return tool_calls
 
 

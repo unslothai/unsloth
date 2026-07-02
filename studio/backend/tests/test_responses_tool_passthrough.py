@@ -2079,3 +2079,35 @@ class TestResponsesStreamHealing:
             payload["delta"] for name, payload in events if name == "response.output_text.delta"
         )
         assert text == self._XML
+
+    def test_healed_call_splits_message_items(self, monkeypatch):
+        # Text on both sides of a healed call becomes TWO message items: the
+        # healed function_call closes the first, trailing text opens a fresh
+        # one with a later output index (native Responses stream shape).
+        events = self._run_stream(monkeypatch, f"before {self._XML} after.")
+        added = [
+            (payload["output_index"], payload["item"]["type"], payload["item"].get("id"))
+            for name, payload in events
+            if name == "response.output_item.added"
+        ]
+        assert [item_type for _, item_type, _ in added] == [
+            "message",
+            "function_call",
+            "message",
+        ]
+        assert [idx for idx, _, _ in added] == sorted(idx for idx, _, _ in added)
+        assert added[0][2] != added[2][2]  # distinct message item ids
+        # Text deltas attribute to their OWN message item.
+        deltas = [
+            (payload["item_id"], payload["delta"])
+            for name, payload in events
+            if name == "response.output_text.delta"
+        ]
+        assert [d for i, d in deltas if i == added[0][2]] == ["before "]
+        assert [d for i, d in deltas if i == added[2][2]] == [" after."]
+        # The completed snapshot lists all three items with per-item text.
+        completed = [payload for name, payload in events if name == "response.completed"]
+        output = completed[0]["response"]["output"]
+        assert [item["type"] for item in output] == ["message", "function_call", "message"]
+        assert output[0]["content"][0]["text"] == "before "
+        assert output[2]["content"][0]["text"] == " after."

@@ -8295,7 +8295,16 @@ async def _responses_stream(
             parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
-        message_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
+        message_state: dict[str, Any] = {
+            "output_index": None,
+            "item_id": None,
+            "opened": False,
+            "text": "",
+        }
+        # Message items already closed mid-stream (a healed tool call splits
+        # the assistant text into separate message items, as native Responses
+        # streams do). Kept for the final response.completed snapshot.
+        closed_message_states: list[dict] = []
         # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,
         # stable across chunks for the same call. Values:
         #   {output_index, item_id, call_id, name, arguments, opened}
@@ -8476,12 +8485,69 @@ async def _responses_stream(
                 ),
             ]
 
+        def _close_message_item() -> list[str]:
+            """Close the open message item so later text opens a fresh one.
+
+            Emits the same done-event triplet the end-of-stream close loop
+            would, records the item for the final snapshot, and resets the
+            state in place. No-op when no message item is open.
+            """
+            if not message_state["opened"]:
+                return []
+            text = message_state["text"]
+            events = [
+                _sse(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": message_state["item_id"],
+                        "output_index": message_state["output_index"],
+                        "content_index": 0,
+                        "text": text,
+                    },
+                ),
+                _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": message_state["item_id"],
+                        "output_index": message_state["output_index"],
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": text, "annotations": []},
+                    },
+                ),
+                _sse(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": message_state["output_index"],
+                        "item": {
+                            "type": "message",
+                            "id": message_state["item_id"],
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": text, "annotations": []}
+                            ],
+                        },
+                    },
+                ),
+            ]
+            closed_message_states.append(dict(message_state))
+            message_state.update(
+                {"output_index": None, "item_id": None, "opened": False, "text": ""}
+            )
+            return events
+
         def _healed_event_sse(events) -> list[str]:
             """Serialize healer events preserving their order.
 
             Text around a healed call must keep its position relative to the
             function_call item (output indexes are claimed in emission order),
-            so never split an event list into all-text-then-all-calls.
+            so never split an event list into all-text-then-all-calls. A healed
+            call also CLOSES any open message item, so trailing text opens a
+            fresh message with a later output index, exactly like a native
+            Responses stream that interleaves messages and calls.
             """
             nonlocal full_text
             out: list[str] = []
@@ -8491,6 +8557,7 @@ async def _responses_stream(
                         continue
                     out.extend(_ensure_message_open())
                     full_text += value
+                    message_state["text"] += value
                     api_monitor.append_reply(monitor_id, value)
                     out.append(
                         _sse(
@@ -8508,6 +8575,7 @@ async def _responses_stream(
                     tc = _healed_tc(value)
                     if tc is None:
                         continue
+                    out.extend(_close_message_item())
                     out.extend(_tool_call_delta_events(tc))
             return out
 
@@ -8527,19 +8595,23 @@ async def _responses_stream(
                         },
                     )
                 )
-            if message_state["opened"]:
+            # Closed copies keep opened=True (snapshotted before reset); the
+            # live state contributes only when a message is currently open.
+            for msg_st in [*closed_message_states, message_state]:
+                if not msg_st["opened"]:
+                    continue
                 indexed_items.append(
                     (
-                        message_state["output_index"],
+                        msg_st["output_index"],
                         {
                             "type": "message",
-                            "id": message_state["item_id"],
+                            "id": msg_st["item_id"],
                             "status": "completed",
                             "role": "assistant",
                             "content": [
                                 {
                                     "type": "output_text",
-                                    "text": full_text,
+                                    "text": msg_st["text"],
                                     "annotations": [],
                                 }
                             ],
@@ -8746,6 +8818,7 @@ async def _responses_stream(
                     for event in _ensure_message_open():
                         yield event
                     full_text += visible_delta
+                    message_state["text"] += visible_delta
                     api_monitor.append_reply(monitor_id, visible_delta)
                     yield _sse(
                         "response.output_text.delta",
@@ -8828,6 +8901,7 @@ async def _responses_stream(
             for event in _ensure_message_open():
                 yield event
             full_text += final_visible
+            message_state["text"] += final_visible
             api_monitor.append_reply(monitor_id, final_visible)
             yield _sse(
                 "response.output_text.delta",
@@ -8886,6 +8960,10 @@ async def _responses_stream(
                 continue
 
             if kind == "message":
+                # Per-item text: message items closed mid-stream (healed-call
+                # rotation) already emitted their done events, so this state
+                # carries only its own text, not the whole stream's.
+                _msg_text = st["text"]
                 yield _sse(
                     "response.output_text.done",
                     {
@@ -8893,7 +8971,7 @@ async def _responses_stream(
                         "item_id": st["item_id"],
                         "output_index": st["output_index"],
                         "content_index": 0,
-                        "text": full_text,
+                        "text": _msg_text,
                     },
                 )
                 yield _sse(
@@ -8903,7 +8981,7 @@ async def _responses_stream(
                         "item_id": st["item_id"],
                         "output_index": st["output_index"],
                         "content_index": 0,
-                        "part": {"type": "output_text", "text": full_text, "annotations": []},
+                        "part": {"type": "output_text", "text": _msg_text, "annotations": []},
                     },
                 )
                 yield _sse(
@@ -8917,7 +8995,7 @@ async def _responses_stream(
                             "status": "completed",
                             "role": "assistant",
                             "content": [
-                                {"type": "output_text", "text": full_text, "annotations": []}
+                                {"type": "output_text", "text": _msg_text, "annotations": []}
                             ],
                         },
                     },
@@ -10916,7 +10994,17 @@ async def _openai_passthrough_stream(
                 if delta.get("tool_calls"):
                     # Structured call streamed: grammar mode worked. Flush any held
                     # text (it preceded the call) and relay verbatim from here on.
-                    return _healer_sse_lines(healer.structured_tool_call_seen()) + [raw_line]
+                    lines = _healer_sse_lines(healer.structured_tool_call_seen())
+                    if healed_call_index:
+                        # A healed call already went out on index 0..n-1; OpenAI
+                        # clients merge tool-call deltas by index, so shift the
+                        # native calls into the next indexes or they would merge
+                        # into the healed call.
+                        for tc in delta["tool_calls"]:
+                            if isinstance(tc, dict) and isinstance(tc.get("index"), int):
+                                tc["index"] += healed_call_index
+                        return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
+                    return lines + [raw_line]
                 content = delta.get("content")
                 finish = choice.get("finish_reason")
                 if not isinstance(content, str) or not content:

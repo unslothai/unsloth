@@ -15,13 +15,13 @@ generation is issued, so llama-server slot/KV-cache reuse is byte-identical.
 
 Healing only ever fires when the request declared client tools, and only
 promotes calls whose function name exactly matches a declared tool. Promotion
-is all-or-nothing per parse: if a response mixes a declared call with an
-undeclared (or unparseable-name) one, nothing is promoted and the text relays
-verbatim -- stripping the promoted markup would otherwise silently delete the
-undeclared call's text, which must reach the client as prose. Responses
-without a tool signal, requests without tools, and Studio's own enable-tools
-loop are untouched. Per-request opt-out: ``auto_heal_tool_calls: false``.
-Process kill-switch: ``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
+removes EXACTLY the promoted calls' markup spans (the parser reports them):
+undeclared calls, unparseable blocks, and suppressed alternate formats keep
+every byte and relay as text, so healing can never silently delete model
+output. Responses without a tool signal, requests without tools, and Studio's
+own enable-tools loop are untouched. Per-request opt-out:
+``auto_heal_tool_calls: false``. Process kill-switch:
+``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
 """
 
 import json
@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 from core.inference.tool_call_parser import TOOL_XML_SIGNALS, has_tool_signal
 from core.inference.tool_loop_controller import coerce_tool_arguments
-from core.tool_healing import parse_tool_calls_from_text, strip_tool_call_markup
+from core.tool_healing import parse_tool_calls_from_text
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
@@ -117,14 +117,25 @@ def _promote(
     return promoted
 
 
+def _remove_spans(text: str, spans: list) -> str:
+    """Text with the given non-overlapping, sorted (start, end) ranges removed."""
+    pieces = []
+    pos = 0
+    for start, end in spans:
+        pieces.append(text[pos:start])
+        pos = end
+    pieces.append(text[pos:])
+    return "".join(pieces)
+
+
 def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
     """Promote text-form tool calls in a non-streaming OpenAI message. In place.
 
     No-op (returns False) unless the message has NO structured ``tool_calls``
     (grammar mode already worked when it does) and its content carries a tool
-    signal where EVERY parsed call names a declared tool. All-or-nothing:
-    ``strip_tool_call_markup`` removes every tool block, so promoting a subset
-    would silently delete the unpromoted calls' text.
+    signal that parses into at least one declared call. Only the promoted
+    calls' markup spans are removed from the content; undeclared calls and
+    anything the parser did not consume stay in the text byte-intact.
     """
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return False
@@ -133,13 +144,21 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
         return False
     # allow_incomplete: the response is final, so a trailing unclosed block is a
     # model failure worth repairing (same as the enable-tools loop at drain).
-    parsed = parse_tool_calls_from_text(content, allow_incomplete = True)
-    calls = _promote(parsed, allowed_tools)
-    if not calls or len(calls) != len(parsed):
+    parsed, spans = parse_tool_calls_from_text(
+        content, allow_incomplete = True, with_spans = True
+    )
+    calls = []
+    promoted_spans = []
+    for call, span in zip(parsed, spans):
+        promoted = _promote([call], allowed_tools, id_offset = len(calls))
+        if promoted:
+            calls.append(promoted[0])
+            promoted_spans.append(span)
+    if not calls:
         return False
     msg["tool_calls"] = calls
     # OpenAI requires content = null on a pure tool-call turn.
-    msg["content"] = strip_tool_call_markup(content, final = True) or None
+    msg["content"] = _remove_spans(content, promoted_spans).strip() or None
     return True
 
 
@@ -215,9 +234,14 @@ class StreamToolCallHealer:
                         events.append(("text", emit))
                     self._buffer = self._buffer[len(self._buffer) - keep :]
                     return events
-            # HOLD: promote once at least one complete block parses.
-            parsed = parse_tool_calls_from_text(
-                self._buffer, id_offset = self._id_offset, allow_incomplete = False
+            # HOLD: handle the FIRST complete block per pass so events keep
+            # document order (a later declared call must not overtake an
+            # earlier undeclared one flushing as text).
+            parsed, spans = parse_tool_calls_from_text(
+                self._buffer,
+                id_offset = self._id_offset,
+                allow_incomplete = False,
+                with_spans = True,
             )
             if not parsed:
                 if len(self._buffer) > _MAX_HOLD_CHARS:
@@ -226,43 +250,60 @@ class StreamToolCallHealer:
                     self._holding = False
                     continue
                 return events
-            promoted = _promote(parsed, self._allowed, id_offset = self._id_offset)
-            if len(promoted) != len(parsed):
-                # At least one complete block names an undeclared tool (or has
-                # no usable name): false alarm for the WHOLE buffer. Stripping
-                # only the declared markup is impossible (the strip helper
-                # removes every block), so flush the raw text -- the client
-                # must still see what the model said.
-                events.append(("text", self._buffer))
-                self._buffer = ""
-                self._holding = False
-                continue
-            self._id_offset += len(promoted)
-            events.extend(("tool_call", call) for call in promoted)
-            # Drop the closed markup, keep surrounding text/partial blocks, and
-            # loop back to rescan the remainder (e.g. a second call following).
-            self._buffer = strip_tool_call_markup(self._buffer, final = False)
+            start, end = spans[0]
+            promoted = _promote([parsed[0]], self._allowed, id_offset = self._id_offset)
+            if promoted:
+                if start:
+                    events.append(("text", self._buffer[:start]))
+                events.append(("tool_call", promoted[0]))
+                self._id_offset += 1
+                # Drop exactly the promoted markup span; everything else
+                # (leading text, later blocks) stays and is rescanned.
+                self._buffer = self._buffer[end:]
+            else:
+                # Undeclared or unusable name: its markup is DATA, flush it
+                # (and anything before it) verbatim, then rescan the rest.
+                events.append(("text", self._buffer[:end]))
+                self._buffer = self._buffer[end:]
             self._holding = False
 
     def finalize(self) -> list:
-        """End of stream: last-chance heal of the residue, else flush it."""
+        """End of stream: last-chance heal of the residue, else flush it.
+
+        Events keep document order; only the promoted calls' markup spans are
+        dropped, every other residue byte flushes as text.
+        """
         if not self._buffer:
             return []
         residue, self._buffer = self._buffer, ""
         holding, self._holding = self._holding, False
         if self.dormant or not holding:
             return [("text", residue)]
-        parsed = parse_tool_calls_from_text(
-            residue, id_offset = self._id_offset, allow_incomplete = True
+        parsed, spans = parse_tool_calls_from_text(
+            residue,
+            id_offset = self._id_offset,
+            allow_incomplete = True,
+            with_spans = True,
         )
-        promoted = _promote(parsed, self._allowed, id_offset = self._id_offset)
-        if not promoted or len(promoted) != len(parsed):
+        events: list = []
+        pos = 0
+        any_promoted = False
+        for call, (start, end) in zip(parsed, spans):
+            promoted = _promote([call], self._allowed, id_offset = self._id_offset)
+            if promoted:
+                if residue[pos:start]:
+                    events.append(("text", residue[pos:start]))
+                events.append(("tool_call", promoted[0]))
+                self._id_offset += 1
+                any_promoted = True
+            else:
+                events.append(("text", residue[pos:end]))
+            pos = end
+        if not any_promoted:
             return [("text", residue)]
-        self._id_offset += len(promoted)
-        events = [("tool_call", call) for call in promoted]
-        remainder = strip_tool_call_markup(residue, final = True)
-        if remainder:
-            events.append(("text", remainder))
+        tail = residue[pos:].strip()
+        if tail:
+            events.append(("text", tail))
         return events
 
 
@@ -287,21 +328,27 @@ def _last_assistant_text(data: Any) -> str:
 
 
 def _heal_would_promote(text: str, allowed_tools: set) -> bool:
-    """Whether ``heal_openai_message`` would promote this text (all-or-nothing)."""
+    """Whether ``heal_openai_message`` would promote at least one call."""
     parsed = parse_tool_calls_from_text(text, allow_incomplete = True)
-    promoted = _promote(parsed, allowed_tools)
-    return bool(promoted) and len(promoted) == len(parsed)
+    return bool(_promote(parsed, allowed_tools))
 
 
 def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
     """True when a non-streaming chat response carries a usable tool call
-    (structured, or text-form that healing would promote). Used to decide
-    whether a nudge retry actually improved on the original response."""
+    (structured naming a DECLARED tool, or text-form that healing would
+    promote). Used to decide whether a nudge retry actually improved on the
+    original response; a hallucinated undeclared call is not an improvement."""
     message = _first_choice_message(data)
     if not message:
         return False
-    if message.get("tool_calls"):
-        return True
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        return any(
+            isinstance(tc, dict)
+            and isinstance(tc.get("function"), dict)
+            and tc["function"].get("name") in allowed_tools
+            for tc in tool_calls
+        )
     text = message.get("content")
     if not isinstance(text, str):
         return False
