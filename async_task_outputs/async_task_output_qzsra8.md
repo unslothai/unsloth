@@ -1,0 +1,2 @@
+- User asked: `So for the PyTorch part, which optimizations did you do, and what impact does each provide`
+- PENDING: answer with PyTorch optimizations and per-optimization impact.

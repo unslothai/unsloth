@@ -149,6 +149,7 @@ def _load(
     load_raises = False,
     exists = True,
     allow_local = True,
+    fast_accum = None,
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
@@ -171,6 +172,7 @@ def _load(
         dtype = "bfloat16",
         hf_token = None,
         scheme = scheme,
+        fast_accum = fast_accum,
         logger = None,
     )
 
@@ -216,6 +218,63 @@ def test_load_scheme_mismatch_is_none(monkeypatch, tmp_path):
 
 def test_load_base_mismatch_is_none(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, _good_ckpt(base = "other/model")) is None
+
+
+def test_load_missing_base_metadata_is_none(monkeypatch, tmp_path):
+    # A checkpoint whose keys happen to match a different base can load strict=True and then
+    # render from the wrong weights, so a base was requested but none recorded must be refused.
+    ckpt = _good_ckpt()
+    del ckpt["metadata"]["base_model_id"]
+    assert _load(monkeypatch, tmp_path, ckpt) is None
+
+
+def test_load_fast_accum_mismatch_is_none(monkeypatch, tmp_path):
+    # fp8 fast-accum is baked into the saved kernels; an explicit request that contradicts
+    # the recorded value must fall to the dense path (which honors it), not silently use it.
+    ckpt = _good_ckpt()
+    ckpt["metadata"]["fast_accum"] = True
+    assert _load(monkeypatch, tmp_path, ckpt, fast_accum = False) is None
+
+
+def test_load_fast_accum_match_ok(monkeypatch, tmp_path):
+    ckpt = _good_ckpt()
+    ckpt["metadata"]["fast_accum"] = True
+    assert _load(monkeypatch, tmp_path, ckpt, fast_accum = True) is not None
+
+
+def test_load_fast_accum_auto_ignores_baked(monkeypatch, tmp_path):
+    # An auto (None) request must accept whatever the checkpoint baked, on any GPU class.
+    ckpt = _good_ckpt()
+    ckpt["metadata"]["fast_accum"] = True
+    assert _load(monkeypatch, tmp_path, ckpt, fast_accum = None) is not None
+
+
+def test_load_exclude_tokens_mismatch_is_none(monkeypatch, tmp_path):
+    # An int8 checkpoint recording a stale exclusion set (would bake M=1 modulation linears
+    # as int8 and crash) must be rejected rather than loaded.
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["exclude_name_tokens"] = ["stale_token"]
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+
+
+def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8"))
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
+
+
+def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
+    # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint
+    # that passed the gate is silently skipped.
+    import os
+
+    real = tmp_path / "transformer_fp8.pt"
+    real.write_bytes(b"x")
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(real) if p == "~/ckpt.pt" else p)
+    source = PrequantSource(kind = "path", location = "~/ckpt.pt", filename = None)
+    assert pq._resolve_checkpoint_path(source, None) == str(real)
 
 
 # ── local-path opt-in gate (RCE guard) ───────────────────────────────────────────

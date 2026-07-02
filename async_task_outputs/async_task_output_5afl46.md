@@ -1,0 +1,1 @@
+- GPU: ours beats ComfyUI; pending Z/Flux2
