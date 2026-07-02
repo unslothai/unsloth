@@ -160,6 +160,7 @@ def run(mode, steps, seed, res):
         print("FAIL: runtime reference image missing; run --mode runtime first", flush = True)
         return 1
     from PIL import Image
+
     lp = _lpips(np.array(Image.open(ref_path).convert("RGB")), np.array(img))
     print(f"[prequant] LPIPS_vs_runtime={lp}", flush = True)
     if lp is None:

@@ -226,6 +226,7 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
+
         # Expand ~ once: the allowlist gate (_local_prequant_path_allowed) already
         # expands it, so a "~/..." path that passed the gate must be expanded here too
         # or os.path.isfile() sees the literal "~" and silently skips a real checkpoint.
@@ -277,7 +278,9 @@ def _validate_checkpoint(
             _warn(
                 logger,
                 scheme,
-                ValueError(f"checkpoint metadata missing base_model_id; refusing for base {base!r}"),
+                ValueError(
+                    f"checkpoint metadata missing base_model_id; refusing for base {base!r}"
+                ),
             )
             return False
         if not _same_base_model(ckpt_base, base):
@@ -300,13 +303,14 @@ def _validate_checkpoint(
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
-
         expected = tuple(exclude_tokens_for_scheme(scheme))
         if tuple(ckpt_excludes) != expected:
             _warn(
                 logger,
                 scheme,
-                ValueError(f"checkpoint exclude_name_tokens {tuple(ckpt_excludes)!r} != {expected!r}"),
+                ValueError(
+                    f"checkpoint exclude_name_tokens {tuple(ckpt_excludes)!r} != {expected!r}"
+                ),
             )
             return False
     # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.

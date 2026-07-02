@@ -296,7 +296,9 @@ def _compare(
         if all(x == math.inf for x in xs):
             return math.inf
         vals = [
-            _PERFECT_MATCH_PSNR if x == math.inf else x for x in xs if math.isfinite(x) or x == math.inf
+            _PERFECT_MATCH_PSNR if x == math.inf else x
+            for x in xs
+            if math.isfinite(x) or x == math.inf
         ]
         return round(sum(vals) / len(vals), 4) if vals else None
 

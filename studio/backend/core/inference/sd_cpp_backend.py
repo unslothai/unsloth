@@ -370,6 +370,7 @@ class SdCppDiffusionBackend:
             # asset-fetch / local-path / cache-IO failure can embed absolute paths
             # (e.g. /home/<user>/...), and the diffusers load path scrubs the same way.
             from utils.native_path_leases import redact_native_paths
+
             with self._lock:
                 if self._load_token == _load_token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))

@@ -55,6 +55,7 @@ _INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
 def _install_accelerator_for(backend: str) -> str:
     return _INSTALL_ACCELERATOR.get(backend, "auto")
 
+
 # The engine the current (or most recent) load committed to, and why a non-native
 # choice was made. Mutated only under _lock during selection.
 _lock = threading.Lock()

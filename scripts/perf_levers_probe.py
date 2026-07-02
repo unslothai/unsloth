@@ -156,7 +156,9 @@ def run(
         try:
             pipe.transformer.set_attention_backend("native")
         except Exception as exc:  # noqa: BLE001 — best-effort isolation
-            print(f"    [{tag}] attn(native-reset)={type(exc).__name__}:{str(exc)[:60]}", flush = True)
+            print(
+                f"    [{tag}] attn(native-reset)={type(exc).__name__}:{str(exc)[:60]}", flush = True
+            )
     if fbcache is not None:
         try:
             from diffusers.hooks import FirstBlockCacheConfig, apply_first_block_cache
