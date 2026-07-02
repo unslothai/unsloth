@@ -220,3 +220,31 @@ def test_walkback_handles_malformed_function_string():
         ]
     )
     assert req.messages[-1].tool_call_id == "call_a"
+
+
+# ── DiffusionLoadRequest.attention_backend casing (Literal validated before normalizer) ──
+import pytest
+from pydantic import ValidationError
+
+from models.inference import DiffusionLoadRequest
+
+
+def _diff_load(**kw):
+    return DiffusionLoadRequest(model_path = "repo", gguf_filename = "m.gguf", **kw)
+
+
+def test_attention_backend_casing_and_whitespace_normalized():
+    # The dispatcher accepts case/whitespace variants; the before-validator must fold them so
+    # the lowercase Literal does not 422 an otherwise-valid request.
+    assert _diff_load(attention_backend = "CuDNN").attention_backend == "cudnn"
+    assert _diff_load(attention_backend = "  sage ").attention_backend == "sage"
+
+
+def test_attention_backend_none_preserved():
+    assert _diff_load(attention_backend = None).attention_backend is None
+    assert _diff_load().attention_backend is None
+
+
+def test_attention_backend_unknown_still_rejected():
+    with pytest.raises(ValidationError):
+        _diff_load(attention_backend = "bogus")

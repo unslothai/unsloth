@@ -1,0 +1,1 @@
+- PR `#6717` int8 prequant fix pending CI

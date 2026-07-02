@@ -819,6 +819,10 @@ function RecipePopover({
   // Controlled + force-closed off-tab: PopoverContent portals to body, so the
   // hidden/inert page wrapper can't contain it when the page is kept mounted.
   const [open, setOpen] = useState(false);
+  // Also clear the flag when leaving the tab so it does not reopen on return.
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
   return (
     <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
@@ -1227,6 +1231,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     })();
   }, [active, refreshStatus]);
 
+  // Collapse the body-ported popovers when leaving the tab. Their open state is
+  // controlled and force-closed via `active && open` while off-tab, but the
+  // underlying flag stays set, so returning to /images would otherwise pop them
+  // back open unprompted. Reset it so the page comes back in a neutral state.
+  useEffect(() => {
+    if (active) return;
+    setSelectorOpen(false);
+    setAspectOpen(false);
+  }, [active]);
+
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
   const pollLoadProgress = useCallback(async () => {
@@ -1410,8 +1424,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
-      // A direct local .gguf file picked without a variant isn't wired for Images.
-      if (meta.isGguf) return;
+      // A direct single-file local .gguf pick has no variant/filename (custom folder /
+      // LM Studio). Load it by splitting the path into (parent dir, basename) the backend
+      // resolves, instead of silently doing nothing.
+      if (meta.isGguf) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        if (!filename.toLowerCase().endsWith(".gguf")) return;
+        // A direct pick carries no curated variant label; surface the filename so
+        // the selector stops advertising the previously loaded quant. Optimistic,
+        // reverted if the load fails to start (mirrors the curated branch above).
+        const prevQuant = quant;
+        setQuant(filename);
+        const dq2 = defaultsFor(id);
+        setSteps(dq2.steps);
+        setGuidance(dq2.guidance);
+        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
+          if (!started) setQuant(prevQuant);
+        });
+        return;
+      }
       // Otherwise treat it as a full diffusers repo (safetensors / bnb-4bit). The backend
       // infers the family + base repo from the id and gates loads to unsloth/* repos or
       // on-device paths, so only attempt those; other Hub orgs can't be assembled here.
