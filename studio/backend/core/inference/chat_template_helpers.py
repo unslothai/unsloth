@@ -6,7 +6,49 @@ Dependency-light wrapper around tokenizer.apply_chat_template with a kwarg
 fallback for templates that reject reasoning/tools args.
 """
 
+import json
 from typing import Optional
+
+
+def _normalize_tool_call_arguments(messages: list) -> list:
+    """Coerce each assistant ``tool_calls[].function.arguments`` from a JSON
+    string to a dict.
+
+    The OpenAI wire format carries ``arguments`` as a JSON string, but some chat
+    templates (e.g. the stricter Qwen tool templates shipped with mlx-community
+    checkpoints) iterate ``arguments.items()`` and raise
+    ``TypeError: Can only get item pairs from a mapping.`` on the string form
+    when a prior tool call is re-rendered on the next turn. A dict works on both
+    strict and lenient templates, so parse the string; leave non-JSON or non-dict
+    values untouched. Returns the original list unchanged when nothing needed
+    coercing (no copy)."""
+    mutated = False
+    out: list = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not tool_calls:
+            out.append(msg)
+            continue
+        new_calls = []
+        msg_changed = False
+        for call in tool_calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    call = {**call, "function": {**fn, "arguments": parsed}}
+                    msg_changed = True
+            new_calls.append(call)
+        if msg_changed:
+            out.append({**msg, "tool_calls": new_calls})
+            mutated = True
+        else:
+            out.append(msg)
+    return out if mutated else messages
 
 
 def apply_chat_template_for_generation(
@@ -21,6 +63,7 @@ def apply_chat_template_for_generation(
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
     propagate."""
+    messages = _normalize_tool_call_arguments(messages)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
