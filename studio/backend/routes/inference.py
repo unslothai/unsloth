@@ -9487,6 +9487,7 @@ async def anthropic_messages(
                     session_id = payload.session_id,
                     cancel_id = payload.cancel_id,
                     disable_parallel_tool_use = _disable_parallel,
+                    auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 )
             )
         return await _monitored_anthropic(
@@ -9506,6 +9507,7 @@ async def anthropic_messages(
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
                 disable_parallel_tool_use = _disable_parallel,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls,
             )
         )
 
@@ -10076,6 +10078,7 @@ async def _anthropic_passthrough_stream(
     session_id = None,
     cancel_id = None,
     disable_parallel_tool_use = False,
+    auto_heal_tool_calls = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
@@ -10112,6 +10115,13 @@ async def _anthropic_passthrough_stream(
 
     async def _stream():
         emitter = AnthropicPassthroughEmitter()
+        # Promote text-form tool calls (declared client tools only) into
+        # tool_use blocks; verbatim behavior when healing is off or no tools.
+        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools)
+        if _allowed_tools:
+            emitter.enable_healing(
+                _allowed_tools, disable_parallel_tool_use = disable_parallel_tool_use
+            )
         for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
             yield line
 
@@ -10248,6 +10258,7 @@ async def _anthropic_passthrough_non_streaming(
     presence_penalty = None,
     tool_choice = "auto",
     disable_parallel_tool_use = False,
+    auto_heal_tool_calls = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -10283,6 +10294,15 @@ async def _anthropic_passthrough_non_streaming(
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     finish_reason = choice.get("finish_reason")
+
+    # Promote text-form tool calls (declared client tools only) into structured
+    # tool_calls BEFORE block building, so the tool_use loop and the stop_reason
+    # line below treat them exactly like native calls. The legacy XML strip
+    # still runs on whatever text remains, preserving today's cleanup when
+    # nothing was promoted (or healing is opted out).
+    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools)
+    if _allowed_tools:
+        heal_openai_message(message, _allowed_tools)
 
     content_blocks = []
     text = message.get("content") or ""

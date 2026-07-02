@@ -396,6 +396,235 @@ class TestOpenaiNonStreamingRoute:
         asyncio.run(_run())
 
 
+class TestAnthropicEmitterHealing:
+    def _events(self, emitter, chunks, finish = True):
+        lines = []
+        for chunk in chunks:
+            lines += emitter.feed_chunk(chunk)
+        if finish:
+            lines += emitter.finish()
+        return [json.loads(ln.split("data: ", 1)[1]) for ln in lines if "data: " in ln]
+
+    def _emitter(self, allowed = ("lookup",), **kwargs):
+        from core.inference.anthropic_compat import AnthropicPassthroughEmitter
+
+        emitter = AnthropicPassthroughEmitter()
+        emitter.enable_healing(set(allowed), **kwargs)
+        return emitter
+
+    def _chunk(self, content = None, tool_calls = None, finish_reason = None):
+        delta = {}
+        if content is not None:
+            delta["content"] = content
+        if tool_calls is not None:
+            delta["tool_calls"] = tool_calls
+        return {"choices": [{"delta": delta, "finish_reason": finish_reason}]}
+
+    def test_xml_becomes_tool_use_block_and_stop_reason(self):
+        events = self._events(
+            self._emitter(),
+            [
+                self._chunk(content = LOOKUP_XML),
+                self._chunk(finish_reason = "stop"),
+            ],
+        )
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        (tool_start,) = [e for e in starts if e["content_block"]["type"] == "tool_use"]
+        assert tool_start["content_block"]["name"] == "lookup"
+        assert tool_start["content_block"]["id"].startswith("toolu_")
+        (args,) = [
+            e["delta"]["partial_json"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "input_json_delta"
+        ]
+        assert json.loads(args) == {"q": "x"}
+        (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
+        assert message_delta["delta"]["stop_reason"] == "tool_use"
+
+    def test_mid_block_signal_closes_text_block_first(self):
+        events = self._events(
+            self._emitter(),
+            [
+                self._chunk(content = f"Let me check {LOOKUP_XML}"),
+                self._chunk(finish_reason = "stop"),
+            ],
+        )
+        kinds = [
+            (e["type"], (e.get("content_block") or e.get("delta") or {}).get("type"))
+            for e in events
+            if e["type"].startswith("content_block")
+        ]
+        # text opens, streams the safe prefix, closes; then the tool_use block.
+        assert kinds[0] == ("content_block_start", "text")
+        assert kinds[1] == ("content_block_delta", "text_delta")
+        assert kinds[2] == ("content_block_stop", None)
+        assert kinds[3] == ("content_block_start", "tool_use")
+        texts = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert "".join(texts) == "Let me check "
+
+    def test_false_alarm_streams_as_text(self):
+        events = self._events(
+            self._emitter(),
+            [self._chunk(content = "use the <div> tag"), self._chunk(finish_reason = "stop")],
+        )
+        texts = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert "".join(texts) == "use the <div> tag"
+        (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
+        assert message_delta["delta"]["stop_reason"] == "end_turn"
+
+    def test_signal_split_across_chunks(self):
+        events = self._events(
+            self._emitter(),
+            [
+                self._chunk(content = "<tool"),
+                self._chunk(content = '_call>{"name":"lookup","arguments":{}}'),
+                self._chunk(finish_reason = "stop"),
+            ],
+        )
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert [e["content_block"]["type"] for e in starts] == ["tool_use"]
+        texts = [
+            e
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert texts == []
+
+    def test_max_tokens_wins_over_healed_stop_reason(self):
+        events = self._events(
+            self._emitter(),
+            [self._chunk(content = LOOKUP_XML), self._chunk(finish_reason = "length")],
+        )
+        (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
+        assert message_delta["delta"]["stop_reason"] == "max_tokens"
+
+    def test_structured_deltas_disable_healing_and_flush(self):
+        structured = [
+            {
+                "index": 0,
+                "id": "call_up",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }
+        ]
+        events = self._events(
+            self._emitter(),
+            [
+                self._chunk(content = "held <tool"),
+                self._chunk(tool_calls = structured),
+                self._chunk(finish_reason = "tool_calls"),
+            ],
+        )
+        texts = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert "".join(texts) == "held <tool"  # nothing swallowed
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert [e["content_block"]["type"] for e in starts] == ["text", "tool_use"]
+
+    def test_disable_parallel_caps_healed_calls(self):
+        two = LOOKUP_XML + '<tool_call>{"name":"lookup","arguments":{"q":"y"}}</tool_call>'
+        events = self._events(
+            self._emitter(disable_parallel_tool_use = True),
+            [self._chunk(content = two), self._chunk(finish_reason = "stop")],
+        )
+        starts = [
+            e
+            for e in events
+            if e.get("type") == "content_block_start"
+            and e["content_block"]["type"] == "tool_use"
+        ]
+        assert len(starts) == 1
+
+    def test_no_healing_means_verbatim_text(self):
+        from core.inference.anthropic_compat import AnthropicPassthroughEmitter
+
+        emitter = AnthropicPassthroughEmitter()  # enable_healing never called
+        events = self._events(
+            emitter,
+            [self._chunk(content = LOOKUP_XML), self._chunk(finish_reason = "stop")],
+        )
+        texts = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert "".join(texts) == LOOKUP_XML
+
+
+class TestAnthropicNonStreamingRoute:
+    async def _drive(self, monkeypatch, bodies, auto_heal = None, tools = None):
+        import routes.inference as inf_mod
+        from routes.inference import _anthropic_passthrough_non_streaming
+
+        client = ScriptedClient(bodies)
+        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        response = await _anthropic_passthrough_non_streaming(
+            _llama_backend(),
+            [{"role": "user", "content": "hi"}],
+            tools if tools is not None else [LOOKUP_TOOL],
+            0.7,
+            0.95,
+            None,
+            256,
+            "msg_test",
+            "gguf",
+            auto_heal_tool_calls = auto_heal,
+        )
+        return client, json.loads(response.body)
+
+    def test_promotes_xml_to_tool_use(self, monkeypatch):
+        async def _run():
+            _, data = await self._drive(monkeypatch, [_upstream_message(LOOKUP_XML)])
+            (block,) = [b for b in data["content"] if b["type"] == "tool_use"]
+            assert block["name"] == "lookup"
+            assert block["input"] == {"q": "x"}
+            assert data["stop_reason"] == "tool_use"
+            assert not any(b["type"] == "text" for b in data["content"])
+
+        asyncio.run(_run())
+
+    def test_opt_out_keeps_legacy_strip(self, monkeypatch):
+        async def _run():
+            _, data = await self._drive(
+                monkeypatch, [_upstream_message(f"plan {LOOKUP_XML}")], auto_heal = False
+            )
+            assert data["stop_reason"] == "end_turn"
+            (block,) = data["content"]
+            assert block["type"] == "text"
+            assert block["text"] == "plan"  # XML stripped, nothing promoted
+
+        asyncio.run(_run())
+
+    def test_undeclared_tool_not_promoted(self, monkeypatch):
+        async def _run():
+            xml = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
+            _, data = await self._drive(monkeypatch, [_upstream_message(xml)])
+            assert data["stop_reason"] == "end_turn"
+            assert not any(b["type"] == "tool_use" for b in data["content"])
+
+        asyncio.run(_run())
+
+    def test_length_beats_tool_use(self, monkeypatch):
+        async def _run():
+            _, data = await self._drive(
+                monkeypatch, [_upstream_message(LOOKUP_XML, finish_reason = "length")]
+            )
+            assert data["stop_reason"] == "max_tokens"
+            assert any(b["type"] == "tool_use" for b in data["content"])
+
+        asyncio.run(_run())
+
+
 class TestOpenaiStreamingRoute:
     def test_heals_streamed_xml(self, monkeypatch):
         async def _run():

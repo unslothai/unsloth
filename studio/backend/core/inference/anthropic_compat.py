@@ -494,6 +494,25 @@ class AnthropicPassthroughEmitter:
         self._usage: dict = {}
         self._stop_reason: str = "end_turn"
         self._stop_sequence: Optional[str] = None
+        # Optional text-form tool-call healing (client-tool passthrough only).
+        self._healer = None
+        self._healed_tool_use = False
+        self._healed_call_count = 0
+        self._heal_disable_parallel = False
+
+    def enable_healing(
+        self, allowed_tools: set, *, disable_parallel_tool_use: bool = False
+    ) -> None:
+        """Promote text-form tool calls in streamed content to tool_use blocks.
+
+        Only calls naming a tool in ``allowed_tools`` (the client's declared
+        tools) are promoted; everything else streams as text exactly as before.
+        Never enabled for Studio's own tool loop.
+        """
+        from core.inference.passthrough_healing import StreamToolCallHealer
+
+        self._healer = StreamToolCallHealer(allowed_tools)
+        self._heal_disable_parallel = disable_parallel_tool_use
 
     def start(
         self,
@@ -542,23 +561,26 @@ class AnthropicPassthroughEmitter:
         delta = choice.get("delta") or {}
         finish_reason = choice.get("finish_reason")
 
+        # ── Structured tool calls take precedence over healing ──
+        # Grammar mode worked: flush anything the healer held (it preceded the
+        # call in the model's output) and relay verbatim from here on.
+        if delta.get("tool_calls") and self._healer is not None and not self._healer.dormant:
+            for kind, value in self._healer.structured_tool_call_seen():
+                if kind == "text" and value:
+                    events.extend(self._emit_text_delta(value))
+
         # ── Text content ──
         content = delta.get("content")
-        if content:
-            if self._current_block_type != "text":
-                if self._current_block_type is not None:
-                    events.append(self._close_current_block())
-                events.extend(self._open_text_block())
-            events.append(
-                build_anthropic_sse_event(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": self.block_index,
-                        "delta": {"type": "text_delta", "text": content},
-                    },
-                )
-            )
+        if content and self._healer is not None and not self._healer.dormant:
+            # Route text through the healer: held/promoted portions become
+            # synthetic tool_use blocks, the rest streams as text unchanged.
+            for kind, value in self._healer.feed(content):
+                if kind == "text":
+                    events.extend(self._emit_text_delta(value))
+                else:
+                    events.extend(self._emit_healed_tool_use(value))
+        elif content:
+            events.extend(self._emit_text_delta(content))
 
         # ── Tool calls (streaming deltas) ──
         tool_calls = delta.get("tool_calls") or []
@@ -618,6 +640,17 @@ class AnthropicPassthroughEmitter:
 
     def finish(self) -> list[str]:
         events: list[str] = []
+        if self._healer is not None:
+            # Last-chance heal of any held residue (e.g. an unclosed tool block).
+            for kind, value in self._healer.finalize():
+                if kind == "text" and value:
+                    events.extend(self._emit_text_delta(value))
+                elif kind == "tool_call":
+                    events.extend(self._emit_healed_tool_use(value))
+        if self._healed_tool_use and self._stop_reason != "max_tokens":
+            # A promoted call must stop for tool use; a truncation still wins
+            # (its arguments may be incomplete).
+            self._stop_reason = "tool_use"
         if self._current_block_type is not None:
             events.append(self._close_current_block())
         events.append(
@@ -639,6 +672,72 @@ class AnthropicPassthroughEmitter:
                 {"type": "message_stop"},
             )
         )
+        return events
+
+    def _emit_text_delta(self, content: str) -> list[str]:
+        events: list[str] = []
+        if self._current_block_type != "text":
+            if self._current_block_type is not None:
+                events.append(self._close_current_block())
+            events.extend(self._open_text_block())
+        events.append(
+            build_anthropic_sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self.block_index,
+                    "delta": {"type": "text_delta", "text": content},
+                },
+            )
+        )
+        return events
+
+    def _emit_healed_tool_use(self, call: dict) -> list[str]:
+        # A healed call arrives complete, so its tool_use block opens, carries
+        # one input_json_delta, and closes immediately; an open text block is
+        # closed first (only the safe prefix ever streamed into it).
+        if self._heal_disable_parallel and self._healed_call_count >= 1:
+            return []
+        events: list[str] = []
+        if self._current_block_type is not None:
+            events.append(self._close_current_block())
+        function = call.get("function") or {}
+        tool_id = anthropic_tool_use_id("")
+        self.block_index += 1
+        self._current_block_type = "tool_use"
+        events.append(
+            build_anthropic_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self.block_index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": function.get("name", ""),
+                        "input": {},
+                    },
+                },
+            )
+        )
+        arguments = function.get("arguments") or ""
+        if arguments:
+            events.append(
+                build_anthropic_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": self.block_index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments,
+                        },
+                    },
+                )
+            )
+        events.append(self._close_current_block())
+        self._healed_tool_use = True
+        self._healed_call_count += 1
         return events
 
     def _open_text_block(self) -> list[str]:
