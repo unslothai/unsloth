@@ -11,6 +11,7 @@ documents already indexed under the old model must be re-uploaded after a change
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -23,11 +24,18 @@ MAX_EMBEDDING_MODEL_LENGTH = 512
 # readers converge within the TTL.
 _CACHE_TTL_S = 2.0
 _cached: tuple[float, str | None] | None = None
+# Bumped on every write/invalidate. A reader captures it before the DB read and
+# only fills the cache if it is unchanged afterward, so a read that overlapped a
+# save cannot repopulate the cache with the pre-save value for the whole TTL.
+_generation = 0
+_lock = threading.Lock()
 
 
 def _invalidate_cache() -> None:
-    global _cached
-    _cached = None
+    global _cached, _generation
+    with _lock:
+        _cached = None
+        _generation += 1
 
 
 def default_embedding_model() -> str:
@@ -63,9 +71,11 @@ def get_stored_embedding_model() -> str | None:
     """The persisted override, or None when unset/invalid."""
     global _cached
     now = time.monotonic()
-    cached = _cached
-    if cached is not None and now - cached[0] < _CACHE_TTL_S:
-        return cached[1]
+    with _lock:
+        cached = _cached
+        if cached is not None and now - cached[0] < _CACHE_TTL_S:
+            return cached[1]
+        gen = _generation
     try:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(EMBEDDING_MODEL_SETTING_KEY, None)
@@ -73,12 +83,18 @@ def get_stored_embedding_model() -> str | None:
         # Transient store failure: keep the last known value instead of
         # silently reverting the embed/search hot path to the default model,
         # which would mix vector spaces mid-ingestion.
-        if cached is not None:
-            _cached = (now, cached[1])
-            return cached[1]
+        with _lock:
+            if _cached is not None:
+                _cached = (time.monotonic(), _cached[1])
+                return _cached[1]
         return None
     value = _coerce_embedding_model(stored)
-    _cached = (now, value)
+    with _lock:
+        # Only cache when no save landed while we were reading; otherwise this
+        # value may be pre-save, and caching it would mask the new one for the
+        # TTL. The next reader re-reads the committed value.
+        if _generation == gen:
+            _cached = (time.monotonic(), value)
     return value
 
 

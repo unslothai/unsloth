@@ -379,7 +379,14 @@ def update_embedding_model(
         and not (_llama_backend_active() and _resolves_as_local_gguf(model))
     ):
         hf_token = (payload.hf_token or "").strip() or None
-        if not is_embedding_model(model, hf_token = hf_token):
+        from core.rag import config as rag_config
+
+        # A GGUF-named repo on the llama-server backend is loaded from its .gguf
+        # files, which rarely carry sentence-transformers metadata; verify the
+        # GGUF is available (below) rather than the ST embedding-metadata gate,
+        # which would wrongly 409 a valid online GGUF embedder.
+        gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
+        if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
             raise HTTPException(
                 status_code = 409,
                 detail = (
