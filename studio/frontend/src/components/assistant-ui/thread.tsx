@@ -2860,18 +2860,22 @@ const VoiceEngine: FC = () => {
       return;
     }
     speakRef.current(text);
-    // Arm the mic DURING TTS so barge-in works for both engines. Web Speech
-    // barges via the transcript-growth debounce in the silence-timer effect;
-    // Whisper barges via submitTranscript (a finalized utterance while TTS plays
-    // stops the speech, then sends). Whisper's own guards keep this from feeding
-    // back on itself: noise suppression, a min-voiced-duration gate, and silence
-    // trimming in the adapter mean the model's own audio / room noise / silence
-    // don't reach Whisper as a spurious turn.
-    if (!auiRef.current.composer().getState().dictation) {
+    // Arm the mic DURING TTS so barge-in works for both engines. Whisper barges
+    // via its real-time VAD (requestVoiceBargeIn) which needs a live mic session
+    // while the model speaks. The just-ended turn's dictation can read as "set"
+    // for a few frames, and a single check would skip arming (leaving no mic to
+    // barge with), so retry until it clears, then click Dictate.
+    const armDuringTts = (n: number) => {
+      if (voiceModeRef.current !== "active") return;
+      if (auiRef.current.composer().getState().dictation) {
+        if (n < 6) setTimeout(() => armDuringTts(n + 1), 60);
+        return;
+      }
       document
         .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
         ?.click();
-    }
+    };
+    armDuringTts(0);
   }, [isThreadRunning, resumeListen]);
 
   // Silence timer: only fires in "active" state. Streaming STT only — Whisper
