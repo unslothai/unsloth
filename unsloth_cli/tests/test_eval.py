@@ -92,6 +92,7 @@ def test_make_jsonl_task_generates_expected_spec(tmp_path):
     assert spec["doc_to_text"] == "{{question}}"
     assert spec["doc_to_target"] == "{{answer}}"
     assert spec["metric_list"][0]["metric"] == "exact_match"
+    assert spec["fewshot_split"] == "train"
 
 
 def test_make_jsonl_task_honours_custom_keys(tmp_path):
@@ -317,7 +318,7 @@ def fake_eval_env(monkeypatch):
 
     # deterministic device detection, no real torch needed
     torch_mod = types.ModuleType("torch")
-    torch_mod.cuda = SimpleNamespace(is_available = lambda: False)
+    torch_mod.cuda = SimpleNamespace(is_available = lambda: False, device_count = lambda: 0)
     torch_mod.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False))
 
     # no adapter_config.json on the fake Hub, and no network access in tests
@@ -584,6 +585,9 @@ def test_eval_hf_honors_base_model_for_remote_adapter(fake_eval_env, tmp_path):
 
 
 def test_eval_cuda_index_keeps_auto_batch_size(fake_eval_env, tmp_path):
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: True, device_count = lambda: 1
+    )
     result = CliRunner().invoke(
         _eval_app(),
         [
@@ -646,6 +650,9 @@ def test_eval_rejects_unknown_backend(fake_eval_env, tmp_path):
 
 
 def test_eval_hf_cuda_without_bnb_loads_full_precision(fake_eval_env, tmp_path, monkeypatch):
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: True, device_count = lambda: 1
+    )
     monkeypatch.setattr(evalmod, "_bitsandbytes_available", lambda: False)
     result = CliRunner().invoke(
         _eval_app(),
@@ -696,6 +703,93 @@ def test_eval_hf_hub_adapter_uses_hub_tokenizer(fake_eval_env, tmp_path, monkeyp
         "tokenizer": "someuser/my-lora",
         "max_length": 2048,
     }
+
+
+def test_eval_hf_rejects_cuda_when_unavailable(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cuda",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "CUDA is not available" in result.output
+
+
+def test_eval_hf_rejects_out_of_range_cuda_index(fake_eval_env, tmp_path):
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: True, device_count = lambda: 1
+    )
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cuda:1",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "only 1 CUDA device(s)" in result.output
+
+
+def test_eval_worker_rank_exits_cleanly_on_none_results(fake_eval_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("RANK", "1")
+    sys.modules["lm_eval"].simple_evaluate = lambda **kwargs: None
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Saved results" not in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_eval_none_results_errors_on_single_process(fake_eval_env, tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising = False)
+    monkeypatch.delenv("LOCAL_RANK", raising = False)
+    sys.modules["lm_eval"].simple_evaluate = lambda **kwargs: None
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "no results" in result.output
 
 
 def test_eval_hf_token_sets_env(fake_eval_env, tmp_path, monkeypatch):

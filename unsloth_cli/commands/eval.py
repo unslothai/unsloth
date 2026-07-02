@@ -88,6 +88,34 @@ def _bitsandbytes_available() -> bool:
     return find_spec("bitsandbytes") is not None
 
 
+def _hf_device_error(device: str) -> Optional[str]:
+    # lm-eval's HFLM silently falls back to its default device when handed a
+    # string it doesn't recognise (e.g. cuda:1 on a one-GPU host), so reject
+    # unavailable devices instead of letting the run land somewhere else
+    import torch
+
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            return f"--device {device} requested but CUDA is not available."
+        _, _, index = device.partition(":")
+        if index:
+            try:
+                idx = int(index)
+            except ValueError:
+                return f"invalid --device '{device}'."
+            count = torch.cuda.device_count()
+            if not 0 <= idx < count:
+                return (
+                    f"--device {device} requested but only {count} CUDA "
+                    "device(s) are available."
+                )
+    elif device.startswith("mps"):
+        mps = getattr(torch.backends, "mps", None)
+        if not (mps and mps.is_available()):
+            return f"--device {device} requested but MPS is not available."
+    return None
+
+
 def _registry_names(manager) -> set:
     return (
         set(getattr(manager, "all_tasks", []) or [])
@@ -142,6 +170,9 @@ def make_jsonl_task(
         "dataset_path": builder,
         "dataset_kwargs": {"data_files": str(data_file)},
         "test_split": "train",
+        # explicit few-shot source so --num-fewshot works on every lm-eval
+        # version we support (the file has a single split)
+        "fewshot_split": "train",
         "output_type": "generate_until",
         "doc_to_text": "{{" + input_key + "}}",
         "doc_to_target": "{{" + target_key + "}}",
@@ -403,6 +434,11 @@ def evaluate(
                     device = "mps"
                 else:
                     device = "cpu"
+            else:
+                device_error = _hf_device_error(device)
+                if device_error:
+                    typer.echo(f"Error: {device_error}", err = True)
+                    raise typer.Exit(code = 2)
             if bs == "auto" and not device.startswith("cuda"):
                 typer.echo(
                     "Note: batch_size 'auto' is slow on CPU/MPS — using 1 (override with --batch-size)."
@@ -477,6 +513,10 @@ def evaluate(
         shutil.rmtree(tmp_dir, ignore_errors = True)
 
     if results is None:
+        # lm-eval hands results only to rank 0 of a multi-process run
+        # (accelerate/torchrun); worker ranks get None and must exit cleanly
+        if os.environ.get("RANK", "0") != "0" or os.environ.get("LOCAL_RANK", "0") != "0":
+            return
         typer.echo("Error: evaluation returned no results.", err = True)
         raise typer.Exit(code = 1)
 
