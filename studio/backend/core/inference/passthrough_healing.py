@@ -14,7 +14,11 @@ RESPONSE side only: the upstream request body is never touched, no extra
 generation is issued, so llama-server slot/KV-cache reuse is byte-identical.
 
 Healing only ever fires when the request declared client tools, and only
-promotes calls whose function name exactly matches a declared tool. Responses
+promotes calls whose function name exactly matches a declared tool. Promotion
+is all-or-nothing per parse: if a response mixes a declared call with an
+undeclared (or unparseable-name) one, nothing is promoted and the text relays
+verbatim -- stripping the promoted markup would otherwise silently delete the
+undeclared call's text, which must reach the client as prose. Responses
 without a tool signal, requests without tools, and Studio's own enable-tools
 loop are untouched. Per-request opt-out: ``auto_heal_tool_calls: false``.
 Process kill-switch: ``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
@@ -118,7 +122,9 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
 
     No-op (returns False) unless the message has NO structured ``tool_calls``
     (grammar mode already worked when it does) and its content carries a tool
-    signal that parses into at least one declared tool.
+    signal where EVERY parsed call names a declared tool. All-or-nothing:
+    ``strip_tool_call_markup`` removes every tool block, so promoting a subset
+    would silently delete the unpromoted calls' text.
     """
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return False
@@ -127,8 +133,9 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
         return False
     # allow_incomplete: the response is final, so a trailing unclosed block is a
     # model failure worth repairing (same as the enable-tools loop at drain).
-    calls = _promote(parse_tool_calls_from_text(content, allow_incomplete = True), allowed_tools)
-    if not calls:
+    parsed = parse_tool_calls_from_text(content, allow_incomplete = True)
+    calls = _promote(parsed, allowed_tools)
+    if not calls or len(calls) != len(parsed):
         return False
     msg["tool_calls"] = calls
     # OpenAI requires content = null on a pure tool-call turn.
@@ -220,9 +227,12 @@ class StreamToolCallHealer:
                     continue
                 return events
             promoted = _promote(parsed, self._allowed, id_offset = self._id_offset)
-            if not promoted:
-                # Complete blocks, but none names a declared tool: false alarm.
-                # Flush the raw text so the client still sees what the model said.
+            if len(promoted) != len(parsed):
+                # At least one complete block names an undeclared tool (or has
+                # no usable name): false alarm for the WHOLE buffer. Stripping
+                # only the declared markup is impossible (the strip helper
+                # removes every block), so flush the raw text -- the client
+                # must still see what the model said.
                 events.append(("text", self._buffer))
                 self._buffer = ""
                 self._holding = False
@@ -242,12 +252,11 @@ class StreamToolCallHealer:
         holding, self._holding = self._holding, False
         if self.dormant or not holding:
             return [("text", residue)]
-        promoted = _promote(
-            parse_tool_calls_from_text(residue, id_offset = self._id_offset, allow_incomplete = True),
-            self._allowed,
-            id_offset = self._id_offset,
+        parsed = parse_tool_calls_from_text(
+            residue, id_offset = self._id_offset, allow_incomplete = True
         )
-        if not promoted:
+        promoted = _promote(parsed, self._allowed, id_offset = self._id_offset)
+        if not promoted or len(promoted) != len(parsed):
             return [("text", residue)]
         self._id_offset += len(promoted)
         events = [("tool_call", call) for call in promoted]
@@ -277,6 +286,13 @@ def _last_assistant_text(data: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
+def _heal_would_promote(text: str, allowed_tools: set) -> bool:
+    """Whether ``heal_openai_message`` would promote this text (all-or-nothing)."""
+    parsed = parse_tool_calls_from_text(text, allow_incomplete = True)
+    promoted = _promote(parsed, allowed_tools)
+    return bool(promoted) and len(promoted) == len(parsed)
+
+
 def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
     """True when a non-streaming chat response carries a usable tool call
     (structured, or text-form that healing would promote). Used to decide
@@ -289,7 +305,7 @@ def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
     text = message.get("content")
     if not isinstance(text, str):
         return False
-    return bool(_promote(parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools))
+    return _heal_would_promote(text, allowed_tools)
 
 
 def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
@@ -307,7 +323,7 @@ def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
     text = message.get("content")
     if not isinstance(text, str) or not has_tool_signal(text):
         return False
-    return not _promote(parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools)
+    return not _heal_would_promote(text, allowed_tools)
 
 
 def nudge_messages(data: Any, allowed_tools: set) -> list:

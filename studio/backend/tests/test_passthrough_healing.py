@@ -115,6 +115,21 @@ class TestHealOpenaiMessage:
         args = json.loads(msg["tool_calls"][0]["function"]["arguments"])
         assert args == {"query": "echo hi"}
 
+    def test_mixed_declared_and_undeclared_relays_verbatim(self):
+        # All-or-nothing: promoting Bash would strip ALL markup, silently
+        # deleting the undeclared Nuke call's text. Decline the heal instead.
+        content = f"pre {XML_BASH} mid {XML_UNDECLARED} post"
+        msg = {"role": "assistant", "content": content}
+        assert heal_openai_message(msg, {"Bash"}) is False
+        assert msg["content"] == content
+        assert "tool_calls" not in msg
+
+    def test_multiple_declared_calls_all_promoted(self):
+        content = f"{XML_BASH} and {XML_BASH}"
+        msg = {"role": "assistant", "content": content}
+        assert heal_openai_message(msg, {"Bash"}) is True
+        assert len(msg["tool_calls"]) == 2
+
 
 class TestStreamHealer:
     def test_plain_text_passes_through(self):
@@ -152,6 +167,26 @@ class TestStreamHealer:
         assert _events_text(events) == "trailing "  # tail held back
         events += healer.finalize()
         assert _events_text(events) == "trailing <tool"
+
+    def test_mixed_calls_in_one_buffer_flush_raw(self):
+        # Declared + undeclared complete in the same hold window: all-or-nothing,
+        # the whole buffer flushes verbatim so no markup is silently deleted.
+        healer = StreamToolCallHealer({"Bash"})
+        text = f"{XML_BASH} then {XML_UNDECLARED}"
+        events = healer.feed(text) + healer.finalize()
+        assert _events_text(events) == text
+        assert not _events_calls(events)
+
+    def test_declared_promoted_then_late_undeclared_flushes_raw(self):
+        # Streaming causality: the declared call completed and was already
+        # emitted before the undeclared one arrived. The undeclared markup
+        # must still reach the client as raw text (no data loss).
+        healer = StreamToolCallHealer({"Bash"})
+        events = healer.feed(f"{XML_BASH} then ")
+        assert len(_events_calls(events)) == 1
+        events += healer.feed(XML_UNDECLARED) + healer.finalize()
+        assert XML_UNDECLARED in _events_text(events)
+        assert len(_events_calls(events)) == 1
 
     def test_undeclared_tool_flushes_raw(self):
         healer = StreamToolCallHealer({"Bash"})
@@ -489,6 +524,17 @@ class TestOpenaiNonStreamingRoute:
             message = data["choices"][0]["message"]
             assert message["content"] == LOOKUP_XML
             assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
+    def test_mixed_declared_and_undeclared_relays_verbatim(self, monkeypatch):
+        async def _run():
+            mixed = f'{LOOKUP_XML} also <tool_call>{{"name":"rogue","arguments":{{}}}}</tool_call>'
+            _, data = await _drive_non_streaming(monkeypatch, _payload(), [_upstream_message(mixed)])
+            choice = data["choices"][0]
+            assert choice["message"]["content"] == mixed
+            assert "tool_calls" not in choice["message"]
+            assert choice["finish_reason"] == "stop"
 
         asyncio.run(_run())
 
