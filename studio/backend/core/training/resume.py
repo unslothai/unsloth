@@ -98,8 +98,4 @@ def can_resume_run(run: dict) -> bool:
         or total_steps <= 0
         or final_step < total_steps
     )
-    return (
-        status == "stopped"
-        and has_remaining_steps
-        and has_resume_state(run.get("output_dir"))
-    )
+    return status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
