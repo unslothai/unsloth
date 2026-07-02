@@ -1042,6 +1042,7 @@ class DiffusionBackend:
                     install_arch_patches,
                     uninstall_arch_patches,
                 )
+
                 try:
                     if effective_speed != SPEED_OFF:
                         install_compile_safe_patches()
