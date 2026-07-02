@@ -166,9 +166,7 @@ def test_dense_filters_same_width_stale_model(rag_conn):
         embedding_model = "org/old-model",
     )
     store.add_chunks(rag_conn, "kb_a", "d_old", chunks, vectors)
-    hits = store.search_dense(
-        rag_conn, "kb_a", embed("alpha"), 10, embedding_model = "org/new-model"
-    )
+    hits = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10, embedding_model = "org/new-model")
     ids = [cid for cid, _ in hits]
     assert "d_legacy:0" in ids  # legacy NULL assumed current
     assert "d_old:0" not in ids  # stale same-width vectors dropped

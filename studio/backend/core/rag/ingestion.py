@@ -151,11 +151,7 @@ def _ocr_scanned_pages(
     return out, ocred
 
 
-def _replace_old_document(
-    conn,
-    replaces: tuple[str, str | None] | None,
-    keep_path: str,
-) -> None:
+def _replace_old_document(conn, replaces: tuple[str, str | None] | None, keep_path: str) -> None:
     """Drop the document this ingestion replaced (stale embedder / empty prior
     ingest), called only after the replacement completed successfully."""
     if replaces is None:

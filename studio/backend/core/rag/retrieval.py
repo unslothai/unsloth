@@ -43,9 +43,7 @@ def retrieve_dense(
     vec = embeddings.encode([query], model_name = effective, normalize = True)[0]
     return [
         Hit(cid, s, dense_score = s)
-        for cid, s in store.search_dense(
-            conn, scope, vec, k, embedding_model = effective
-        )
+        for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = effective)
     ]
 
 

@@ -388,9 +388,7 @@ def test_ingestion_with_real_embedder(rag_home, tmp_path):
         conn.close()
 
 
-def test_failed_reingest_preserves_old_document(
-    rag_home, stub_embeddings, tmp_path, monkeypatch
-):
+def test_failed_reingest_preserves_old_document(rag_home, stub_embeddings, tmp_path, monkeypatch):
     """The stale document is dropped only after its replacement completes; a
     failing re-index must leave the searchable original in place."""
     from core.rag import config
@@ -467,7 +465,12 @@ def test_ingestion_pins_model_across_setting_change(
     seen: list = []
     orig = embeddings.encode
 
-    def _tracking_encode(texts, *, model_name = None, normalize = True):
+    def _tracking_encode(
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         seen.append(model_name)
         return orig(texts, model_name = model_name, normalize = normalize)
 

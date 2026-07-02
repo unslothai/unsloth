@@ -278,7 +278,6 @@ def _resolves_as_local_gguf(model: str) -> bool:
     a save on the llama-server backend needs no HF verification (the artifact
     itself is the proof)."""
     from core.rag.embed_llama_server import LlamaServerBackend
-
     try:
         return LlamaServerBackend._resolve_local_gguf(model) is not None
     except Exception:  # noqa: BLE001 - dir without .gguf, filesystem oddity
@@ -324,9 +323,7 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
         return None
     from core.rag import config as rag_config
 
-    candidates = (
-        [model] if rag_config._names_gguf(model) else [f"{model}-GGUF", model]
-    )
+    candidates = [model] if rag_config._names_gguf(model) else [f"{model}-GGUF", model]
     try:
         from huggingface_hub import list_repo_files
     except Exception:  # noqa: BLE001 - hub client unavailable: don't block saving
@@ -391,9 +388,7 @@ def update_embedding_model(
                     "you may be offline)."
                 ),
             )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(
-            model, hf_token
-        )
+        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)

@@ -720,12 +720,8 @@ def test_is_hidden_model_repo_id_still_matches_basename(monkeypatch):
     """HF repo embedders keep the basename needle (cache paths embed it)."""
     from core.rag import config as rag_config
 
-    monkeypatch.setattr(
-        rag_config, "effective_embedding_model", lambda: "org/my-embedder"
-    )
-    monkeypatch.setattr(
-        rag_config, "effective_gguf_repo", lambda: "org/my-embedder-GGUF"
-    )
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/my-embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/my-embedder-GGUF")
     assert models_route._is_hidden_model("org/my-embedder")
     assert models_route._is_hidden_model("/hf/models--org--my-embedder/snap/x")
     assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")
