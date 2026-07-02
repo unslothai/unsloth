@@ -360,17 +360,21 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               isDataset ? undefined : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <label className="flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground">
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={fitOnDeviceOnly}
+                      onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
+                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
                       <Checkbox
                         checked={fitOnDeviceOnly}
-                        onCheckedChange={(v) =>
-                          onFitOnDeviceOnlyChange(v === true)
-                        }
-                        className="size-3.5 rounded-full [&_svg]:!size-2.5"
-                        aria-label="Only show models that fit"
+                        tabIndex={-1}
+                        aria-hidden
+                        className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
                       />
                       Only show models that fit
-                    </label>
+                    </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
                     Hides models larger than this device's memory budget.

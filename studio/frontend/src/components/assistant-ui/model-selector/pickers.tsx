@@ -2342,18 +2342,27 @@ export function HubModelPicker({
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle lives inside the sort menu (shared with the Hub page).
+  // The whole row is the click target (a button): a Checkbox renders as a
+  // <button>, and label-click forwarding to a button is unreliable, so the row
+  // owns the toggle and the Checkbox is presentational (pointer-events-none).
   const fitOnDeviceFooter = (
     <Tooltip>
       <TooltipTrigger asChild>
-        <label className="flex cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={fitOnDeviceOnly}
+          onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
+          className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
           <Checkbox
             checked={fitOnDeviceOnly}
-            onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
-            className="size-3.5 rounded-full [&_svg]:!size-2.5"
-            aria-label="Only show models that fit"
+            tabIndex={-1}
+            aria-hidden
+            className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
           />
           Only show models that fit
-        </label>
+        </button>
       </TooltipTrigger>
       <TooltipContent side="bottom">
         Hides models larger than this device's memory budget. Downloaded models
