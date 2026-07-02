@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  AiMagicIcon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
@@ -1917,8 +1918,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             size="sm"
             className="h-[34px]"
             onClick={() => setTrainOpen(true)}
-            title="Train a LoRA adapter (SDXL)"
+            title="Teach SDXL your own style or subject from a folder of images"
           >
+            <HugeiconsIcon icon={AiMagicIcon} className="mr-1.5 size-3.5" />
             Train LoRA
           </Button>
           {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings

@@ -319,3 +319,41 @@ export async function stopDiffusionTraining(): Promise<{ status: string }> {
 export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }
+
+// One image-dataset folder under the Studio datasets root (GET /api/train/diffusion/info).
+export interface DiffusionDatasetSummary {
+  name: string;
+  path: string;
+  image_count: number;
+  caption_count: number;
+}
+
+// Where diffusion training reads/writes on this Studio, plus usable dataset folders.
+export interface DiffusionTrainingInfo {
+  datasets_root: string;
+  outputs_root: string;
+  datasets: DiffusionDatasetSummary[];
+}
+
+export async function getDiffusionTrainingInfo(): Promise<DiffusionTrainingInfo> {
+  return parseJson(await authFetch("/api/train/diffusion/info"));
+}
+
+export interface DiffusionDatasetUploadResult extends DiffusionDatasetSummary {
+  uploaded: number;
+}
+
+/** Upload images (+ optional caption .txt / metadata.jsonl) into a named dataset folder.
+ * Repeat uploads into the same name accumulate; the returned name is a valid data_dir
+ * for startDiffusionTraining. */
+export async function uploadDiffusionDataset(
+  name: string,
+  files: File[],
+): Promise<DiffusionDatasetUploadResult> {
+  const form = new FormData();
+  form.append("name", name);
+  for (const f of files) form.append("files", f);
+  return parseJson(
+    await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),
+  );
+}
