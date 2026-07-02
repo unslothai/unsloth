@@ -224,6 +224,16 @@ const ASPECT_RATIOS: Record<string, [number, number]> = {
 };
 const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 
+// Friendly labels for ControlNet control types. "canny" traces edges from a source image;
+// every other type is an already-made map (passthrough/depth/pose/...). Unknown types fall
+// back to a capitalized "(map)" label so a new backend type still renders.
+const CONTROL_TYPE_LABELS: Record<string, string> = {
+  passthrough: "Passthrough (already a map)",
+  canny: "Canny (trace edges)",
+  depth: "Depth (map)",
+  pose: "Pose (map)",
+};
+
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
@@ -758,6 +768,31 @@ async function buildOutpaint(
   mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
   mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
 
+  // The grown canvas can exceed the backend's 4096px-per-side decode limit (e.g. a
+  // 2048px source at 100% on both sides -> 6144px), which would 400 the load. Scale the
+  // built pair down proportionally to fit, so Extend still returns an outpaint instead
+  // of failing. The backend also rounds to /16, so exact dims here are not required.
+  const MAX_SIDE = 4096;
+  const longest = Math.max(nw, nh);
+  if (longest > MAX_SIDE) {
+    const scale = MAX_SIDE / longest;
+    const sw = Math.max(1, Math.round(nw * scale));
+    const sh = Math.max(1, Math.round(nh * scale));
+    const scaleCanvas = (source: HTMLCanvasElement): HTMLCanvasElement => {
+      const dst = document.createElement("canvas");
+      dst.width = sw;
+      dst.height = sh;
+      const dctx = dst.getContext("2d");
+      if (!dctx) throw new Error("Could not scale the extended canvas");
+      dctx.drawImage(source, 0, 0, sw, sh);
+      return dst;
+    };
+    return {
+      image: scaleCanvas(ic).toDataURL("image/png"),
+      mask: scaleCanvas(mc).toDataURL("image/png"),
+    };
+  }
+
   return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 
@@ -900,7 +935,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // per loaded family; applied at generate time only when a model + control image are set.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
-  const [controlType, setControlType] = useState<"passthrough" | "canny">("passthrough");
+  // Free-form: a union ControlNet advertises depth/pose/etc alongside the preprocessing
+  // "canny", and the backend maps the exact control_type to the union control_mode. The
+  // picker is built from the selected model's control_types, so it isn't limited to two.
+  const [controlType, setControlType] = useState<string>("passthrough");
   const [controlStrength, setControlStrength] = useState(0.7);
   const [availableControlNets, setAvailableControlNets] = useState<DiffusionControlNetInfo[]>([]);
   // Advanced options live in a right-docked panel (like Chat's settings panel). Closed by
@@ -958,6 +996,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const loadToastId = useRef<string | number | null>(null);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
+  // The quant to restore if the current optimistic swap fails. A same-repo quant
+  // change sets `quant` immediately for picker feedback; if the load then fails
+  // AFTER starting (an error/eviction during download), the old pipeline stays
+  // loaded, so the poll must roll the label back rather than advertise the failed
+  // quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
+  const quantRevert = useRef<{ prev: string | null } | null>(null);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -1026,6 +1070,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       cancelled = true;
     };
   }, [controlnetCapable, status?.family]);
+
+  // The control types offered for the selected ControlNet. A union model advertises
+  // several (canny/depth/pose/passthrough); a plain model advertises its own. Fall back
+  // to the preprocessing pair when nothing is selected.
+  const controlTypeOptions = useMemo(() => {
+    const cn = availableControlNets.find((c) => c.id === controlnetId);
+    const types = cn?.control_types?.length ? cn.control_types : ["passthrough", "canny"];
+    return types;
+  }, [availableControlNets, controlnetId]);
+
+  // Keep controlType valid for the selected model: if the current choice isn't among the
+  // model's advertised types, snap to the first (prefer passthrough when offered).
+  useEffect(() => {
+    if (!controlTypeOptions.includes(controlType)) {
+      setControlType(
+        controlTypeOptions.includes("passthrough") ? "passthrough" : controlTypeOptions[0],
+      );
+    }
+  }, [controlTypeOptions, controlType]);
 
   const selected = useMemo(
     () => images.find((i) => i.id === selectedId) ?? images[0] ?? null,
@@ -1123,6 +1186,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
+    // Restore selected LoRA adapters from the recipe ("id:weight" strings); split on the
+    // LAST colon so an id that itself contains ':' is preserved. Unparseable entries are
+    // skipped, and a recipe with no LoRAs clears the current selection so the restore
+    // reproduces the image faithfully rather than leaking a stale form selection.
+    const restoredLoras: LoraSpecInput[] = [];
+    for (const entry of image.loras ?? []) {
+      const idx = entry.lastIndexOf(":");
+      if (idx <= 0) continue;
+      const id = entry.slice(0, idx);
+      const weight = Number(entry.slice(idx + 1));
+      if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
+    }
+    setLoras(restoredLoras);
     toast.success("Settings restored to inputs");
   }, []);
 
@@ -1205,12 +1281,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setStatus(await getDiffusionStatus());
         toast.success("Model loaded");
         setBusy(null);
+        // Load succeeded: the optimistic quant is now the real one, so drop the
+        // pending revert.
+        quantRevert.current = null;
         return;
       }
       if (p.phase === "error") {
         dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
+        // A load that failed AFTER starting leaves the previous pipeline loaded, so
+        // roll the optimistic quant label back to what is actually loaded (status
+        // does not carry the quant, so refreshStatus alone can't correct it).
+        if (quantRevert.current) {
+          setQuant(quantRevert.current.prev);
+          quantRevert.current = null;
+        }
         // A failed load may have freed a previously-loaded model, so resync to
         // the real backend state (the synchronous failure path does the same).
         void refreshStatus();
@@ -1223,6 +1309,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // busy stuck on "loading", deadening the picker and Generate button.
         dismissLoadToast();
         setBusy(null);
+        // Same optimistic-quant rollback as the error path: the swap did not take.
+        if (quantRevert.current) {
+          setQuant(quantRevert.current.prev);
+          quantRevert.current = null;
+        }
         void refreshStatus();
         return;
       }
@@ -1364,17 +1455,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker
-      // feedback, but revert if the load fails to START (400/409/network): the
-      // selector must not advertise a quant that is not the loaded one. Poll-phase
-      // failures re-sync via refreshStatus.
+      // feedback, but revert if the load fails to START (400/409/network) or LATER
+      // during the poll (download/preflight error/eviction) -- in both cases the old
+      // pipeline stays loaded, so the selector must not advertise the failed quant.
+      // The poll owns the after-start revert via quantRevert; here we only handle
+      // the never-started case.
       if (meta.ggufVariant && meta.ggufFilename) {
         const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
         void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename }).then((started) => {
-          if (!started) setQuant(prevQuant);
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
         });
         return;
       }
@@ -1389,14 +1486,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!filename.toLowerCase().endsWith(".gguf")) return;
         // A direct pick carries no curated variant label; surface the filename so
         // the selector stops advertising the previously loaded quant. Optimistic,
-        // reverted if the load fails to start (mirrors the curated branch above).
+        // reverted if the load fails to start OR fails later in the poll (mirrors the
+        // curated branch above; the poll owns the after-start revert via quantRevert).
         const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
-          if (!started) setQuant(prevQuant);
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
         });
         return;
       }
@@ -2163,16 +2265,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     <ImageDropzone value={controlImage} onChange={setControlImage} />
                     <div className="flex items-center gap-2">
                       <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
-                      <Select
-                        value={controlType}
-                        onValueChange={(v) => setControlType(v as "passthrough" | "canny")}
-                      >
+                      <Select value={controlType} onValueChange={setControlType}>
                         <SelectTrigger className="h-8 flex-1 text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="passthrough">Passthrough (already a map)</SelectItem>
-                          <SelectItem value="canny">Canny (trace edges)</SelectItem>
+                          {controlTypeOptions.map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {CONTROL_TYPE_LABELS[t] ??
+                                `${t.charAt(0).toUpperCase()}${t.slice(1)} (map)`}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>

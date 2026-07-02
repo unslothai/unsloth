@@ -75,6 +75,14 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
+    # Reap the killed child so it does not linger as a zombie until the next Popen
+    # cleanup / interpreter exit. Callers raise immediately after _terminate (the
+    # cancellation and timeout paths), so without this a burst of image cancellations
+    # leaks process-table entries. SIGKILL is prompt, so a short bounded wait suffices.
+    try:
+        proc.wait(timeout = 5)
+    except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
+        pass
 
 
 def _binary_name(stem: str) -> str:
