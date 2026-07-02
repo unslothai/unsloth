@@ -1393,6 +1393,7 @@ def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
             return False, "unknown"
     try:
         from packaging.version import parse as _parse
+
         # Drop any local build suffix ("4.57.6+abc") so it does not skew the comparison.
         active = _parse(str(transformers_version).split("+", 1)[0])
         ceiling = _parse(_LLM_COMPRESSOR_MAX_TRANSFORMERS)
