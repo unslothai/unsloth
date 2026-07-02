@@ -43,12 +43,12 @@ logger = get_logger(__name__)
 # <|im_start|> turns. Stopping on every turn-end token the vocab defines fixes
 # that and is a no-op when eos is already the turn-ender (the id just dedups).
 _CHAT_TURN_END_TOKENS = (
-    "<|im_end|>",     # ChatML: Qwen, Yi
-    "<|eot_id|>",     # Llama 3.x
-    "<|eom_id|>",     # Llama 3.x tool turns
+    "<|im_end|>",  # ChatML: Qwen, Yi
+    "<|eot_id|>",  # Llama 3.x
+    "<|eom_id|>",  # Llama 3.x tool turns
     "<end_of_turn>",  # Gemma
-    "<|end|>",        # Phi
-    "<|return|>",     # gpt-oss harmony
+    "<|end|>",  # Phi
+    "<|return|>",  # gpt-oss harmony
 )
 
 
