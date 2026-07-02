@@ -19,11 +19,11 @@ from typing import Optional
 
 # Canonical assistant-turn-end markers per chat family.
 _CHAT_TURN_END_TOKENS = (
-    "<|im_end|>",     # ChatML: Qwen, Yi
-    "<|eot_id|>",     # Llama 3.x
-    "<|eom_id|>",     # Llama 3.x tool turns
+    "<|im_end|>",  # ChatML: Qwen, Yi
+    "<|eot_id|>",  # Llama 3.x
+    "<|eom_id|>",  # Llama 3.x tool turns
     "<end_of_turn>",  # Gemma
-    "<|end|>",        # Phi
+    "<|end|>",  # Phi
 )
 # gpt-oss/harmony uses <|end|> as an intra-message channel delimiter (not the turn
 # end) and has a dedicated streamer, so its eos is left untouched.

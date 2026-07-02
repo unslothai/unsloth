@@ -24,7 +24,13 @@ from core.inference.chat_eos import (  # noqa: E402
 
 
 class _FakeTokenizer:
-    def __init__(self, eos_id, chat_template="", token_ids=None, unk_token_id=None):
+    def __init__(
+        self,
+        eos_id,
+        chat_template = "",
+        token_ids = None,
+        unk_token_id = None,
+    ):
         self.eos_token_id = eos_id
         self.chat_template = chat_template
         self.unk_token_id = unk_token_id
@@ -41,36 +47,36 @@ _CHATML = "{% for m in messages %}<|im_start|>{{m.role}}\n{{m.content}}<|im_end|
 
 def test_qwen35_adds_im_end_from_template():
     # eos synced to <|endoftext|> (248044); template uses <|im_end|> (248046).
-    tok = _FakeTokenizer(248044, chat_template=_CHATML, token_ids={"<|im_end|>": 248046})
+    tok = _FakeTokenizer(248044, chat_template = _CHATML, token_ids = {"<|im_end|>": 248046})
     assert resolve_chat_turn_end_eos_ids(tok) == [248044, 248046]
 
 
 def test_marker_in_vocab_but_not_in_template_is_ignored():
     # Base/coder model: <|im_end|> exists in the shared vocab but the template
     # does not use it, so it must not become a stop token.
-    tok = _FakeTokenizer(248044, chat_template="{{ messages }}", token_ids={"<|im_end|>": 248046})
+    tok = _FakeTokenizer(248044, chat_template = "{{ messages }}", token_ids = {"<|im_end|>": 248046})
     assert resolve_chat_turn_end_eos_ids(tok) == [248044]
 
 
 def test_harmony_template_is_left_untouched():
     # gpt-oss/harmony: <|end|> is a channel delimiter, not the turn end.
     harmony = "<|start|>assistant<|channel|>analysis<|message|>...<|end|>"
-    tok = _FakeTokenizer(200002, chat_template=harmony, token_ids={"<|end|>": 200007})
+    tok = _FakeTokenizer(200002, chat_template = harmony, token_ids = {"<|end|>": 200007})
     assert resolve_chat_turn_end_eos_ids(tok) == [200002]
 
 
 def test_llama3_eot_id_from_template():
-    tok = _FakeTokenizer(128001, chat_template="...<|eot_id|>...", token_ids={"<|eot_id|>": 128009})
+    tok = _FakeTokenizer(128001, chat_template = "...<|eot_id|>...", token_ids = {"<|eot_id|>": 128009})
     assert resolve_chat_turn_end_eos_ids(tok) == [128001, 128009]
 
 
 def test_list_eos_preserved():
-    tok = _FakeTokenizer([1, 2], chat_template=_CHATML, token_ids={"<|im_end|>": 2})
+    tok = _FakeTokenizer([1, 2], chat_template = _CHATML, token_ids = {"<|im_end|>": 2})
     assert resolve_chat_turn_end_eos_ids(tok) == [1, 2]
 
 
 def test_missing_marker_maps_to_unk_and_is_skipped():
-    tok = _FakeTokenizer(7, chat_template=_CHATML, token_ids={}, unk_token_id=0)
+    tok = _FakeTokenizer(7, chat_template = _CHATML, token_ids = {}, unk_token_id = 0)
     assert resolve_chat_turn_end_eos_ids(tok) == [7]
 
 
