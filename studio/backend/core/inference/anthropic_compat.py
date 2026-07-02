@@ -501,7 +501,10 @@ class AnthropicPassthroughEmitter:
         self._heal_disable_parallel = False
 
     def enable_healing(
-        self, allowed_tools: set, *, disable_parallel_tool_use: bool = False
+        self,
+        allowed_tools: set,
+        *,
+        disable_parallel_tool_use: bool = False,
     ) -> None:
         """Promote text-form tool calls in streamed content to tool_use blocks.
 

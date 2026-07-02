@@ -10992,7 +10992,12 @@ async def _openai_passthrough_stream(
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single upstream line
                     # relays verbatim (monitored exactly as emitted either way).
-                    if healer is not None and not healer.dormant and isinstance(chunk_data, dict) and not saw_stream_error:
+                    if (
+                        healer is not None
+                        and not healer.dormant
+                        and isinstance(chunk_data, dict)
+                        and not saw_stream_error
+                    ):
                         out_lines = _heal_transform(chunk_data, raw_line)
                     else:
                         out_lines = [raw_line]

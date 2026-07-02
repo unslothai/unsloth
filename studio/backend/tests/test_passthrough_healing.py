@@ -178,7 +178,11 @@ class TestStreamHealer:
 
 
 class TestNudgeHelpers:
-    def _resp(self, content, tool_calls = None):
+    def _resp(
+        self,
+        content,
+        tool_calls = None,
+    ):
         msg = {"role": "assistant", "content": content}
         if tool_calls:
             msg["tool_calls"] = tool_calls
@@ -251,7 +255,11 @@ def _llama_backend():
     )
 
 
-def _upstream_message(content, tool_calls = None, finish_reason = "stop"):
+def _upstream_message(
+    content,
+    tool_calls = None,
+    finish_reason = "stop",
+):
     message = {"role": "assistant", "content": content}
     if tool_calls is not None:
         message["tool_calls"] = tool_calls
@@ -272,7 +280,12 @@ class ScriptedClient:
         self.bodies = list(bodies)
         self.posts = []
 
-    async def post(self, _url, json = None, timeout = None):
+    async def post(
+        self,
+        _url,
+        json = None,
+        timeout = None,
+    ):
         self.posts.append(json)
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
 
@@ -369,9 +382,7 @@ class TestOpenaiNonStreamingRoute:
     def test_undeclared_tool_not_promoted(self, monkeypatch):
         async def _run():
             xml = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
-            _, data = await _drive_non_streaming(
-                monkeypatch, _payload(), [_upstream_message(xml)]
-            )
+            _, data = await _drive_non_streaming(monkeypatch, _payload(), [_upstream_message(xml)])
             assert data["choices"][0]["message"]["content"] == xml
             assert "tool_calls" not in data["choices"][0]["message"]
 
@@ -479,7 +490,12 @@ class TestNudgeRetryOpenai:
 
 
 class TestNudgeRetryAnthropic:
-    async def _drive(self, monkeypatch, bodies, nudge = None):
+    async def _drive(
+        self,
+        monkeypatch,
+        bodies,
+        nudge = None,
+    ):
         import routes.inference as inf_mod
         from routes.inference import _anthropic_passthrough_non_streaming
 
@@ -522,7 +538,12 @@ class TestNudgeRetryAnthropic:
 
 
 class TestAnthropicEmitterHealing:
-    def _events(self, emitter, chunks, finish = True):
+    def _events(
+        self,
+        emitter,
+        chunks,
+        finish = True,
+    ):
         lines = []
         for chunk in chunks:
             lines += emitter.feed_chunk(chunk)
@@ -530,14 +551,23 @@ class TestAnthropicEmitterHealing:
             lines += emitter.finish()
         return [json.loads(ln.split("data: ", 1)[1]) for ln in lines if "data: " in ln]
 
-    def _emitter(self, allowed = ("lookup",), **kwargs):
+    def _emitter(
+        self,
+        allowed = ("lookup",),
+        **kwargs,
+    ):
         from core.inference.anthropic_compat import AnthropicPassthroughEmitter
 
         emitter = AnthropicPassthroughEmitter()
         emitter.enable_healing(set(allowed), **kwargs)
         return emitter
 
-    def _chunk(self, content = None, tool_calls = None, finish_reason = None):
+    def _chunk(
+        self,
+        content = None,
+        tool_calls = None,
+        finish_reason = None,
+    ):
         delta = {}
         if content is not None:
             delta["content"] = content
@@ -665,8 +695,7 @@ class TestAnthropicEmitterHealing:
         starts = [
             e
             for e in events
-            if e.get("type") == "content_block_start"
-            and e["content_block"]["type"] == "tool_use"
+            if e.get("type") == "content_block_start" and e["content_block"]["type"] == "tool_use"
         ]
         assert len(starts) == 1
 
@@ -687,7 +716,13 @@ class TestAnthropicEmitterHealing:
 
 
 class TestAnthropicNonStreamingRoute:
-    async def _drive(self, monkeypatch, bodies, auto_heal = None, tools = None):
+    async def _drive(
+        self,
+        monkeypatch,
+        bodies,
+        auto_heal = None,
+        tools = None,
+    ):
         import routes.inference as inf_mod
         from routes.inference import _anthropic_passthrough_non_streaming
 

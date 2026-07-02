@@ -38,6 +38,7 @@ _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 def nudge_enabled(request_flag: Optional[bool]) -> bool:
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
+
 _MAX_SIGNAL_LEN = max(len(s) for s in TOOL_XML_SIGNALS)
 # A suspected-but-unclosed tool block larger than this is declared a false
 # alarm and flushed, bounding memory on a model rambling XML-lookalike text.
@@ -64,7 +65,11 @@ def heal_gate(auto_heal: Optional[bool], tools: Optional[list]) -> Optional[set]
     return names or None
 
 
-def _promote(calls: list, allowed_tools: set, id_offset: int = 0) -> list:
+def _promote(
+    calls: list,
+    allowed_tools: set,
+    id_offset: int = 0,
+) -> list:
     """Filter parsed calls to declared tools and normalize their arguments.
 
     ``function.arguments`` leaves ``parse_tool_calls_from_text`` as whatever the
@@ -105,9 +110,7 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
         return False
     # allow_incomplete: the response is final, so a trailing unclosed block is a
     # model failure worth repairing (same as the enable-tools loop at drain).
-    calls = _promote(
-        parse_tool_calls_from_text(content, allow_incomplete = True), allowed_tools
-    )
+    calls = _promote(parse_tool_calls_from_text(content, allow_incomplete = True), allowed_tools)
     if not calls:
         return False
     msg["tool_calls"] = calls
@@ -223,9 +226,7 @@ class StreamToolCallHealer:
         if self.dormant or not holding:
             return [("text", residue)]
         promoted = _promote(
-            parse_tool_calls_from_text(
-                residue, id_offset = self._id_offset, allow_incomplete = True
-            ),
+            parse_tool_calls_from_text(residue, id_offset = self._id_offset, allow_incomplete = True),
             self._allowed,
             id_offset = self._id_offset,
         )
@@ -262,9 +263,7 @@ def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
     text = message.get("content")
     if not isinstance(text, str):
         return False
-    return bool(
-        _promote(parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools)
-    )
+    return bool(_promote(parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools))
 
 
 def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
@@ -285,9 +284,7 @@ def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
     text = message.get("content")
     if not isinstance(text, str) or not has_tool_signal(text):
         return False
-    return not _promote(
-        parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools
-    )
+    return not _promote(parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools)
 
 
 def nudge_messages(data: Any, allowed_tools: set) -> list:
