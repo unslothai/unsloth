@@ -34,9 +34,10 @@ const BROWSER_ENGINE_LABEL = "Browser";
 // Input-device picker: pins the voice-loop mic to a specific device so it
 // captures the user's headset mic and not a loopback / "Stereo Mix" / default-
 // communications device that mixes in system/app audio (e.g. a Discord call).
-// Applies to the Whisper capture path; the browser Web Speech API can't target a
-// device, so it's a no-op there. Device labels are only populated once mic
-// permission has been granted; before that they read as generic names.
+// Applies to both the Whisper and browser capture paths. Rendered as themed
+// button rows (not a native <select>, whose option list renders unstyled
+// white-on-white). Device labels are only populated once mic permission has been
+// granted; before that they read as generic names.
 const MicDevicePicker: FC = () => {
   const selectedMicDeviceId = useChatRuntimeStore((s) => s.selectedMicDeviceId);
   const setSelectedMicDeviceId = useChatRuntimeStore((s) => s.setSelectedMicDeviceId);
@@ -63,24 +64,45 @@ const MicDevicePicker: FC = () => {
 
   if (devices.length === 0) return null;
 
+  const rows: { id: string | null; label: string }[] = [
+    { id: null, label: "Default input" },
+    ...devices.map((d, i) => ({
+      id: d.deviceId,
+      label: d.label || `Microphone ${i + 1}`,
+    })),
+  ];
+
   return (
     <>
       <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
       <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         Microphone
       </div>
-      <select
-        value={selectedMicDeviceId ?? ""}
-        onChange={(e) => setSelectedMicDeviceId(e.target.value || null)}
-        className="mx-1 mb-1 w-[calc(100%-0.5rem)] rounded-md bg-transparent px-2 py-1.5 text-sm outline-none ring-1 ring-black/[0.12] focus:ring-black/25 dark:ring-white/[0.12] dark:focus:ring-white/25"
-      >
-        <option value="">Default input</option>
-        {devices.map((d, i) => (
-          <option key={d.deviceId || i} value={d.deviceId}>
-            {d.label || `Microphone ${i + 1}`}
-          </option>
-        ))}
-      </select>
+      {rows.map((row, i) => {
+        const active = (selectedMicDeviceId ?? null) === row.id;
+        return (
+          <button
+            key={row.id ?? `default-${i}`}
+            type="button"
+            onClick={() => setSelectedMicDeviceId(row.id)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+              active && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+            )}
+          >
+            <MicIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate">{row.label}</span>
+            {active && (
+              <DotTag
+                tone="success"
+                label="Active"
+                className="ml-auto h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+                dotClassName="size-[5px]"
+              />
+            )}
+          </button>
+        );
+      })}
     </>
   );
 };
