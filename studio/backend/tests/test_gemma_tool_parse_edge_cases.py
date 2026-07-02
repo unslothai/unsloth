@@ -21,7 +21,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.inference.tool_call_parser import (
+    _gemma_parse_value,
+    parse_tool_calls_from_text,
+)
 
 
 def _args(call: dict) -> dict:
@@ -170,3 +173,49 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_gemma_parse_value_always_advances_on_stray_delimiter():
+    # A stray delimiter (`,`, `}`, `]`) at the primitive position consumes no
+    # characters. The parser must still advance the index by at least one, or a
+    # caller that loops on the returned index spins forever at 100% CPU (DoS).
+    for delim in (",", "}", "]"):
+        text = delim + "rest"
+        value, nxt = _gemma_parse_value(text, 0)
+        assert nxt > 0, (delim, value, nxt)
+
+
+def test_malformed_gemma_array_does_not_hang():
+    # ``[},]`` puts a stray ``}`` at the primitive position inside a list body.
+    # On the buggy parser this hangs the server; guard with a wall-clock timeout
+    # so the regression fails loudly instead of blocking CI forever.
+    import threading
+
+    result: dict = {}
+
+    def _run():
+        result["calls"] = parse_tool_calls_from_text(
+            "<|tool_call>call:f{a:[},]}<tool_call|>"
+        )
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=10.0)
+    assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed array input"
+
+
+def test_malformed_gemma_mapping_value_does_not_hang():
+    # A stray ``}`` where a mapping value is expected must also terminate.
+    import threading
+
+    result: dict = {}
+
+    def _run():
+        result["calls"] = parse_tool_calls_from_text(
+            "<|tool_call>call:f{a:}},b:1}<tool_call|>"
+        )
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=10.0)
+    assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
