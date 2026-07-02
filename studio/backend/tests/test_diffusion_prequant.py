@@ -66,6 +66,7 @@ class _FakeTransformer:
     def __init__(self):
         self.assigned = None
         self.moved = None
+        self.eval_called = False
 
     @classmethod
     def load_config(cls, base, **kw):
@@ -99,6 +100,10 @@ class _FakeTransformer:
 
     def to(self, device):
         self.moved = device
+        return self
+
+    def eval(self):
+        self.eval_called = True
         return self
 
 
@@ -180,6 +185,14 @@ def test_load_meta_init_and_assign(monkeypatch, tmp_path):
     assert _FakeTransformer.calls["load_state_dict"] == {"strict": True, "assign": True}
     assert t.moved == "cuda"
     assert t._unsloth_runtime_quant == "fp8"
+
+
+def test_load_puts_transformer_in_eval_mode(monkeypatch, tmp_path):
+    # Built via from_config (not from_pretrained), so the loader must eval() it to match
+    # the dense/GGUF paths; otherwise train-mode dropout makes inference nondeterministic.
+    t = _load(monkeypatch, tmp_path, _good_ckpt())
+    assert t is not None
+    assert t.eval_called is True
 
 
 def test_load_missing_file_is_none(monkeypatch, tmp_path):

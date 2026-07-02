@@ -499,12 +499,18 @@ class DiffusionBackend:
         # The cancel makes that wait ~one step (or the rest of the denoise for a
         # pipeline that ignores the step callback).
         with self._lock:
+            # Bail BEFORE signalling any cancel if this load was already superseded (an
+            # unload/eviction or a newer load bumped the token while we were resolving /
+            # downloading). Otherwise a stale worker would abort an unrelated, still-live
+            # generation from the CURRENT model and only then discover it has nothing to do.
+            if _load_token is not None and _load_token != self._load_token:
+                raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
         with self._generate_lock:
             with self._lock:
-                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
-                # newer load superseded this one while we were resolving/downloading.
+                # Re-check under the generate lock: a newer load/unload may have superseded
+                # this one while we waited for the in-flight denoise to exit.
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Diffusion load was cancelled.")
 
@@ -554,6 +560,12 @@ class DiffusionBackend:
                         )
                         pipe = None
                         transformer_quant_engaged = None
+                        # Drop the exception (and its traceback) BEFORE clearing the cache:
+                        # exc.__traceback__ keeps _load_dense_quant_pipeline's frame -- and
+                        # thus its partially-built dense bf16 transformer/pipe -- alive, so
+                        # clear_gpu_cache() could not otherwise reclaim that VRAM before the
+                        # GGUF build (the OOM-fallback path this cleanup exists for).
+                        del exc
                         clear_gpu_cache()
 
                 if pipe is None:
@@ -826,6 +838,26 @@ class DiffusionBackend:
             explicit_offload = cpu_offload,
         )
 
+    @staticmethod
+    def _reset_step_cache(pipe: Any) -> None:
+        """Clear the transformer's stateful step cache (FBCache) before a generation.
+
+        diffusers keys FBCache residuals by cache context ("cond"/"uncond") on the
+        long-lived transformer, and neither the pipeline nor the context exit resets
+        them (``StateManager`` only clears via ``reset_stateful_hooks``, which no
+        pipeline calls). This backend reuses one resident pipe across generations, so
+        without a reset the next generation's first step compares its first-block
+        residual against the PREVIOUS request's -- a tensor-shape mismatch when the
+        resolution/batch changed, or a stale-cache reuse otherwise. Best-effort: a
+        transformer without the hook (uncached load) is a silent no-op."""
+        transformer = getattr(pipe, "transformer", None)
+        reset = getattr(transformer, "reset_stateful_hooks", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception:  # noqa: BLE001 — reset is best-effort, never fail a generation
+                pass
+
     def generate(
         self,
         *,
@@ -909,6 +941,13 @@ class DiffusionBackend:
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+
+                # Start each generation from a clean step cache: FBCache residuals from
+                # a prior request on this resident pipe would otherwise be compared
+                # against this generation's first step (shape mismatch on a resolution/
+                # batch change, or stale reuse). No-op when no cache is engaged.
+                if state.transformer_cache:
+                    self._reset_step_cache(state.pipe)
 
                 self._gen = gen
                 try:

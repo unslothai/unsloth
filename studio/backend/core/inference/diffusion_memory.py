@@ -423,20 +423,20 @@ def apply_memory_plan(
         # is in the low-VRAM situation where the decode-time spike can OOM, so turn VAE
         # tiling on now (if not already engaged) to cap it.
         nonlocal tiling_engaged
-        pipe.enable_model_cpu_offload()
+        pipe.enable_model_cpu_offload(device = device)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
-        pipe.enable_model_cpu_offload()
+        pipe.enable_model_cpu_offload(device = device)
     elif policy == OFFLOAD_GROUP:
         if not _apply_group_offload(pipe, device, logger):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
-            pipe.enable_sequential_cpu_offload()
+            pipe.enable_sequential_cpu_offload(device = device)
         except Exception as exc:  # noqa: BLE001 — keep the model loadable
             if logger is not None:
                 logger.warning(
