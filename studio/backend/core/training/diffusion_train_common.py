@@ -80,9 +80,13 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
       compatible: a genuinely wrong pick still fails cleanly later in from_pretrained).
     """
     name = str(base_model or "").strip().lower()
-    if name.endswith(".gguf"):
+    # GGUF weights (a ``.gguf`` file or a ``*-GGUF`` repo) are inference-only: training needs
+    # the full diffusers pipeline (transformer + VAE + text encoders), which a GGUF repo does
+    # not provide. Reject by name even when the family itself is trainable.
+    if name.endswith(".gguf") or "gguf" in name:
         raise ValueError(
-            f"'{base_model}' is a GGUF checkpoint, which can't be trained. {_trainable_hint()}"
+            f"'{base_model}' is a GGUF checkpoint/repo, which can't be a training base "
+            f"(training needs the full diffusers model). {_trainable_hint()}"
         )
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
@@ -128,7 +132,70 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
         return run_diffusion_lora_training
+    if key in ("flux.1", "qwen-image", "z-image"):
+        from core.training.diffusion_dit_trainer import run_dit_lora_training
+        return run_dit_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
+
+
+# Per-family training defaults surfaced by the Train UI. Distilled/turbo bases and the big
+# DiTs want different rank / learning rate / resolution; these are starting points, not
+# hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
+FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
+    "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
+    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
+    "qwen-image": {"lora_rank": 16, "learning_rate": 5e-5, "resolution": 512},
+    "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
+}
+
+
+def train_defaults(family: str) -> dict[str, Any]:
+    """Recommended starting hyperparameters for ``family`` (empty if unknown)."""
+    return dict(FAMILY_TRAIN_DEFAULTS.get((family or "").strip().lower(), {}))
+
+
+# Display labels + a short VRAM/access note per trainable family, surfaced by the Train UI
+# so users pick a base with realistic expectations. Kept next to the defaults they pair with.
+_FAMILY_LABELS = {
+    "sdxl": "SDXL",
+    "flux.1": "FLUX.1-dev",
+    "qwen-image": "Qwen-Image",
+    "z-image": "Z-Image",
+}
+_FAMILY_VRAM_NOTES = {
+    "sdxl": "Trains on ~12 GB+ (bf16 LoRA). The lightest, fastest option.",
+    "flux.1": (
+        "12B model, QLoRA (nf4) by default (~16 GB+). Gated on Hugging Face: accept the "
+        "FLUX.1-dev license and add your HF token before training."
+    ),
+    "qwen-image": "20B model, QLoRA (nf4) by default (~24 GB+). The heaviest option.",
+    "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
+}
+
+
+def family_train_infos() -> list[dict[str, Any]]:
+    """Describe every trainable family for the Train UI: name, label, the default + allowed
+    base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
+    the family registry so it stays in sync with what the trainers actually support."""
+    from core.inference.diffusion_families import detect_family
+
+    infos: list[dict[str, Any]] = []
+    for name in trainable_family_names():
+        fam = detect_family("", override = name)
+        if fam is None:
+            continue
+        repos = list(fam.train_base_repos) or [fam.base_repo]
+        infos.append(
+            {
+                "name": name,
+                "label": _FAMILY_LABELS.get(name, name),
+                "default_base": repos[0],
+                "base_repos": repos,
+                "defaults": train_defaults(name),
+                "vram_note": _FAMILY_VRAM_NOTES.get(name, ""),
+            }
+        )
+    return infos
 
 
 @dataclass
