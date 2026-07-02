@@ -71,11 +71,27 @@ def test_resolve_controlnet_local(tmp_path, monkeypatch):
     cn = d / "my-cn"
     cn.mkdir()
     (cn / "config.json").write_text("{}")
+    (cn / "diffusion_pytorch_model.safetensors").write_bytes(b"x")  # a loadable weight
     monkeypatch.setattr(dc, "controlnets_dir", lambda: d)
     entries = {e.id for e in dc.list_controlnets()}
     assert "my-cn" in entries
     r = dc.resolve_controlnet("my-cn")
     assert r.is_local and r.path == str(cn)
+
+
+def test_scan_local_skips_config_only_folder(tmp_path, monkeypatch):
+    # A folder with config.json but no weight/index (interrupted copy) must NOT be
+    # advertised: it would otherwise fail deep in from_pretrained as a generic 500.
+    d = tmp_path / "controlnets"
+    d.mkdir()
+    incomplete = d / "incomplete-cn"
+    incomplete.mkdir()
+    (incomplete / "config.json").write_text("{}")
+    monkeypatch.setattr(dc, "controlnets_dir", lambda: d)
+    assert "incomplete-cn" not in {e.id for e in dc.list_controlnets()}
+    # A sharded weight index counts as a loadable weight.
+    (incomplete / "diffusion_pytorch_model.safetensors.index.json").write_text("{}")
+    assert "incomplete-cn" in {e.id for e in dc.list_controlnets()}
 
 
 def test_preprocess_control_passthrough_and_canny():

@@ -111,7 +111,9 @@ export interface ControlNetSpecInput {
   id: string;
   // Base64/data-URL control image (a source image or an already-made control map).
   image: string;
-  control_type: "passthrough" | "canny";
+  // "canny" preprocesses edges from a source image; any other type (passthrough, or a
+  // union type like depth/pose) is an already-made map the backend maps to a control mode.
+  control_type: string;
   strength: number;
   guidance_start?: number;
   guidance_end?: number;

@@ -97,6 +97,26 @@ def sanitize_id(raw: str) -> str:
     return stem or "controlnet"
 
 
+def _has_controlnet_weights(p: Path) -> bool:
+    """True when ``p`` holds a loadable diffusers ControlNet weight (or shard index).
+
+    A config-only folder (interrupted copy/download) would otherwise be advertised and
+    then fail deep inside ``from_pretrained`` as a generic 500. Accept the standard
+    single-file weights, a sharded weight index, or any ``.safetensors`` shard."""
+    names = (
+        "diffusion_pytorch_model.safetensors",
+        "diffusion_pytorch_model.bin",
+        "diffusion_pytorch_model.safetensors.index.json",
+        "diffusion_pytorch_model.bin.index.json",
+    )
+    if any((p / n).exists() for n in names):
+        return True
+    try:
+        return any(child.suffix == ".safetensors" for child in p.iterdir())
+    except OSError:
+        return False
+
+
 def _scan_local() -> list[ControlNetCatalogEntry]:
     """A local ControlNet is a directory containing a diffusers config + weights."""
     entries: list[ControlNetCatalogEntry] = []
@@ -108,7 +128,9 @@ def _scan_local() -> list[ControlNetCatalogEntry]:
     for p in children:
         if not p.is_dir():
             continue
-        if not (p / "config.json").exists():
+        # Require BOTH the config and a loadable weight/index: a config-only folder is an
+        # incomplete copy/download, and advertising it would fail later in from_pretrained.
+        if not (p / "config.json").exists() or not _has_controlnet_weights(p):
             continue
         entries.append(
             ControlNetCatalogEntry(

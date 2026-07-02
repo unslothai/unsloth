@@ -391,11 +391,15 @@ def run_diffusion_lora_training(
 
     lora_params = [p for p in unet.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(lora_params, lr = cfg.learning_rate)
+    # The scheduler advances once per optimizer update: lr_sched.step() runs a single
+    # time per outer opt_step (after the accumulation inner loop), for cfg.train_steps
+    # total. Count warmup/decay in those optimizer steps -- multiplying by the
+    # accumulation factor would stretch warmup past the run and never reach the decay.
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
         optimizer = optimizer,
-        num_warmup_steps = cfg.lr_warmup_steps * cfg.gradient_accumulation_steps,
-        num_training_steps = cfg.train_steps * cfg.gradient_accumulation_steps,
+        num_warmup_steps = cfg.lr_warmup_steps,
+        num_training_steps = cfg.train_steps,
     )
 
     vae_scale = vae.config.scaling_factor
