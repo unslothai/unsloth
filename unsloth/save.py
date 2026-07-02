@@ -670,16 +670,30 @@ def _qwen3_5_existing_mtp_layers(config):
     if isinstance(text_config, dict):
         values.append(text_config.get("mtp_num_hidden_layers"))
 
+    existing_mtp_layers = None
     for value in values:
         if isinstance(value, int):
-            return value
-    return None
+            existing_mtp_layers = (
+                value if existing_mtp_layers is None else max(existing_mtp_layers, value)
+            )
+    return existing_mtp_layers
 
 
 def _qwen3_5_tensor_names_from_save_directory(save_directory):
     save_path = Path(save_directory)
-    for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
-        index_path = save_path / index_name
+    index_paths = [
+        save_path / "model.safetensors.index.json",
+        save_path / "pytorch_model.bin.index.json",
+    ]
+    index_paths.extend(sorted(save_path.glob("model.*.safetensors.index.json")))
+    index_paths.extend(sorted(save_path.glob("model.safetensors.index.*.json")))
+    index_paths.extend(sorted(save_path.glob("pytorch_model.*.bin.index.json")))
+    index_paths.extend(sorted(save_path.glob("pytorch_model.bin.index.*.json")))
+    inspected_index_paths = set()
+    for index_path in index_paths:
+        if index_path in inspected_index_paths:
+            continue
+        inspected_index_paths.add(index_path)
         if index_path.is_file():
             try:
                 with index_path.open("r", encoding = "utf-8") as file:
@@ -689,7 +703,7 @@ def _qwen3_5_tensor_names_from_save_directory(save_directory):
                     return list(weight_map.keys())
             except (json.JSONDecodeError, OSError) as error:
                 logger.warning_once(
-                    f"Unsloth: Could not inspect {index_name} for Qwen3.5 MTP metadata: {error}"
+                    f"Unsloth: Could not inspect {index_path.name} for Qwen3.5 MTP metadata: {error}"
                 )
 
     tensor_names = []
@@ -704,8 +718,15 @@ def _qwen3_5_tensor_names_from_save_directory(save_directory):
             )
             return []
 
-    pytorch_checkpoint_path = save_path / "pytorch_model.bin"
-    if pytorch_checkpoint_path.is_file():
+    pytorch_checkpoint_paths = [save_path / "pytorch_model.bin"]
+    pytorch_checkpoint_paths.extend(sorted(save_path.glob("pytorch_model.*.bin")))
+    inspected_pytorch_checkpoint_paths = set()
+    for pytorch_checkpoint_path in pytorch_checkpoint_paths:
+        if pytorch_checkpoint_path in inspected_pytorch_checkpoint_paths:
+            continue
+        inspected_pytorch_checkpoint_paths.add(pytorch_checkpoint_path)
+        if not pytorch_checkpoint_path.is_file():
+            continue
         try:
             from torch._subclasses.fake_tensor import FakeTensorMode
             with FakeTensorMode():
@@ -743,12 +764,21 @@ def _qwen3_5_infer_mtp_layers_from_tensor_names(tensor_names, num_hidden_layers)
         re.compile(r"^language_model\.model\.layers\.(\d+)\."),
         re.compile(r"^model\.language_model\.model\.layers\.(\d+)\."),
     )
-    mtp_pattern = re.compile(r"^(?:model\.)?mtp\.layers\.(\d+)\.")
+    mtp_patterns = (
+        re.compile(r"^(?:model\.)?mtp\.layers\.(\d+)\."),
+        re.compile(r"^(?:model\.)?language_model\.mtp\.layers\.(\d+)\."),
+        re.compile(r"^language_model\.model\.mtp\.layers\.(\d+)\."),
+        re.compile(r"^model\.language_model\.model\.mtp\.layers\.(\d+)\."),
+    )
 
     for name in tensor_names:
-        match = mtp_pattern.match(name)
-        if match is not None:
-            layer = int(match.group(1))
+        mtp_match = None
+        for pattern in mtp_patterns:
+            mtp_match = pattern.match(name)
+            if mtp_match is not None:
+                break
+        if mtp_match is not None:
+            layer = int(mtp_match.group(1))
             highest_mtp_layer = (
                 layer if highest_mtp_layer is None else max(highest_mtp_layer, layer)
             )
@@ -800,14 +830,26 @@ def _ensure_qwen3_5_mtp_config_for_gguf(save_directory):
         num_hidden_layers,
     )
     existing_mtp_layers = _qwen3_5_existing_mtp_layers(config)
-    if inferred_mtp_layers <= 0 or (
-        existing_mtp_layers is not None and existing_mtp_layers >= inferred_mtp_layers
+    target_mtp_layers = inferred_mtp_layers
+    if isinstance(existing_mtp_layers, int):
+        target_mtp_layers = max(target_mtp_layers, existing_mtp_layers)
+    if target_mtp_layers <= 0:
+        return
+
+    text_config = config.get("text_config")
+    text_config_is_dict = isinstance(text_config, dict)
+    if (
+        config.get("mtp_num_hidden_layers") == target_mtp_layers
+        and (
+            not text_config_is_dict
+            or text_config.get("mtp_num_hidden_layers") == target_mtp_layers
+        )
     ):
         return
 
-    config["mtp_num_hidden_layers"] = inferred_mtp_layers
-    if isinstance(config.get("text_config"), dict):
-        config["text_config"]["mtp_num_hidden_layers"] = inferred_mtp_layers
+    config["mtp_num_hidden_layers"] = target_mtp_layers
+    if text_config_is_dict:
+        text_config["mtp_num_hidden_layers"] = target_mtp_layers
 
     temp_config_path = config_path.with_name(f".{config_path.name}.tmp")
     try:
@@ -827,7 +869,7 @@ def _ensure_qwen3_5_mtp_config_for_gguf(save_directory):
 
     logger.warning_once(
         "Unsloth: Restored missing Qwen3.5 MTP metadata in config.json "
-        f"(mtp_num_hidden_layers={inferred_mtp_layers}) so GGUF conversion can map NextN tensors."
+        f"(mtp_num_hidden_layers={target_mtp_layers}) so GGUF conversion can map NextN tensors."
     )
 
 

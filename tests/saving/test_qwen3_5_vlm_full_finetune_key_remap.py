@@ -144,7 +144,62 @@ def test_qwen3_5_gguf_save_reads_pytorch_shard_index(tmp_path):
     assert updated["text_config"]["mtp_num_hidden_layers"] == 1
 
 
+def test_qwen3_5_gguf_save_reads_variant_pytorch_shard_index(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    for index_name in ("pytorch_model.bin.index.fp16.json", "pytorch_model.fp16.bin.index.json"):
+        save_dir = tmp_path / index_name
+        save_dir.mkdir()
+        config = {
+            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "model_type": "qwen3_5",
+            "text_config": {
+                "model_type": "qwen3_5_text",
+                "num_hidden_layers": 32,
+            },
+        }
+        (save_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        index = {
+            "metadata": {},
+            "weight_map": {
+                "model.layers.32.mlp.down_proj.weight": "pytorch_model-00001-of-00001.fp16.bin",
+            },
+        }
+        (save_dir / index_name).write_text(json.dumps(index), encoding = "utf-8")
+
+        helpers["_ensure_qwen3_5_mtp_config_for_gguf"](save_dir)
+
+        updated = json.loads((save_dir / "config.json").read_text(encoding = "utf-8"))
+        assert updated["mtp_num_hidden_layers"] == 1
+        assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+
 def test_qwen3_5_gguf_save_reads_unsharded_pytorch_checkpoint(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    for checkpoint_name in ("pytorch_model.bin", "pytorch_model.fp16.bin"):
+        save_dir = tmp_path / checkpoint_name
+        save_dir.mkdir()
+        config = {
+            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "model_type": "qwen3_5",
+            "text_config": {
+                "model_type": "qwen3_5_text",
+                "num_hidden_layers": 32,
+            },
+        }
+        (save_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        state_dict = {
+            "model.layers.32.mlp.down_proj.weight": torch.ones(1),
+        }
+        torch.save(state_dict, save_dir / checkpoint_name)
+
+        helpers["_ensure_qwen3_5_mtp_config_for_gguf"](save_dir)
+
+        updated = json.loads((save_dir / "config.json").read_text(encoding = "utf-8"))
+        assert updated["mtp_num_hidden_layers"] == 1
+        assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+
+def test_qwen3_5_gguf_save_recognizes_vlm_prefixed_mtp_tensors(tmp_path):
     helpers = _load_qwen3_5_vlm_save_helpers()
     config = {
         "architectures": ["Qwen3_5ForConditionalGeneration"],
@@ -155,16 +210,80 @@ def test_qwen3_5_gguf_save_reads_unsharded_pytorch_checkpoint(tmp_path):
         },
     }
     (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
-    state_dict = {
-        "model.layers.32.mlp.down_proj.weight": torch.ones(1),
+    index = {
+        "metadata": {},
+        "weight_map": {
+            "language_model.mtp.layers.0.mlp.down_proj.weight": "model.safetensors",
+        },
     }
-    torch.save(state_dict, tmp_path / "pytorch_model.bin")
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index), encoding = "utf-8")
 
     helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
 
     updated = json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))
     assert updated["mtp_num_hidden_layers"] == 1
     assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+
+def test_qwen3_5_gguf_save_fills_missing_mtp_config_copy(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    root_only = tmp_path / "root_only"
+    root_only.mkdir()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "mtp_num_hidden_layers": 1,
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+        },
+    }
+    (root_only / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](root_only)
+
+    updated = json.loads((root_only / "config.json").read_text(encoding = "utf-8"))
+    assert updated["mtp_num_hidden_layers"] == 1
+    assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+    text_only = tmp_path / "text_only"
+    text_only.mkdir()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+            "mtp_num_hidden_layers": 1,
+        },
+    }
+    (text_only / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](text_only)
+
+    updated = json.loads((text_only / "config.json").read_text(encoding = "utf-8"))
+    assert updated["mtp_num_hidden_layers"] == 1
+    assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+    mismatched = tmp_path / "mismatched"
+    mismatched.mkdir()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "mtp_num_hidden_layers": 1,
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+            "mtp_num_hidden_layers": 2,
+        },
+    }
+    (mismatched / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](mismatched)
+
+    updated = json.loads((mismatched / "config.json").read_text(encoding = "utf-8"))
+    assert updated["mtp_num_hidden_layers"] == 2
+    assert updated["text_config"]["mtp_num_hidden_layers"] == 2
 
 
 def test_qwen3_5_gguf_save_leaves_non_qwen_config_unchanged(tmp_path):
