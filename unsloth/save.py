@@ -4531,7 +4531,6 @@ def _unsloth_save_torchao(
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
-        AutoModelForImageTextToText,
         AutoProcessor,
         TorchAoConfig,
     )
@@ -4619,7 +4618,28 @@ def _unsloth_save_torchao(
                                 break
                 except Exception:
                     pass
-        auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
+        # Reload with the class that matches the checkpoint: an image-text VLM class (with a
+        # fallback for older Transformers that lack AutoModelForImageTextToText); the model's own
+        # architecture class for encoder-decoder seq2seq (T5/BART/Whisper are not causal LMs, and
+        # AutoModelForCausalLM would fail to load them); otherwise causal-LM.
+        if is_vlm:
+            try:
+                from transformers import AutoModelForImageTextToText as _reload_model
+            except ImportError:
+                from transformers import AutoModelForVision2Seq as _reload_model
+            auto_model = _reload_model
+        elif getattr(getattr(model, "config", None), "is_encoder_decoder", False):
+            import transformers as _tf
+            auto_model = next(
+                (
+                    getattr(_tf, _arch)
+                    for _arch in (getattr(model.config, "architectures", None) or [])
+                    if getattr(_tf, _arch, None) is not None
+                ),
+                AutoModelForCausalLM,
+            )
+        else:
+            auto_model = AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
         # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from disk.
