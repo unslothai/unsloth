@@ -298,9 +298,15 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         # Don't let a generic base family (e.g. qwen-image) swallow a variant it can't run
         # (qwen-image-LAYERED, ...-Inpaint): if the id still carries a reject keyword the
         # matched family does not itself declare, reject so the load fails fast + clearly.
+        # Scope the keyword check to the LAST path component (the model id or
+        # filename), not arbitrary parent directories: a valid file selected as
+        # repo_id `/models/edit` + filename `Z-Image-Turbo-Q4.gguf` must not be
+        # rejected because a parent folder happens to be named `edit`. The
+        # combined `repo_id/gguf_filename` fallback passes the filename last.
+        basename = re.split(r"[/\\]+", needle)[-1]
         matched_tokens = (match.name, *match.aliases)
         if any(
-            _token_in_needle(kw, needle) and not any(kw in tok for tok in matched_tokens)
+            _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
             for kw in _EDIT_KEYWORDS
         ):
             return None

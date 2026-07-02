@@ -472,6 +472,15 @@ class DiffusionBackend:
                 raise ValueError("a 'gguf' load requires a .gguf checkpoint name.")
             if kind == "single_file" and is_gguf_name:
                 raise ValueError("a .gguf checkpoint needs model_kind 'gguf', not 'single_file'.")
+            # A single-file load must name an actual checkpoint: an arbitrary repo file
+            # (README.md, config.json) would pass preflight, evict the chat model, and
+            # only fail in the background from_single_file -- the eviction this
+            # validation exists to prevent.
+            if kind == "single_file" and not gguf_filename.lower().endswith(".safetensors"):
+                raise ValueError(
+                    f"'{gguf_filename}' is not a loadable single-file checkpoint "
+                    f"(expected a .safetensors name; use a .gguf name for a GGUF load)."
+                )
             if local_root.exists():
                 resolve_local_gguf_child(local_root, gguf_filename)
             elif path_shaped:

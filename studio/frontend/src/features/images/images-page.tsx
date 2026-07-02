@@ -965,6 +965,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const loadToastId = useRef<string | number | null>(null);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
+  // The quant to restore if the current optimistic swap fails. A same-repo quant
+  // change sets `quant` immediately for picker feedback; if the load then fails
+  // AFTER starting (an error/eviction during download), the old pipeline stays
+  // loaded, so the poll must roll the label back rather than advertise the failed
+  // quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
+  const quantRevert = useRef<{ prev: string | null } | null>(null);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -1157,12 +1163,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setStatus(await getDiffusionStatus());
         toast.success("Model loaded");
         setBusy(null);
+        // Load succeeded: the optimistic quant is now the real one, so drop the
+        // pending revert.
+        quantRevert.current = null;
         return;
       }
       if (p.phase === "error") {
         dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
+        // A load that failed AFTER starting leaves the previous pipeline loaded, so
+        // roll the optimistic quant label back to what is actually loaded (status
+        // does not carry the quant, so refreshStatus alone can't correct it).
+        if (quantRevert.current) {
+          setQuant(quantRevert.current.prev);
+          quantRevert.current = null;
+        }
         // A failed load may have freed a previously-loaded model, so resync to
         // the real backend state (the synchronous failure path does the same).
         void refreshStatus();
@@ -1175,6 +1191,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // busy stuck on "loading", deadening the picker and Generate button.
         dismissLoadToast();
         setBusy(null);
+        // Same optimistic-quant rollback as the error path: the swap did not take.
+        if (quantRevert.current) {
+          setQuant(quantRevert.current.prev);
+          quantRevert.current = null;
+        }
         void refreshStatus();
         return;
       }
@@ -1316,17 +1337,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker
-      // feedback, but revert if the load fails to START (400/409/network): the
-      // selector must not advertise a quant that is not the loaded one. Poll-phase
-      // failures re-sync via refreshStatus.
+      // feedback, but revert if the load fails to START (400/409/network) or LATER
+      // during the poll (download/preflight error/eviction) -- in both cases the old
+      // pipeline stays loaded, so the selector must not advertise the failed quant.
+      // The poll owns the after-start revert via quantRevert; here we only handle
+      // the never-started case.
       if (meta.ggufVariant && meta.ggufFilename) {
         const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
         void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename }).then((started) => {
-          if (!started) setQuant(prevQuant);
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
         });
         return;
       }
@@ -1341,14 +1368,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!filename.toLowerCase().endsWith(".gguf")) return;
         // A direct pick carries no curated variant label; surface the filename so
         // the selector stops advertising the previously loaded quant. Optimistic,
-        // reverted if the load fails to start (mirrors the curated branch above).
+        // reverted if the load fails to start OR fails later in the poll (mirrors the
+        // curated branch above; the poll owns the after-start revert via quantRevert).
         const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
-          if (!started) setQuant(prevQuant);
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
         });
         return;
       }
