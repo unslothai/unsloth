@@ -1427,8 +1427,18 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+# Apple Silicon: exclude the broken mlx-lm 0.31.3 (QK-norm load regression for
+# gemma4 / qwen3_5; see mlx-lm #1242) directly on the base install. The
+# overrides file below only applies when it exists relative to this script,
+# which is not the case for a fresh curl-piped install, and the guarded
+# install_python_stack.py MLX step is skipped there (SKIP_STUDIO_BASE=1), so
+# this is the exclusion's only cover on that path. mlx-lm is a transitive dep on
+# Apple Silicon, so requesting it here just pins the resolver away from 0.31.3.
+_MLX_LM_EXCLUDE_ARG=""
+
 # Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _MLX_LM_EXCLUDE_ARG="mlx-lm!=0.31.3"
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
         # uv splits UV_OVERRIDE on whitespace, so a repo path with whitespace
@@ -2897,7 +2907,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth -- "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
