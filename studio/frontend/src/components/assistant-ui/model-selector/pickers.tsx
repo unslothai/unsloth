@@ -2322,6 +2322,21 @@ export function HubModelPicker({
   // selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+  // Device-fit toggle lives inside the sort menu (shared with the Hub page).
+  const fitOnDeviceFooter = (
+    <label
+      className="flex cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      title="Hides models larger than this device's memory budget. Downloaded models stay visible."
+    >
+      <Checkbox
+        checked={fitOnDeviceOnly}
+        onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
+        className="size-3.5"
+        aria-label="Only show models that fit on this device"
+      />
+      Only show models that fit on this device
+    </label>
+  );
   const sectionSortDropdown =
     section === "recommended" ? (
       <HubOptionMenu
@@ -2332,6 +2347,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        footer={fitOnDeviceFooter}
       />
     ) : section === "downloaded" ? (
       <HubOptionMenu
@@ -2342,6 +2358,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        footer={fitOnDeviceFooter}
       />
     ) : (
       <HubOptionMenu
@@ -2352,6 +2369,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        footer={fitOnDeviceFooter}
       />
     );
 
@@ -2580,21 +2598,6 @@ export function HubModelPicker({
           </div>
         )}
       </div>
-
-      {showConnected ? null : (
-        <label
-          className="flex w-fit cursor-pointer select-none items-center gap-1.5 px-1 text-xs text-muted-foreground hover:text-foreground"
-          title="Hides models larger than this device's memory budget. Downloaded models stay visible."
-        >
-          <Checkbox
-            checked={fitOnDeviceOnly}
-            onCheckedChange={(v) => setFitOnDeviceOnly(v === true)}
-            className="size-3.5"
-            aria-label="Only show models that fit on this device"
-          />
-          Only show models that fit on this device
-        </label>
-      )}
 
       <div
         ref={scrollRef}

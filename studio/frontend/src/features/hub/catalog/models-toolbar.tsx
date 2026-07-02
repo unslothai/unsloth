@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -355,38 +356,23 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onValueChange={onSortChange}
             ariaLabel="Sort models"
             className={cn(triggerBase, "w-[128px]")}
+            footer={
+              isDataset ? undefined : (
+                <label
+                  className="flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+                  title="Hides models larger than this device's memory budget. Downloaded models stay visible."
+                >
+                  <Checkbox
+                    checked={fitOnDeviceOnly}
+                    onCheckedChange={(v) => onFitOnDeviceOnlyChange(v === true)}
+                    className="size-3.5"
+                    aria-label="Only show models that fit on this device"
+                  />
+                  Only show models that fit on this device
+                </label>
+              )
+            }
           />
-        )}
-
-        {tab === "discover" && !isDataset && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-pressed={fitOnDeviceOnly}
-                aria-label="Only show models that fit on this device"
-                onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
-                className={cn(
-                  "hub-menu-trigger inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12.5px] transition-colors",
-                  fitOnDeviceOnly
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    fitOnDeviceOnly ? "bg-emerald-500" : "bg-muted-foreground/40",
-                  )}
-                />
-                Fits device
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              Only show models that fit on this device
-            </TooltipContent>
-          </Tooltip>
         )}
 
         <div

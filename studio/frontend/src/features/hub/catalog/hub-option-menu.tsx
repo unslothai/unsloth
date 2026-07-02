@@ -38,6 +38,7 @@ export function HubOptionMenu<T extends string>({
   showChevron = true,
   title,
   triggerContent,
+  footer,
 }: {
   value: T;
   options: readonly HubOption<T>[];
@@ -49,6 +50,8 @@ export function HubOptionMenu<T extends string>({
   showChevron?: boolean;
   title?: string;
   triggerContent?: ReactNode;
+  /** Rendered under the options behind a separator; clicks keep the menu open. */
+  footer?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -235,6 +238,9 @@ export function HubOptionMenu<T extends string>({
             );
           })}
         </div>
+        {footer && (
+          <div className="mt-1 border-t border-border/60 px-1 pt-1">{footer}</div>
+        )}
       </PopoverContent>
     </Popover>
   );
