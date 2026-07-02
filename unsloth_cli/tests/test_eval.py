@@ -148,7 +148,11 @@ def fake_eval_env(monkeypatch):
 
     class _FakeFLM:
         @classmethod
-        def from_pretrained(cls, model_name = None, **kw):
+        def from_pretrained(
+            cls,
+            model_name = None,
+            **kw,
+        ):
             calls["model_name"] = model_name
             return SimpleNamespace(name = model_name), SimpleNamespace(name = "tok")
 
@@ -158,7 +162,12 @@ def fake_eval_env(monkeypatch):
             return model
 
     class _FakeHFLM:
-        def __init__(self, pretrained = None, tokenizer = None, batch_size = None):
+        def __init__(
+            self,
+            pretrained = None,
+            tokenizer = None,
+            batch_size = None,
+        ):
             calls["batch_size"] = batch_size
 
     class _FakeTaskManager:
@@ -169,7 +178,12 @@ def fake_eval_env(monkeypatch):
         def __init__(self, include_path = None):
             calls["include_path"] = include_path
 
-    def _simple_evaluate(model = None, model_args = None, tasks = None, **kw):
+    def _simple_evaluate(
+        model = None,
+        model_args = None,
+        tasks = None,
+        **kw,
+    ):
         calls["model"] = model
         calls["model_args"] = model_args
         calls["tasks"] = tasks
@@ -191,9 +205,7 @@ def fake_eval_env(monkeypatch):
     # deterministic device detection, no real torch needed
     torch_mod = types.ModuleType("torch")
     torch_mod.cuda = SimpleNamespace(is_available = lambda: False)
-    torch_mod.backends = SimpleNamespace(
-        mps = SimpleNamespace(is_available = lambda: False)
-    )
+    torch_mod.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False))
 
     lm_eval_mod = types.ModuleType("lm_eval")
     lm_eval_mod.simple_evaluate = _simple_evaluate
@@ -266,10 +278,14 @@ def test_eval_hf_backend_skips_unsloth(fake_eval_env, tmp_path):
         _eval_app(),
         [
             "fake/model",
-            "--tasks", "gsm8k",
-            "--backend", "hf",
-            "--device", "cpu",
-            "--output-dir", str(tmp_path / "out"),
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -284,10 +300,17 @@ def test_eval_rejects_nonpositive_batch_size(fake_eval_env, tmp_path):
         result = CliRunner().invoke(
             _eval_app(),
             [
-                "fake/model", "--tasks", "gsm8k",
-                "--backend", "hf", "--device", "cpu",
-                "--batch-size", bad,
-                "--output-dir", str(tmp_path / "out"),
+                "fake/model",
+                "--tasks",
+                "gsm8k",
+                "--backend",
+                "hf",
+                "--device",
+                "cpu",
+                "--batch-size",
+                bad,
+                "--output-dir",
+                str(tmp_path / "out"),
             ],
         )
         assert result.exit_code == 2, (bad, result.output)
@@ -298,10 +321,17 @@ def test_eval_hf_forwards_max_seq_length(fake_eval_env, tmp_path):
     result = CliRunner().invoke(
         _eval_app(),
         [
-            "fake/model", "--tasks", "gsm8k",
-            "--backend", "hf", "--device", "cpu",
-            "--max-seq-length", "1024",
-            "--output-dir", str(tmp_path / "out"),
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--max-seq-length",
+            "1024",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -312,10 +342,17 @@ def test_eval_hf_honors_base_model_for_remote_adapter(fake_eval_env, tmp_path):
     result = CliRunner().invoke(
         _eval_app(),
         [
-            "someuser/my-lora", "--tasks", "gsm8k",
-            "--backend", "hf", "--device", "cpu",
-            "--base-model", "meta-llama/Llama-2-7b",
-            "--output-dir", str(tmp_path / "out"),
+            "someuser/my-lora",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--base-model",
+            "meta-llama/Llama-2-7b",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -330,9 +367,15 @@ def test_eval_cuda_index_keeps_auto_batch_size(fake_eval_env, tmp_path):
     result = CliRunner().invoke(
         _eval_app(),
         [
-            "fake/model", "--tasks", "gsm8k",
-            "--backend", "hf", "--device", "cuda:0",
-            "--output-dir", str(tmp_path / "out"),
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cuda:0",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -355,10 +398,17 @@ def test_eval_hf_token_sets_env(fake_eval_env, tmp_path, monkeypatch):
     result = CliRunner().invoke(
         _eval_app(),
         [
-            "fake/model", "--tasks", "gsm8k",
-            "--backend", "hf", "--device", "cpu",
-            "--hf-token", "hf_secret",
-            "--output-dir", str(tmp_path / "out"),
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--hf-token",
+            "hf_secret",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output

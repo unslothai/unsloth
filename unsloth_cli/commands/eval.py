@@ -18,7 +18,6 @@ import yaml
 def _spinner(console, text):
     from rich.live import Live
     from rich.spinner import Spinner
-
     with Live(
         Spinner("dots", text = text, style = "cyan"),
         console = console,
@@ -66,12 +65,7 @@ def resolve_base_model(model: str) -> Optional[str]:
     return data.get("base_model_name_or_path")
 
 
-def make_jsonl_task(
-    data_file: Path,
-    input_key: str,
-    target_key: str,
-    out_dir: Path,
-) -> str:
+def make_jsonl_task(data_file: Path, input_key: str, target_key: str, out_dir: Path) -> str:
     data_file = Path(data_file).resolve()
     task_name = data_file.stem
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
@@ -107,10 +101,7 @@ def make_jsonl_task(
 
 
 def resolve_tasks(
-    tasks: str,
-    input_key: str,
-    target_key: str,
-    tmp_dir: Path,
+    tasks: str, input_key: str, target_key: str, tmp_dir: Path
 ) -> Tuple[List[str], List[str]]:
     names: List[str] = []
     include_paths: List[str] = []
@@ -183,13 +174,13 @@ def evaluate(
         "--tasks",
         "-t",
         help = "Comma-separated built-in task names (e.g. mmlu,gsm8k), or a path to a "
-               "custom .yaml task or a .jsonl/.csv dataset.",
+        "custom .yaml task or a .jsonl/.csv dataset.",
     ),
     base_model: Optional[str] = typer.Option(
         None,
         "--base-model",
         help = "Base model for a LoRA adapter. Auto-detected from adapter_config.json; "
-               "set this to override a moved/renamed base.",
+        "set this to override a moved/renamed base.",
     ),
     num_fewshot: Optional[int] = typer.Option(
         None, "--num-fewshot", "-n", help = "Few-shot examples (default: per-task)."
@@ -197,9 +188,7 @@ def evaluate(
     limit: Optional[int] = typer.Option(
         None, "--limit", help = "Cap examples per task (for quick smoke tests)."
     ),
-    batch_size: str = typer.Option(
-        "auto", "--batch-size", "-b", help = "Batch size, or 'auto'."
-    ),
+    batch_size: str = typer.Option("auto", "--batch-size", "-b", help = "Batch size, or 'auto'."),
     max_seq_length: int = typer.Option(
         2048, "--max-seq-length", help = "Max sequence length for the model."
     ),
@@ -210,8 +199,8 @@ def evaluate(
         "unsloth",
         "--backend",
         help = "Model backend: 'unsloth' (fast kernels; needs an NVIDIA/AMD/Intel "
-               "GPU) or 'hf' (plain transformers; works on CPU/MPS/Mac). "
-               "Auto-falls back to 'hf' on Apple Silicon.",
+        "GPU) or 'hf' (plain transformers; works on CPU/MPS/Mac). "
+        "Auto-falls back to 'hf' on Apple Silicon.",
     ),
     device: Optional[str] = typer.Option(
         None,
@@ -238,8 +227,7 @@ def evaluate(
         from lm_eval.tasks import TaskManager
     except ImportError as e:
         typer.echo(
-            "Error: evaluation requires lm-eval. Install it with "
-            "`pip install unsloth[eval]`.",
+            "Error: evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.",
             err = True,
         )
         raise typer.Exit(code = 1) from e
@@ -252,9 +240,7 @@ def evaluate(
             if bs <= 0:
                 raise ValueError
         except ValueError:
-            typer.echo(
-                "Error: --batch-size must be a positive integer or 'auto'.", err = True
-            )
+            typer.echo("Error: --batch-size must be a positive integer or 'auto'.", err = True)
             raise typer.Exit(code = 2)
 
     if hf_token:
@@ -277,8 +263,11 @@ def evaluate(
 
         registered = getattr(task_manager, "all_tasks", None)
         if registered:
-            known = set(registered) | set(getattr(task_manager, "all_groups", []) or []) \
+            known = (
+                set(registered)
+                | set(getattr(task_manager, "all_groups", []) or [])
                 | set(getattr(task_manager, "all_tags", []) or [])
+            )
             unknown = [t for t in task_names if t not in known]
             if unknown:
                 typer.echo(
@@ -318,7 +307,6 @@ def evaluate(
         if backend == "hf":
             if device is None:
                 import torch
-
                 if torch.cuda.is_available():
                     device = "cuda"
                 elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -326,7 +314,9 @@ def evaluate(
                 else:
                     device = "cpu"
             if bs == "auto" and not device.startswith("cuda"):
-                typer.echo("Note: batch_size 'auto' is slow on CPU/MPS — using 1 (override with --batch-size).")
+                typer.echo(
+                    "Note: batch_size 'auto' is slow on CPU/MPS — using 1 (override with --batch-size)."
+                )
                 bs = 1
             # dict form: a comma in a path can't corrupt key=value parsing
             if effective_base:
@@ -358,7 +348,6 @@ def evaluate(
                         model_name = effective_base, **load_kwargs
                     )
                     from peft import PeftModel
-
                     lmodel = PeftModel.from_pretrained(lmodel, model)
             else:
                 typer.echo(f"Loading model: {model}")
@@ -385,7 +374,5 @@ def evaluate(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
-    results_path.write_text(
-        json.dumps(results, indent = 2, default = str), encoding = "utf-8"
-    )
+    results_path.write_text(json.dumps(results, indent = 2, default = str), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")
