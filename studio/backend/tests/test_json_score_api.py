@@ -110,7 +110,6 @@ def test_extract_json_accepts_repaired_empty_object():
     # Regression: `_extract_json` used to discard well-repaired `{}` / `[]`
     # via `and repaired` — treating a valid empty match as unparseable.
     from eval.json_score.api import _extract_json
-
     assert _extract_json("{") == {}
     assert _extract_json("[") == []
 
