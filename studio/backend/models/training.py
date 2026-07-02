@@ -677,9 +677,13 @@ class DiffusionTrainingStartRequest(BaseModel):
 
     model_config = ConfigDict(protected_namespaces = ())
 
-    base_model: str = Field(..., description = "HF repo id or local path to an SDXL pipeline")
+    base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    model_family: Optional[str] = Field(
+        None,
+        description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
+    )
     instance_prompt: Optional[str] = Field(
         None, description = "Dreambooth caption applied to images without their own caption"
     )
@@ -720,6 +724,15 @@ class DiffusionTrainingStartResponse(BaseModel):
     status: str
 
 
+class DiffusionMetricHistory(BaseModel):
+    """Paired step-indexed history arrays for the live training charts. ``lr`` entries may
+    be null so a sparse learning-rate series still aligns with ``steps`` by index."""
+
+    steps: List[int] = Field(default_factory = list)
+    loss: List[float] = Field(default_factory = list)
+    lr: List[Optional[float]] = Field(default_factory = list)
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -736,8 +749,18 @@ class DiffusionTrainingStatusResponse(BaseModel):
     in_model_load: bool = False
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
+    # Where the trained adapter was mirrored into the Studio LoRA catalog, and what family
+    # / base it was trained from -- lets the UI deploy the adapter onto the right base.
+    catalog_path: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    # Live throughput + peak VRAM (from the trainer's progress events).
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
     started_at: Optional[float] = None
     updated_at: Optional[float] = None
+    # Bounded step/loss/lr history for the live loss + LR charts.
+    metric_history: Optional[DiffusionMetricHistory] = None
 
 
 class DiffusionDatasetSummary(BaseModel):
