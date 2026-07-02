@@ -81,6 +81,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_load_on_selection",
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
+  "unsloth_models_fit_on_device_only",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
