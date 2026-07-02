@@ -1721,6 +1721,47 @@ def test_yolo_config_agents_add_no_command_flag(fake_studio):
         assert not any("--yolo" in arg or "--dangerous" in arg for arg in command)
 
 
+def test_pi_launch_clears_screen_first(fake_studio, monkeypatch):
+    # Pi paints inline from the current cursor position (no alternate screen, no
+    # clear on its first render), so the launcher hands it a clean screen. The
+    # clear must come BEFORE the exec, and only on the launch path.
+    calls = []
+    monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/pi")
+
+    def run(command, env):
+        calls.append("exec")
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, ["pi"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["clear", "exec"]
+
+
+def test_pi_no_launch_does_not_clear(fake_studio, monkeypatch):
+    # The --no-launch recipe is meant to be read (and piped); never wipe it.
+    calls = []
+    monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
+    result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert calls == []
+
+
+def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
+    # Alternate-screen agents manage the terminal themselves; leave it alone.
+    calls = []
+    monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0)
+    )
+    result = CliRunner().invoke(start.start_app, ["claude"])
+    assert result.exit_code == 0, result.output
+    assert calls == []
+
+
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "WSL-from-Linux scenario: a Windows pi shim under /mnt called from WSL "

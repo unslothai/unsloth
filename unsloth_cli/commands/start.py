@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, Optional
 from urllib.parse import urlparse
 
+import click
 import typer
 
 from unsloth_cli._inference import (
@@ -920,7 +921,16 @@ def _run(
     launch: bool,
     install_hint: str,
     unset_env: tuple = (),
+    clear_screen: bool = False,
 ) -> None:
+    # Some agents (Pi) render inline from wherever the cursor sits: their first
+    # paint assumes a clean screen rather than clearing or entering the
+    # alternate screen themselves. Hand them one so the session doesn't start
+    # mid-scroll under our connection output. click.clear() is cross-platform
+    # and a no-op when stdout is not a terminal (piped/CI), so transcripts and
+    # --no-launch recipes stay intact.
+    if launch and clear_screen:
+        click.clear()
     typer.echo(f"Studio {base} · model {entry['id']}")
     wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     if not launch:
@@ -1443,4 +1453,14 @@ def pi(
             drive, tail = os.path.splitdrive(str(home))
             if drive:
                 env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        # Pi paints inline from the current cursor position (no alternate screen,
+        # no clear on first render), so give it the clean screen it assumes.
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            clear_screen = True,
+        )
