@@ -24,7 +24,11 @@ class _ExistingScanFolderConn:
     def __init__(self):
         self.params = ()
 
-    def execute(self, _sql, params = ()):
+    def execute(
+        self,
+        _sql,
+        params = (),
+    ):
         self.params = params
         return self
 
@@ -67,9 +71,7 @@ def test_linux_run_media_policy_accepts_mounted_volume_descendants(monkeypatch):
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
 
     assert external_media.is_linux_run_media_path("/run/media/dspofu/nvmeB")
-    assert external_media.is_linux_run_media_path(
-        "/run/media/dspofu/nvmeB/modelsAI/gguf/qwen3.6"
-    )
+    assert external_media.is_linux_run_media_path("/run/media/dspofu/nvmeB/modelsAI/gguf/qwen3.6")
 
 
 @pytest.mark.parametrize(

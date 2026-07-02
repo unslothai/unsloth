@@ -40,9 +40,7 @@ def _current_username() -> str | None:
 
 
 def linux_run_media_mount_roots(
-    base: Path | str = "/run/media",
-    *,
-    user: str | None = None,
+    base: Path | str = "/run/media", *, user: str | None = None
 ) -> list[Path]:
     """Readable /run/media/<user>/<volume> roots for the folder browser."""
     if platform.system() != "Linux":
