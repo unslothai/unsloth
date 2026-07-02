@@ -626,6 +626,8 @@ export const ja = {
       scheduleEpochsTooltip: "データセット全体の完全な学習回数。0 に設定すると最大ステップ数に基づいて実行されます。",
       saveSteps: "保存ステップ間隔",
       saveStepsTooltip: "N ステップごとにチェックポイントを保存します。0 で無効化します。",
+      saveStepsNoResumeHint:
+        "この設定ではトレーニング中にチェックポイントが保存されないため、中断した場合は再開できません。",
       evalSteps: "評価ステップ間隔",
       evalStepsTooltip: "評価を行う総トレーニングステップ of 割合 (0-1)。0 に設定すると評価が無効になります。例: 0.01 = ステップの 1% ごとに評価を実行。",
       seed: "シード値",

@@ -515,6 +515,24 @@ class TrainingBackend:
             )
         return True
 
+    def shutdown_with_checkpoint(self, timeout: float = 60.0) -> None:
+        """Best-effort stop-and-save before force-terminating (server shutdown path)."""
+        with self._lock:
+            proc = self._proc
+            active = proc is not None and proc.is_alive()
+            cancelled = self._cancel_requested
+            stopping = self._should_stop
+        if active and not cancelled and timeout > 0:
+            logger.info(
+                "Training active at shutdown -- saving a stop checkpoint "
+                "(up to %.0fs, Ctrl+C again to skip)...",
+                timeout,
+            )
+            if not stopping:
+                self.stop_training(save = True)
+            proc.join(timeout = timeout)
+        self.force_terminate()
+
     def force_terminate(self) -> None:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:

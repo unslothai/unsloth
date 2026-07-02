@@ -119,3 +119,22 @@ def test_write_mlx_stop_checkpoint_returns_false_when_save_fails(tmp_path, monke
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
 
     assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 5), object(), out) is False
+
+
+def test_worker_sigint_guard_survives_first_interrupt_only(monkeypatch):
+    # First Ctrl+C is the parent's stop-and-save window; the second force-quits.
+    import signal as signal_mod
+
+    installed = {}
+    monkeypatch.setattr(signal_mod, "signal", lambda s, h: installed.setdefault(s, h))
+    exits: list = []
+    monkeypatch.setattr(worker.os, "_exit", lambda code: exits.append(code))
+
+    worker._install_worker_sigint_guard()
+    handler = installed[signal_mod.SIGINT]
+
+    handler(signal_mod.SIGINT, None)
+    assert exits == []
+
+    handler(signal_mod.SIGINT, None)
+    assert exits == [130]

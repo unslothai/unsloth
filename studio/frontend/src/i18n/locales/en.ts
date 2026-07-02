@@ -705,6 +705,8 @@ export const en = {
         "Number of full passes over the dataset. Set 0 to run by max steps.",
       saveSteps: "Save Steps",
       saveStepsTooltip: "Save a checkpoint every N steps. 0 to disable.",
+      saveStepsNoResumeHint:
+        "No checkpoints will be saved during this run, so it can't be resumed if interrupted.",
       evalSteps: "Eval Steps",
       evalStepsTooltip:
         "Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps.",

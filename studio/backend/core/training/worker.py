@@ -2079,6 +2079,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
             pass
 
 
+def _install_worker_sigint_guard() -> None:
+    """Terminal Ctrl+C hits the whole process group. The first one is the
+    parent's stop-and-save window, so the worker must survive it; a second
+    matches the terminal's force-quit and exits immediately."""
+    import signal
+
+    seen = [False]
+
+    def _on_sigint(signum, frame):
+        if seen[0]:
+            os._exit(130)
+        seen[0] = True
+
+    try:
+        signal.signal(signal.SIGINT, _on_sigint)
+    except (ValueError, OSError):
+        pass
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2087,6 +2106,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
+    _install_worker_sigint_guard()
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 

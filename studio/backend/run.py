@@ -693,6 +693,17 @@ def _remove_pid_file():
         pass
 
 
+def _shutdown_save_timeout() -> float:
+    """Seconds to wait for a stop checkpoint at shutdown; 0 disables the save."""
+    raw = (os.environ.get("UNSLOTH_STUDIO_SHUTDOWN_SAVE_TIMEOUT") or "").strip()
+    if not raw:
+        return 60.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 60.0
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server.
 
@@ -722,11 +733,12 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
-    # 4. Clean up training subprocess (if active).
+    # 4. Clean up training subprocess (if active). Save a stop checkpoint first
+    #    so an accidental Ctrl+C doesn't lose a resumable run.
     try:
         from core.training.training import _training_backend
         if _training_backend is not None:
-            _training_backend.force_terminate()
+            _training_backend.shutdown_with_checkpoint(timeout = _shutdown_save_timeout())
     except Exception as e:
         logger.warning("Error shutting down training subprocess: %s", e)
 

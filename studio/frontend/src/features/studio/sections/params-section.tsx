@@ -946,6 +946,12 @@ export function ParamsSection(): ReactElement {
                       className="w-28 font-mono"
                     />
                   </Row>
+                  {(store.saveSteps <= 0 ||
+                    (!useEpochs && store.maxSteps > 0 && store.saveSteps >= store.maxSteps)) && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      {t("studio.params.saveStepsNoResumeHint")}
+                    </p>
+                  )}
                   <Row
                     label={t("studio.params.evalSteps")}
                     tooltip={t("studio.params.evalStepsTooltip")}
