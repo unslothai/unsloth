@@ -3605,12 +3605,16 @@ def make_fast_generate_wrapper(original_generate):
         def _has_sampling_params(a):
             # SamplingParams passed directly or inside a positional list/tuple
             return type(a).__name__ == "SamplingParams" or (
-                isinstance(a, (list, tuple)) and any(type(i).__name__ == "SamplingParams" for i in a)
+                isinstance(a, (list, tuple))
+                and any(type(i).__name__ == "SamplingParams" for i in a)
             )
+
         def _is_vllm_prompt(a):
             # str prompt, {"prompt"/"multi_modal_data":...} dict, or a list/tuple of those
             head = a[0] if isinstance(a, (list, tuple)) and len(a) > 0 else a
-            return isinstance(head, str) or (isinstance(head, dict) and ("prompt" in head or "multi_modal_data" in head))
+            return isinstance(head, str) or (
+                isinstance(head, dict) and ("prompt" in head or "multi_modal_data" in head)
+            )
 
         # vLLM-only; also catch SamplingParams passed positionally (fast_generate(prompt, params))
         if "sampling_params" in kwargs or any(_has_sampling_params(a) for a in args):
