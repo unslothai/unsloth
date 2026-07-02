@@ -1754,9 +1754,7 @@ def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
     monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda: [])
-    monkeypatch.setattr(
-        start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0)
-    )
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
     result = CliRunner().invoke(start.start_app, ["claude"])
     assert result.exit_code == 0, result.output
     assert calls == []
