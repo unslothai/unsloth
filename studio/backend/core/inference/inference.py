@@ -36,9 +36,9 @@ logger = get_logger(__name__)
 
 
 def apply_presence_penalty(input_ids, scores, penalty: float, prompt_len: int):
-    """OpenAI/llama.cpp presence penalty: subtract ``penalty`` once from each
-    distinct completion token (positions >= prompt_len; prompt excluded,
-    multiplicity ignored). Zero is a no-op, negatives raise. In place."""
+    """OpenAI/llama.cpp presence penalty: subtract ``penalty`` once per distinct
+    completion token (positions >= prompt_len; prompt excluded, multiplicity
+    ignored, negatives raise). In place; zero is a no-op."""
     if not penalty:
         return scores
     vocab_size = scores.shape[-1]
@@ -54,8 +54,7 @@ def apply_presence_penalty(input_ids, scores, penalty: float, prompt_len: int):
 
 
 def _make_presence_penalty_processor(penalty: float, prompt_len: int):
-    """Return a ``LogitsProcessorList`` applying ``apply_presence_penalty``, or
-    ``None`` when ``penalty`` is zero (keeps the generate call byte-identical)."""
+    """``LogitsProcessorList`` for ``apply_presence_penalty``; ``None`` at zero penalty (generate call stays byte-identical)."""
     if not penalty:
         return None
     from transformers import LogitsProcessor, LogitsProcessorList
@@ -1379,8 +1378,7 @@ class InferenceBackend:
 
         _adapter_state: if not None, the background thread toggles adapters
         before model.generate(), under _generation_lock.
-        ``presence_penalty`` applies an OpenAI/llama.cpp-style presence penalty
-        (parity with the GGUF path) via a logits processor; 0 disables it.
+        ``presence_penalty`` matches the GGUF sampling path via a logits processor (0 disables it).
         """
         if not self.active_model_name:
             yield "Error: No active model"

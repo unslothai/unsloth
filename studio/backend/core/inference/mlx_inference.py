@@ -42,26 +42,23 @@ def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
 
 
 def _make_mlx_presence_penalty_processor(penalty: float):
-    """OpenAI-style presence penalty as an mlx_lm/mlx_vlm logits processor,
-    matching the transformers safetensors path (once per distinct completion
-    token, prompt excluded, multiplicity ignored, negatives raise).
+    """Presence penalty as an mlx_lm/mlx_vlm logits processor, matching the safetensors path.
 
     generate_step calls processors as ``fn(tokens, logits)`` with ``tokens`` the
-    full running sequence (prompt + generated) and ``logits`` ``[1, vocab]``. The
-    first call is prompt-only, so latch that length and penalize only after it.
+    full running sequence; the first call is prompt-only, so latch that length
+    and penalize only after it.
     """
     state = {"prompt_len": None}
 
     def _processor(tokens, logits):
         if state["prompt_len"] is None:
-            # First call = prompt only; latch its length, penalize nothing yet.
+            # First call = prompt only; latch its length.
             state["prompt_len"] = int(tokens.shape[0])
             return logits
         generated = tokens[state["prompt_len"]:]
         if generated.size == 0:
             return logits
-        # Scatter-assign is idempotent for duplicate ids, so presence applies
-        # once per token, on-device, with no per-step host sync.
+        # Scatter-assign is idempotent for duplicate ids: presence applies once per token, on-device.
         logits[:, generated] = logits[:, generated] - penalty
         return logits
 
@@ -406,8 +403,7 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
-        # Logits processors for repetition penalty and/or presence penalty
-        # (OpenAI-style; parity with the GGUF and safetensors paths).
+        # Repetition and/or presence penalty processors (parity with the GGUF/safetensors paths).
         logits_processors = []
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
@@ -542,9 +538,8 @@ class MLXInferenceBackend:
             1.0,
         )
         if presence_penalty:
-            # Presence needs a custom processor: build the full list (repetition +
-            # presence) and pass it directly instead of the repetition_penalty
-            # shortcut so both apply once. pp=0 keeps the shortcut path below.
+            # Presence needs a custom processor: pass the full list (repetition +
+            # presence) instead of the repetition_penalty shortcut so both apply once.
             from mlx_lm.sample_utils import make_logits_processors
 
             _vlm_processors = []
