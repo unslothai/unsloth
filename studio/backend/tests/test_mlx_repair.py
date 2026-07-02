@@ -278,13 +278,16 @@ def test_mlx_packages_exclude_known_bad_mlx_lm():
     assert mlx_lm_spec == "mlx-lm>=0.22.0,!=0.31.3"
 
 
-def test_known_bad_installed_mlx_lm_triggers_repair(monkeypatch):
+@pytest.mark.parametrize("bad_form", ["0.31.3", "0.31.3.0"])
+def test_known_bad_installed_mlx_lm_triggers_repair(monkeypatch, bad_form):
     # An already-installed 0.31.3 counts as unsatisfied so the self-heal replaces
-    # it, even though it is above the >=0.22.0 floor.
+    # it, even above the >=0.22.0 floor -- matched via parsed Versions so the
+    # trailing-zero form 0.31.3.0 is caught too (a local/post rebuild is not, on
+    # purpose: it may carry the fix).
     import importlib.metadata as metadata
 
     def _version(name):
-        return "0.31.3" if name == "mlx-lm" else mr._MLX_MIN_VERSIONS[name]
+        return bad_form if name == "mlx-lm" else mr._MLX_MIN_VERSIONS[name]
 
     monkeypatch.setattr(metadata, "version", _version)
     monkeypatch.setattr(

@@ -153,12 +153,13 @@ def _mlx_versions_satisfy_minimums() -> bool:
         return False
     for name, minimum in _MLX_MIN_VERSIONS.items():
         try:
-            installed = _dist_version(name)
-            if Version(installed) < Version(minimum):
+            installed = Version(_dist_version(name))
+            if installed < Version(minimum):
                 return False
             # A known-broken build (e.g. mlx-lm 0.31.3, QK-norm load) counts as
-            # unsatisfied so the self-heal reinstalls a good one.
-            if installed in _MLX_BAD_VERSIONS.get(name, ()):
+            # unsatisfied so the self-heal reinstalls a good one. Compare parsed
+            # Versions so 0.31.3 == 0.31.3.0 == 0.31.3+local all match.
+            if any(installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())):
                 return False
         except PackageNotFoundError:
             return False
