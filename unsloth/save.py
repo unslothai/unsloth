@@ -2291,6 +2291,10 @@ def unsloth_save_pretrained_gguf(
     del arguments["model_name"]
     del arguments["base_model_name"]
     del arguments["is_processor"]
+    # gguf_shard_size is consumed later by save_to_gguf (the GGUF conversion),
+    # not by the intermediate 16-bit merge below; drop it so unsloth_generic_save
+    # doesn't choke on the unknown kwarg.
+    del arguments["gguf_shard_size"]
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:

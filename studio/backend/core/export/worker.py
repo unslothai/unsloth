@@ -362,6 +362,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
+                private = cmd.get("private", False),
+                gguf_shard_size = cmd.get("gguf_shard_size"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
