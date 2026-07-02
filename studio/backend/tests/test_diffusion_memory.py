@@ -270,6 +270,21 @@ def test_explicit_cpu_offload_overrides_resident_auto_choice():
     assert any("explicit cpu_offload" in r for r in plan.reasons)
 
 
+def test_explicit_memory_mode_wins_over_legacy_cpu_offload():
+    # The API documents memory_mode as overriding cpu_offload when set: fast +
+    # the legacy flag must stay resident, not silently downgrade to offload.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(80000),
+        model_dense_mib = 4000,
+        runtime_headroom_mib = 2000,
+        requested_mode = MEMORY_MODE_FAST,
+        explicit_offload = True,
+    )
+    assert plan.offload_policy == OFFLOAD_NONE
+    assert not any("explicit cpu_offload" in r for r in plan.reasons)
+
+
 def test_explicit_cpu_offload_ignored_on_cpu_target():
     plan = plan_diffusion_memory(
         target = _target(device = "cpu", backend = "cpu", supports_offload = False),
