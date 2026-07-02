@@ -260,6 +260,31 @@ def _embedding_model_response() -> EmbeddingModelResponse:
     )
 
 
+def _llama_backend_active() -> bool:
+    """True when this install embeds via the llama-server (GGUF) backend."""
+    from core.rag import config as rag_config
+    from core.rag import embeddings
+
+    try:
+        raw = (rag_config.EMBED_BACKEND or "auto").strip().lower()
+        key = embeddings._resolve_auto() if raw in embeddings._AUTO_ALIASES else raw
+    except Exception:  # noqa: BLE001 - backend probe must never block saving
+        return False
+    return key in embeddings._LLAMA_ALIASES
+
+
+def _resolves_as_local_gguf(model: str) -> bool:
+    """True when ``model`` is a local .gguf file or a directory holding one, so
+    a save on the llama-server backend needs no HF verification (the artifact
+    itself is the proof)."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    try:
+        return LlamaServerBackend._resolve_local_gguf(model) is not None
+    except Exception:  # noqa: BLE001 - dir without .gguf, filesystem oddity
+        return False
+
+
 def _local_gguf_backend_error(model: str) -> str | None:
     """409 detail when ``model`` is a local dir without a .gguf but this install
     embeds via llama-server (macOS/CPU default), which needs one. A
@@ -269,16 +294,9 @@ def _local_gguf_backend_error(model: str) -> str | None:
 
     if not Path(model).expanduser().is_dir():
         return None
-    from core.rag import config as rag_config
-    from core.rag import embeddings
     from core.rag.embed_llama_server import LlamaServerBackend
 
-    try:
-        raw = (rag_config.EMBED_BACKEND or "auto").strip().lower()
-        key = embeddings._resolve_auto() if raw in embeddings._AUTO_ALIASES else raw
-    except Exception:  # noqa: BLE001 - backend probe must never block saving
-        return None
-    if key not in embeddings._LLAMA_ALIASES:
+    if not _llama_backend_active():
         return None
     try:
         LlamaServerBackend._resolve_local_gguf(model)
@@ -291,6 +309,41 @@ def _local_gguf_backend_error(model: str) -> str | None:
         )
     except Exception:  # noqa: BLE001 - filesystem oddity: don't block saving
         return None
+
+
+def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
+    """409 detail when the llama-server backend would find no .gguf for an HF
+    repo: neither the derived companion repo nor the repo itself has one. Saves
+    that verify as embedding models would otherwise fail at first index.
+    None when not applicable; ``force`` skips this like HF verification."""
+    from pathlib import Path
+
+    if Path(model).expanduser().exists():
+        return None  # local paths are handled by the local checks
+    if not _llama_backend_active():
+        return None
+    from core.rag import config as rag_config
+
+    candidates = (
+        [model] if rag_config._names_gguf(model) else [f"{model}-GGUF", model]
+    )
+    try:
+        from huggingface_hub import list_repo_files
+    except Exception:  # noqa: BLE001 - hub client unavailable: don't block saving
+        return None
+    for candidate in candidates:
+        try:
+            files = list_repo_files(candidate, token = hf_token)
+        except Exception:  # noqa: BLE001 - missing/gated repo: try next candidate
+            continue
+        if any(f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files):
+            return None
+    checked = " or ".join(repr(c) for c in candidates)
+    return (
+        f"No GGUF weights found in {checked}, but this install embeds with the "
+        "llama-server backend which requires them. Pick a model with a GGUF "
+        "companion repo or GGUF files in the repo itself."
+    )
 
 
 @router.get("/embedding-model", response_model = EmbeddingModelResponse)
@@ -321,7 +374,13 @@ def update_embedding_model(
             log = logger,
         ) from exc
     # The env/default model needs no verification; saving it is a no-op override.
-    if model != default_embedding_model() and not payload.force:
+    # A local GGUF on the llama-server backend is accepted as-is: it is exactly
+    # what the backend loads, and HF metadata cannot verify a local path.
+    if (
+        model != default_embedding_model()
+        and not payload.force
+        and not (_llama_backend_active() and _resolves_as_local_gguf(model))
+    ):
         hf_token = (payload.hf_token or "").strip() or None
         if not is_embedding_model(model, hf_token = hf_token):
             raise HTTPException(
@@ -332,7 +391,9 @@ def update_embedding_model(
                     "you may be offline)."
                 ),
             )
-        gguf_error = _local_gguf_backend_error(model)
+        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(
+            model, hf_token
+        )
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)

@@ -386,3 +386,104 @@ def test_ingestion_with_real_embedder(rag_home, tmp_path):
         assert hits and hits[0].chunk_id == f"{doc_id}:0"
     finally:
         conn.close()
+
+
+def test_failed_reingest_preserves_old_document(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """The stale document is dropped only after its replacement completes; a
+    failing re-index must leave the searchable original in place."""
+    from core.rag import config
+
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    _drain(job_id)
+    _wait_completed(job_id)
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/new-embedder")
+
+    def _boom(texts, model_name):
+        raise RuntimeError("embedder unavailable")
+
+    monkeypatch.setattr(ingestion, "_embed_all", _boom)
+    path2 = _write(tmp_path, "copy.txt", "alpha bravo charlie")
+    doc_id2, job_id2 = ingestion.start_ingestion(scope, "K1", None, "copy.txt", path2)
+    _drain(job_id2)
+    status = _wait_completed(job_id2)
+    assert status["status"] == "failed"
+
+    conn = rag_db.get_connection()
+    try:
+        old = store.get_document(conn, doc_id)
+        assert old is not None and old["status"] == "completed"  # original intact
+        assert store.search_lexical(conn, scope, "alpha", 10)
+        new = store.get_document(conn, doc_id2)
+        assert new is not None and new["status"] == "failed"
+    finally:
+        conn.close()
+
+
+def test_inflight_duplicate_not_deleted_on_model_change(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """A pending/running duplicate has a live worker; a model change must not
+    delete its row out from under it. Only completed rows are replaceable."""
+    from core.rag import config
+
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    _drain(job_id)
+    _wait_completed(job_id)
+
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("UPDATE documents SET status='running' WHERE id=?", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/new-embedder")
+    path2 = _write(tmp_path, "copy.txt", "alpha bravo charlie")
+    doc_id2, job_id2 = ingestion.start_ingestion(scope, "K1", None, "copy.txt", path2)
+    _drain(job_id2)
+    assert doc_id2 == doc_id  # deduped against the in-flight row
+
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id) is not None
+    finally:
+        conn.close()
+
+
+def test_ingestion_pins_model_across_setting_change(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """The embedder captured at job start is used for the whole job, even when
+    the Settings value changes while the worker runs."""
+    from core.rag import config, embeddings
+
+    seen: list = []
+    orig = embeddings.encode
+
+    def _tracking_encode(texts, *, model_name = None, normalize = True):
+        seen.append(model_name)
+        return orig(texts, model_name = model_name, normalize = normalize)
+
+    monkeypatch.setattr(embeddings, "encode", _tracking_encode)
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pinned-embedder")
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
+    scope = store.kb_scope("K1")
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    # The setting changes while the worker runs; the job must keep the pin.
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/other-embedder")
+    _drain(job_id)
+    _wait_completed(job_id)
+    assert seen and all(m == "org/pinned-embedder" for m in seen)
+
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id)["embedding_model"] == "org/pinned-embedder"
+    finally:
+        conn.close()

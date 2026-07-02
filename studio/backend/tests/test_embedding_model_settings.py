@@ -138,7 +138,12 @@ def test_env_custom_model_derives_companion(settings_store, monkeypatch):
 
 @pytest.fixture
 def client(settings_store, monkeypatch):
+    import core.rag.config as core_rag_config
     import routes.settings as settings_routes
+
+    # Route tests are backend-neutral by default; llama-backend specifics
+    # (local GGUF saves, companion-repo availability) pin it explicitly.
+    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "st")
 
     # Verification is stubbed per-test via calls["is_embedding"].
     calls: dict = {"is_embedding": True}
@@ -274,3 +279,99 @@ def test_delete_resets_to_default(client):
     body = r.json()
     assert body["embedding_model"] == rag_config.EMBEDDING_MODEL
     assert body["is_custom"] is False
+
+
+def test_put_local_gguf_saves_without_verification(client, monkeypatch, tmp_path):
+    """A local GGUF file/dir is exactly what the llama-server backend loads, so
+    saving it must not require HF verification or Save anyway."""
+    import core.rag.config as core_rag_config
+
+    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "llama-server")
+    local = tmp_path / "gguf-dir"
+    local.mkdir()
+    (local / "embedder-F16.gguf").write_bytes(b"GGUF")
+    c, calls = client
+    calls["is_embedding"] = False  # would 409 if the HF gate ran
+    r = c.put("/embedding-model", json = {"embedding_model": str(local)})
+    assert r.status_code == 200
+    assert "checked" not in calls
+    assert r.json()["is_custom"] is True
+
+
+def test_put_hf_repo_without_gguf_on_llama_backend_409(client, monkeypatch):
+    """On the llama-server backend an HF repo with no GGUF anywhere fails at
+    first index; the save must warn via 409 (force still bypasses)."""
+    import core.rag.config as core_rag_config
+    import routes.settings as settings_routes
+
+    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "llama-server")
+    listed: list[str] = []
+
+    def _no_gguf(model, hf_token):
+        listed.append(model)
+        return "no GGUF weights found (stub)"
+
+    monkeypatch.setattr(settings_routes, "_hf_gguf_backend_error", _no_gguf)
+    c, _ = client
+    r = c.put("/embedding-model", json = {"embedding_model": "org/st-only"})
+    assert r.status_code == 409
+    assert listed == ["org/st-only"]
+    r = c.put(
+        "/embedding-model",
+        json = {"embedding_model": "org/st-only", "force": True},
+    )
+    assert r.status_code == 200
+
+
+def test_hf_gguf_backend_error_checks_candidates(client, monkeypatch):
+    """The availability probe accepts a .gguf in the companion repo or the repo
+    itself, and reports both when neither has one."""
+    import sys
+    import types
+
+    import core.rag.config as core_rag_config
+    import routes.settings as settings_routes
+
+    monkeypatch.setattr(core_rag_config, "EMBED_BACKEND", "llama-server")
+    repos = {
+        "org/has-companion-GGUF": ["embedder-F16.gguf"],
+        "org/self-hosted": ["weights.gguf"],
+        "org/st-only": ["model.safetensors"],
+        "org/st-only-GGUF": None,  # missing repo
+    }
+
+    def _list_repo_files(repo_id, token = None):
+        files = repos.get(repo_id)
+        if files is None:
+            raise RuntimeError("404")
+        return files
+
+    hub = types.SimpleNamespace(list_repo_files = _list_repo_files)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    assert settings_routes._hf_gguf_backend_error("org/has-companion", None) is None
+    # st-only-GGUF is missing and self-hosted has the .gguf in the repo itself.
+    repos["org/self-hosted-GGUF"] = None
+    assert settings_routes._hf_gguf_backend_error("org/self-hosted", None) is None
+    err = settings_routes._hf_gguf_backend_error("org/st-only", None)
+    assert err is not None and "org/st-only-GGUF" in err
+
+
+def test_stored_value_survives_transient_read_error(settings_store, monkeypatch):
+    """A settings-store hiccup must not flip the hot path to the default model
+    mid-ingestion; the last known override wins until the store recovers."""
+    ems.set_rag_embedding_model("org/my-embedder")
+    assert ems.get_rag_embedding_model() == "org/my-embedder"
+
+    import storage.studio_db as studio_db
+
+    def _boom(key, default = None):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(studio_db, "get_app_setting", _boom)
+    # Expire the TTL entry (keeping its value) so the next read hits the
+    # broken store and must fall back to the last known override.
+    ems._cached = (ems.time.monotonic() - 10.0, "org/my-embedder")
+    assert ems.get_rag_embedding_model() == "org/my-embedder"
+    # Sticky across repeated failures until the store recovers.
+    ems._cached = (ems.time.monotonic() - 10.0, "org/my-embedder")
+    assert ems.get_rag_embedding_model() == "org/my-embedder"

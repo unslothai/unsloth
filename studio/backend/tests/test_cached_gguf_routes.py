@@ -698,3 +698,34 @@ def test_gguf_download_progress_counts_quant_subdir(monkeypatch, tmp_path):
 
     assert result["downloaded_bytes"] == 20_000
     assert result["progress"] == 1.0
+
+
+def test_is_hidden_model_local_path_matches_exactly(monkeypatch, tmp_path):
+    """A local-path embedder with a generic basename (e.g. ".../model") must
+    hide only that exact path, never substring-hide unrelated chat models."""
+    from core.rag import config as rag_config
+
+    local = tmp_path / "models" / "model"
+    local.mkdir(parents = True)
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: str(local))
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: f"{local}-GGUF")
+    assert models_route._is_hidden_model(str(local))
+    # Unrelated ids/paths that merely contain "model" stay visible.
+    assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")
+    assert not models_route._is_hidden_model("org/model-large")
+    assert not models_route._is_hidden_model(str(tmp_path / "models" / "other"))
+
+
+def test_is_hidden_model_repo_id_still_matches_basename(monkeypatch):
+    """HF repo embedders keep the basename needle (cache paths embed it)."""
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(
+        rag_config, "effective_embedding_model", lambda: "org/my-embedder"
+    )
+    monkeypatch.setattr(
+        rag_config, "effective_gguf_repo", lambda: "org/my-embedder-GGUF"
+    )
+    assert models_route._is_hidden_model("org/my-embedder")
+    assert models_route._is_hidden_model("/hf/models--org--my-embedder/snap/x")
+    assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")

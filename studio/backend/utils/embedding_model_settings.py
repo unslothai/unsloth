@@ -70,7 +70,13 @@ def get_stored_embedding_model() -> str | None:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(EMBEDDING_MODEL_SETTING_KEY, None)
     except Exception:
-        stored = None
+        # Transient store failure: keep the last known value instead of
+        # silently reverting the embed/search hot path to the default model,
+        # which would mix vector spaces mid-ingestion.
+        if cached is not None:
+            _cached = (now, cached[1])
+            return cached[1]
+        return None
     value = _coerce_embedding_model(stored)
     _cached = (now, value)
     return value

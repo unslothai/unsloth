@@ -149,3 +149,29 @@ def test_kb_crud_and_delete_cascades(rag_conn):
     assert store.get_kb(rag_conn, "K1") is None
     assert store.list_documents(rag_conn, scope) == []
     assert store.search_lexical(rag_conn, scope, "alpha", 10) == []
+
+
+def test_dense_filters_same_width_stale_model(rag_conn):
+    """Same-width vectors from a different embedder live in another space; the
+    model filter drops them while NULL-model legacy documents stay served."""
+    _add_doc(rag_conn, "kb_a", "d_legacy", "f", "h1", ["alpha alpha"])  # NULL model
+    chunks = [_chunk("alpha bravo", 0)]
+    vectors = [embed("alpha bravo")]
+    store.create_document(
+        rag_conn,
+        scope = "kb_a",
+        filename = "g",
+        sha256 = "h2",
+        document_id = "d_old",
+        embedding_model = "org/old-model",
+    )
+    store.add_chunks(rag_conn, "kb_a", "d_old", chunks, vectors)
+    hits = store.search_dense(
+        rag_conn, "kb_a", embed("alpha"), 10, embedding_model = "org/new-model"
+    )
+    ids = [cid for cid, _ in hits]
+    assert "d_legacy:0" in ids  # legacy NULL assumed current
+    assert "d_old:0" not in ids  # stale same-width vectors dropped
+    # Without a model filter, behavior is unchanged.
+    unfiltered = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10)
+    assert "d_old:0" in [cid for cid, _ in unfiltered]
