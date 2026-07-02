@@ -263,7 +263,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                 </span>
               </button>
               {model.isGguf && isExpanded && (
-                <div className="pl-2">
+                <div className="max-h-[240px] overflow-y-auto pl-2">
                   <GgufVariantExpander
                     repoId={model.id}
                     onDevice
