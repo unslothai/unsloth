@@ -48,6 +48,10 @@ from .storage_roots import (
     resolve_tensorboard_dir,
     resolve_dataset_path,
 )
+from .external_media import (
+    is_linux_run_media_path,
+    linux_run_media_mount_roots,
+)
 
 # Re-export shim: mark project-path helpers as used so the import-hoist
 # safety net does not flag them as unused.
@@ -95,6 +99,8 @@ __all__ = [
     "resolve_export_write_dir",
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
+    "is_linux_run_media_path",
+    "linux_run_media_mount_roots",
 ]
 
 # Bind the re-exports so the import-hoist verifier counts them as used.

@@ -1202,6 +1202,7 @@ def _build_browse_allowlist() -> list[Path]:
         legacy_hf_cache_dir,
         well_known_model_dirs,
     )
+    from utils.paths.external_media import linux_run_media_mount_roots
     from storage.studio_db import list_scan_folders
 
     candidates: list[Path] = []
@@ -1217,6 +1218,8 @@ def _build_browse_allowlist() -> list[Path]:
             candidates.append(resolved)
 
     _add(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         _add(hf_default_cache_dir())
@@ -1435,6 +1438,7 @@ async def browse_folders(
     then hidden (if ``show_hidden=true``).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
+    from utils.paths.external_media import linux_run_media_mount_roots
     from storage.studio_db import list_scan_folders
 
     # Build once; the sandbox check and suggestion chips share it.
@@ -1541,6 +1545,8 @@ async def browse_folders(
 
     # Home first -- the safe fallback when everything else is cold.
     _add_sug(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add_sug(p)
     # The HF cache root the process is actually using.
     try:
         _add_sug(hf_default_cache_dir())

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from storage.studio_db import get_connection
 from hub.utils.paths import normalize_path
+from utils.paths.external_media import is_linux_run_media_path
 
 
 _schema_lock = threading.Lock()
@@ -142,6 +143,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()

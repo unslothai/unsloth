@@ -22,7 +22,12 @@ logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
-from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.paths import (
+    ensure_dir,
+    project_workspaces_root,
+    studio_db_path,
+)
+from utils.paths.external_media import is_linux_run_media_path
 from utils.training_runs import extract_project_name
 
 
@@ -903,6 +908,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()
