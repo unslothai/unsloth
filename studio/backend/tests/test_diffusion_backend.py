@@ -170,11 +170,13 @@ class _FakePipe:
         self.moved_to = device
         return self
 
-    def enable_model_cpu_offload(self) -> None:
+    def enable_model_cpu_offload(self, device = None) -> None:
         self.offloaded = True
+        self.offload_device = device
 
-    def enable_sequential_cpu_offload(self) -> None:
+    def enable_sequential_cpu_offload(self, device = None) -> None:
         self.sequential_offloaded = True
+        self.offload_device = device
 
     def enable_vae_tiling(self) -> None:
         self.vae_tiled = True
@@ -1214,6 +1216,29 @@ def test_unload_cancels_in_flight_load(fake_runtime):
         )
 
 
+def test_superseded_load_does_not_cancel_live_generation(fake_runtime):
+    # A superseded background load (its token was bumped by a newer load/unload) that
+    # finally reaches load_pipeline must bail WITHOUT signalling the current model's
+    # in-flight generation: the token check has to run before the cancel is set, or a
+    # stale worker aborts an unrelated, still-live denoise.
+    import threading as _threading
+
+    backend = DiffusionBackend()
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    live_cancel = _threading.Event()
+    backend._active_generate_cancel = live_cancel  # a generation from the CURRENT model
+    token = 11
+    backend._load_token = token + 1  # this load has already been superseded
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.load_pipeline(
+            "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+            base_repo = fam.base_repo,
+            _load_token = token,
+        )
+    assert not live_cancel.is_set()  # the live generation was left untouched
+
+
 def test_pick_dtype_bf16_only_on_ampere(fake_runtime, monkeypatch):
     # BF16 only on Ampere+ (cc >= 8); pre-Ampere cards must fall back to FP16.
     torch = sys.modules["torch"]
@@ -1863,3 +1888,41 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
     assert status["transformer_quant"] is None
     assert status["offload_policy"] == "model"
     assert _FakeTransformer.last["path"]  # GGUF path used
+
+
+def test_reset_step_cache_helper_is_best_effort():
+    # Calls the transformer's reset hook when present.
+    calls = []
+    pipe = types.SimpleNamespace(
+        transformer = types.SimpleNamespace(reset_stateful_hooks = lambda: calls.append(True))
+    )
+    DiffusionBackend._reset_step_cache(pipe)
+    assert calls == [True]
+    # No transformer, or a transformer without the hook -> silent no-op (never raises).
+    DiffusionBackend._reset_step_cache(types.SimpleNamespace())
+    DiffusionBackend._reset_step_cache(types.SimpleNamespace(transformer = object()))
+
+
+def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
+    # FBCache residuals live on the resident transformer across generations, so each
+    # generate() must reset the stateful cache first -- but only when a cache is engaged.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    resets = []
+    backend._state.pipe.transformer = types.SimpleNamespace(
+        reset_stateful_hooks = lambda: resets.append(True)
+    )
+    # No cache engaged (transformer_cache is None) -> reset must NOT run.
+    backend.generate(prompt = "a sloth")
+    assert resets == []
+    # Engage a cache; every subsequent generation resets the stateful cache first.
+    object.__setattr__(backend._state, "transformer_cache", "fbcache")
+    backend.generate(prompt = "a sloth")
+    backend.generate(prompt = "another sloth")
+    assert resets == [True, True]
