@@ -1490,7 +1490,6 @@ class DiffusionBackend:
                 # and passes a control map. v1 conditions txt2img only (not img2img/inpaint/edit).
                 if controlnet is not None:
                     from core.inference import diffusion_controlnet
-
                     cn_id, cn_image_b64, cn_type, cn_strength, cn_gs, cn_ge = controlnet
                     # strength 0 disables ControlNet (documented on the request model, and the
                     # frontend slider allows it): skip the whole path so a no-op selection never

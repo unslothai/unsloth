@@ -137,11 +137,7 @@ def _catalog_by_id() -> dict[str, ControlNetCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
 
-def resolve_controlnet(
-    spec_id: str,
-    *,
-    family: Optional[str] = None,
-) -> ResolvedControlNet:
+def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> ResolvedControlNet:
     """Resolve a ControlNet id to a loadable repo id / local dir.
 
     Accepts a catalog/local id, or a bare public HF repo id (``owner/name``). The backend
