@@ -367,7 +367,17 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
 
-    if explicit_offload and policy == OFFLOAD_NONE and can_offload and not device_memory.is_unified:
+    # The legacy cpu_offload flag only applies when NO memory_mode was supplied:
+    # the API documents memory_mode as overriding cpu_offload when set, so an
+    # explicit `fast` request must stay resident even if the caller also left the
+    # old flag enabled.
+    if (
+        explicit_offload
+        and normalize_memory_mode(requested_mode) is None
+        and policy == OFFLOAD_NONE
+        and can_offload
+        and not device_memory.is_unified
+    ):
         policy = OFFLOAD_MODEL
         reasons.append("explicit cpu_offload overrides resident placement")
 

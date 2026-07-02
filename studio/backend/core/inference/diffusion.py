@@ -219,6 +219,34 @@ class DiffusionBackend:
 
         return hf_hub_download(repo_id, gguf_filename, token = hf_token)
 
+    def _dense_quant_prefetch_needed(self, fam: DiffusionFamily, kwargs: dict) -> bool:
+        """True when ``load_pipeline`` may take the dense transformer-quant path, so
+        the prefetch should also pull the base repo's ``transformer/`` shards.
+
+        Those shards are excluded from the prefetch by default (the GGUF supplies
+        the transformer), but ``_load_dense_quant_pipeline`` fetches them with
+        ``from_pretrained(subfolder = "transformer")`` under the load lock during
+        "finalizing", after the previous pipeline was already evicted, where
+        unload/cancellation cannot preempt the download. Mirrors the dense-path
+        gates in ``load_pipeline``: quant requested and supported for this device,
+        and no pre-quantized checkpoint that would shortcut the dense build."""
+        mode = normalize_transformer_quant(kwargs.get("transformer_quant"))
+        if mode is None:
+            return False
+        try:
+            target = self._resolve_device_target(fam)
+            if not dense_transformer_supported(target):
+                return False
+            scheme = select_transformer_quant_scheme(target, mode)
+            if scheme is None:
+                return False
+            source = resolve_prequant_source(
+                fam, scheme, path_override = kwargs.get("transformer_prequant_path")
+            )
+            return source is None
+        except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
+            return False
+
     def _prefetch_files(
         self,
         repo_id: str,
@@ -364,7 +392,16 @@ class DiffusionBackend:
             )
             kwargs["base_repo"] = base
             expected, base_files = self._estimate_download_bytes(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                base,
+                kwargs.get("hf_token"),
+                # The dense transformer-quant path downloads the base repo's
+                # transformer/ shards via from_pretrained(subfolder="transformer")
+                # INSIDE the locked finalize phase, where unload/cancellation cannot
+                # preempt the multi-GB pull. When that path can actually run, pull the
+                # shards here in the preemptible prefetch instead.
+                include_transformer = self._dense_quant_prefetch_needed(fam, kwargs),
             )
             with self._lock:
                 # Stamp progress only if this load is still current; a superseding
@@ -433,7 +470,12 @@ class DiffusionBackend:
 
     @staticmethod
     def _estimate_download_bytes(
-        repo_id: str, gguf_filename: Optional[str], base_repo: str, hf_token: Optional[str]
+        repo_id: str,
+        gguf_filename: Optional[str],
+        base_repo: str,
+        hf_token: Optional[str],
+        *,
+        include_transformer: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once)."""
@@ -452,7 +494,7 @@ class DiffusionBackend:
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             for s in base_info.siblings:
-                if _base_file_downloaded(s.rfilename):
+                if _base_file_downloaded(s.rfilename, include_transformer = include_transformer):
                     base_files.append(s.rfilename)
                     total += s.size or 0
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
@@ -1156,16 +1198,18 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     return base if isinstance(base, str) and base.strip() else None
 
 
-def _base_file_downloaded(rfilename: str) -> bool:
+def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) -> bool:
     """True for base-repo files ``from_pretrained`` actually fetches.
 
     The transformer is supplied by the GGUF, and repo docs (``assets/``, the
     top-level README/PDF/images) are never downloaded — counting them would peg
     the progress estimate above what lands on disk, so the bar would sit short of
     100% for the whole pipeline-load phase instead of advancing to "finalizing".
-    """
+    ``include_transformer`` admits the ``transformer/`` shards for loads where the
+    dense transformer-quant path will fetch them anyway (see
+    ``_dense_quant_prefetch_needed``)."""
     if rfilename.startswith("transformer/"):
-        return False
+        return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
     return not rfilename.startswith("assets/")
