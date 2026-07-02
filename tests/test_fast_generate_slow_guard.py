@@ -60,7 +60,9 @@ def test_fast_generate_slow_guard():
     )
     assert _rejects(lambda: w(["a", "b"]), "fast_inference=True")
     assert _rejects(lambda: w([{"prompt": "hi"}]), "fast_inference=True")  # list of prompt dicts
-    assert _rejects(lambda: w({"prompt_token_ids": [1, 2, 3]}), "fast_inference=True")  # vLLM TokensPrompt
+    assert _rejects(
+        lambda: w({"prompt_token_ids": [1, 2, 3]}), "fast_inference=True"
+    )  # vLLM TokensPrompt
     assert _rejects(lambda: w({"prompt": "hi"}, _SamplingParams()), "sampling_params")
     assert _rejects(
         lambda: w({"prompt": "hi"}, [_SamplingParams()]), "sampling_params"

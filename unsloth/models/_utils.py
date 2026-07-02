@@ -3615,7 +3615,10 @@ def make_fast_generate_wrapper(original_generate):
             head = a[0] if isinstance(a, (list, tuple)) and len(a) > 0 else a
             return isinstance(head, str) or (
                 isinstance(head, dict)
-                and any(k in head for k in ("prompt", "prompt_token_ids", "prompt_embeds", "multi_modal_data"))
+                and any(
+                    k in head
+                    for k in ("prompt", "prompt_token_ids", "prompt_embeds", "multi_modal_data")
+                )
             )
 
         # vLLM-only; also catch SamplingParams passed positionally (fast_generate(prompt, params))
