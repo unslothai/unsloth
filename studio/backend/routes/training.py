@@ -1158,6 +1158,15 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
+    # Validate the config BEFORE freeing resident GPU workloads, so a start that is
+    # then refused (bad numbers, a non-SDXL base model) never tears down the user's
+    # loaded chat/Images model. service.start() re-runs this cheaply before spawn.
+    from core.training.diffusion_lora_trainer import _config_from_dict
+    try:
+        _config_from_dict(config).normalized()
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+
     # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
     # loads its own SDXL pipeline.
     _free_gpu_for_diffusion_training()
@@ -1253,6 +1262,7 @@ _DATASET_NAME_RE = None  # compiled lazily; module keeps its import block torch-
 def _clean_diffusion_dataset_name(name: str) -> str:
     """Validate a dataset folder name: a single path component, no traversal, printable."""
     import re
+
     global _DATASET_NAME_RE
     if _DATASET_NAME_RE is None:
         _DATASET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")

@@ -459,3 +459,19 @@ def test_diffusion_dataset_upload_rejects_unsupported_files(client, dataset_root
     )
     assert r.status_code == 400
     assert "Unsupported file" in r.json()["detail"]
+
+
+def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypatch):
+    # A doomed start (non-SDXL base) must 400 BEFORE resident GPU workloads are freed,
+    # so a bad pick never unloads the user's working chat/Images model.
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/FLUX.1-dev-GGUF"}
+    )
+    assert r.status_code == 400
+    assert "SDXL" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.started_with is None
