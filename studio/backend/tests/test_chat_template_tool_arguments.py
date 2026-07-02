@@ -28,9 +28,17 @@ from core.inference.chat_template_helpers import (  # noqa: E402
 def _conv(arguments):
     return [
         {"role": "user", "content": "weather?"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"type": "function", "id": "c1",
-                         "function": {"name": "web_search", "arguments": arguments}}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "c1",
+                    "function": {"name": "web_search", "arguments": arguments},
+                }
+            ],
+        },
         {"role": "tool", "name": "web_search", "content": "21C sunny"},
     ]
 
@@ -38,7 +46,14 @@ def _conv(arguments):
 class _StrictTemplateTokenizer:
     """Mimics a strict Qwen tool template: rejects string tool_call arguments."""
 
-    def apply_chat_template(self, messages, *, tokenize=False, add_generation_prompt=True, **kw):
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
         for msg in messages:
             for call in msg.get("tool_calls", []) or []:
                 args = call.get("function", {}).get("arguments")
