@@ -84,19 +84,13 @@ def resolve_base_model(model: str) -> Optional[str]:
         return None
     try:
         from huggingface_hub import hf_hub_download
-
         config_path = hf_hub_download(model, "adapter_config.json")
     except Exception:
         return None
     return _read_adapter_base(Path(config_path))
 
 
-def make_jsonl_task(
-    data_file: Path,
-    input_key: str,
-    target_key: str,
-    out_dir: Path,
-) -> str:
+def make_jsonl_task(data_file: Path, input_key: str, target_key: str, out_dir: Path) -> str:
     data_file = Path(data_file).resolve()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents = True, exist_ok = True)
@@ -395,12 +389,12 @@ def evaluate(
                         model_name = effective_base, **load_kwargs
                     )
                     from peft import PeftModel
+
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                     # adapters that saved their own tokenizer (added tokens
                     # etc.) must not be scored with the base tokenizer
                     if _has_tokenizer_files(model):
                         from transformers import AutoTokenizer
-
                         tokenizer = AutoTokenizer.from_pretrained(model)
             else:
                 typer.echo(f"Loading model: {model}")

@@ -50,9 +50,7 @@ def test_resolve_base_model_none_for_non_dict_config(tmp_path):
 
 def test_resolve_base_model_finds_hub_adapter(tmp_path, monkeypatch):
     remote_config = tmp_path / "adapter_config.json"
-    remote_config.write_text(
-        json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"})
-    )
+    remote_config.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B"}))
 
     hub_mod = types.ModuleType("huggingface_hub")
 
@@ -234,7 +232,11 @@ def fake_eval_env(monkeypatch):
 
     class _FakeHFLM:
         def __init__(
-            self, pretrained = None, tokenizer = None, batch_size = None, max_length = None
+            self,
+            pretrained = None,
+            tokenizer = None,
+            batch_size = None,
+            max_length = None,
         ):
             calls["batch_size"] = batch_size
             calls["hflm_tokenizer"] = tokenizer
@@ -422,9 +424,13 @@ def test_eval_unsloth_forwards_max_seq_length_to_hflm(fake_eval_env, tmp_path):
     result = CliRunner().invoke(
         _eval_app(),
         [
-            "fake/model", "--tasks", "gsm8k",
-            "--max-seq-length", "512",
-            "--output-dir", str(tmp_path / "out"),
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--max-seq-length",
+            "512",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -442,9 +448,15 @@ def test_eval_hf_local_adapter_uses_adapter_tokenizer(fake_eval_env, tmp_path):
     result = CliRunner().invoke(
         _eval_app(),
         [
-            str(adapter), "--tasks", "gsm8k",
-            "--backend", "hf", "--device", "cpu",
-            "--output-dir", str(tmp_path / "out"),
+            str(adapter),
+            "--tasks",
+            "gsm8k",
+            "--backend",
+            "hf",
+            "--device",
+            "cpu",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
