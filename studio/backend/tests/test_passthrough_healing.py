@@ -396,6 +396,131 @@ class TestOpenaiNonStreamingRoute:
         asyncio.run(_run())
 
 
+GARBAGE_SIGNAL = "<tool_call>call lookup somehow???"
+
+
+class TestNudgeRetryOpenai:
+    def test_retry_recovers_call(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(nudge_tool_calls = True),
+                [_upstream_message(GARBAGE_SIGNAL), _upstream_message(LOOKUP_XML)],
+            )
+            assert len(client.posts) == 2  # exactly one retry
+            # Prefix byte-identical, nudge suffix appended (KV-cache reuse guard).
+            original, retry = client.posts
+            assert retry["messages"][: len(original["messages"])] == original["messages"]
+            suffix = retry["messages"][len(original["messages"]) :]
+            assert [m["role"] for m in suffix] == ["assistant", "user"]
+            assert suffix[0]["content"] == GARBAGE_SIGNAL
+            # The healed retry response is returned.
+            (call,) = data["choices"][0]["message"]["tool_calls"]
+            assert call["function"]["name"] == "lookup"
+            assert data["choices"][0]["finish_reason"] == "tool_calls"
+
+        asyncio.run(_run())
+
+    def test_retry_still_garbage_returns_original(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(nudge_tool_calls = True),
+                [_upstream_message(GARBAGE_SIGNAL), _upstream_message(GARBAGE_SIGNAL + "2")],
+            )
+            assert len(client.posts) == 2
+            assert data["choices"][0]["message"]["content"] == GARBAGE_SIGNAL
+            assert "tool_calls" not in data["choices"][0]["message"]
+
+        asyncio.run(_run())
+
+    def test_default_off_single_post(self, monkeypatch):
+        async def _run():
+            client, _ = await _drive_non_streaming(
+                monkeypatch, _payload(), [_upstream_message(GARBAGE_SIGNAL)]
+            )
+            assert len(client.posts) == 1
+
+        asyncio.run(_run())
+
+    def test_no_retry_on_clean_prose(self, monkeypatch):
+        async def _run():
+            client, _ = await _drive_non_streaming(
+                monkeypatch,
+                _payload(nudge_tool_calls = True),
+                [_upstream_message("all done")],
+            )
+            assert len(client.posts) == 1
+
+        asyncio.run(_run())
+
+    def test_no_retry_when_heal_succeeds(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(nudge_tool_calls = True),
+                [_upstream_message(LOOKUP_XML)],
+            )
+            assert len(client.posts) == 1
+            assert data["choices"][0]["message"]["tool_calls"]
+
+        asyncio.run(_run())
+
+    def test_heal_opt_out_disables_nudge_too(self, monkeypatch):
+        async def _run():
+            client, _ = await _drive_non_streaming(
+                monkeypatch,
+                _payload(auto_heal_tool_calls = False, nudge_tool_calls = True),
+                [_upstream_message(GARBAGE_SIGNAL)],
+            )
+            assert len(client.posts) == 1
+
+        asyncio.run(_run())
+
+
+class TestNudgeRetryAnthropic:
+    async def _drive(self, monkeypatch, bodies, nudge = None):
+        import routes.inference as inf_mod
+        from routes.inference import _anthropic_passthrough_non_streaming
+
+        client = ScriptedClient(bodies)
+        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        response = await _anthropic_passthrough_non_streaming(
+            _llama_backend(),
+            [{"role": "user", "content": "hi"}],
+            [LOOKUP_TOOL],
+            0.7,
+            0.95,
+            None,
+            256,
+            "msg_test",
+            "gguf",
+            nudge_tool_calls = nudge,
+        )
+        return client, json.loads(response.body)
+
+    def test_retry_recovers_tool_use(self, monkeypatch):
+        async def _run():
+            client, data = await self._drive(
+                monkeypatch,
+                [_upstream_message(GARBAGE_SIGNAL), _upstream_message(LOOKUP_XML)],
+                nudge = True,
+            )
+            assert len(client.posts) == 2
+            (block,) = [b for b in data["content"] if b["type"] == "tool_use"]
+            assert block["name"] == "lookup"
+            assert data["stop_reason"] == "tool_use"
+
+        asyncio.run(_run())
+
+    def test_default_off(self, monkeypatch):
+        async def _run():
+            client, _ = await self._drive(monkeypatch, [_upstream_message(GARBAGE_SIGNAL)])
+            assert len(client.posts) == 1
+
+        asyncio.run(_run())
+
+
 class TestAnthropicEmitterHealing:
     def _events(self, emitter, chunks, finish = True):
         lines = []

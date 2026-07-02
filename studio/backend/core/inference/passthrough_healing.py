@@ -30,6 +30,13 @@ from core.tool_healing import parse_tool_calls_from_text, strip_tool_call_markup
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
+# Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process
+# default with UNSLOTH_TOOL_CALL_NUDGE=1 (e.g. an `unsloth run` operator).
+_NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
+
+
+def nudge_enabled(request_flag: Optional[bool]) -> bool:
+    return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 _MAX_SIGNAL_LEN = max(len(s) for s in TOOL_XML_SIGNALS)
 # A suspected-but-unclosed tool block larger than this is declared a false
@@ -96,8 +103,10 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
     content = msg.get("content")
     if not isinstance(content, str) or not has_tool_signal(content):
         return False
+    # allow_incomplete: the response is final, so a trailing unclosed block is a
+    # model failure worth repairing (same as the enable-tools loop at drain).
     calls = _promote(
-        parse_tool_calls_from_text(content, allow_incomplete = False), allowed_tools
+        parse_tool_calls_from_text(content, allow_incomplete = True), allowed_tools
     )
     if not calls:
         return False
@@ -238,6 +247,24 @@ def _last_assistant_text(data: Any) -> str:
         return content if isinstance(content, str) else ""
     except (KeyError, IndexError, TypeError):
         return ""
+
+
+def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
+    """True when a non-streaming chat response carries a usable tool call
+    (structured, or text-form that healing would promote). Used to decide
+    whether a nudge retry actually improved on the original response."""
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    if message.get("tool_calls"):
+        return True
+    text = message.get("content")
+    if not isinstance(text, str):
+        return False
+    return bool(
+        _promote(parse_tool_calls_from_text(text, allow_incomplete = True), allowed_tools)
+    )
 
 
 def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:

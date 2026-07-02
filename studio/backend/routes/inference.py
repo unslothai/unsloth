@@ -1119,8 +1119,10 @@ from core.inference.passthrough_healing import (
     StreamToolCallHealer,
     heal_gate,
     heal_openai_message,
+    nudge_enabled,
     nudge_messages,
     nudge_should_retry,
+    response_has_promotable_calls,
 )
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
@@ -8052,10 +8054,13 @@ def _build_chat_request(
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
             explicit_enable_thinking = True
-        # auto_heal_tool_calls is not typed on ResponsesRequest; lift the opt-out
-        # from the extra-body so passthrough healing honors it on both paths.
+        # auto_heal_tool_calls / nudge_tool_calls are not typed on
+        # ResponsesRequest; lift them from the extra-body so passthrough
+        # healing (and the opt-in nudge) honor them on both paths.
         if isinstance(_extra.get("auto_heal_tool_calls"), bool):
             chat_kwargs["auto_heal_tool_calls"] = _extra["auto_heal_tool_calls"]
+        if isinstance(_extra.get("nudge_tool_calls"), bool):
+            chat_kwargs["nudge_tool_calls"] = _extra["nudge_tool_calls"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
@@ -9508,6 +9513,7 @@ async def anthropic_messages(
                 tool_choice = openai_tool_choice,
                 disable_parallel_tool_use = _disable_parallel,
                 auto_heal_tool_calls = payload.auto_heal_tool_calls,
+                nudge_tool_calls = payload.nudge_tool_calls,
             )
         )
 
@@ -10259,6 +10265,7 @@ async def _anthropic_passthrough_non_streaming(
     tool_choice = "auto",
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
+    nudge_tool_calls = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -10291,6 +10298,33 @@ async def _anthropic_passthrough_non_streaming(
         )
 
     data = resp.json()
+    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools)
+
+    # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the model
+    # tried to call a tool but nothing usable came out; re-ask once with the
+    # prompt prefix intact so llama-server's KV cache is reused.
+    if (
+        _allowed_tools
+        and nudge_enabled(nudge_tool_calls)
+        and nudge_should_retry(data, _allowed_tools)
+    ):
+        retry_body = {
+            **body,
+            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+        }
+        try:
+            retry_resp = await nonstreaming_client().post(
+                target_url,
+                json = retry_body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
+            if retry_resp.status_code == 200:
+                retry_data = retry_resp.json()
+                if response_has_promotable_calls(retry_data, _allowed_tools):
+                    data = retry_data
+        except (httpx.RequestError, ValueError) as exc:
+            logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
+
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     finish_reason = choice.get("finish_reason")
@@ -10300,7 +10334,6 @@ async def _anthropic_passthrough_non_streaming(
     # line below treat them exactly like native calls. The legacy XML strip
     # still runs on whatever text remains, preserving today's cleanup when
     # nothing was promoted (or healing is opted out).
-    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools)
     if _allowed_tools:
         heal_openai_message(message, _allowed_tools)
 
@@ -11166,6 +11199,33 @@ async def _openai_passthrough_non_streaming(
         )
         api_monitor.finish(monitor_id)
         return Response(content = resp.content, media_type = "application/json")
+
+    # Opt-in single-retry nudge: the model clearly tried to call a tool (signal
+    # present) but nothing parseable/declared came out, so re-ask once with the
+    # original prompt prefix intact (llama-server reuses the slot's KV cache)
+    # plus a two-message nudge suffix. The retry replaces the original response
+    # only when it actually yields a usable call.
+    if (
+        _allowed_tools
+        and nudge_enabled(payload.nudge_tool_calls)
+        and nudge_should_retry(data, _allowed_tools)
+    ):
+        retry_body = {
+            **body,
+            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+        }
+        try:
+            retry_resp = await nonstreaming_client().post(
+                target_url,
+                json = retry_body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
+            if retry_resp.status_code == 200:
+                retry_data = retry_resp.json()
+                if response_has_promotable_calls(retry_data, _allowed_tools):
+                    resp, data = retry_resp, retry_data
+        except (httpx.RequestError, ValueError) as exc:
+            logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
     changed = False
     for choice in data.get("choices", []):
