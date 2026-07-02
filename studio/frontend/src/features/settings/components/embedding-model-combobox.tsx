@@ -53,6 +53,9 @@ export function EmbeddingModelCombobox({
     accessToken,
     excludeGguf: true,
     enabled: !disabled,
+    // Curated unsloth listing when empty (the global top-downloads page holds
+    // no unsloth mirrors to float); a typed query searches the whole Hub.
+    ownerScope: debouncedQuery.trim() ? "all" : "unsloth",
   });
 
   const items = useMemo(() => {
