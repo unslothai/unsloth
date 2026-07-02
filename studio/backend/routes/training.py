@@ -1050,7 +1050,6 @@ def _diffusion_training_active() -> bool:
     interlock never blocks a start just because the service could not be imported."""
     try:
         from core.training.diffusion_training_service import get_diffusion_training_service
-
         return get_diffusion_training_service().is_active()
     except Exception:  # noqa: BLE001
         return False
@@ -1065,7 +1064,6 @@ def _free_gpu_for_diffusion_training() -> None:
     pipeline + chat). Best-effort: a failure to free one resident never blocks the start."""
     try:
         from core.export import get_export_backend
-
         exp_backend = get_export_backend()
         if exp_backend.current_checkpoint or exp_backend.is_export_active():
             logger.info("Shutting down export subprocess to free GPU memory for diffusion training")
@@ -1093,7 +1091,6 @@ def _free_gpu_for_diffusion_training() -> None:
         # model, so free chat unconditionally (same conservative choice the LLM path
         # makes for an in-flight chat load) rather than risk an OOM.
         from routes.training_vram import free_chat_models_for_training, summarize_resident_chat
-
         if summarize_resident_chat()["any"]:
             freed = free_chat_models_for_training(reason = "diffusion training starting")
             logger.info("Freed chat model(s) for diffusion training: %s", freed)
@@ -1130,7 +1127,6 @@ async def start_diffusion_training(
     config = body.model_dump()
     try:
         from utils.paths import resolve_dataset_path, resolve_output_dir
-
         config["data_dir"] = str(resolve_dataset_path(config["data_dir"]))
         config["output_dir"] = str(resolve_output_dir(config["output_dir"]))
     except ValueError as e:
