@@ -1372,11 +1372,13 @@ class DiffusionBackend:
             family = getattr(state.family, "name", None),
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
+            compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
         ):
             raise ValueError(
                 "LoRA is not supported for this model/quantisation on the diffusers engine "
-                "(GGUF-via-diffusers or torchao fp8/int8). Use a bf16 or bnb-4bit load, or the "
-                "native engine for GGUF models."
+                "(GGUF-via-diffusers, torchao fp8/int8, or a torch.compile'd Speed=default/max "
+                "load). Use a bf16 or bnb-4bit load at Speed=off/eager, or the native engine "
+                "for GGUF models."
             )
 
         resolved = diffusion_lora.resolve_specs(specs, hf_token = state.hf_token, cancel_event = cancel)
@@ -1829,6 +1831,7 @@ class DiffusionBackend:
                 family = state.family.name,
                 model_kind = state.kind,
                 transformer_quant = state.transformer_quant,
+                compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
             ),
         }
 

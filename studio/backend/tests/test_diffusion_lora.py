@@ -44,12 +44,14 @@ def test_inject_prompt_tags_validated_weight_overrides_user_typed():
     assert dl.inject_prompt_tags("a cat <lora:style:1>", [r]) == "a cat <lora:style:0.8>"
 
 
-def test_inject_prompt_tags_keeps_unselected_user_tags():
+def test_inject_prompt_tags_strips_unselected_user_tags():
     r = dl.ResolvedLora("id", "style", "/p", "safetensors", 0.8)
-    # A user tag for an alias that is NOT one of the selected adapters is left untouched.
+    # A user tag for an alias that is NOT selected is stripped: only selected adapters are
+    # materialized in the managed --lora-model-dir, so sd-cli would drop the dead tag anyway;
+    # removing it keeps the prompt clean and unambiguous.
     out = dl.inject_prompt_tags("a cat <lora:other:0.5>", [r])
-    assert "<lora:other:0.5>" in out
-    assert "<lora:style:0.8>" in out
+    assert "<lora:other:0.5>" not in out
+    assert out == "a cat <lora:style:0.8>"
 
 
 def test_inject_prompt_tags_empty_returns_prompt():
@@ -83,6 +85,38 @@ def test_supports_lora_matrix():
     assert not dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None
     )
+    # A torch.compile'd diffusers transformer (Speed=default/max) can't take a non-hotswap
+    # adapter: diffusers needs the adapter loaded before compilation.
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline",
+        transformer_quant = None, compiled = True,
+    )
+    # compiled is diffusers-only; the native path ignores it.
+    assert dl.supports_lora(
+        engine = "sd_cpp", family = "flux.1", model_kind = "gguf",
+        transformer_quant = None, compiled = True,
+    )
+
+
+def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatch):
+    # A Hub download cancelled mid-flight raises RuntimeError("Cancelled"); resolve_specs
+    # must convert it to the diffusion cancellation sentinel so the route maps it to 409,
+    # not a generic 500 server-error toast.
+    def _boom(spec_id, weight, **kw):
+        raise RuntimeError("Cancelled")
+
+    monkeypatch.setattr(dl, "resolve_one", _boom)
+    with pytest.raises(RuntimeError) as ei:
+        dl.resolve_specs([("a", 1.0)])
+    assert str(ei.value) == dl.DIFFUSION_CANCELLED_MSG
+    # A non-cancellation RuntimeError is left untouched.
+    def _other(spec_id, weight, **kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(dl, "resolve_one", _other)
+    with pytest.raises(RuntimeError) as ei2:
+        dl.resolve_specs([("a", 1.0)])
+    assert str(ei2.value) == "disk full"
 
 
 def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
@@ -192,6 +226,12 @@ def test_lora_spec_and_request_validation():
         LoraSpec(id = "a", weight = -0.1)
     # default weight
     assert LoraSpec(id = "a").weight == 1.0
+    # duplicate ids are rejected: repeating an id would load the same adapter as several
+    # distinct suffixed adapters and stack its effect past the per-adapter weight bound.
+    with pytest.raises(Exception):
+        DiffusionGenerateRequest(
+            prompt = "x", loras = [{"id": "a", "weight": 0.5}, {"id": "a", "weight": 1.0}]
+        )
 
 
 # ── Diffusers apply manager ─────────────────────────────────────────────────

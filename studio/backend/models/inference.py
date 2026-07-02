@@ -1897,6 +1897,21 @@ class DiffusionGenerateRequest(BaseModel):
         "message when the loaded model or its quantisation can't apply LoRA.",
     )
 
+    @field_validator("loras")
+    @classmethod
+    def _unique_lora_ids(cls, value: Optional[list[LoraSpec]]) -> Optional[list[LoraSpec]]:
+        # Both apply paths break alias collisions by suffixing the adapter name/file, so a
+        # repeated id would load the SAME adapter as several distinct adapters and stack
+        # its effect past the per-adapter weight bound. The UI already prevents duplicates;
+        # reject them for API clients too so each adapter takes effect at most once.
+        if value:
+            seen: set[str] = set()
+            for spec in value:
+                if spec.id in seen:
+                    raise ValueError(f"duplicate LoRA id '{spec.id}'; list each adapter at most once")
+                seen.add(spec.id)
+        return value
+
     @field_validator("reference_images")
     @classmethod
     def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:

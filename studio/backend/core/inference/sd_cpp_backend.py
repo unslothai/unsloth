@@ -528,8 +528,13 @@ class SdCppDiffusionBackend:
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
                 # Resolve any selected LoRA adapters up front (downloads land in the HF
                 # cache; a bad id fails here as a clear 400 before we spawn sd-cli).
+                # Drop weight-0 rows BEFORE the support gate: LoraSpec documents weight 0
+                # as disabling the adapter (the diffusers path treats it as empty), so a
+                # request carrying only disabled rows must stay a no-op even on a family
+                # where native LoRA is unsupported, rather than 400 on a dead selection.
                 lora_resolved: list = []
-                if loras:
+                active_loras = [(i, w) for (i, w) in (loras or []) if w != 0]
+                if active_loras:
                     if not diffusion_lora.supports_lora(
                         engine = "sd_cpp",
                         family = state.family.name,
@@ -541,7 +546,7 @@ class SdCppDiffusionBackend:
                             "sd.cpp engine."
                         )
                     lora_resolved = diffusion_lora.resolve_specs(
-                        loras, hf_token = state.hf_token, cancel_event = cancel
+                        active_loras, hf_token = state.hf_token, cancel_event = cancel
                     )
                 extra_args: list[str] = []
                 if state.vae_format:

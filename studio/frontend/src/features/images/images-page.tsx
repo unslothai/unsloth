@@ -1087,6 +1087,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
+    // Restore selected LoRA adapters from the recipe ("id:weight" strings); split on the
+    // LAST colon so an id that itself contains ':' is preserved. Unparseable entries are
+    // skipped, and a recipe with no LoRAs clears the current selection so the restore
+    // reproduces the image faithfully rather than leaking a stale form selection.
+    const restoredLoras: LoraSpecInput[] = [];
+    for (const entry of image.loras ?? []) {
+      const idx = entry.lastIndexOf(":");
+      if (idx <= 0) continue;
+      const id = entry.slice(0, idx);
+      const weight = Number(entry.slice(idx + 1));
+      if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
+    }
+    setLoras(restoredLoras);
     toast.success("Settings restored to inputs");
   }, []);
 
