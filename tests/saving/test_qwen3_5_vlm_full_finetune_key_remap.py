@@ -38,6 +38,7 @@ def _load_qwen3_5_vlm_save_helpers():
         "json": json,
         "Path": Path,
         "re": re,
+        "torch": torch,
         "logger": types.SimpleNamespace(warning_once = lambda *_args, **_kwargs: None),
     }
     exec(compile(module, str(source), "exec"), namespace)
@@ -135,6 +136,29 @@ def test_qwen3_5_gguf_save_reads_pytorch_shard_index(tmp_path):
         },
     }
     (tmp_path / "pytorch_model.bin.index.json").write_text(json.dumps(index), encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
+
+    updated = json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))
+    assert updated["mtp_num_hidden_layers"] == 1
+    assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+
+def test_qwen3_5_gguf_save_reads_unsharded_pytorch_checkpoint(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    state_dict = {
+        "model.layers.32.mlp.down_proj.weight": torch.ones(1),
+    }
+    torch.save(state_dict, tmp_path / "pytorch_model.bin")
 
     helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
 

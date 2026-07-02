@@ -703,6 +703,34 @@ def _qwen3_5_tensor_names_from_save_directory(save_directory):
                 f"Unsloth: Could not inspect {safetensor_path.name} for Qwen3.5 MTP metadata: {error}"
             )
             return []
+
+    pytorch_checkpoint_path = save_path / "pytorch_model.bin"
+    if pytorch_checkpoint_path.is_file():
+        try:
+            from torch._subclasses.fake_tensor import FakeTensorMode
+            with FakeTensorMode():
+                try:
+                    checkpoint = torch.load(
+                        str(pytorch_checkpoint_path),
+                        map_location = "cpu",
+                        mmap = True,
+                        weights_only = True,
+                    )
+                except TypeError:
+                    checkpoint = torch.load(
+                        str(pytorch_checkpoint_path),
+                        map_location = "cpu",
+                    )
+            if isinstance(checkpoint, dict):
+                state_dict = checkpoint.get("state_dict")
+                if not isinstance(state_dict, dict):
+                    state_dict = checkpoint
+                return list(state_dict.keys())
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not inspect {pytorch_checkpoint_path.name} for Qwen3.5 MTP metadata: {error}"
+            )
+
     return tensor_names
 
 
