@@ -1203,10 +1203,7 @@ export function AppSidebar() {
                 icon={PaintBrush02Icon}
                 label={t("shell.navigation.images")}
                 active={pathname === "/images" || pathname.startsWith("/images/")}
-                disabled={chatOnly}
-                tooltip={trainExportDisabledHint}
                 onClick={() => {
-                  if (chatOnly) return;
                   navigate({ to: "/images" });
                   closeMobileIfOpen();
                 }}
