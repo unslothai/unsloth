@@ -109,6 +109,7 @@ def _hf_device_error(device: str) -> Optional[str]:
         if not match:
             return f"invalid --device '{device}' — use 'cuda' or 'cuda:<index>'."
         import torch
+
         if not torch.cuda.is_available():
             return f"--device {device} requested but CUDA is not available."
         if match.group(1) is not None:
@@ -120,6 +121,7 @@ def _hf_device_error(device: str) -> Optional[str]:
         if not re.fullmatch(r"mps(?::0)?", device):
             return f"invalid --device '{device}' — use 'mps'."
         import torch
+
         mps = getattr(torch.backends, "mps", None)
         if not (mps and mps.is_available()):
             return f"--device {device} requested but MPS is not available."
@@ -488,9 +490,7 @@ def evaluate(
                 )
                 raise typer.Exit(code = 2)
 
-        if num_fewshot and any(
-            (tmp_dir / "generated" / f"{t}.yaml").exists() for t in task_names
-        ):
+        if num_fewshot and any((tmp_dir / "generated" / f"{t}.yaml").exists() for t in task_names):
             typer.echo(
                 "Note: few-shot examples for a generated task come from the same "
                 "file (no held-out split)."

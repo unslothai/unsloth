@@ -192,9 +192,7 @@ def test_resolve_tasks_yml_normalised_to_yaml(tmp_path):
 
 def test_resolve_tasks_include_yaml_keeps_parent_dir(tmp_path):
     task_file = tmp_path / "custom.yaml"
-    task_file.write_text(
-        yaml.safe_dump({"task": "my_task", "include": "base.yaml"})
-    )
+    task_file.write_text(yaml.safe_dump({"task": "my_task", "include": "base.yaml"}))
 
     names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path / "gen")
 
@@ -285,7 +283,9 @@ def test_resolve_tasks_rejects_duplicate_yaml_names(tmp_path):
     with pytest.raises(ValueError, match = "Duplicate task name 'same_task'"):
         evalmod.resolve_tasks(
             f"{tmp_path / 'one.yaml'},{tmp_path / 'two.yaml'}",
-            "question", "answer", tmp_path / "gen",
+            "question",
+            "answer",
+            tmp_path / "gen",
         )
 
 
@@ -310,7 +310,12 @@ def test_resolve_tasks_renames_dataset_colliding_with_yaml_name(tmp_path):
     assert (tmp_dir / "generated" / "foo_2.yaml").exists()
 
 
-def _fake_torch(monkeypatch, cuda_available = False, device_count = 0, mps_available = False):
+def _fake_torch(
+    monkeypatch,
+    cuda_available = False,
+    device_count = 0,
+    mps_available = False,
+):
     torch_mod = types.ModuleType("torch")
     torch_mod.cuda = SimpleNamespace(
         is_available = lambda: cuda_available, device_count = lambda: device_count
