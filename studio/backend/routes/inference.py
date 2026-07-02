@@ -1115,6 +1115,13 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
+from core.inference.passthrough_healing import (
+    StreamToolCallHealer,
+    heal_gate,
+    heal_openai_message,
+    nudge_messages,
+    nudge_should_retry,
+)
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -8045,6 +8052,10 @@ def _build_chat_request(
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
             explicit_enable_thinking = True
+        # auto_heal_tool_calls is not typed on ResponsesRequest; lift the opt-out
+        # from the extra-body so passthrough healing honors it on both paths.
+        if isinstance(_extra.get("auto_heal_tool_calls"), bool):
+            chat_kwargs["auto_heal_tool_calls"] = _extra["auto_heal_tool_calls"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
@@ -8285,9 +8296,94 @@ async def _responses_stream(
         #   {output_index, item_id, call_id, name, arguments, opened}
         tool_call_state: dict[int, dict] = {}
         next_output_index = 0
+        # Text-form tool calls promoted back to structured calls (declared
+        # client tools only); dormant once grammar-mode structured deltas appear.
+        _allowed_tools = heal_gate(
+            getattr(chat_req, "auto_heal_tool_calls", None), body.get("tools")
+        )
+        healer = StreamToolCallHealer(_allowed_tools) if _allowed_tools else None
+        healed_tc_index = 0
+
+        def _healed_tc(call: dict):
+            # Chat-delta shape for a healed call. Indexes live in a disjoint
+            # range so a healed call can never merge into a structured call's
+            # state slot; parallel_tool_calls=false caps healed calls too (the
+            # upstream cap ran before injection).
+            nonlocal healed_tc_index
+            if payload.parallel_tool_calls is False and healed_tc_index >= 1:
+                return None
+            tc = {
+                "index": 1_000_000 + healed_tc_index,
+                "id": call["id"],
+                "type": "function",
+                "function": call["function"],
+            }
+            healed_tc_index += 1
+            return tc
 
         def _sse(event_name: str, payload: dict) -> str:
             return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+
+        def _tool_call_delta_events(tc: dict) -> list:
+            # One Chat Completions tool_calls delta -> Responses SSE events,
+            # allocating/merging per-call state (shared by the structured loop
+            # and the healer's promoted calls).
+            events = []
+            idx = tc.get("index", 0)
+            st = tool_call_state.get(idx)
+            fn = tc.get("function") or {}
+            if st is None:
+                # First chunk for this tool call -- allocate an
+                # output_index and emit output_item.added.
+                st = {
+                    "output_index": _claim_output_index(),
+                    "item_id": f"fc_{uuid.uuid4().hex[:12]}",
+                    "call_id": tc.get("id") or "",
+                    "name": fn.get("name") or "",
+                    "arguments": "",
+                    "opened": False,
+                }
+                tool_call_state[idx] = st
+            else:
+                # Later chunks sometimes carry id/name only once; merge
+                # when present.
+                if tc.get("id") and not st["call_id"]:
+                    st["call_id"] = tc["id"]
+                if fn.get("name") and not st["name"]:
+                    st["name"] = fn["name"]
+
+            if not st["opened"] and st["call_id"] and st["name"]:
+                item_added = {
+                    "type": "response.output_item.added",
+                    "output_index": st["output_index"],
+                    "item": {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "in_progress",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": "",
+                    },
+                }
+                events.append(_sse("response.output_item.added", item_added))
+                st["opened"] = True
+
+            arg_delta = fn.get("arguments") or ""
+            if arg_delta and st["opened"]:
+                st["arguments"] += arg_delta
+                args_delta_event = {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": st["item_id"],
+                    "output_index": st["output_index"],
+                    "delta": arg_delta,
+                }
+                events.append(_sse("response.function_call_arguments.delta", args_delta_event))
+            elif arg_delta:
+                # Buffer args until we can open the item (some models
+                # send id/name in the same chunk as the first arg delta;
+                # if not, stash).
+                st["arguments"] += arg_delta
+            return events
 
         def _claim_output_index() -> int:
             nonlocal next_output_index
@@ -8585,6 +8681,21 @@ async def _responses_stream(
                             "delta": reasoning_delta,
                         },
                     )
+                # Heal text-form tool calls in the visible stream (never in
+                # reasoning text): promoted calls join the structured tc loop
+                # below through the same state machinery. Once a structured
+                # delta arrives, grammar mode worked and the healer goes dormant.
+                healed_calls: list = []
+                if healer is not None and not healer.dormant:
+                    if delta.get("tool_calls"):
+                        held = healer.structured_tool_call_seen()
+                        visible_delta = (
+                            "".join(t for kind, t in held if kind == "text") + visible_delta
+                        )
+                    elif visible_delta:
+                        events = healer.feed(visible_delta)
+                        visible_delta = "".join(t for kind, t in events if kind == "text")
+                        healed_calls = [v for kind, v in events if kind == "tool_call"]
                 if visible_delta:
                     for event in _ensure_message_open():
                         yield event
@@ -8601,61 +8712,14 @@ async def _responses_stream(
                         },
                     )
 
-                for tc in delta.get("tool_calls") or []:
-                    idx = tc.get("index", 0)
-                    st = tool_call_state.get(idx)
-                    fn = tc.get("function") or {}
-                    if st is None:
-                        # First chunk for this tool call -- allocate an
-                        # output_index and emit output_item.added.
-                        st = {
-                            "output_index": _claim_output_index(),
-                            "item_id": f"fc_{uuid.uuid4().hex[:12]}",
-                            "call_id": tc.get("id") or "",
-                            "name": fn.get("name") or "",
-                            "arguments": "",
-                            "opened": False,
-                        }
-                        tool_call_state[idx] = st
-                    else:
-                        # Later chunks sometimes carry id/name only once; merge
-                        # when present.
-                        if tc.get("id") and not st["call_id"]:
-                            st["call_id"] = tc["id"]
-                        if fn.get("name") and not st["name"]:
-                            st["name"] = fn["name"]
-
-                    if not st["opened"] and st["call_id"] and st["name"]:
-                        item_added = {
-                            "type": "response.output_item.added",
-                            "output_index": st["output_index"],
-                            "item": {
-                                "type": "function_call",
-                                "id": st["item_id"],
-                                "status": "in_progress",
-                                "call_id": st["call_id"],
-                                "name": st["name"],
-                                "arguments": "",
-                            },
-                        }
-                        yield _sse("response.output_item.added", item_added)
-                        st["opened"] = True
-
-                    arg_delta = fn.get("arguments") or ""
-                    if arg_delta and st["opened"]:
-                        st["arguments"] += arg_delta
-                        args_delta_event = {
-                            "type": "response.function_call_arguments.delta",
-                            "item_id": st["item_id"],
-                            "output_index": st["output_index"],
-                            "delta": arg_delta,
-                        }
-                        yield _sse("response.function_call_arguments.delta", args_delta_event)
-                    elif arg_delta:
-                        # Buffer args until we can open the item (some models
-                        # send id/name in the same chunk as the first arg delta;
-                        # if not, stash).
-                        st["arguments"] += arg_delta
+                for tc in [
+                    *(delta.get("tool_calls") or []),
+                    *(_healed_tc(call) for call in healed_calls),
+                ]:
+                    if tc is None:
+                        continue
+                    for event in _tool_call_delta_events(tc):
+                        yield event
 
                 _apply_usage(chunk_data.get("usage"))
         except asyncio.CancelledError:
@@ -8711,6 +8775,13 @@ async def _responses_stream(
                     "delta": final_reasoning,
                 },
             )
+        # Last-chance heal of any held residue (e.g. a tool block the model
+        # never closed) before the trailing visible text is flushed.
+        healed_final_calls: list = []
+        if healer is not None:
+            events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
+            final_visible = "".join(t for kind, t in events if kind == "text")
+            healed_final_calls = [v for kind, v in events if kind == "tool_call"]
         if final_visible:
             for event in _ensure_message_open():
                 yield event
@@ -8726,6 +8797,12 @@ async def _responses_stream(
                     "delta": final_visible,
                 },
             )
+        for call in healed_final_calls:
+            tc = _healed_tc(call)
+            if tc is None:
+                continue
+            for event in _tool_call_delta_events(tc):
+                yield event
 
         close_items: list[tuple[int, str, dict[str, Any]]] = []
         if reasoning_state["opened"]:
@@ -10578,6 +10655,10 @@ async def _openai_passthrough_stream(
     body = _build_openai_passthrough_body(
         payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
+    # Text-form tool calls from small models get promoted to structured calls on
+    # the way back (declared client tools only); requests without tools or with
+    # auto_heal_tool_calls=false keep the verbatim relay.
+    _allowed_tools = heal_gate(payload.auto_heal_tool_calls, body.get("tools"))
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
@@ -10680,9 +10761,12 @@ async def _openai_passthrough_stream(
             last_chunk_id = completion_id
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
+            healer = StreamToolCallHealer(_allowed_tools) if _allowed_tools else None
+            healed_call_index = 0
 
             def _synthetic_finish_line() -> str:
-                finish_reason = "tool_calls" if saw_tool_call_delta else "stop"
+                healed = healer is not None and healer.healed
+                finish_reason = "tool_calls" if (saw_tool_call_delta or healed) else "stop"
                 chunk = ChatCompletionChunk(
                     id = last_chunk_id,
                     created = last_chunk_created,
@@ -10695,6 +10779,83 @@ async def _openai_passthrough_stream(
                     ],
                 )
                 return f"data: {chunk.model_dump_json(exclude_none = True)}"
+
+            def _healer_sse_lines(events) -> list:
+                # Serialize healer events as chunks matching the upstream stream's
+                # id/model/created so clients see one coherent completion.
+                nonlocal healed_call_index
+                lines = []
+                for kind, value in events:
+                    if kind == "text":
+                        if not value:
+                            continue
+                        delta = {"content": value}
+                    else:
+                        # parallel_tool_calls=false caps healed calls too (the SSE
+                        # line cap only sees structured upstream deltas).
+                        if payload.parallel_tool_calls is False and healed_call_index >= 1:
+                            continue
+                        delta = {
+                            "tool_calls": [
+                                {
+                                    "index": healed_call_index,
+                                    "id": value["id"],
+                                    "type": "function",
+                                    "function": value["function"],
+                                }
+                            ]
+                        }
+                        healed_call_index += 1
+                    chunk = {
+                        "id": last_chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": last_chunk_created,
+                        "model": last_chunk_model,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                    }
+                    lines.append("data: " + json.dumps(chunk, ensure_ascii = False))
+                return lines
+
+            def _heal_transform(chunk_data: dict, raw_line: str) -> list:
+                """SSE lines to emit in place of one upstream line (healing on)."""
+                choices = chunk_data.get("choices")
+                if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+                    return [raw_line]
+                choice = choices[0]
+                delta = choice.get("delta")
+                delta = delta if isinstance(delta, dict) else {}
+                if delta.get("tool_calls"):
+                    # Structured call streamed: grammar mode worked. Flush any held
+                    # text (it preceded the call) and relay verbatim from here on.
+                    return _healer_sse_lines(healer.structured_tool_call_seen()) + [raw_line]
+                content = delta.get("content")
+                finish = choice.get("finish_reason")
+                if not isinstance(content, str) or not content:
+                    if not finish:
+                        return [raw_line]
+                    # Finish chunk: last-chance heal of the residue, and rewrite a
+                    # "stop" into "tool_calls" when text-form calls were promoted.
+                    lines = _healer_sse_lines(healer.finalize())
+                    if healer.healed and finish == "stop":
+                        choice["finish_reason"] = "tool_calls"
+                        return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
+                    return lines + [raw_line]
+                events = healer.feed(content)
+                if finish:
+                    events += healer.finalize()
+                if not finish and events == [("text", content)]:
+                    # Nothing held or promoted: the healer passed the chunk
+                    # through whole, so keep the verbatim upstream bytes.
+                    return [raw_line]
+                lines = _healer_sse_lines(events)
+                # The healer re-emits (or withholds) the text, so drop it from the
+                # relayed chunk; keep the chunk only if it still carries anything.
+                del delta["content"]
+                if delta or finish or chunk_data.get("usage"):
+                    if healer.healed and finish == "stop":
+                        choice["finish_reason"] = "tool_calls"
+                    lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
+                return lines
 
             try:
                 lines_iter = resp.aiter_lines()
@@ -10712,6 +10873,14 @@ async def _openai_passthrough_stream(
                     data_text = raw_line[6:].strip()
                     if data_text == "[DONE]":
                         saw_done = True
+                        # Upstream ended without a finish chunk: heal the residue
+                        # first so the synthetic finish sees healer.healed.
+                        if healer is not None and not saw_stream_error:
+                            for held_line in _healer_sse_lines(healer.finalize()):
+                                _monitor_openai_sse_line(
+                                    monitor_id, held_line, llama_backend.context_length
+                                )
+                                yield held_line + "\n\n"
                         if (
                             not saw_finish_reason
                             and not saw_stream_error
@@ -10767,13 +10936,13 @@ async def _openai_passthrough_stream(
                         # emit a successful finish_reason after a failed stream.
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
-                    monitor_event = _monitor_openai_sse_line(
-                        monitor_id,
-                        raw_line,
-                        llama_backend.context_length,
-                    )
-                    if monitor_event == "error":
-                        saw_stream_error = True
+                    # With healing active, a content-bearing line may be replaced by
+                    # held/promoted chunks; otherwise the single upstream line
+                    # relays verbatim (monitored exactly as emitted either way).
+                    if healer is not None and not healer.dormant and isinstance(chunk_data, dict) and not saw_stream_error:
+                        out_lines = _heal_transform(chunk_data, raw_line)
+                    else:
+                        out_lines = [raw_line]
                     # If a trailing usage-only chunk (include_usage) arrives before
                     # any finish chunk, emit the synthetic finish first so the order
                     # stays finish -> usage -> [DONE], matching the other streams.
@@ -10787,23 +10956,46 @@ async def _openai_passthrough_stream(
                         and not saw_stream_error
                         and not cancel_event.is_set()
                     ):
+                        if healer is not None:
+                            # Residue must precede the finish it may upgrade.
+                            held = _healer_sse_lines(healer.finalize())
+                            for held_line in held:
+                                _monitor_openai_sse_line(
+                                    monitor_id, held_line, llama_backend.context_length
+                                )
+                                yield held_line + "\n\n"
                         finish_line = _synthetic_finish_line()
                         _monitor_openai_sse_line(
                             monitor_id, finish_line, llama_backend.context_length
                         )
                         yield finish_line + "\n\n"
                         saw_finish_reason = True
-                    # Relay verbatim to preserve llama-server's native id,
-                    # finish_reason, delta.tool_calls, and usage chunks.
-                    yield raw_line + "\n\n"
-                    if monitor_event == "done":
-                        monitor_done = True
+                    for out_line in out_lines:
+                        monitor_event = _monitor_openai_sse_line(
+                            monitor_id,
+                            out_line,
+                            llama_backend.context_length,
+                        )
+                        if monitor_event == "error":
+                            saw_stream_error = True
+                        # Relay to preserve llama-server's native id,
+                        # finish_reason, delta.tool_calls, and usage chunks.
+                        yield out_line + "\n\n"
+                        if monitor_event == "done":
+                            monitor_done = True
+                    if monitor_done:
                         break
                 if not saw_done and not saw_stream_error and not cancel_event.is_set():
                     # Synthesize a finish chunk only if one was not already
                     # emitted (e.g. before a trailing usage-only chunk), but
                     # always close with [DONE] whenever the upstream omitted it,
                     # so the stream ends on the [DONE] sentinel either way.
+                    if healer is not None:
+                        for held_line in _healer_sse_lines(healer.finalize()):
+                            _monitor_openai_sse_line(
+                                monitor_id, held_line, llama_backend.context_length
+                            )
+                            yield held_line + "\n\n"
                     if not saw_finish_reason:
                         finish_line = _synthetic_finish_line()
                         _monitor_openai_sse_line(
@@ -10942,6 +11134,7 @@ async def _openai_passthrough_non_streaming(
     _guided_fence = bool((payload.model_extra or {}).get("_unsloth_guided_fence"))
     _do_fence = _guided_fence and _extract_response_format(payload) is not None
     _cap_parallel = payload.parallel_tool_calls is False
+    _allowed_tools = heal_gate(payload.auto_heal_tool_calls, body.get("tools"))
 
     try:
         data = resp.json()
@@ -10961,6 +11154,12 @@ async def _openai_passthrough_non_streaming(
         msg = choice.get("message")
         if not isinstance(msg, dict):
             continue
+
+        # Small models emit tool calls as text instead of structured tool_calls;
+        # promote them (declared client tools only) so the agent sees a real call.
+        if _allowed_tools and heal_openai_message(msg, _allowed_tools):
+            choice["finish_reason"] = "tool_calls"
+            changed = True
 
         # OpenAI requires content=null on a pure tool-call turn; llama-server
         # emits content="".

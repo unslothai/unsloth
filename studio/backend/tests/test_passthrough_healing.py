@@ -208,3 +208,301 @@ class TestNudgeHelpers:
         assert [m["role"] for m in suffix] == ["assistant", "user"]
         assert suffix[0]["content"] == "<tool_call>garbage"
         assert "`Bash` or `Read`" in suffix[1]["content"]
+
+
+# ── Route-level wiring (OpenAI passthrough) ─────────────────────────────
+# Mirrors the fake-llama-server patterns in test_openai_tool_passthrough.py.
+
+import asyncio  # noqa: E402
+import threading  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+import httpx  # noqa: E402
+
+from core.inference.api_monitor import ApiMonitor  # noqa: E402
+from models.inference import ChatCompletionRequest, ChatMessage  # noqa: E402
+from routes.inference import (  # noqa: E402
+    _openai_passthrough_non_streaming,
+    _openai_passthrough_stream,
+)
+
+LOOKUP_TOOL = {
+    "type": "function",
+    "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
+}
+LOOKUP_XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+
+
+def _payload(**kwargs):
+    defaults = dict(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "hi")],
+        tools = [LOOKUP_TOOL],
+    )
+    defaults.update(kwargs)
+    return ChatCompletionRequest(**defaults)
+
+
+def _llama_backend():
+    return SimpleNamespace(
+        base_url = "http://llama.test",
+        context_length = 4096,
+        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+    )
+
+
+def _upstream_message(content, tool_calls = None, finish_reason = "stop"):
+    message = {"role": "assistant", "content": content}
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
+    return {
+        "id": "chatcmpl-up",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gguf",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+    }
+
+
+class ScriptedClient:
+    """Fake nonstreaming_client() returning scripted JSON bodies, counting POSTs."""
+
+    def __init__(self, bodies):
+        self.bodies = list(bodies)
+        self.posts = []
+
+    async def post(self, _url, json = None, timeout = None):
+        self.posts.append(json)
+        return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
+
+
+async def _drive_non_streaming(monkeypatch, payload, bodies):
+    import routes.inference as inf_mod
+
+    client = ScriptedClient(bodies)
+    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    response = await _openai_passthrough_non_streaming(
+        _llama_backend(), payload, "gguf", monitor_id = None
+    )
+    return client, json.loads(response.body)
+
+
+async def _drive_stream(monkeypatch, payload, lines):
+    import routes.inference as inf_mod
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    async def fake_send(*_args, **_kwargs):
+        return httpx.Response(200, content = b"")
+
+    async def fake_items(*_args, **_kwargs):
+        for line in lines:
+            yield line
+
+    monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+    monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+    response = await _openai_passthrough_stream(
+        Request(),
+        threading.Event(),
+        _llama_backend(),
+        payload,
+        "gguf",
+        "chatcmpl-test",
+        monitor_id = None,
+    )
+    return [chunk async for chunk in response.body_iterator]
+
+
+def _stream_payloads(chunks):
+    out = []
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            if line.startswith("data: ") and line[6:] != "[DONE]":
+                out.append(json.loads(line[6:]))
+    return out
+
+
+class TestOpenaiNonStreamingRoute:
+    def test_heals_xml_to_tool_calls(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch, _payload(), [_upstream_message(LOOKUP_XML)]
+            )
+            choice = data["choices"][0]
+            assert choice["finish_reason"] == "tool_calls"
+            (call,) = choice["message"]["tool_calls"]
+            assert call["function"]["name"] == "lookup"
+            assert json.loads(call["function"]["arguments"]) == {"q": "x"}
+            assert choice["message"]["content"] is None
+            assert data["usage"]["total_tokens"] == 3  # usage preserved
+            assert len(client.posts) == 1  # healing never re-requests
+
+        asyncio.run(_run())
+
+    def test_opt_out_relays_verbatim(self, monkeypatch):
+        async def _run():
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(auto_heal_tool_calls = False),
+                [_upstream_message(LOOKUP_XML)],
+            )
+            choice = data["choices"][0]
+            assert choice["message"]["content"] == LOOKUP_XML
+            assert "tool_calls" not in choice["message"]
+            assert choice["finish_reason"] == "stop"
+
+        asyncio.run(_run())
+
+    def test_no_tools_untouched(self, monkeypatch):
+        async def _run():
+            _, data = await _drive_non_streaming(
+                monkeypatch, _payload(tools = None), [_upstream_message(LOOKUP_XML)]
+            )
+            assert data["choices"][0]["message"]["content"] == LOOKUP_XML
+
+        asyncio.run(_run())
+
+    def test_undeclared_tool_not_promoted(self, monkeypatch):
+        async def _run():
+            xml = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
+            _, data = await _drive_non_streaming(
+                monkeypatch, _payload(), [_upstream_message(xml)]
+            )
+            assert data["choices"][0]["message"]["content"] == xml
+            assert "tool_calls" not in data["choices"][0]["message"]
+
+        asyncio.run(_run())
+
+    def test_structured_calls_untouched(self, monkeypatch):
+        async def _run():
+            native = [
+                {
+                    "id": "call_up",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ]
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(),
+                [_upstream_message("", tool_calls = native, finish_reason = "tool_calls")],
+            )
+            assert data["choices"][0]["message"]["tool_calls"] == native
+
+        asyncio.run(_run())
+
+
+class TestOpenaiStreamingRoute:
+    def test_heals_streamed_xml(self, monkeypatch):
+        async def _run():
+            pieces = ["<tool_call>", '{"name":"lookup",', '"arguments":{"q":"x"}}', "</tool_call>"]
+            lines = [
+                'data: {"id":"c1","model":"gguf","created":1,"choices":[{"index":0,"delta":{"content":%s}}]}'
+                % json.dumps(p)
+                for p in pieces
+            ]
+            lines += [
+                'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(), lines)
+            payloads = _stream_payloads(chunks)
+            tool_deltas = [
+                tc
+                for p in payloads
+                for c in p.get("choices", [])
+                for tc in (c.get("delta") or {}).get("tool_calls") or []
+            ]
+            (call,) = tool_deltas
+            assert call["function"]["name"] == "lookup"
+            assert json.loads(call["function"]["arguments"]) == {"q": "x"}
+            finishes = [
+                c["finish_reason"]
+                for p in payloads
+                for c in p.get("choices", [])
+                if c.get("finish_reason")
+            ]
+            assert finishes == ["tool_calls"]
+            # None of the XML leaked as visible content.
+            text = "".join(
+                (c.get("delta") or {}).get("content") or ""
+                for p in payloads
+                for c in p.get("choices", [])
+            )
+            assert "<tool_call>" not in text
+            assert chunks[-1] == "data: [DONE]\n\n"
+
+        asyncio.run(_run())
+
+    def test_false_alarm_text_flushes(self, monkeypatch):
+        async def _run():
+            lines = [
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"use the <div> tag"}}]}',
+                'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(), lines)
+            payloads = _stream_payloads(chunks)
+            text = "".join(
+                (c.get("delta") or {}).get("content") or ""
+                for p in payloads
+                for c in p.get("choices", [])
+            )
+            assert text == "use the <div> tag"
+            finishes = [
+                c["finish_reason"]
+                for p in payloads
+                for c in p.get("choices", [])
+                if c.get("finish_reason")
+            ]
+            assert finishes == ["stop"]
+
+        asyncio.run(_run())
+
+    def test_incomplete_xml_healed_at_done(self, monkeypatch):
+        async def _run():
+            # No close tag and no finish chunk: healed at the [DONE] boundary,
+            # synthetic finish must say tool_calls.
+            lines = [
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"<tool_call>{\\"name\\":\\"lookup\\",\\"arguments\\":{}}"}}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(), lines)
+            payloads = _stream_payloads(chunks)
+            tool_deltas = [
+                tc
+                for p in payloads
+                for c in p.get("choices", [])
+                for tc in (c.get("delta") or {}).get("tool_calls") or []
+            ]
+            assert len(tool_deltas) == 1
+            finishes = [
+                c["finish_reason"]
+                for p in payloads
+                for c in p.get("choices", [])
+                if c.get("finish_reason")
+            ]
+            assert finishes == ["tool_calls"]
+
+        asyncio.run(_run())
+
+    def test_structured_upstream_calls_relay_verbatim(self, monkeypatch):
+        async def _run():
+            line = (
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
+                '[{"index":0,"id":"call_up","type":"function","function":'
+                '{"name":"lookup","arguments":"{}"}}]}}]}'
+            )
+            lines = [
+                line,
+                'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(), lines)
+            assert chunks[0] == line + "\n\n"  # byte-for-byte relay
+
+        asyncio.run(_run())
