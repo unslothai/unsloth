@@ -347,6 +347,41 @@ def test_st_cache_resolutions_honor_explicit_hf_cache_dir():
         ), "an ST cache_dir resolution must read an explicit kwargs.get('cache_dir') first"
 
 
+def test_st_native_loads_map_hf_cache_dir_to_cache_folder():
+    """The for_inference and fast-encoder branches construct a native SentenceTransformer, which takes
+    cache_folder (not cache_dir). The prefetch warms cache_dir first, so an explicit HF cache_dir must be
+    mapped onto cache_folder for those native loads; otherwise the load reads a different cache, misses the
+    warm, and starts an unprotected in-process Xet download (Codex #6638). Static guard."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+    # Every native SentenceTransformer(...) constructor that forwards cache_folder must read cache_dir.
+    st_calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "SentenceTransformer"
+    ]
+    cache_folder_kws = [kw for call in st_calls for kw in call.keywords if kw.arg == "cache_folder"]
+    assert cache_folder_kws, "expected a native SentenceTransformer call forwarding cache_folder"
+    for kw in cache_folder_kws:
+        assert "'cache_dir'" in ast.dump(
+            kw.value
+        ), "a native SentenceTransformer cache_folder must map the explicit HF cache_dir first"
+    # The for_inference branch feeds cache_folder through st_kwargs; it must map cache_dir there too, and
+    # both native branches resolve cache_dir -> cache_folder (reformatting-tolerant normalized check).
+    normalized = "".join(src.split())
+    assert 'st_kwargs["cache_folder"]=' in normalized, "for_inference must set st_kwargs cache_folder"
+    assert (
+        normalized.count('kwargs.get("cache_dir")orkwargs.get("cache_folder")') >= 2
+    ), "both native ST branches (for_inference, fast-encoder) must map cache_dir -> cache_folder"
+
+
 def test_vision_warms_vllm_tokenizer_after_remap():
     """On the vLLM path the base warm is skipped and the tokenizer warm is deferred until after
     fast_inference_setup may remap model_name. The final tokenizer repo must then be warmed (tokenizer

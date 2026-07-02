@@ -1490,6 +1490,14 @@ class FastSentenceTransformer(FastModel):
                 if k in kwargs:
                     st_kwargs[k] = kwargs[k]
 
+            # ST takes cache_folder, not cache_dir. Map an explicit HF cache_dir onto cache_folder so this
+            # native load reads the cache the prefetch warmed above (cache_dir wins, else the caller's
+            # cache_folder; None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch) -- else a
+            # cache_dir warm is missed and the load starts an unprotected in-process Xet download.
+            _st_cache = kwargs.get("cache_dir") or kwargs.get("cache_folder")
+            if _st_cache is not None:
+                st_kwargs["cache_folder"] = _st_cache
+
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
@@ -1590,8 +1598,9 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # Forward cache_folder so this load reads the cache the prefetch warmed (None lets ST honor
-            # SENTENCE_TRANSFORMERS_HOME, matching the prefetch); a custom one would otherwise miss it.
+            # ST takes cache_folder, not cache_dir; map an explicit HF cache_dir onto it so this load reads
+            # the cache the prefetch warmed (cache_dir wins, else cache_folder; None lets ST honor
+            # SENTENCE_TRANSFORMERS_HOME, matching the prefetch) -- a mismatched cache would miss the warm.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1599,7 +1608,7 @@ class FastSentenceTransformer(FastModel):
                 token = token,
                 revision = revision,
                 model_kwargs = model_kwargs,
-                cache_folder = kwargs.get("cache_folder"),
+                cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
             )
 
             # Store metadata for get_peft_model
