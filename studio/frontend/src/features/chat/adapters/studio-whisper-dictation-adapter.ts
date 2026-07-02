@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { requestVoiceResume, requestVoiceSubmit } from "@/components/assistant-ui/thread";
+import {
+  requestVoiceBargeIn,
+  requestVoiceResume,
+  requestVoiceSubmit,
+} from "@/components/assistant-ui/thread";
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import type { DictationAdapter } from "@assistant-ui/react";
@@ -25,6 +29,11 @@ const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
 // noise fall under this and are dropped -- this is what stops Whisper being fed
 // junk (and hallucinating repeated tokens) during barge-in / idle listening.
 const MIN_SPEECH_MS = 350;
+// Sustained voiced audio that triggers a real-time barge-in (cut the TTS) while
+// the model is speaking, without waiting for end-of-utterance + transcription.
+// Slightly below MIN_SPEECH_MS so the interrupt lands fast; the utterance still
+// has to clear MIN_SPEECH_MS to actually be transcribed and sent.
+const BARGE_IN_MS = 250;
 // Silence trimmed around the voiced span before sending to Whisper (Whisper
 // hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
@@ -104,6 +113,7 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
     // measure voiced duration and to trim silence before transcription.
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
+    let bargedIn = false;
     let sampleRate = 16000;
     let heardSpeech = false;
     let lastVoiceAt = 0;
@@ -291,6 +301,14 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
             if (!heardSpeech) {
               heardSpeech = true;
               for (const cb of speechStartCallbacks) cb();
+            }
+            // Real-time barge-in: as soon as speech is sustained past the
+            // threshold, cut the TTS immediately (once). The VoiceEngine handler
+            // no-ops unless the model is actually speaking, so this is safe to
+            // fire during normal listening too.
+            if (!bargedIn && voicedMs >= BARGE_IN_MS) {
+              bargedIn = true;
+              requestVoiceBargeIn();
             }
           }
 

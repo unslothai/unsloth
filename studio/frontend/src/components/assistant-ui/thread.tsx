@@ -2630,6 +2630,16 @@ export function requestVoiceSubmit() {
   _voiceSubmit?.();
 }
 
+// Registered by the mounted VoiceEngine so a batch STT adapter (Whisper) can
+// barge in the moment its energy VAD detects sustained speech — without waiting
+// for end-of-utterance + the (slow) transcription. This is what makes Whisper
+// barge-in feel as immediate as the streaming Web Speech engine. Self-guards:
+// only cuts TTS if voice mode is active and something is actually speaking.
+let _voiceBargeIn: (() => void) | null = null;
+export function requestVoiceBargeIn() {
+  _voiceBargeIn?.();
+}
+
 // Silence debounce: how long the transcript must stop growing before we treat
 // the user as done and send. Reset on every transcript update so a mid-sentence
 // pause never clips speech; only a real pause this long auto-sends.
@@ -2994,6 +3004,19 @@ const VoiceEngine: FC = () => {
       if (_voiceSubmit === submitTranscript) _voiceSubmit = null;
     };
   }, [submitTranscript]);
+
+  // Expose a real-time barge-in for the Whisper adapter's energy VAD: cut the TTS
+  // immediately on sustained speech, before transcription. No-op unless voice is
+  // active and something is actually speaking, so stray calls are harmless.
+  useEffect(() => {
+    _voiceBargeIn = () => {
+      if (voiceModeRef.current !== "active") return;
+      if (isSpeakingRef.current) stop();
+    };
+    return () => {
+      _voiceBargeIn = null;
+    };
+  }, [stop]);
 
   // Thread-switch voice reset moved OUT of VoiceEngine: this component remounts
   // across the ThreadWelcome → ThreadComposerDock (first-send) boundary and loses
