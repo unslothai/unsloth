@@ -1409,6 +1409,52 @@ export function ChatPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
 
+  // Ensure the backend voice slot actually matches the selected voice when voice
+  // mode is entered. selectedVoiceModelId is persisted and shows "Active", but
+  // the backend slot is empty after a restart (and the unload effect above clears
+  // it on mount) -- so without this, /api/audio/speech has no TTS slot loaded and
+  // 400s, and the model never speaks. Keyed on voiceMode (not the selection) so
+  // it fires on entering the ball, not on every pick (handleVoiceModelChange
+  // already loads on pick); the /voice/status check makes a redundant load a
+  // no-op, so the two never double-load.
+  useEffect(() => {
+    if (voiceMode === "off") return;
+    const id = useChatRuntimeStore.getState().selectedVoiceModelId;
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const st = await authFetch("/api/inference/voice/status");
+        const data = st.ok
+          ? ((await st.json()) as { loaded?: boolean; model?: string | null })
+          : null;
+        const loadedModel = data?.loaded ? (data.model ?? null) : null;
+        if (loadedModel && loadedModel.toLowerCase() === id.toLowerCase()) return;
+        if (cancelled) return;
+        setVoiceSlotLoading(true);
+        const res = await authFetch("/api/inference/voice/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model_path: id }),
+        });
+        if (!res.ok && !cancelled) {
+          const body = await res.json().catch(() => ({}));
+          toast.error("Voice model failed to load", {
+            description: (body as { detail?: string }).detail ?? undefined,
+          });
+        }
+      } catch {
+        // status/load unavailable -- leave the slot as-is.
+      } finally {
+        if (!cancelled) setVoiceSlotLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode]);
+
   // Navigating away from Chat while voice mode is still active unmounts this
   // component without flipping voiceMode to "off", so the effect above never
   // runs. Unload on teardown so the independent voice model can't keep holding
