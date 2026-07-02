@@ -70,6 +70,18 @@ class AudioCodecManager:
         else:
             raise ValueError(f"Unknown audio_type: {audio_type}")
 
+    def has_codec(self, audio_type: str) -> bool:
+        """Whether the codec weights for ``audio_type`` are currently loaded."""
+        if audio_type == "snac":
+            return self._snac_model is not None
+        if audio_type == "bicodec":
+            return self._bicodec_tokenizer is not None
+        if audio_type == "dac":
+            return self._dac_audio_codec is not None
+        if audio_type == "csm":
+            return True  # decoding is built into the model
+        return False
+
     # ── Lazy loaders ─────────────────────────────────────────────
 
     def _load_snac(self, device: str) -> None:

@@ -9004,6 +9004,16 @@ class LlamaCppBackend:
         if audio_type not in self._TTS_PROMPTS:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
 
+        # The codec manager is shared class-level, so swapping/unloading another
+        # audio model (e.g. a speech-LLM chat model) can tear it down while this
+        # voice slot stays loaded -- then decode() would hit None. Re-ensure our
+        # codec here so the voice slot survives chat-model swaps.
+        if (
+            LlamaCppBackend._codec_mgr is None
+            or not LlamaCppBackend._codec_mgr.has_codec(audio_type)
+        ):
+            self.init_audio_codec(audio_type)
+
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
 
         payload: dict = {
