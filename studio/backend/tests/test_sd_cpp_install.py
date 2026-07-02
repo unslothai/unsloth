@@ -500,7 +500,14 @@ def test_pinned_tag_prefers_upstream_pin_over_mirror_latest(tmp_path, monkeypatc
     mirror_latest = "sd-master-000-latest-bin-Linux-Ubuntu-22.04-x86_64.zip"
     upstream_pinned = "sd-master-999-pinned-bin-Linux-Ubuntu-24.04-x86_64.zip"
 
-    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0, allow_latest = True):
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
         r = repo or sdmod.DEFAULT_REPO
         if r == sdmod.DEFAULT_REPO:
             if tag == "master-999-pinned":  # mirror lacks the pin
@@ -532,7 +539,14 @@ def test_print_asset_uses_upstream_fallback(monkeypatch, capsys):
     monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
     monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
 
-    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0, allow_latest = True):
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
         r = repo or sdmod.DEFAULT_REPO
         if r == sdmod.DEFAULT_REPO:
             return {"tag_name": _TAG, "assets": [{"name": n} for n in _MIRROR_ASSETS]}
