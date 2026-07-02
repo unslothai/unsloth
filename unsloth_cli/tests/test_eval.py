@@ -201,6 +201,29 @@ def test_resolve_tasks_include_yaml_keeps_parent_dir(tmp_path):
     assert includes == [str(tmp_path.resolve())]
 
 
+def test_resolve_tasks_yaml_with_function_tag(tmp_path):
+    task_file = tmp_path / "custom.yaml"
+    task_file.write_text(
+        "task: fn_task\noutput_type: generate_until\n"
+        "process_docs: !function utils.process_docs\n"
+    )
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
+
+    assert names == ["fn_task"]
+    # the copy keeps the tag verbatim for lm-eval's own loader
+    copied = (tmp_dir / "custom" / "fn_task.yaml").read_text()
+    assert "!function utils.process_docs" in copied
+
+
+def test_resolve_tasks_rejects_yml_group_config(tmp_path):
+    task_file = tmp_path / "suite.yml"
+    task_file.write_text(yaml.safe_dump({"group": "my_suite", "task": ["task_a", "task_b"]}))
+    with pytest.raises(ValueError, match = "only indexes .yaml"):
+        evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path / "gen")
+
+
 def test_resolve_tasks_jsonl_generates_task(tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "q", "answer": "a"}\n')
@@ -379,6 +402,23 @@ def test_render_results_renders_metric_row(capsys):
     assert "0.0500" in out
 
 
+def test_render_results_includes_group_aggregates(capsys):
+    evalmod._render_results(
+        {
+            "results": {
+                "mmlu_abstract_algebra": {"acc,none": 0.30, "alias": " - abstract_algebra"},
+            },
+            "groups": {
+                "mmlu": {"acc,none": 0.45, "alias": "mmlu"},
+            },
+        }
+    )
+    out = capsys.readouterr().out
+    assert "0.3000" in out
+    # the group aggregate must be shown, not just per-subtask rows
+    assert "0.4500" in out
+
+
 def test_eval_missing_lm_eval_shows_hint(monkeypatch):
     monkeypatch.setitem(sys.modules, "lm_eval", None)
     result = CliRunner().invoke(_eval_app(), ["fake/model", "--tasks", "gsm8k"])
@@ -436,7 +476,8 @@ def fake_eval_env(monkeypatch):
             # registered under their task or group name
             for directory in include_path or []:
                 for spec_file in sorted(Path(directory).glob("*.yaml")):
-                    spec = yaml.safe_load(spec_file.read_text())
+                    # like lm-eval, tolerate !function tags but not broken yaml
+                    spec = yaml.load(spec_file.read_text(), Loader = evalmod._TaskYamlLoader)
                     if not isinstance(spec, dict):
                         continue
                     name = spec.get("task")

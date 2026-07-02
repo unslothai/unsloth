@@ -153,6 +153,17 @@ def resolve_base_model(model: str) -> Optional[str]:
     return _read_adapter_base(Path(config_path))
 
 
+class _TaskYamlLoader(yaml.SafeLoader):
+    """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
+
+
+# map local tags to their raw scalar so a valid lm-eval config parses for
+# name extraction; TaskManager loads the original file with its own loader
+_TaskYamlLoader.add_multi_constructor(
+    "!", lambda loader, suffix, node: getattr(node, "value", None)
+)
+
+
 def _doc_column(key: str) -> str:
     # a jinja template stringifies the value (needed e.g. for numeric answer
     # columns in few-shot prompts), but jinja can't parse keys that aren't
@@ -246,7 +257,7 @@ def resolve_tasks(
             if not path.exists():
                 raise FileNotFoundError(f"Custom task file not found: {entry}")
             try:
-                spec = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+                spec = yaml.load(path.read_text(encoding = "utf-8"), Loader = _TaskYamlLoader) or {}
             except yaml.YAMLError as e:
                 raise ValueError(f"Invalid YAML in custom task file '{entry}': {e}") from e
             if not isinstance(spec, dict):
@@ -273,7 +284,14 @@ def resolve_tasks(
                 raise ValueError(f"Duplicate task name '{name}' in --tasks.")
             if "include" in spec or isinstance(spec.get("task"), list):
                 # include-bearing and group configs reference sibling files,
-                # so their directory must stay on the include path
+                # so their directory must stay on the include path — which
+                # only works for .yaml, the sole extension lm-eval indexes
+                if suffix == ".yml":
+                    raise ValueError(
+                        f"Custom task file '{entry}' is a .yml group/include config — "
+                        "lm-eval only indexes .yaml files, so it would never register. "
+                        "Rename it (and the files it references) to .yaml."
+                    )
                 _add_include(str(path.resolve().parent))
             else:
                 # copy just this file into the temp include dir so a broken
@@ -316,7 +334,12 @@ def _render_results(results: dict) -> None:
     table.add_column("Value", justify = "right")
     table.add_column("± stderr", justify = "right")
 
-    for task, metrics in results.get("results", {}).items():
+    rows = dict(results.get("results", {}) or {})
+    # group aggregates (mmlu, custom suites) live in a separate section
+    for task, metrics in (results.get("groups") or {}).items():
+        rows.setdefault(task, metrics)
+
+    for task, metrics in rows.items():
         for key, value in metrics.items():
             if key == "alias" or "_stderr" in key or not isinstance(value, (int, float)):
                 continue
