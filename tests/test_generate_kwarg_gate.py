@@ -92,60 +92,26 @@ class VisionAcceptsMM:
     ): ...
 
 
-def run():
-    cases = [
-        (
-            "prep(**kwargs)+forward(key)  -> accept",
-            PrepHasKwargs_ForwardHasKey(),
-            "logits_to_keep",
-            True,
-        ),
-        (
-            "prep(no kwargs)+forward(key) -> reject",
-            PrepNoKwargs_ForwardHasKey(),
-            "logits_to_keep",
-            False,
-        ),
-        ("prep(key) direct            -> accept", PrepHasKeyDirectly(), "logits_to_keep", True),
-        ("no prepare_inputs_for_gen   -> reject", NoPrepare(), "logits_to_keep", False),
-        (
-            "num_logits_to_keep variant  -> reject",
-            PrepNoKwargs_ForwardHasKey(),
-            "num_logits_to_keep",
-            False,
-        ),
-        (
-            "mm_token_type_ids not accepted -> reject (strip)",
-            VisionRejectsMM(),
-            "mm_token_type_ids",
-            False,
-        ),
-        (
-            "mm_token_type_ids accepted     -> keep",
-            VisionAcceptsMM(),
-            "mm_token_type_ids",
-            True,
-        ),
-    ]
-    passed = 0
-    for name, model, key, expected in cases:
-        got = accepts(model, key)
-        ok = got is expected
-        passed += ok
-        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: got={got} expected={expected}")
-        assert ok, f"{name}: got {got}, expected {expected}"
+# (model, key, expected) per gate case.
+CASES = [
+    ("prep(**kwargs)+forward(key)  -> accept", PrepHasKwargs_ForwardHasKey(), "logits_to_keep", True),
+    ("prep(no kwargs)+forward(key) -> reject", PrepNoKwargs_ForwardHasKey(), "logits_to_keep", False),
+    ("prep(key) direct             -> accept", PrepHasKeyDirectly(), "logits_to_keep", True),
+    ("no prepare_inputs_for_gen    -> reject", NoPrepare(), "logits_to_keep", False),
+    ("num_logits_to_keep variant   -> reject", PrepNoKwargs_ForwardHasKey(), "num_logits_to_keep", False),
+    ("mm_token_type_ids not accepted -> reject (strip)", VisionRejectsMM(), "mm_token_type_ids", False),
+    ("mm_token_type_ids accepted     -> keep", VisionAcceptsMM(), "mm_token_type_ids", True),
+]
 
-    # Optional transformers parity smoke for the accept case.
-    try:
-        import torch  # noqa
-        from transformers import AutoModelForCausalLM, AutoConfig
-    except Exception as e:
-        print(f"  [SKIP] transformers parity (import failed: {e})")
-        print(f"{passed}/{len(cases)} logic cases passed")
-        return
-    print(f"{passed}/{len(cases)} logic cases passed")
+
+def test_generate_kwarg_gate():
+    for name, model, key, expected in CASES:
+        got = accepts(model, key)
+        assert got is expected, f"{name}: got {got}, expected {expected}"
 
 
 if __name__ == "__main__":
-    run()
+    test_generate_kwarg_gate()
+    for name, _, _, _ in CASES:
+        print(f"  [PASS] {name}")
     print("OK: generate-kwarg gate behaves like transformers _validate_model_kwargs")
