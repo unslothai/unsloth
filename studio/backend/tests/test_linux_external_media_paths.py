@@ -176,11 +176,18 @@ def test_legacy_scan_folder_keeps_unrelated_run_paths_blocked(monkeypatch, targe
     with pytest.raises(ValueError, match = "Path under /run is not allowed"):
         studio_db.add_scan_folder(target)
 
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+
+def test_legacy_scan_folder_keeps_sensitive_dirs_blocked_under_run_media(monkeypatch):
+    _stub_linux_path_checks(monkeypatch, studio_db)
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+    _stub_legacy_scan_folder_db(monkeypatch)
+
+    with pytest.raises(ValueError, match = "Credential or configuration"):
+        studio_db.add_scan_folder("/run/media/dspofu/nvmeB/.aws/models")
 
 
 def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text())
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
     function_names = {
         "_build_browse_allowlist",
         "_browse_relative_parts",

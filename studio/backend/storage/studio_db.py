@@ -66,6 +66,40 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+_SENSITIVE_PATH_COMPONENTS = {
+    ".aws",
+    ".azure",
+    ".config",
+    ".docker",
+    ".gcloud",
+    ".gnupg",
+    ".huggingface",
+    ".kaggle",
+    ".kube",
+    ".modelscope",
+    ".ngc",
+    ".local",
+    ".mozilla",
+    ".pki",
+    ".thunderbird",
+    ".ssh",
+    ".1password",
+    ".bitwarden",
+    ".password-store",
+    "1password",
+    "bitwarden",
+    "keychains",
+    "keyrings",
+    "mozilla",
+    "thunderbird",
+}
+
+
+def _contains_sensitive_path_component(path: str) -> bool:
+    parts = os.path.normpath(path).split(os.sep)
+    return any(part.lower() in _SENSITIVE_PATH_COMPONENTS for part in parts)
+
+
 _schema_lock = threading.Lock()
 _schema_ready = False
 _SQLITE_IN_CHUNK_SIZE = 900
@@ -901,6 +935,8 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    if _contains_sensitive_path_component(normalized):
+        raise ValueError("Credential or configuration directories are not allowed")
 
     # Windows: normcase for the denylist check but store original casing
     # so consumers see the native drive-letter casing (e.g. C:\Models).
