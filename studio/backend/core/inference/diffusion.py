@@ -754,10 +754,10 @@ class DiffusionBackend:
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
             else:
+
                 def base_filter(rfilename: str) -> bool:
-                    return _base_file_downloaded(
-                        rfilename, include_transformer = include_transformer
-                    )
+                    return _base_file_downloaded(rfilename, include_transformer = include_transformer)
+
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             for s in base_info.siblings:
                 if base_filter(s.rfilename):
