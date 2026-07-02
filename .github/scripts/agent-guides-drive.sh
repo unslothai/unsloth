@@ -332,7 +332,9 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   # Writing the redacted copy up front keeps the key out of the artifact even if
   # the run times out (run_timed exits before returning here).
   cp "$real" "$script"; redact "$script"
-  echo "[$AGENT] invoking (timeout ${TIMEOUT}s): $cmd $*"
+  # The connect one-liner now carries the key as an inline env assignment; scrub it on
+  # the way to the log (the executed $real keeps the live value).
+  echo "[$AGENT] invoking (timeout ${TIMEOUT}s): ${cmd//${UNSLOTH_API_KEY}/<REDACTED>} $*"
   run_timed "$out" bash "$real"
   local rc=$?
   rm -f "$real"

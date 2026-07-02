@@ -17,11 +17,12 @@ function normalizeHost(host: string): string {
   return lower.startsWith("[") && lower.endsWith("]") ? lower.slice(1, -1) : lower;
 }
 
-// The bare `unsloth start` only auto-discovers 127.0.0.1:8888 on the IPv4 stack
-// (localhost aliases it). ::1 is a loopback address the bare command never probes, so it
-// must carry an explicit UNSLOTH_STUDIO_URL rather than be treated as the bare default.
+// The bare `unsloth start` probes exactly http://127.0.0.1:8888, so only that literal
+// host earns the bare command. `localhost` can resolve to ::1 (and `::1` is never
+// probed), so both keep an explicit UNSLOTH_STUDIO_URL -- harmless when they alias
+// 127.0.0.1, correct when they don't.
 function isDefaultLocalHost(host: string): boolean {
-  return host === "127.0.0.1" || host === "localhost";
+  return host === "127.0.0.1";
 }
 
 // Match the CLI auto-mint rule (is_loopback_url): localhost, ::1, and all of 127.0.0.0/8.

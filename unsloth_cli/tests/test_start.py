@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import urllib.error
 from pathlib import Path
@@ -36,6 +37,18 @@ def _assert_env_set(output: str, name: str, value: str) -> None:
 def _assert_env_unset(output: str, name: str) -> None:
     needle = f"Remove-Item Env:{name}" if os.name == "nt" else f"unset {name}"
     assert needle in output, f"{needle!r} not found in:\n{output}"
+
+
+def _launch_command(output: str) -> list:
+    # The --no-launch recipe ends with a self-contained one-liner: inline NAME=value
+    # assignments, then the command. Return just the command argv.
+    last = [ln for ln in output.splitlines() if ln.strip()][-1]
+    parts = shlex.split(last)
+    for i, part in enumerate(parts):
+        name = part.partition("=")[0]
+        if "=" not in part or not name.replace("_", "").isalnum():
+            return parts[i:]
+    return []
 
 
 def _fake_claude(monkeypatch, version_output: str) -> None:
@@ -374,14 +387,96 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
 )
 def test_no_launch_output_is_parseable(fake_studio):
     # Mirror the #6547 CI parser: status lines, then `export`/`unset`, then exactly
-    # one launch command on the last line.
+    # one launch command on the last line (now an inline-env one-liner, so the parser
+    # matches by substring rather than prefix).
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
     skip = ("export ", "unset ", "Studio ", "Updated ", "Disabled ", "Warning", "Loading")
     body = [ln for ln in lines if not ln.startswith(skip)]
-    assert body[-1].startswith("codex --oss --profile unsloth_api")
+    assert "codex --oss --profile unsloth_api" in body[-1]
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
+
+
+def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
+    # People copy just the last line. A bare `codex` there would run against the user's
+    # real ~/.codex (e.g. a pre-existing damaged state DB) with zero isolation, so the
+    # last line must inline every session env var ahead of the command.
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
+    parts = shlex.split(last)
+    assignments = {}
+    command = []
+    for i, part in enumerate(parts):
+        if "=" not in part:
+            command = parts[i:]
+            break
+        name, _, value = part.partition("=")
+        assignments[name] = value
+    assert command and command[0] == "codex"
+    assert assignments["CODEX_HOME"] == str(tmp_path / "agents" / "codex")
+    assert assignments["UNSLOTH_STUDIO_AUTH_TOKEN"].startswith("sk-unsloth-")
+
+
+def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
+    # The unset vars must be neutralized inline too, or a partial copy would send the
+    # user's own ANTHROPIC_API_KEY to the Studio base.
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
+    assert "ANTHROPIC_API_KEY= " in last
+    assert "CLAUDE_CODE_OAUTH_TOKEN= " in last
+    assert "ANTHROPIC_AUTH_TOKEN=" in last  # the real key still applied after the blanks
+
+
+def test_opencode_inline_config_beats_project_config(fake_studio):
+    # A project's opencode.json outranks OPENCODE_CONFIG, so the model pin (and --yolo
+    # permissions) ride in OPENCODE_CONFIG_CONTENT, which outranks project config.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--yolo"])
+    assert result.exit_code == 0, result.output
+    content_line = next(
+        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
+    )
+    inline = json.loads(shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0])
+    assert inline["model"] == f"unsloth/{MODEL['id']}"
+    assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert "sk-unsloth" not in content_line  # key stays in the private file
+
+
+def test_opencode_inline_config_omits_permissions_without_yolo(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    content_line = next(
+        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
+    )
+    inline = json.loads(shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0])
+    assert inline == {"model": f"unsloth/{MODEL['id']}"}
+
+
+def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
+    # `unsloth run` serves plain HTTP; auto-serving behind an https:// target would poll
+    # the wrong scheme until the startup timeout. Keep the plain "no server" error.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "https://127.0.0.1:8443")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {"called": False}
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True)
+    )
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"]
+    )
+    assert result.exit_code == 1
+    assert "No running Studio server" in result.output
+    assert started["called"] is False
+
+
+def test_connect_alias_still_works(fake_studio):
+    # `unsloth connect` remains a compat alias for `unsloth start`.
+    from unsloth_cli import app
+    result = CliRunner().invoke(app, ["connect", "claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
 def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
@@ -569,18 +664,49 @@ def test_split_repo_variant(model, expected):
     assert start._split_repo_variant(model) == expected
 
 
-def test_connect_model_variant_suffix_matches_loaded_without_reload(fake_studio):
-    # `--model <loaded repo>:QUANT` must resolve against the already-loaded repo (which
-    # /v1/models lists without the `:QUANT` suffix), NOT trigger a reload. A reload here
-    # both fails (Studio rejects a `:`-suffixed repo id) and evicts a model another
-    # session is using -- the bug wasim hit running a second `unsloth start`.
+def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
+    # A bare `--model <loaded repo>` (no load knobs) attaches to the already-loaded model
+    # without touching /api/inference/load, so it can never evict another session.
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == []
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
+
+
+def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
+    # `--model repo:QUANT` splits into a VALID load payload (bare repo + gguf_variant),
+    # never the `:`-suffixed repo id Studio rejects. The variant knob defers to
+    # /api/inference/load, whose already-loaded dedup answers without reloading when the
+    # active variant+settings match -- so a second session running the same command
+    # attaches without evicting the first, while a genuinely different quant reloads.
     result = CliRunner().invoke(
         start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]
     )
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
-    assert loads == []  # no reload, so no eviction of the running session
+    assert loads == [
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
+        )
+    ]
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
+
+
+def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
+    # /v1/models can't reveal the active quant, so an id match alone would silently keep
+    # the wrong variant loaded. Explicit knobs must always consult the load endpoint.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", MODEL["id"], "--gguf-variant", "Q8_0"],
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == [
+        ("POST", f"{BASE}/api/inference/load", {"model_path": MODEL["id"], "gguf_variant": "Q8_0"})
+    ]
 
 
 def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
@@ -1124,6 +1250,10 @@ def test_no_server_no_model_hints_model_flag(fake_studio, monkeypatch):
         ("http://localhost", "http://localhost:8888"),
         ("http://[::1]", "http://[::1]:8888"),  # IPv6 literal stays bracketed
         ("http://[::1]:8888", "http://[::1]:8888"),
+        # Paths are stripped: unsloth run serves at the root, so /studio would make the
+        # health poll hit /studio/api/health (404) until the startup timeout.
+        ("http://127.0.0.1:8888/studio", "http://127.0.0.1:8888"),
+        ("http://127.0.0.1/studio", "http://127.0.0.1:8888"),
     ],
 )
 def test_effective_base(base, expected):
@@ -1493,9 +1623,9 @@ def test_no_yolo_omits_native_flag(fake_studio, agent, native):
     result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
     assert result.exit_code == 0, result.output
     # pi's --approve is a real flag only added under --yolo; assert it's absent here.
-    launch_line = [ln for ln in result.output.splitlines() if ln.strip().startswith(agent)]
-    assert launch_line, result.output
-    assert all(native not in ln for ln in launch_line)
+    command = _launch_command(result.output)
+    assert command and command[0] == agent, result.output
+    assert native not in command
 
 
 @pytest.mark.parametrize(
@@ -1583,9 +1713,9 @@ def test_yolo_config_agents_add_no_command_flag(fake_studio):
     for agent in ("opencode", "openclaw"):
         result = CliRunner().invoke(start.start_app, [agent, "--yolo", "--no-launch"])
         assert result.exit_code == 0, result.output
-        launch_line = [ln for ln in result.output.splitlines() if ln.strip().startswith(agent)]
-        assert launch_line, result.output
-        assert all("--yolo" not in ln and "--dangerous" not in ln for ln in launch_line)
+        command = _launch_command(result.output)
+        assert command and command[0] == agent, result.output
+        assert not any("--yolo" in arg or "--dangerous" in arg for arg in command)
 
 
 @pytest.mark.skipif(

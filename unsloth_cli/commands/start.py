@@ -303,7 +303,11 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         f"No Studio server at {base}. Starting one for {model} (loading the model can take a while)…"
     )
     typer.echo(f"Server log: {log_path}")
-    log = open(log_path, "wb")
+    # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and
+    # the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid
+    # reuse) can't survive with its old permissions.
+    log_path.unlink(missing_ok = True)
+    log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
     # server; we tear it down explicitly when the agent exits.
     kwargs: dict = {"stdout": log, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
@@ -311,7 +315,10 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    server = subprocess.Popen(command, **kwargs)
+    try:
+        server = subprocess.Popen(command, **kwargs)
+    finally:
+        log.close()  # Popen dup'd the fd; drop the parent's copy
     _auto_served_server = server
     atexit.register(_shutdown_auto_served)
 
@@ -334,17 +341,16 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
 
 
 def _effective_base(base: str) -> str:
-    # `unsloth run` binds to `parsed.port or 8888`, so a portless UNSLOTH_STUDIO_URL like
-    # http://127.0.0.1 must resolve to :8888 here. Otherwise we launch the child on 8888
-    # but poll (and later connect to) port 80 and hit the startup timeout. Rebuild the
-    # host:port explicitly, keeping IPv6 literals bracketed.
+    # `unsloth run` binds to `parsed.port or 8888` and serves at the root, so normalize
+    # UNSLOTH_STUDIO_URL to plain scheme://host:port. A portless http://127.0.0.1 would
+    # otherwise launch on 8888 but poll port 80, and a path like /studio would poll
+    # /studio/api/health (404) -- either way hitting the startup timeout. IPv6 literals
+    # stay bracketed.
     parsed = urlparse(base)
-    if parsed.port:
-        return base
     host = parsed.hostname or "127.0.0.1"
     if ":" in host:  # bare IPv6 literal (urlparse strips the brackets)
         host = f"[{host}]"
-    return f"{parsed.scheme or 'http'}://{host}:8888"
+    return f"{parsed.scheme or 'http'}://{host}:{parsed.port or 8888}"
 
 
 def _require_studio(
@@ -360,8 +366,10 @@ def _require_studio(
         return base, None
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     # Auto-start a local server only for an interactive launch with a model to serve, and
-    # only for a loopback target (never stand in for an explicit remote UNSLOTH_STUDIO_URL).
-    if serve and launch and model and is_loopback_url(expected):
+    # only for a plain-HTTP loopback target: never stand in for an explicit remote
+    # UNSLOTH_STUDIO_URL, and never for an https:// one -- `unsloth run` serves plain
+    # HTTP, so the health poll against https would spin until the startup timeout.
+    if serve and launch and model and is_loopback_url(expected) and urlparse(expected).scheme == "http":
         # Normalize to the port unsloth run actually binds, so the health poll and the
         # returned base hit the same server we launch (not a portless :80).
         expected = _effective_base(expected)
@@ -463,15 +471,23 @@ def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
 def _key_accepted(base: str, key: str) -> bool:
     # Only a genuine auth rejection (401/403) means "this key is bad -- skip it and try
     # the next cached key or mint a fresh one". A 5xx or a network blip is a server-side
-    # outage, not a bad key: let it propagate so we surface the outage instead of silently
-    # discarding a working key and minting extras against a struggling server.
+    # outage, not a bad key: fail with a clean message (never a traceback) instead of
+    # silently discarding a working key and minting extras against a struggling server.
     try:
         _http_json("GET", f"{base}/v1/models", key)
         return True
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             return False
-        raise
+        _fail(
+            f"Studio server error while checking an API key ({exc.code}). "
+            "The server may be starting up or unhealthy; try again shortly."
+        )
+    except (urllib.error.URLError, TimeoutError) as exc:
+        _fail(
+            "Couldn't reach the Studio server while checking an API key: "
+            f"{getattr(exc, 'reason', None) or exc}"
+        )
 
 
 def _agent_api_key(base: str, explicit: Optional[str]) -> str:
@@ -542,9 +558,26 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    match = next((m for m in models if m["id"] == requested), None)
+    # /v1/models reports the model id but not the active GGUF variant or runtime load
+    # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
+    # user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to
+    # /api/inference/load: the server's already-loaded dedup answers "already_loaded"
+    # without reloading when the variant AND settings match, so a second session running
+    # the same command still attaches without evicting the first.
+    load_has_overrides = bool(
+        load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
+    )
+    match = (
+        None
+        if requested and load_has_overrides
+        else next((m for m in models if m["id"] == requested), None)
+    )
     if requested and match is None:
-        typer.echo(f"Loading {requested} on the Studio server (this can take a while)…")
+        typer.echo(
+            f"Ensuring {requested} is loaded with the requested settings…"
+            if load_has_overrides
+            else f"Loading {requested} on the Studio server (this can take a while)…"
+        )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -771,7 +804,19 @@ def _print_env(
         typer.echo(
             f"export WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}"
         )
-    typer.echo(shlex.join(command))
+    # The final line is a SELF-CONTAINED one-liner (inline env, VAR=... cmd) rather than a
+    # bare command. People copy just the last line, and a bare `codex`/`claude` would then
+    # run against their real ~/.codex or Anthropic credentials with zero isolation -- e.g.
+    # inheriting a pre-existing damaged ~/.codex state DB and blaming the recipe. Inline
+    # assignments scope every var (and empty-string the conflicting ones) to this single
+    # invocation, so a partial copy behaves the same as pasting the whole block.
+    inline = [f"{name}=" for name in unset_env]
+    inline += [f"{name}={shlex.quote(value)}" for name, value in env.items()]
+    if wsl_env_bridge:
+        inline.append(
+            f"WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}"
+        )
+    typer.echo(" ".join((*inline, shlex.join(command))))
 
 
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
@@ -1288,7 +1333,17 @@ def opencode(
         # configs), so this adds the Unsloth provider/model for the session without
         # changing the user's default model. Key lives in the config, not the env.
         write_opencode_config(base, key, entry, config_path, yolo = yolo)
-        env = {"OPENCODE_CONFIG": str(config_path)}
+        # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model
+        # pin (and --yolo permissions) would silently lose to a repo config. Carry the
+        # settings that must win in OPENCODE_CONFIG_CONTENT, which outranks project
+        # config; the API key stays in the private file, never in the printed env.
+        inline_config: dict = {"model": f"unsloth/{entry['id']}"}
+        if yolo:
+            inline_config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+        env = {
+            "OPENCODE_CONFIG": str(config_path),
+            "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
+        }
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
 
 

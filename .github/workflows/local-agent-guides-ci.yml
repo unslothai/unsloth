@@ -246,8 +246,10 @@ jobs:
           # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
           # step publishes all of logs/, so scrubbing only studio-logs would leak
           # the bearer token in the retained artifact.
+          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
+          # agent-workdir/ are published by the same upload step.
           if [ -n "${UNSLOTH_API_KEY:-}" ]; then
-            grep -rlF "$UNSLOTH_API_KEY" logs 2>/dev/null | while IFS= read -r f; do
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
               sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
             done
           fi
@@ -436,8 +438,10 @@ jobs:
           # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
           # step publishes all of logs/, so scrubbing only studio-logs would leak
           # the bearer token in the retained artifact.
+          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
+          # agent-workdir/ are published by the same upload step.
           if [ -n "${UNSLOTH_API_KEY:-}" ]; then
-            grep -rlF "$UNSLOTH_API_KEY" logs 2>/dev/null | while IFS= read -r f; do
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
               sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
             done
           fi
@@ -580,8 +584,10 @@ jobs:
           # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
           # step publishes all of logs/, so scrubbing only studio-logs would leak
           # the bearer token in the retained artifact.
+          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
+          # agent-workdir/ are published by the same upload step.
           if [ -n "${UNSLOTH_API_KEY:-}" ]; then
-            grep -rlF "$UNSLOTH_API_KEY" logs 2>/dev/null | while IFS= read -r f; do
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
               sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
             done
           fi
