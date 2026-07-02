@@ -695,7 +695,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
 
   const handleLoad = useCallback(
-    async (repoId: string, ggufFilename: string) => {
+    // Resolves true when the background load STARTED (callers may revert
+    // optimistic picker state on false); poll outcomes are handled internally.
+    async (repoId: string, ggufFilename: string): Promise<boolean> => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       setBusy("loading");
@@ -717,9 +719,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
         void refreshStatus();
-        return;
+        return false;
       }
       void pollLoadProgress();
+      return true;
     },
     [pollLoadProgress, refreshStatus, dismissLoadToast],
   );
@@ -733,11 +736,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // busy, while the backend rejects the second load with a 409.
       if (busy !== null) return;
       if (meta.ggufVariant && meta.ggufFilename) {
+        // Optimistic for instant picker feedback, but revert if the load fails to
+        // START (400/409/network): the selector must not advertise a quant that
+        // is not the loaded one. Poll-phase failures re-sync via refreshStatus.
+        const prevQuant = quant;
         setQuant(meta.ggufVariant);
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void handleLoad(id, meta.ggufFilename);
+        void handleLoad(id, meta.ggufFilename).then((started) => {
+          if (!started) setQuant(prevQuant);
+        });
         return;
       }
       // A direct single-file local .gguf pick has no variant/filename (custom folder /
@@ -755,7 +764,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void handleLoad(dir, filename);
       }
     },
-    [busy, handleLoad],
+    [busy, handleLoad, quant],
   );
 
   const handleUnload = useCallback(async () => {
@@ -841,7 +850,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           height: h,
           steps,
           guidance,
-          seed: baseSeed + i,
+          // Offset runs by the batch size: the native engine seeds image j of a
+          // run at seed+j, so a +1 run offset would regenerate the previous run's
+          // batch-mates. Unique per image on both engines, reproducible via recipes.
+          seed: baseSeed + i * batchSize,
           batch_size: batchSize,
         });
         if (!isMounted.current) break;

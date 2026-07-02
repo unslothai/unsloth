@@ -193,6 +193,15 @@ def load_prequantized_transformer(
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
         transformer = transformer.to(device)
+        # Built via from_config (not from_pretrained), so it starts in TRAIN mode; the
+        # dense and GGUF paths load through from_pretrained, which diffusers documents as
+        # returning an eval()'d module. Match that here so any train/eval-sensitive layer
+        # (e.g. dropout) can't make prequant inference nondeterministic or diverge from
+        # the other load paths.
+        try:
+            transformer.eval()
+        except Exception:  # noqa: BLE001 — eval() is best-effort
+            pass
         try:  # diagnostic marker, mirrors the runtime-quant path
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 — marker is best-effort
