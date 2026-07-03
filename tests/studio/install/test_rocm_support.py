@@ -2325,10 +2325,7 @@ class TestWindowsRocmTorchaoGuard:
 
     def test_install_python_stack_uses_direct_windows_rocm_torchao_guard(self):
         source = _STACK_PATH.read_text(encoding = "utf-8")
-        assert (
-            "elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():"
-            in source
-        )
+        assert "elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():" in source
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
