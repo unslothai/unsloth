@@ -38,7 +38,7 @@ export const en = {
       search: "Search",
       hub: "Hub",
       train: "Train",
-      notebook: "NoteBook",
+      notebooks: "NoteBooks",
       recipes: "Recipes",
       export: "Export",
       recents: "Recents",

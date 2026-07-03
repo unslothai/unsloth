@@ -245,7 +245,7 @@ def _build_enriched_map(
                 continue
             studio_model = _studio_model_for_yaml(yaml_filename, header_lines)
             for notebook_file in notebook_files:
-                if not notebook_file.endswith(".ipynb"):
+                if not _is_public_notebook_file(notebook_file):
                     continue
                 entry = _make_entry(
                     notebook_file,
@@ -255,7 +255,7 @@ def _build_enriched_map(
                 by_file[notebook_file] = _merge_entries(by_file.get(notebook_file), entry)
 
     for notebook_file, fields in overrides.items():
-        if not notebook_file.endswith(".ipynb"):
+        if not _is_public_notebook_file(notebook_file):
             continue
         entry = _normalize_override(
             notebook_file,

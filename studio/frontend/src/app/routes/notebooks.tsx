@@ -7,7 +7,7 @@ import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 const NotebooksPage = lazy(() =>
-  import("@/features/notebooks/notebooks-page").then((m) => ({
+  import("@/features/notebook/notebooks-page").then((m) => ({
     default: m.NotebooksPage,
   })),
 );
