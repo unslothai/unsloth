@@ -3,12 +3,16 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
+import type { SystemInfoResponse } from "./use-system";
 
 export interface GpuInfo {
   available: boolean;
   name: string;
   memoryTotalGb: number;
+  cpuCore: number;
+  cpuThread: number;
   systemRamAvailableGb: number;
+  systemRamTotalGb: number
 }
 
 export interface SystemGpuDevice {
@@ -27,34 +31,24 @@ const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
   memoryTotalGb: 0,
+  cpuCore: 0,
+  cpuThread: 0,
   systemRamAvailableGb: 0,
+  systemRamTotalGb: 0
 };
 
-interface SystemPayload {
-  gpu?: {
-    available?: boolean;
-    devices?: Array<{
-      index?: number;
-      name?: string;
-      memory_total_gb?: number;
-      index_kind?: string;
-    }>;
-  };
-  memory?: { available_gb?: number };
-}
-
 // One module-level cache so every GPU hook shares a single /api/system fetch.
-let cachedSystem: SystemPayload | null = null;
-let systemPromise: Promise<SystemPayload | null> | null = null;
+let cachedSystem: SystemInfoResponse | null = null;
+let systemPromise: Promise<SystemInfoResponse | null> | null = null;
 
-async function fetchSystemOnce(): Promise<SystemPayload | null> {
+async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
   if (cachedSystem) return cachedSystem;
   if (systemPromise) return systemPromise;
   systemPromise = (async () => {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      cachedSystem = (await res.json()) as SystemPayload;
+      cachedSystem = (await res.json()) as SystemInfoResponse;
       return cachedSystem;
     } catch {
       systemPromise = null; // reset so a later call retries (backend not ready)
@@ -64,25 +58,30 @@ async function fetchSystemOnce(): Promise<SystemPayload | null> {
   return systemPromise;
 }
 
-function toGpuInfo(data: SystemPayload | null): GpuInfo {
-  const ramAvailableGb = data?.memory?.available_gb ?? 0;
+function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
+  // CPU/RAM exist even on hosts without a GPU, so populate them on every path.
+  // No discrete GPU (e.g. Mac): still surface system RAM so memory math
+  // (unified memory) has a budget to work with.
+  const base = {
+    cpuCore: data?.cpu?.physical_count ?? 0,
+    cpuThread: data?.cpu?.logical_count ?? 0,
+    systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+    systemRamTotalGb: data?.memory?.total_gb ?? 0,
+  };
   const gpuData = data?.gpu;
-  if (!gpuData?.available || !gpuData.devices?.length) {
-    // No discrete GPU (e.g. Mac): still surface system RAM so memory math
-    // (unified memory) has a budget to work with.
-    return { ...DEFAULT_GPU, systemRamAvailableGb: ramAvailableGb };
+  const devices = gpuData?.devices ?? [];
+  if (!gpuData?.available || !devices.length) {
+    return { ...DEFAULT_GPU, ...base };
   }
-  const devices = gpuData.devices;
-  const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
   return {
+    ...base,
     available: true,
     name: devices[0]?.name ?? "Unknown",
-    memoryTotalGb: totalGb,
-    systemRamAvailableGb: ramAvailableGb,
+    memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
   };
 }
 
-function toGpuDevices(data: SystemPayload | null): SystemGpuDevice[] {
+function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({

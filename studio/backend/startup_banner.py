@@ -3,13 +3,25 @@
 
 """Terminal banner for Studio startup.
 
-Stdlib only — safe to import without the rest of the backend.
+Stdlib only -- safe to import without the rest of the backend.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+
+
+def _safe_print(text: str) -> None:
+    """Print text without crashing on terminals that cannot encode Unicode."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        try:
+            print(text.encode(encoding, errors = "replace").decode(encoding))
+        except LookupError:
+            print(text.encode("ascii", errors = "replace").decode("ascii"))
 
 
 def stdout_supports_color() -> bool:
@@ -28,9 +40,9 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
     """Message when the requested port is taken and another is chosen."""
     msg = f"Port {original_port} is in use, using port {new_port} instead."
     if stdout_supports_color():
-        print(f"\033[38;5;245m{msg}\033[0m")
+        _safe_print(f"\033[38;5;245m{msg}\033[0m")
     else:
-        print(msg)
+        _safe_print(msg)
 
 
 def print_studio_stop_hint() -> None:
@@ -44,15 +56,15 @@ def print_studio_stop_hint() -> None:
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    print(
+    _safe_print(
         "\n".join(
             [
                 "",
                 style(
-                    "  To stop Unsloth Studio: press Ctrl+C in this terminal.",
+                    "  To stop Unsloth Studio: press Ctrl+C "
+                    "(Control+C, not Command+C, on macOS).",
                     stop_hint_style,
                 ),
-                style("  (On macOS this is Control+C, not Command+C.)", dim),
                 style("─" * 52, dim),
                 "",
             ]
@@ -101,7 +113,6 @@ def print_studio_access_banner(
     # Use the loopback URL only when reachable on loopback; otherwise show
     # the actual bound address.
     primary_url = loopback_url if listen_all or loopback_bind else external_url
-    tip_url = alt_local if listen_all or loopback_bind else external_url
     api_base = primary_url
 
     lines: list[str] = [
@@ -145,10 +156,6 @@ def print_studio_access_banner(
             style(f"    {api_base}/api", secondary),
             style(f"    {api_base}/api/health", secondary),
             style("─" * 52, dim),
-            style(
-                f"  Tip: if you are on this computer, open {tip_url}/ in your browser.",
-                dim,
-            ),
         ]
     )
 
@@ -157,23 +164,15 @@ def print_studio_access_banner(
             [
                 "",
                 style(
-                    "  Studio is only reachable on this machine (bound to 127.0.0.1).",
+                    "  Reachable on this machine only (bound to 127.0.0.1).",
                     secondary,
                 ),
                 style(
-                    "  To deploy and access globally:",
+                    f"  To expose it, stop and relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
                     secondary,
                 ),
                 style(
-                    "    1. press Ctrl+C to stop Studio",
-                    secondary,
-                ),
-                style(
-                    f"    2. relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
-                    secondary,
-                ),
-                style(
-                    "  Only do this on trusted networks -- it exposes the API on every interface.",
+                    "  Only on trusted networks -- anyone who reaches this machine can use Studio.",
                     secondary,
                 ),
             ]
@@ -184,13 +183,13 @@ def print_studio_access_banner(
             [
                 "",
                 style(
-                    "  To stop Unsloth Studio: press Ctrl+C in this terminal.",
+                    "  To stop Unsloth Studio: press Ctrl+C "
+                    "(Control+C, not Command+C, on macOS).",
                     stop_hint_style,
                 ),
-                style("  (On macOS this is Control+C, not Command+C.)", dim),
                 style("─" * 52, dim),
                 "",
             ]
         )
 
-    print("\n".join(lines))
+    _safe_print("\n".join(lines))

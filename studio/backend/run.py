@@ -253,12 +253,13 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     local_url_c = "\033[38;5;108;1m" if use_color else ""  # matches banner's URL color
     reset = "\033[0m" if use_color else ""
 
-    url = f"http://{display_host}:{port}"
+    url = f"http://{_url_host(display_host)}:{port}"
 
     # Private/loopback/link-local addresses aren't globally routable.
     try:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
+            _public_reachable = False
             print(
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
@@ -340,34 +341,19 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
                 flush = True,
             )
-            print(f"{dim}    Common causes:{reset}", flush = True)
             print(
-                f"{dim}      * AWS  -- the instance's Security Group doesn't "
-                f"allow inbound TCP {port}.{reset}",
+                f"{dim}    Usually a cloud firewall (AWS security group, "
+                f"GCP firewall / Azure NSG rule) or home router isn't "
+                f"allowing inbound TCP {port}.{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
-                f"for the instance's network tag.{reset}",
+                f"{dim}    No firewall change needed -- SSH local-forward "
+                f"from your own computer:{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * Azure / other clouds -- equivalent NSG / "
-                f"firewall rule missing.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}      * Home -- your router isn't port-forwarding "
-                f"{port} to this machine.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}    Workaround that needs no firewall changes -- "
-                f"SSH local-forward from your laptop:{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
+                f"{dim}        ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
                 flush = True,
             )
             print(
@@ -393,6 +379,20 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
     except Exception:
         pass
+
+
+def _display_host_for_bind(host: str) -> str:
+    return _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+
+
+def _loopback_bind_host_for(host: str) -> str:
+    return "::1" if host == "::" else "127.0.0.1"
+
+
+def _url_host(host: str) -> str:
+    return (
+        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+    )
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
@@ -431,7 +431,7 @@ def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None
     print("")
     print("🦥 Unsloth Studio is running (secure)")
     print("─" * 52)
-    _print_cloudflare_line()
+    _print_cloudflare_line(secure = True)
     print(f"  On this machine only: http://127.0.0.1:{port}/")
     print("─" * 52)
     _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
@@ -462,30 +462,108 @@ def _emit_startup_output(
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
-        _print_cloudflare_line()
+        _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(host, False, enable_tools)
     print_studio_stop_hint()
 
 
-def _print_cloudflare_line() -> None:
-    """Print the Cloudflare quick-tunnel URL for 0.0.0.0 binds, if one is up.
-
-    Reads the module-level URL set by ``run_server``. Prints nothing when the
-    tunnel is disabled or failed -- failures are silently ignored. When the public
-    reachability probe just failed (``_public_reachable is False``) but the tunnel
-    is up, reword to point the user at the Cloudflare link as the way in.
-    """
-    if not _cloudflare_url:
-        return
+def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1") -> None:
+    """Print Cloudflare tunnel state for startup banners."""
     from startup_banner import stdout_supports_color
 
     accent = "\033[38;5;150;1m"
+    warn = "\033[38;5;215;1m"
     reset = "\033[0m"
-    if _public_reachable is False:
-        line = f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}"
-    else:
-        line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
-    print(f"{accent}{line}{reset}" if stdout_supports_color() else line)
+    color = stdout_supports_color()
+
+    def _emit(text: str, style: str = "") -> None:
+        print(f"{style}{text}{reset}" if (color and style) else text)
+
+    if _cloudflare_url:
+        if _public_reachable is False:
+            _emit(f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}", accent)
+        else:
+            _emit(f"  Secure link access via Cloudflare: {_cloudflare_url}", accent)
+        if not secure:
+            if _public_reachable is True:
+                _emit(
+                    "  Cloudflare tunnel: ON. This Cloudflare URL is PUBLIC, and the "
+                    "raw port is also publicly reachable. --no-cloudflare disables "
+                    f"only the Cloudflare URL; bind {loopback_host} or close firewall "
+                    "access to keep Studio private.",
+                    warn,
+                )
+            else:
+                _emit(
+                    "  Cloudflare tunnel: ON. This is a PUBLIC internet URL: anyone "
+                    "who has it can reach this Studio. Relaunch with --no-cloudflare "
+                    f"to disable the Cloudflare URL; bind {loopback_host} or close "
+                    "firewall access to keep Studio private.",
+                    warn,
+                )
+        return
+    if _cloudflare_requested:
+        if _public_reachable is True:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. The raw port is "
+                "still reachable from the public internet (see the reachability check "
+                "above): anyone who can reach it can access this Studio.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. Studio is reachable "
+                "on your local network only (no public link).",
+                warn,
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. There is no "
+                "Cloudflare public link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
+    elif _cloudflare_flag:
+        if _public_reachable is True:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. The raw port is still "
+                "reachable from the public internet (see the reachability check above): "
+                "anyone who can reach it can access this Studio.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. Studio is reachable on your "
+                "local network only (no public link)."
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. There is no Cloudflare public "
+                "link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
+    elif not _cloudflare_flag:
+        if _public_reachable is True:
+            _emit(
+                "  Cloudflare tunnel: OFF (--no-cloudflare). The raw port is still "
+                "reachable from the public internet (see the reachability check above): "
+                "--no-cloudflare disables only the Cloudflare link, not the public bind.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                "  Cloudflare tunnel: OFF (--no-cloudflare). Studio is reachable on your "
+                "local network only. Omit --no-cloudflare to expose a public "
+                "Cloudflare HTTPS link."
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: OFF (--no-cloudflare). There is no Cloudflare "
+                "public link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -622,7 +700,7 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
-    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+    logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
@@ -712,7 +790,7 @@ _server_thread = None
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
 
-# trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
+# trycloudflare.com URL for wildcard binds (set by run_server, read by the banner);
 # None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
 _cloudflare_url = None
 
@@ -721,6 +799,9 @@ _cloudflare_url = None
 # False when it confirmed NOT reachable, None when the probe did not run or could
 # not decide (timeout, blocked, private address).
 _public_reachable = None
+
+_cloudflare_requested = False
+_cloudflare_flag = True
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -895,12 +976,12 @@ def _cloudflare_tunnel_should_start(
 ) -> bool:
     """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel
     (loopback bind), so it tunnels even api-only (headless secure API serving);
-    otherwise tunnel only a 0.0.0.0 bind, never api-only (Tauri) or Colab."""
+    otherwise tunnel wildcard binds, never api-only (Tauri) or Colab."""
     if is_colab or not cloudflare:
         return False
     if secure:
         return True
-    return host == "0.0.0.0" and not api_only
+    return host in ("0.0.0.0", "::") and not api_only
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
@@ -947,6 +1028,9 @@ def run_server(
         their own interrupt semantics; standalone callers register them after.
     """
     global _server, _server_thread, _shutdown_event
+
+    boot_started = time.perf_counter()
+    logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
 
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
@@ -999,7 +1083,14 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
+    import_started = time.perf_counter()
+
     from main import app, setup_frontend, _IS_COLAB
+
+    logger.info(
+        "Imported FastAPI app in %.1fms",
+        (time.perf_counter() - import_started) * 1000,
+    )
     from utils.paths import ensure_studio_directories
 
     # Allow local stdio MCP servers on a loopback bind (the user's own machine),
@@ -1011,6 +1102,11 @@ def run_server(
 
     # Create all standard directories on startup.
     ensure_studio_directories()
+
+    logger.info(
+        "Ensured Studio directories in %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
 
     # Auto-find a free port if the requested one is in use.
     if not _is_port_free(host, port):
@@ -1072,8 +1168,13 @@ def run_server(
             )
 
     # Resolve once; shared by the log rewrite and banner.
-    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)
+
+    logger.info(
+        "run_server pre-uvicorn setup completed in %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
 
     ready_event = Event()
     startup_failed = Event()
@@ -1083,6 +1184,10 @@ def run_server(
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
             if getattr(self, "started", False) and not self.should_exit:
+                logger.info(
+                    "Uvicorn startup hook completed in %.1fms",
+                    (time.perf_counter() - boot_started) * 1000,
+                )
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
@@ -1108,10 +1213,10 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
-    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
+    # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
-        app.state.server_url = f"http://{_direct_host}:{port}"
+        _direct_host = _display_host_for_bind(host)
+        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
     else:
         app.state.server_url = None
     app.state.secure = secure
@@ -1162,6 +1267,11 @@ def run_server(
         _shutdown_event.set()
         raise
 
+    logger.info(
+        "run_server uvicorn ready after %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
+
     _write_pid_file()
     import atexit
 
@@ -1175,11 +1285,12 @@ def run_server(
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
 
-    # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
+    # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
     # read app.state.cloudflare_url; torn down by _graceful_shutdown.
-    global _cloudflare_url
+    global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
     _cloudflare_url = None
+    _cloudflare_flag = cloudflare
     app.state.cloudflare_url = None
     _cloudflare_enabled = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
@@ -1188,6 +1299,7 @@ def run_server(
         api_only = api_only,
         is_colab = _IS_COLAB,
     )
+    _cloudflare_requested = _cloudflare_enabled
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
@@ -1210,6 +1322,43 @@ def run_server(
         )
         _graceful_shutdown(_server)
         sys.exit(1)
+
+    # Time-box a freshly-exposed web UI: if nobody changes the seeded admin
+    # password within the deadline (default 1h), shut down rather than leave an
+    # unsecured public instance running. No-op for loopback, --api-only, Colab,
+    # an already-changed password, or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0.
+    try:
+        from auth import storage as _auth_storage
+        from auth.bootstrap_timeout import (
+            arm_bootstrap_timeout,
+            bootstrap_timeout_seconds,
+            should_arm_bootstrap_timeout,
+        )
+
+        _bootstrap_timeout = bootstrap_timeout_seconds()
+        if should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = bool(frontend_path) and not api_only,
+            is_colab = _IS_COLAB,
+            requires_change = _auth_storage.requires_password_change(
+                _auth_storage.DEFAULT_ADMIN_USERNAME
+            ),
+            timeout_seconds = _bootstrap_timeout,
+        ):
+            arm_bootstrap_timeout(
+                _auth_storage,
+                _trigger_shutdown,
+                timeout_seconds = _bootstrap_timeout,
+                logger = logger,
+            )
+            logger.info(
+                "Studio will shut down in %ds unless the default admin password is changed.",
+                _bootstrap_timeout,
+            )
+    except Exception as e:  # best-effort: never block startup on the timeout
+        logger.warning("Bootstrap timeout not armed: %s", e)
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
@@ -1255,8 +1404,10 @@ def _build_arg_parser():
         "--cloudflare",
         action = argparse.BooleanOptionalAction,
         default = True,
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
-        "(default on; --no-cloudflare to disable)",
+        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
+        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
+        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
+        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
     )
     parser.add_argument(
         "--secure",

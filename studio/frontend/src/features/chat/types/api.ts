@@ -104,7 +104,9 @@ export interface GgufVariantDetail {
   filename: string;
   quant: string;
   size_bytes: number;
+  download_size_bytes?: number;
   downloaded?: boolean;
+  update_available?: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -386,6 +388,9 @@ export interface OpenAIChatCompletionsRequest {
     mode: "hybrid" | "lexical" | "dense";
     autoinject?: boolean;
     autoinject_min_score?: number;
+
+    whole_doc?: boolean;
+    context_length?: number;
   };
   auto_heal_tool_calls?: boolean;
   max_tool_calls_per_message?: number;

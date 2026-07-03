@@ -105,6 +105,7 @@ export const zhCN = {
       huggingFaceTokenDescription: "用于加载受限模型和推送产物。",
       hideToken: "隐藏 token",
       showToken: "显示 token",
+      tokenSaved: "Token 已保存",
       password: "密码",
       passwordDescription: "更改此 Studio 账号的密码。",
       passwordDialog: {
@@ -540,6 +541,9 @@ export const zhCN = {
     params: {
       title: "参数",
       description: "配置训练超参数",
+      projectName: "项目名称",
+      optional: "可选",
+      projectNameDescription: "用于训练输出文件夹名称、导出默认值和历史记录。",
       loraSettings: "LoRA 设置",
       trainingHyperparameters: "训练超参数",
       maxSteps: "最大步数",
@@ -765,6 +769,7 @@ export const zhCN = {
       loss: "Loss",
       lr: "LR",
       gradNorm: "梯度范数",
+      project: "项目",
       model: "模型",
       method: "方法",
       elapsed: "已用时间：{value}",

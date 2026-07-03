@@ -36,6 +36,7 @@ from backend.utils.wheel_utils import (
     probe_torch_wheel_env,
     url_exists,
 )
+from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -178,6 +179,41 @@ def _probe_installed_torch_version() -> str | None:
         return None
     lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
     return lines[-1] if lines else None
+
+
+# constraints.txt caps new anyio resolutions at <4.14 (#6483), but an install
+# from before the cap existed can already be stuck at 4.14+, which later
+# constrained installs won't touch since it already satisfies mcp/fastmcp.
+_ANYIO_BAD_FLOOR = (4, 14)
+
+
+def _installed_anyio_version() -> tuple[int, int] | None:
+    try:
+        from importlib.metadata import version as _pkg_version
+        raw = _pkg_version("anyio")
+    except Exception:
+        return None
+    parts = raw.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(re.sub(r"[^0-9].*", "", parts[1])) if len(parts) > 1 else 0
+    except (IndexError, ValueError):
+        return None
+    return (major, minor)
+
+
+def _repair_bad_anyio() -> None:
+    installed = _installed_anyio_version()
+    if installed is None or installed < _ANYIO_BAD_FLOOR:
+        return
+    _safe_print(_dim(f"   anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14..."))
+    pip_install(
+        "Repairing anyio version",
+        "--no-cache-dir",
+        "--force-reinstall",
+        "anyio<4.14.0",
+        constrain = False,
+    )
 
 
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
@@ -1374,25 +1410,7 @@ def _ensure_rocm_torch() -> None:
             )
 
 
-def _uv_safe_path(path: object) -> str:
-    # uv 0.11.x: `-c <path with space>` truncates at the space; use 8.3 short form.
-    s = str(path)
-    if not IS_WINDOWS or " " not in s:
-        return s
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        get_short = ctypes.windll.kernel32.GetShortPathNameW
-        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-        get_short.restype = wintypes.DWORD
-        buf = ctypes.create_unicode_buffer(32768)
-        rc = get_short(s, buf, 32768)
-        if 0 < rc < 32768 and " " not in buf.value:
-            return buf.value
-    except Exception:
-        pass
-    return s
+# _uv_safe_path is imported from backend.utils.uv_path_safety (shared with mlx_repair).
 
 
 def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -1481,9 +1499,10 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
+# _uv_safe_path: uv truncates UV_OVERRIDE at the first space too (issue #6503).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
-if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
-    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
+    os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the console encoding may be a legacy code page (e.g. CP1252)
@@ -1986,7 +2005,7 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    base_total = 10 if IS_WINDOWS else 11
+    base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -2299,6 +2318,10 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "studio.txt",
     )
+
+    # 8b. anyio repair (#6483)
+    _progress("anyio check")
+    _repair_bad_anyio()
 
     # 9. Data-designer dependencies
     _progress("data designer deps")

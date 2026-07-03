@@ -46,13 +46,55 @@ from utils.subprocess_compat import (
 logger = get_logger(__name__)
 
 
+_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
 def _env_offline() -> bool:
-    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+    """True if an HF offline env var is truthy (canonical strip+lower parse); gates the urllib fetches below."""
+    return (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    )
+
+
+def hf_endpoint_unreachable(timeout: int = 3) -> bool:
+    """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
+    joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
+    unreachable. urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
+    (the proxy can reach HF), not just that the proxy is up. No ML imports, so it is safe to
+    call before transformers version activation. Mirrors the probe in export._hf_offline."""
+    import ssl
+    import threading
+    import urllib.error
+    import urllib.request
+
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    if "://" not in endpoint:
+        endpoint = "https://" + endpoint
+
+    result = {"online": False}
+
+    def _probe():
+        try:
+            req = urllib.request.Request(endpoint, method = "HEAD")
+            with urllib.request.urlopen(req, timeout = timeout):
+                result["online"] = True
+        except urllib.error.HTTPError as exc:
+            # The server/proxy answered: reachable unless it is a gateway error.
+            result["online"] = exc.code not in (502, 503, 504)
+        except urllib.error.URLError as exc:
+            # A TLS/cert failure means we DID reach the server; treat as reachable so the real
+            # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
+            result["online"] = isinstance(exc.reason, ssl.SSLError)
+        except ssl.SSLError:
+            result["online"] = True
+        except Exception:
+            result["online"] = False
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout + 1)
+    return t.is_alive() or not result["online"]
 
 
 def _safe_is_file(p: Path) -> bool:
@@ -151,6 +193,8 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 
 # Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
 # gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
+# Offline negatives are NOT written (see the _env_offline branches) so they cannot poison a
+# later online read in this persistent worker.
 _tokenizer_class_cache: dict[tuple[str, str | None], bool] = {}
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
@@ -181,6 +225,11 @@ _VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
 _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
+
+# llm-compressor-main shadow for FP8/FP4 export of newer-transformers models. Like the .venv_t5_*
+# sidecars but also shadows llm-compressor main + compressed-tensors; installed --no-deps so it
+# reuses the workspace torch (torch-agnostic).
+_VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 
 # Tier precedence: higher rank wins in _higher_tier.
 _TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3}
@@ -525,9 +574,9 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     if _safe_is_dir(local_path):
         return False
 
-    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
+    # Offline: skip the 10s urllib fetch (fail-open to lower tier). Do NOT cache this
+    # assumed negative, so a later online read of the same id re-fetches the real value.
     if _env_offline():
-        _tokenizer_class_cache[cache_key] = False
         return False
 
     # --- Fall back to fetching from HuggingFace ----------------------------
@@ -633,9 +682,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return None
 
     if _env_offline():
-        # No network: a previously downloaded repo can still tier from the hub cache.
+        # No network: a previously downloaded repo can still tier from the hub cache. Cache a
+        # real hit, but never the miss (None) so a later online read still fetches the config.
         cfg = _config_json_from_hf_cache(model_name)
-        _config_json_cache[cache_key] = cfg
+        if cfg is not None:
+            _config_json_cache[cache_key] = cfg
         return cfg
 
     import urllib.error
@@ -1470,6 +1521,152 @@ def _ensure_venv_t5_510_exists() -> bool:
 def _ensure_venv_t5_exists() -> bool:
     """Backwards-compat: ensure the Gemma 4 5.5 sidecar venv exists."""
     return _ensure_venv_t5_550_exists()
+
+
+# --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------
+# Exact, reproducible pins (bump deliberately in review). Full 40-char SHA validated to FP8-quantize
+# Qwen3.5 / Gemma-4 / Llama.
+_LLMC_MAIN_TRANSFORMERS = "5.10.2"
+_LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
+_LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
+# Installed --no-deps (torch untouched); the full runtime set llm-compressor main needs, pinned.
+_VENV_LLMCOMPRESSOR_SPECS = (
+    f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
+    f"llmcompressor @ git+https://github.com/vllm-project/llm-compressor@{_LLMC_MAIN_SHA}",
+    f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
+    "huggingface-hub==1.21.0",
+    "hf-xet==1.5.1",
+    "tokenizers==0.22.2",
+    "safetensors==0.8.0",
+    "accelerate==1.14.0",
+    "datasets==5.0.0",
+    "pydantic==2.13.4",
+    "pydantic-core==2.46.4",
+    "typing-inspection==0.4.2",
+    "loguru==0.7.3",
+    "pyyaml==6.0.3",
+    "nvidia-ml-py==13.610.43",
+    "pillow==12.3.0",
+    "auto-round==0.13.1",
+    "regex==2026.6.28",
+)
+# Fingerprint of the pin set; bump the trailing schema version to force a rebuild on layout changes.
+_LLMC_SHADOW_FINGERPRINT = (
+    f"{_LLMC_MAIN_SHA}|{_LLMC_MAIN_TRANSFORMERS}|{_LLMC_MAIN_COMPRESSED_TENSORS}|schema=1"
+)
+_LLMC_SHADOW_MARKER = ".unsloth_llmc_fingerprint"
+
+
+def _llmcompressor_main_disabled() -> bool:
+    """True if the operator forbids the llm-compressor-main shadow (air-gapped / locked-down)."""
+    return os.environ.get("UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _llmcompressor_shadow_is_valid() -> bool:
+    """True if the shadow dir exists with a marker matching the current pin fingerprint."""
+    marker = Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER
+    try:
+        return marker.is_file() and marker.read_text().strip() == _LLMC_SHADOW_FINGERPRINT
+    except Exception:
+        return False
+
+
+def _ensure_venv_llmcompressor_exists() -> bool:
+    """Ensure .venv_llmcompressor/ has the pinned llm-compressor-main stack. Install if missing.
+
+    All specs are installed with --no-deps into a --target dir (mirrors the transformers sidecars),
+    so the workspace torch is never touched. Returns True on success.
+    """
+    if _llmcompressor_shadow_is_valid():
+        return True
+    if _llmcompressor_main_disabled():
+        logger.warning(
+            "llm-compressor-main shadow needed but UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN is set; "
+            "compressed export of newer-transformers models will fail fast."
+        )
+        return False
+    if _env_offline():
+        logger.warning(
+            "llm-compressor-main shadow missing and HF/offline mode is set; cannot provision it."
+        )
+        return False
+
+    logger.warning(
+        "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
+        _VENV_LLMCOMPRESSOR_DIR,
+    )
+    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
+    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
+
+    # Prefer uv (faster) then pip; install every spec at once, --no-deps, prereleases allowed
+    # (compressed-tensors ships as a pre-release).
+    base = [
+        "--target",
+        _VENV_LLMCOMPRESSOR_DIR,
+        "--no-deps",
+        "--prerelease=allow",
+        *_VENV_LLMCOMPRESSOR_SPECS,
+    ]
+    cmds = []
+    if shutil.which("uv"):
+        cmds.append(["uv", "pip", "install", "--python", sys.executable, *base])
+    cmds.append(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            *[a for a in base if a != "--prerelease=allow"],
+            "--pre",
+        ]
+    )
+
+    last_out = ""
+    for cmd in cmds:
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        last_out = result.stdout or ""
+        if result.returncode == 0:
+            try:
+                (Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER).write_text(
+                    _LLMC_SHADOW_FINGERPRINT
+                )
+            except Exception:
+                pass
+            logger.info("Provisioned llm-compressor-main shadow at %s", _VENV_LLMCOMPRESSOR_DIR)
+            return True
+        logger.warning("llm-compressor-main shadow install failed with %s; trying next", cmd[0])
+
+    logger.error(
+        "Failed to provision llm-compressor-main shadow (spec: llmcompressor@%s). Output:\n%s",
+        _LLMC_MAIN_SHA,
+        last_out[-4000:],
+    )
+    return False
+
+
+def llmcompressor_shadow_pythonpath() -> str | None:
+    """Provision (lazily) the llm-compressor-main shadow and return its sys.path entry, or None.
+
+    Returns None when the shadow is disabled (UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN), offline, or
+    provisioning failed - callers then fall back to the fail-fast path.
+    """
+    if _llmcompressor_main_disabled():
+        return None
+    if _ensure_venv_llmcompressor_exists():
+        return _VENV_LLMCOMPRESSOR_DIR
+    return None
 
 
 def _activate_venv(venv_dir: str, label: str) -> None:
