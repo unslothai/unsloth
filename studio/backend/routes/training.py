@@ -1143,7 +1143,12 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
 
     repo = (base_model or "").strip()
     # Only remote 'org/name' repos are gated; skip local paths and single-file names.
-    if not repo or repo.count("/") != 1 or repo.startswith((".", "/", "~")) or repo.endswith(".gguf"):
+    if (
+        not repo
+        or repo.count("/") != 1
+        or repo.startswith((".", "/", "~"))
+        or repo.endswith(".gguf")
+    ):
         return
     url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
@@ -1494,7 +1499,6 @@ def _image_record(
     width = height = 0
     try:
         from PIL import Image
-
         with Image.open(image_path) as im:
             width, height = im.size
     except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
@@ -1509,9 +1513,7 @@ def _image_record(
     )
 
 
-@router.get(
-    "/diffusion/dataset/{name}/images", response_model = DiffusionDatasetImagesResponse
-)
+@router.get("/diffusion/dataset/{name}/images", response_model = DiffusionDatasetImagesResponse)
 async def list_diffusion_dataset_images(
     name: str, current_subject: str = Depends(get_current_subject)
 ):
@@ -1525,9 +1527,7 @@ async def list_diffusion_dataset_images(
         for p in sorted(folder.iterdir()):
             if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
                 records.append(_image_record(folder, p, meta))
-        return DiffusionDatasetImagesResponse(
-            name = folder.name, path = str(folder), images = records
-        )
+        return DiffusionDatasetImagesResponse(name = folder.name, path = str(folder), images = records)
 
     return await asyncio.to_thread(scan)
 
@@ -1614,7 +1614,9 @@ async def set_diffusion_dataset_caption(
 
 @router.delete("/diffusion/dataset/{name}/image/{filename}")
 async def delete_diffusion_dataset_image(
-    name: str, filename: str, current_subject: str = Depends(get_current_subject)
+    name: str,
+    filename: str,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Remove an image, its caption sidecars, and any cached thumbnails."""
     folder = _resolve_dataset_folder(name)
@@ -1728,9 +1730,7 @@ def _example_by_id(example_id: str) -> dict:
 
 
 @router.get("/diffusion/dataset-examples", response_model = DiffusionDatasetExamplesResponse)
-async def list_diffusion_dataset_examples(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_diffusion_dataset_examples(current_subject: str = Depends(get_current_subject)):
     """List the curated example datasets available for one-click import."""
     return DiffusionDatasetExamplesResponse(
         examples = [
@@ -1820,8 +1820,19 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
         snapshot_download(
             entry["repo"],
             repo_type = "dataset",
-            allow_patterns = ["*.jsonl", "*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp", "**/*.jpg",
-                              "**/*.jpeg", "**/*.png", "**/*.webp", "**/*.bmp"],
+            allow_patterns = [
+                "*.jsonl",
+                "*.jpg",
+                "*.jpeg",
+                "*.png",
+                "*.webp",
+                "*.bmp",
+                "**/*.jpg",
+                "**/*.jpeg",
+                "**/*.png",
+                "**/*.webp",
+                "**/*.bmp",
+            ],
         )
     )
     # Map basename -> caption from every jsonl carrying file_name + caption column.
@@ -1840,7 +1851,8 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
                 captions[Path(str(fn)).name] = str(row[caption_col])
     # Copy images (those with a caption first, so a cap keeps captioned pairs).
     images = sorted(
-        p for p in snap.rglob("*")
+        p
+        for p in snap.rglob("*")
         if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
     )
     images.sort(key = lambda p: (p.name not in captions, p.name))
@@ -1857,12 +1869,9 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     return written
 
 
-@router.post(
-    "/diffusion/dataset/import-example", response_model = DiffusionDatasetImportResponse
-)
+@router.post("/diffusion/dataset/import-example", response_model = DiffusionDatasetImportResponse)
 async def import_diffusion_dataset_example(
-    body: DiffusionDatasetImportRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: DiffusionDatasetImportRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Materialize a curated example dataset into a Studio dataset folder (images + .txt
     captions), ready to train. Idempotent: a folder that already holds images is returned
