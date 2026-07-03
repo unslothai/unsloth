@@ -1941,6 +1941,23 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
+def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
+    """Sentence-transformers detection from the local HF cache, no network call.
+
+    True if a cached snapshot carries the ``modules.json`` marker (the same
+    signal ``is_embedding_model`` uses for local paths), False if the repo is
+    cached but no snapshot has it, None when the repo is not in the cache."""
+    cached = False
+    for snap in _iter_hf_cache_snapshots(repo_id):
+        cached = True
+        try:
+            if (snap / "modules.json").is_file():
+                return True
+        except OSError:
+            continue
+    return False if cached else None
+
+
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Detect embedding/sentence-transformer models via HF metadata.
 
@@ -1965,6 +1982,23 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
+
+    # Prefer the local HF cache: a sentence-transformers repo carries
+    # modules.json in its snapshot, so an already-downloaded model needs no
+    # network call. This also lets an offline / HF_HUB_OFFLINE session classify a
+    # cached model instead of hanging on a model_info() request that fails with a
+    # DNS error and only ever gets retried (#6817).
+    cache_hit = _embedding_marker_in_hf_cache(model_name)
+    if cache_hit is True:
+        _embedding_detection_cache[cache_key] = True
+        logger.info(f"Model {model_name} detected as embedding model via HF cache (modules.json)")
+        return True
+    if _env_offline():
+        # Offline: the cache is the only source; anything not positively a
+        # sentence-transformers model is treated as non-embedding rather than
+        # making a network call that cannot succeed.
+        _embedding_detection_cache[cache_key] = False
+        return False
 
     try:
         from huggingface_hub import model_info as hf_model_info
