@@ -88,15 +88,15 @@ def _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig):
             ordered_names.pop(load_best_idx)
             dataset_idx = ordered_names.index("dataset_text_field")
             ordered_names.insert(dataset_idx + 1, "load_best_model_at_end")
-            MLXTrainingConfig.__dataclass_fields__ = {
-                name: fields[name] for name in ordered_names
-            }
+            MLXTrainingConfig.__dataclass_fields__ = {name: fields[name] for name in ordered_names}
 
     # Newer MLX trainer paths use a dedicated dataset accessor for batch planning.
     # Older trainers and local test doubles only expose train_dataset.
     if not hasattr(MLXTrainer, "_train_dataset_for_batches"):
+
         def _train_dataset_for_batches(self):
             return getattr(self, "train_dataset", None)
+
         MLXTrainer._train_dataset_for_batches = _train_dataset_for_batches
 
     return MLXTrainer, MLXTrainingConfig
@@ -130,9 +130,7 @@ if _IS_MLX:
             "`unsloth_zoo.mlx.trainer` and `unsloth_zoo.mlx.loader`. Upgrade with "
             "`pip install -U unsloth-zoo` or rerun install.sh."
         ) from _e
-    MLXTrainer, MLXTrainingConfig = _apply_mlx_trainer_compat(
-        MLXTrainer, MLXTrainingConfig
-    )
+    MLXTrainer, MLXTrainingConfig = _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig)
 
     import dataclasses as _dataclasses
     import importlib.machinery as _machinery

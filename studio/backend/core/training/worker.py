@@ -1371,13 +1371,13 @@ def _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig):
             ordered_names.pop(load_best_idx)
             dataset_idx = ordered_names.index("dataset_text_field")
             ordered_names.insert(dataset_idx + 1, "load_best_model_at_end")
-            MLXTrainingConfig.__dataclass_fields__ = {
-                name: fields[name] for name in ordered_names
-            }
+            MLXTrainingConfig.__dataclass_fields__ = {name: fields[name] for name in ordered_names}
 
     if not hasattr(MLXTrainer, "_train_dataset_for_batches"):
+
         def _train_dataset_for_batches(self):
             return getattr(self, "train_dataset", None)
+
         MLXTrainer._train_dataset_for_batches = _train_dataset_for_batches
 
     return MLXTrainer, MLXTrainingConfig
@@ -1445,9 +1445,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "(unsloth_zoo.mlx.loader / unsloth_zoo.mlx.trainer). Reinstall via "
             "install.sh on Apple Silicon."
         ) from e
-    MLXTrainer, MLXTrainingConfig = _apply_mlx_trainer_compat(
-        MLXTrainer, MLXTrainingConfig
-    )
+    MLXTrainer, MLXTrainingConfig = _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig)
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     if mx.metal.is_available():
