@@ -1,4 +1,0 @@
-- Decision: GPU default stays PyTorch/diffusers; benchmark showed PyTorch GGUF 0.82s vs sd.cpp `--diffusion-fa` 6.96s at 1024px (~8.5x faster).
-- File noted: `scripts/compare_engines.py` reproduces benchmark; not committed in span.
-- Command `tail -30 ...compare_engines_*.log` showed run progress; background run completed exit 0.
-- COMPLETED: GPU comparison. PENDING: optional commit and CPU comparison.

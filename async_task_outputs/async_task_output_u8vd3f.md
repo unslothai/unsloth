@@ -1,9 +1,0 @@
-- Decision: `use_fast_accum=True` treated as precision tradeoff, not overflow risk, because FP8 GEMM still uses FP32 accumulator and torchao dynamic scaling bounds FP8 inputs before cast.
-- Decision: Z-Image singled out as strongest overflow test because it is `fp16_incompatible` with activations around `~9e5`.
-- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/fp8_overflow_check.py`: probe hooks all quantized linears during real Z-Image generation and reports max abs/nonfinite/image finite for `fast_accum=True/False`.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/temp/phase8_pr_body.md`: added overflow verification artifact/results.
-- Ran `CUDA_VISIBLE_DEVICES=4 python3 -u scripts/fp8_overflow_check.py`; first attempt exit `1` due Dynamo hook compile error.
-- Resolved by editing probe to run eager/lower workload; rerun exit `0`: `fast_accum=True hooked_linears=276 max|linear_out|=1007616.0 nonfinite_elems=0 image_all_finite=True`; same for `fast_accum=False`.
-- Commit attempted, push initially rejected due remote advancing; verified local `3a3c9abdd` vs remote `bdb8eb918`, ahead/behind `1 1`.
-- Ran `git rebase origin/diffusion-phase8-quant -X theirs` then `git push origin diffusion-phase8-quant`; pushed `bdb8eb918..e966a6d7e`, verified ahead/behind `0 0`.
-- Completed: PR `#6694` updated, branch `diffusion-phase8-quant` remote contains `scripts/fp8_overflow_check.py`, PR mergeable.

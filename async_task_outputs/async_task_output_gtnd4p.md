@@ -1,1 +1,0 @@
-• Asked GGUF backend: PyTorch vs cpp
