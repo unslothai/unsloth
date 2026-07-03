@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { LayoutAlignRightIcon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import {
@@ -205,10 +205,6 @@ export function DiffusionTrainPanel({
   const [outputDir, setOutputDir] = useState("");
   const [instancePrompt, setInstancePrompt] = useState("");
 
-  // The right-docked Advanced settings panel (mirrors the Create tab's / Chat's settings
-  // panel). Open by default -- on a training tab the hyperparameters are primary content,
-  // like the LLM Train page's right rail; the fixed top-right button hides it.
-  const [advancedOpen, setAdvancedOpen] = useState(true);
   const [steps, setSteps] = useState(500);
   const [learningRate, setLearningRate] = useState(family?.defaults.lr ?? 0.0001);
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
@@ -651,12 +647,12 @@ export function DiffusionTrainPanel({
     return "fp8 (experimental)";
   };
 
-  // The Advanced training settings, rendered inside the right-docked panel (mirrors the
-  // Create tab's advancedControls). Numeric hyperparameters, the sdxl/DiT precision control,
-  // and the DiT speed levers (base precision + torch.compile).
-  const advancedControls = (
-    <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-3">
+  // The training settings, shown as the run area's MAIN content before a run starts
+  // (settings are set once, up front); once training starts the run view (progress +
+  // charts) replaces them. Laid out as a wide grid for the center column.
+  const trainingSettings = (
+    <div className="flex flex-col gap-5">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-3">
         {numberField("Steps", steps, setSteps, 1)}
         {numberField("LoRA rank", rank, setRank, 1)}
         {numberField("Resolution", resolution, setResolution, 512, { min: 64, step: 64 })}
@@ -664,111 +660,117 @@ export function DiffusionTrainPanel({
         {numberField("Grad accumulation", gradAccum, setGradAccum, 1)}
         {numberField("Seed", seed, setSeed, 42, { min: 0 })}
       </div>
-      {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
-        min: 0,
-        step: 0.00001,
-      })}
 
-      <div className="grid gap-1.5">
-        <Label className="text-xs">LR schedule</Label>
-        <select
-          value={lrScheduler}
-          onChange={(e) => setLrScheduler(e.target.value as typeof lrScheduler)}
-          className={selectClass}
-          aria-label="LR schedule"
-        >
-          <option value="constant">Constant</option>
-          <option value="constant_with_warmup">Constant + warmup</option>
-          <option value="cosine">Cosine decay</option>
-          <option value="linear">Linear decay</option>
-        </select>
-        {lrScheduler !== "constant" &&
-          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, { min: 0 })}
-        <p className="text-[11px] leading-snug text-muted-foreground">
-          How the learning rate evolves over the run (shown live in the LR chart).
-        </p>
-      </div>
-
-      <div className="grid gap-1.5">
-        <Label className="text-xs">Gradient checkpointing</Label>
-        <select
-          value={gradCheckpoint ? "on" : "off"}
-          onChange={(e) => setGradCheckpoint(e.target.value === "on")}
-          className={selectClass}
-          aria-label="Gradient checkpointing"
-        >
-          <option value="on">On (less VRAM)</option>
-          <option value="off">Off (faster steps)</option>
-        </select>
-        <p className="text-[11px] leading-snug text-muted-foreground">
-          Recomputes activations in the backward pass: a large VRAM saving for a modest
-          per-step slowdown.
-        </p>
-      </div>
-
-      {isDiT ? (
-        <>
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Base precision</Label>
-            <select
-              value={basePrecision}
-              onChange={(e) => {
-                precisionDirty.current = true;
-                setBasePrecision(e.target.value as typeof basePrecision);
-              }}
-              className={selectClass}
-              aria-label="Base precision"
-            >
-              {precisionModes.map((m) => (
-                <option key={m} value={m}>
-                  {precisionLabel(m)}
-                </option>
-              ))}
-            </select>
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
-              bf16 is fastest but needs the most. Auto picks this family&apos;s recommended mode.
-            </p>
-          </div>
-          {supportsCompile && (
-            <div className="grid gap-1.5">
-              <Label className="text-xs">Compile transformer</Label>
-              <select
-                value={compileTransformer}
-                onChange={(e) =>
-                  setCompileTransformer(e.target.value as typeof compileTransformer)
-                }
-                className={selectClass}
-                aria-label="Compile transformer"
-              >
-                <option value="auto">Auto</option>
-                <option value="on">On (faster after warmup)</option>
-                <option value="off">Off</option>
-              </select>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                torch.compile the transformer. Adds a one-time warmup, then speeds up each step.
-              </p>
-            </div>
-          )}
-        </>
-      ) : (
+      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-4 lg:grid-cols-3">
+        {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
+          min: 0,
+          step: 0.00001,
+        })}
         <div className="grid gap-1.5">
-          <Label className="text-xs">Precision</Label>
+          <Label className="text-xs">LR schedule</Label>
           <select
-            value={precision}
-            onChange={(e) => setPrecision(e.target.value as "bf16" | "fp16" | "no")}
+            value={lrScheduler}
+            onChange={(e) => setLrScheduler(e.target.value as typeof lrScheduler)}
             className={selectClass}
-            aria-label="Precision"
+            aria-label="LR schedule"
           >
-            <option value="bf16">bf16 (default)</option>
-            <option value="fp16">fp16 (older GPUs)</option>
-            <option value="no">fp32 (no mixed)</option>
+            <option value="constant">Constant</option>
+            <option value="constant_with_warmup">Constant + warmup</option>
+            <option value="cosine">Cosine decay</option>
+            <option value="linear">Linear decay</option>
           </select>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            Mixed-precision autocast for the U-Net. bf16 suits modern GPUs.
+            How the learning rate evolves over the run (shown live in the LR chart).
           </p>
         </div>
-      )}
+        {lrScheduler !== "constant" &&
+          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, { min: 0 })}
+      </div>
+
+      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-4 lg:grid-cols-3">
+        <div className="grid gap-1.5">
+          <Label className="text-xs">Gradient checkpointing</Label>
+          <select
+            value={gradCheckpoint ? "on" : "off"}
+            onChange={(e) => setGradCheckpoint(e.target.value === "on")}
+            className={selectClass}
+            aria-label="Gradient checkpointing"
+          >
+            <option value="on">On (less VRAM)</option>
+            <option value="off">Off (faster steps)</option>
+          </select>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            Recomputes activations in the backward pass: a large VRAM saving for a modest
+            per-step slowdown.
+          </p>
+        </div>
+
+        {isDiT ? (
+          <>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Base precision</Label>
+              <select
+                value={basePrecision}
+                onChange={(e) => {
+                  precisionDirty.current = true;
+                  setBasePrecision(e.target.value as typeof basePrecision);
+                }}
+                className={selectClass}
+                aria-label="Base precision"
+              >
+                {precisionModes.map((m) => (
+                  <option key={m} value={m}>
+                    {precisionLabel(m)}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
+                bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
+                mode.
+              </p>
+            </div>
+            {supportsCompile && (
+              <div className="grid gap-1.5">
+                <Label className="text-xs">Compile transformer</Label>
+                <select
+                  value={compileTransformer}
+                  onChange={(e) =>
+                    setCompileTransformer(e.target.value as typeof compileTransformer)
+                  }
+                  className={selectClass}
+                  aria-label="Compile transformer"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="on">On (faster after warmup)</option>
+                  <option value="off">Off</option>
+                </select>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  torch.compile the transformer. Adds a one-time warmup, then speeds up each
+                  step.
+                </p>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Precision</Label>
+            <select
+              value={precision}
+              onChange={(e) => setPrecision(e.target.value as "bf16" | "fp16" | "no")}
+              className={selectClass}
+              aria-label="Precision"
+            >
+              <option value="bf16">bf16 (default)</option>
+              <option value="fp16">fp16 (older GPUs)</option>
+              <option value="no">fp32 (no mixed)</option>
+            </select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Mixed-precision autocast for the U-Net. bf16 suits modern GPUs.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -978,18 +980,6 @@ export function DiffusionTrainPanel({
           />
         </div>
 
-        {/* Training settings now live in the right-docked Advanced panel (opened by the
-            top-right toggle), so the left rail stays focused on the dataset + trigger. */}
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen(true)}
-          className="w-fit text-left text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-        >
-          {advancedOpen
-            ? "Training settings are in the Advanced panel."
-            : "Adjust steps, rank, precision and speed in Advanced settings."}
-        </button>
-
         <div className="mt-auto pt-2">
           {running ? (
             <Button
@@ -1014,99 +1004,77 @@ export function DiffusionTrainPanel({
         </div>
       </div>
 
-      {/* Right: run view. The progress card + charts are ALWAYS mounted; before a run they
-          render grayed as a preview (with an overlaid hint), so the layout never jumps when
-          training starts. A single fixed top-right button toggles the Advanced panel. */}
+      {/* Right: the run area. Before a run it shows the training settings (they are set
+          once, up front); the moment a run exists the settings give way to the run view
+          (progress + live charts), and come back after "Train another". */}
       <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
-        {/* Fixed Advanced toggle (mirrors Chat's / the Create tab's settings toggle: same icon
-            in both states so it never moves, highlighted when open). */}
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((o) => !o)}
-            aria-label={advancedOpen ? "Hide advanced settings" : "Show advanced settings"}
-            aria-pressed={advancedOpen}
-            title="Advanced settings"
-            className={cn(
-              "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              advancedOpen
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
-          >
-            <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-          </button>
-        </div>
-
-        <div
-          className={cn(
-            "relative flex flex-col gap-4",
-            !hasRun && "pointer-events-none select-none opacity-45 grayscale",
-          )}
-          aria-hidden={!hasRun}
-        >
-          <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
+        {!hasRun ? (
+          <div className="bg-card corner-squircle flex flex-col gap-4 rounded-3xl p-5 ring-1 ring-foreground/10">
             <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold capitalize">
-                {hasRun ? status?.status : "Idle"}
+              <span className="flex items-center gap-1.5 text-sm font-semibold">
+                <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+                Training settings
               </span>
               <span className="text-xs text-muted-foreground">
-                {hasRun && (status?.total_steps ?? 0) > 0
-                  ? `${status?.step}/${status?.total_steps} steps`
-                  : ""}
+                Applied when you press Start training
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-border">
-              <div
-                className="h-full bg-primary transition-all"
-                style={{ width: `${hasRun ? pct : 0}%` }}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Stat
-                label="Loss"
-                value={hasRun && status?.loss != null ? status.loss.toFixed(4) : "-"}
-              />
-              <Stat
-                label="Avg loss"
-                value={hasRun && status?.avg_loss != null ? status.avg_loss.toFixed(4) : "-"}
-              />
-              <Stat
-                label="Speed"
-                value={
-                  hasRun && status?.samples_per_second != null
-                    ? `${status.samples_per_second.toFixed(2)} img/s`
-                    : "-"
-                }
-              />
-              <Stat
-                label="Peak VRAM"
-                value={
-                  hasRun && status?.peak_memory_gb != null
-                    ? `${status.peak_memory_gb.toFixed(1)} GB`
-                    : "-"
-                }
-              />
-            </div>
-            {hasRun && status?.message && (
-              <p className="text-[11px] text-muted-foreground">{status.message}</p>
-            )}
+            {trainingSettings}
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Once training starts, live progress and the Training Loss / Learning Rate
+              charts take over this area.
+            </p>
           </div>
-
-          <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
-        </div>
-
-        {/* Placeholder hint overlaid on the grayed preview until a run exists. */}
-        {!hasRun && (
-          <div className="pointer-events-none absolute inset-0 top-[34px] flex items-center justify-center">
-            <div className="max-w-sm rounded-2xl bg-background/70 px-5 py-4 text-center backdrop-blur-[1px]">
-              <p className="text-sm font-medium">No training run yet</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Pick a family and dataset on the left, then Start training. Progress and the loss
-                chart fill in here live.
-              </p>
+        ) : (
+          <>
+            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold capitalize">{status?.status}</span>
+                <span className="text-xs text-muted-foreground">
+                  {(status?.total_steps ?? 0) > 0
+                    ? `${status?.step}/${status?.total_steps} steps`
+                    : ""}
+                </span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-border">
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Stat
+                  label="Loss"
+                  value={status?.loss != null ? status.loss.toFixed(4) : "-"}
+                />
+                <Stat
+                  label="Avg loss"
+                  value={status?.avg_loss != null ? status.avg_loss.toFixed(4) : "-"}
+                />
+                <Stat
+                  label="Speed"
+                  value={
+                    status?.samples_per_second != null
+                      ? `${status.samples_per_second.toFixed(2)} img/s`
+                      : "-"
+                  }
+                />
+                <Stat
+                  label="Peak VRAM"
+                  value={
+                    status?.peak_memory_gb != null
+                      ? `${status.peak_memory_gb.toFixed(1)} GB`
+                      : "-"
+                  }
+                />
+              </div>
+              {status?.message && (
+                <p className="text-[11px] text-muted-foreground">{status.message}</p>
+              )}
             </div>
-          </div>
+
+            <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
+          </>
         )}
 
         {(completed || stoppedWithAdapter) && (
@@ -1139,34 +1107,6 @@ export function DiffusionTrainPanel({
           </div>
         )}
       </div>
-
-      {/* Right-docked Advanced settings panel (mirrors the Create tab / Chat settings panel):
-          closed by default, opened by the top-right toggle above. Holds every training
-          hyperparameter and the DiT speed levers so the left rail stays focused on data. */}
-      {advancedOpen && (
-        <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
-          <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-border/60 px-4">
-            <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-              <HugeiconsIcon icon={Settings02Icon} className="size-4" />
-              Advanced
-            </span>
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen(false)}
-              aria-label="Hide advanced settings"
-              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-            </button>
-          </div>
-          <div className="flex flex-col gap-4 overflow-y-auto p-4">
-            <p className="text-xs text-muted-foreground">
-              Defaults suit a first run. Changes apply to the next Start training.
-            </p>
-            {advancedControls}
-          </div>
-        </div>
-      )}
 
       {/* Confirm-stop dialog (mirrors the LLM Train tab): Continue / Stop / Stop and save. */}
       <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>

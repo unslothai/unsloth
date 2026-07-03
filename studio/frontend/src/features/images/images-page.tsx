@@ -1956,21 +1956,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           shared element matches. The load progress shows in a chat-style toast,
           not here. ── */}
       <div className="flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
-        <ModelSelector
-          models={MODELS}
-          value={status?.loaded ? status.repo_id ?? undefined : undefined}
-          activeGgufVariant={quant}
-          onValueChange={handleModelSelect}
-          onEject={status?.loaded ? handleUnload : undefined}
-          variant="ghost"
-          className="!h-[34px]"
-          task={IMAGE_GEN_TASKS}
-          open={active && selectorOpen}
-          onOpenChange={(o) => setSelectorOpen(active && o)}
-        />
         <div className="flex items-center gap-2">
-          {/* Create | Train page-mode switch, next to the model selector. Create is the
-              generation workspace; Train is the full-page LoRA training workspace. */}
+          <ModelSelector
+            models={MODELS}
+            value={status?.loaded ? status.repo_id ?? undefined : undefined}
+            activeGgufVariant={quant}
+            onValueChange={handleModelSelect}
+            onEject={status?.loaded ? handleUnload : undefined}
+            variant="ghost"
+            className="!h-[34px]"
+            task={IMAGE_GEN_TASKS}
+            open={active && selectorOpen}
+            onOpenChange={(o) => setSelectorOpen(active && o)}
+          />
+          {/* Create | Train page-mode switch, on the left next to the model selector
+              (the selector itself stays leftmost: its position is shared with Chat's).
+              Create is the generation workspace; Train is the LoRA training workspace. */}
           <Tabs value={pageMode} onValueChange={(v) => setPageMode(v as "create" | "train")}>
             <TabsList className="h-[34px]">
               <TabsTrigger value="create" className="w-[64px]">
@@ -1981,6 +1982,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               </TabsTrigger>
             </TabsList>
           </Tabs>
+        </div>
+        <div className="flex items-center gap-2">
           {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
               toggle, same icon in both states so it never moves). Highlighted when open.
               Only meaningful in Create mode (load-time tuning), so hidden while training. */}
