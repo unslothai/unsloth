@@ -172,12 +172,16 @@ parse_connect() {
 # (env-var rename, wire_api flip, attribution setting drop) also fail/flag.
 crosscheck_contract() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
-  local cfg
+  local cfg home
   case "$AGENT" in
     codex)
       grep -q 'UNSLOTH_STUDIO_AUTH_TOKEN' "$raw" \
         || guide_fail "Codex env key is no longer UNSLOTH_STUDIO_AUTH_TOKEN (start.py _CODEX_ENV_KEY)"
-      cfg="$(raw_env CODEX_HOME)/config.toml"
+      home="$(raw_env CODEX_HOME)"
+      # An empty relocation var would make cfg "/config.toml" and silently
+      # skip the [ -f ] contract check below; fail loudly instead.
+      [ -n "$home" ] || guide_fail "CODEX_HOME missing from connect output (start.py codex())"
+      cfg="$home/config.toml"
       if [ -f "$cfg" ]; then
         grep -q 'wire_api = "responses"' "$cfg" \
           || guide_fail "Codex wire_api is no longer \"responses\" in \$CODEX_HOME/config.toml"
@@ -195,7 +199,9 @@ crosscheck_contract() {
     hermes)
       grep -q 'UNSLOTH_API_KEY' "$raw" \
         || guide_fail "Hermes env key is no longer UNSLOTH_API_KEY (start.py _HERMES_ENV_KEY)"
-      cfg="$(raw_env HERMES_HOME)/config.yaml"
+      home="$(raw_env HERMES_HOME)"
+      [ -n "$home" ] || guide_fail "HERMES_HOME missing from connect output (start.py hermes())"
+      cfg="$home/config.yaml"
       [ -f "$cfg" ] && cp "$cfg" "$REDACTED_DIR/hermes-config.yaml"
       ;;
     openclaw)
@@ -240,8 +246,12 @@ crosscheck_contract() {
 # that `unsloth start` printed, not the user's ~/.hermes.
 # (-z reads platform_toolsets.cli; --ignore-rules is a no-op under -z.)
 patch_hermes_tools() {  # $1 = none|default
-  local cfg; cfg="$(raw_env HERMES_HOME)/config.yaml"
-  [ -n "$cfg" ] || guide_fail "Hermes HERMES_HOME missing from connect output (start.py hermes())"
+  # Check the raw var BEFORE appending /config.yaml: the joined path is never
+  # empty, so the old guard could not fire and the patcher would die on
+  # "/config.yaml" with a bare traceback instead of this clear failure.
+  local home; home="$(raw_env HERMES_HOME)"
+  [ -n "$home" ] || guide_fail "Hermes HERMES_HOME missing from connect output (start.py hermes())"
+  local cfg; cfg="$home/config.yaml"
   # Find a python that can import yaml. The runner's bare python3 cannot, but the
   # interpreter in the `unsloth` console-script shebang provably can (it runs
   # start.py's write_hermes_config, which imports yaml). Try that first, then
