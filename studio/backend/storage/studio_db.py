@@ -23,12 +23,14 @@ from typing import Any, Iterable, Optional
 
 
 from utils.paths import (
-    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
     ensure_dir,
     project_workspaces_root,
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path
+from utils.paths.sensitive import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
+)
 from utils.training_runs import extract_project_name
 
 
