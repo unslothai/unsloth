@@ -5705,7 +5705,7 @@ async def openai_chat_completions(
     # free-form sampling. Guided decoding does not require ``supports_tools`` --
     # the grammar machinery is independent of tool-call parsing.
     _has_response_format = _extract_response_format(payload) is not None
-    _tools_passthrough = llama_backend.supports_tools and (
+    _tools_passthrough = llama_backend.supports_tool_passthrough and (
         (payload.tools and len(payload.tools) > 0) or _has_tool_messages
     )
     if (
@@ -9564,7 +9564,9 @@ async def anthropic_messages(
         and not _has_image
     )
     client_tools = (
-        not server_tools and len(openai_client_tools) > 0 and llama_backend.supports_tools
+        not server_tools
+        and len(openai_client_tools) > 0
+        and llama_backend.supports_tool_passthrough
     )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a

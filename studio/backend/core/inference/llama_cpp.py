@@ -1687,6 +1687,15 @@ class LlamaCppBackend:
         return self._supports_tools
 
     @property
+    def supports_tool_passthrough(self) -> bool:
+        # Client-side tool loops (the caller declares tools, executes them, and
+        # sends results back) only need the response healer to promote the model's
+        # text-form <|tool_call> blocks into structured tool_calls -- they never run
+        # the agentic loop, so DiffusionGemma's per-step canvas frames survive.
+        # So this stays on for diffusion even though supports_tools (agentic) is off.
+        return self._supports_tools
+
+    @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
 
