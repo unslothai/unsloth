@@ -502,7 +502,12 @@ def _key_accepted(base: str, key: str) -> bool:
         )
 
 
-def _agent_api_key(base: str, explicit: Optional[str], *, auto_started: bool = False) -> str:
+def _agent_api_key(
+    base: str,
+    explicit: Optional[str],
+    *,
+    auto_started: bool = False,
+) -> str:
     cache = _key_cache_path()
     if explicit:
         if not auto_started or _key_accepted(base, explicit):
