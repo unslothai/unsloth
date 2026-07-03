@@ -2307,9 +2307,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_passthrough_stream_unstarted_cleanup_closes_completed_send_response(
-        self, monkeypatch
-    ):
+    def test_passthrough_stream_unstarted_cleanup_closes_completed_send_response(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
 
