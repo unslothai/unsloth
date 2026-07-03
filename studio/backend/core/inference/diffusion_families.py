@@ -141,6 +141,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
         aliases = ("flux1", "flux-1"),
+        # LoRA training targets the guidance-distilled FLUX.1-dev via the DiT trainer
+        # (QLoRA nf4). The dev repo is gated on the Hub, so a user HF token is required.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/FLUX.1-dev",),
         img2img_pipeline_class = "FluxImg2ImgPipeline",
         inpaint_pipeline_class = "FluxInpaintPipeline",
         controlnet_pipeline_class = "FluxControlNetPipeline",
@@ -238,6 +242,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        # LoRA training via the DiT trainer, defaulting to the prequant nf4 repo (QLoRA).
+        trainable = True,
+        train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
@@ -262,6 +269,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         aliases = ("zimage", "z_image"),
+        # LoRA training via the DiT trainer (bf16 only). Defaults to the prequant nf4 repo
+        # for QLoRA; the bf16 Tongyi-MAI base is the alternative.
+        trainable = True,
+        train_base_repos = ("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"),
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
@@ -308,7 +319,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 def trainable_family_names() -> tuple[str, ...]:
     """Names of families Studio can train a LoRA on, in registry order."""
     return tuple(fam.name for fam in _FAMILIES if fam.trainable)
-
 
 # Editing / inpaint checkpoints share an arch keyword but need a different
 # pipeline and an input image, which this text-to-image backend doesn't drive.

@@ -484,15 +484,8 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
 def test_apply_event_records_metric_history_and_perf():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
-        {
-            "type": "progress",
-            "step": 1,
-            "total_steps": 10,
-            "loss": 0.5,
-            "learning_rate": 1e-4,
-            "samples_per_second": 3.2,
-            "peak_memory_gb": 7.1,
-        }
+        {"type": "progress", "step": 1, "total_steps": 10, "loss": 0.5,
+         "learning_rate": 1e-4, "samples_per_second": 3.2, "peak_memory_gb": 7.1}
     )
     svc._apply_event(
         {"type": "progress", "step": 2, "total_steps": 10, "loss": 0.4, "learning_rate": 9e-5}
@@ -538,14 +531,8 @@ def test_metric_history_decimates_at_cap():
 def test_complete_event_records_family_and_catalog():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
-        {
-            "type": "complete",
-            "output_dir": "/o",
-            "lora_path": "/o/w.safetensors",
-            "catalog_path": "/loras/w.safetensors",
-            "family": "sdxl",
-            "base_model": "b",
-        }
+        {"type": "complete", "output_dir": "/o", "lora_path": "/o/w.safetensors",
+         "catalog_path": "/loras/w.safetensors", "family": "sdxl", "base_model": "b"}
     )
     st = svc.status()
     assert st["status"] == "completed"
@@ -557,12 +544,8 @@ def test_complete_event_records_family_and_catalog():
 def test_status_route_nests_metric_history(client):
     # The status route folds the service's flat arrays into a nested metric_history object.
     client._fake.status_extra = {
-        "metric_steps": [1, 2],
-        "metric_loss": [0.5, 0.4],
-        "metric_lr": [1e-4, 9e-5],
-        "family": "sdxl",
-        "samples_per_second": 2.0,
-        "peak_memory_gb": 6.0,
+        "metric_steps": [1, 2], "metric_loss": [0.5, 0.4], "metric_lr": [1e-4, 9e-5],
+        "family": "sdxl", "samples_per_second": 2.0, "peak_memory_gb": 6.0,
     }
     r = client.get("/api/train/diffusion/status")
     assert r.status_code == 200, r.text
@@ -571,3 +554,55 @@ def test_status_route_nests_metric_history(client):
     assert body["metric_history"]["loss"] == [0.5, 0.4]
     assert body["family"] == "sdxl"
     assert body["samples_per_second"] == 2.0
+
+
+# ── /diffusion/info families + gated-repo preflight (PR B) ──────────────────────
+def test_info_lists_trainable_families(client):
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    families = {f["name"]: f for f in r.json()["families"]}
+    for fam in ("sdxl", "flux.1", "qwen-image", "z-image"):
+        assert fam in families
+    assert families["flux.1"]["default_base"] == "black-forest-labs/FLUX.1-dev"
+    assert families["z-image"]["defaults"]["resolution"] == 768
+
+
+def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatch):
+    # A gated FLUX base with no valid token must 400 from the HEAD preflight BEFORE the GPU
+    # residents are freed, so a doomed start never evicts the user's loaded model.
+    import urllib.error
+    import urllib.request
+
+    import routes.training as tr
+
+    freed: list[int] = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+
+    def _fake_urlopen(req, timeout = None):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+    )
+    assert r.status_code == 400
+    assert "gated" in r.json()["detail"].lower()
+    assert freed == []
+    assert client._fake.started_with is None
+
+
+def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
+    # A reachable base (HEAD 200) proceeds to start normally.
+    import urllib.request
+
+    import routes.training as tr
+
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+    )
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["base_model"] == "black-forest-labs/FLUX.1-dev"

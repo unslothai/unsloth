@@ -25,6 +25,7 @@ Design:
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import random
 import time
@@ -226,7 +227,7 @@ def run_diffusion_lora_training(
         cast_training_params(unet, dtype = torch.float32)
 
     lora_params = [p for p in unet.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(lora_params, lr = cfg.learning_rate)
+    optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
     # The scheduler advances once per optimizer update: lr_sched.step() runs a single
     # time per outer opt_step (after the accumulation inner loop), for cfg.train_steps
     # total. Count warmup/decay in those optimizer steps -- multiplying by the
@@ -240,6 +241,24 @@ def run_diffusion_lora_training(
 
     vae_scale = vae.config.scaling_factor
     prediction_type = noise_scheduler.config.prediction_type
+
+    # Precompute text embeddings once per unique caption, then free the CLIP text encoders.
+    # SDXL re-encoded captions every step (pure waste: captions are constant) and kept both
+    # text encoders (~1.5 GB) resident. Embeddings are deterministic and this consumes no
+    # torch RNG, so the training math is bit-identical to in-loop encoding -- only faster and
+    # lighter. The env toggle exists purely so the accuracy guard can A/B the two paths.
+    precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
+    caption_embeds: dict[str, tuple] = {}
+    if precompute:
+        for cap in sorted({c for _, c in pairs}):
+            pe, pooled_c = _encode_sdxl_prompts([cap], tokenizers, text_encoders, device)
+            caption_embeds[cap] = (pe.cpu(), pooled_c.cpu())
+        for te in text_encoders:
+            te.to("cpu")
+        text_encoders = []
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     _emit(on_event, "model_load_completed")
 
@@ -281,9 +300,13 @@ def run_diffusion_lora_training(
             ).long()
             noisy = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            prompt_embeds, pooled = _encode_sdxl_prompts(
-                captions, tokenizers, text_encoders, device
-            )
+            if precompute:
+                prompt_embeds = torch.cat([caption_embeds[c][0] for c in captions]).to(device)
+                pooled = torch.cat([caption_embeds[c][1] for c in captions]).to(device)
+            else:
+                prompt_embeds, pooled = _encode_sdxl_prompts(
+                    captions, tokenizers, text_encoders, device
+                )
             prompt_embeds = prompt_embeds.to(dtype = weight_dtype)
             pooled = pooled.to(dtype = weight_dtype)
             added = {"text_embeds": pooled, "time_ids": batch_time_ids}
@@ -379,6 +402,21 @@ def run_diffusion_lora_training(
         steps_run = done if cfg.train_steps else 0,
     )
     return str(out_dir)
+
+
+def _make_lora_optimizer(params: list, lr: float) -> Any:
+    """8-bit AdamW (bitsandbytes) by default -- half the optimizer state, no meaningful
+    quality cost for LoRA -- falling back to fp32 AdamW when unavailable or when
+    UNSLOTH_DIFFUSION_FP32_OPTIM is set (used by the accuracy guard)."""
+    import torch
+
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") not in ("1", "true"):
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit(params, lr = lr)
+        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
+            pass
+    return torch.optim.AdamW(params, lr = lr)
 
 
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
