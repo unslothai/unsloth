@@ -6717,6 +6717,7 @@ async def openai_chat_completions(
                         "content": _strip_tool_xml_for_display(
                             _msg["content"],
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                            enabled_tool_names = _sf_display_tool_names,
                         ).strip(),
                     }
                 )
@@ -9717,10 +9718,16 @@ async def anthropic_messages(
 
         # Strip stale tool-call XML via the protected display helper (not raw
         # _TOOL_XML_RE.sub) so <think> rehearsal and nested [TOOL_CALLS] prose survive.
+        # Gate on the enabled tool names, like the live Anthropic strips, so a prior
+        # assistant turn documenting an inactive ``foo[ARGS]{...}`` example is preserved
+        # in the replayed prompt history instead of deleted.
+        _anthropic_history_gate = _display_tool_name_gate(openai_tools)
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
                 _msg["content"] = _strip_tool_xml_for_display(
-                    _msg["content"], auto_heal_tool_calls = True
+                    _msg["content"],
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _anthropic_history_gate,
                 ).strip()
 
         def _run_tool_gen():
@@ -10477,8 +10484,14 @@ async def _anthropic_passthrough_non_streaming(
     text = message.get("content") or ""
     if text:
         # Protected helper (not raw _TOOL_XML_RE.sub): preserves <think> rehearsal
-        # and balanced [TOOL_CALLS] trailing prose.
-        text = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip()
+        # and balanced [TOOL_CALLS] trailing prose. Gate on the declared tools, like
+        # the live Anthropic paths, so an inactive ``NAME[ARGS]{...}`` example in the
+        # final text is kept instead of stripped.
+        text = _strip_tool_xml_for_display(
+            text,
+            auto_heal_tool_calls = True,
+            enabled_tool_names = _display_tool_name_gate(openai_tools),
+        ).strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 

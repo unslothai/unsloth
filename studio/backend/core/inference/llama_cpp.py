@@ -8582,7 +8582,7 @@ class LlamaCppBackend:
                                         # rehearsal NAME whose [ARGS] has not arrived) so
                                         # it is not streamed before the call drains;
                                         # released by later prose or the end-of-stream flush.
-                                        _hold = _held_rehearsal_tail_len(cleaned, active_tools)
+                                        _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
                                         _emit = (
                                             cleaned[: len(cleaned) - _hold] if _hold else cleaned
                                         )
@@ -8638,7 +8638,7 @@ class LlamaCppBackend:
                                         if (
                                             not is_match
                                             and not is_prefix
-                                            and _is_rehearsal_prefix(stripped_buf, active_tools)
+                                            and _is_rehearsal_prefix(stripped_buf, _detect_tools)
                                         ):
                                             is_prefix = True
                                             is_rehearsal_prefix = True
@@ -8680,7 +8680,7 @@ class LlamaCppBackend:
                                             # Same trailing-name hold as STREAMING: this
                                             # first flush out of BUFFERING must not emit a
                                             # bare name whose [ARGS] arrives next chunk.
-                                            _hold = _held_rehearsal_tail_len(cleaned, active_tools)
+                                            _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
                                             _emit = (
                                                 cleaned[: len(cleaned) - _hold]
                                                 if _hold

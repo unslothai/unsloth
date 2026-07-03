@@ -2111,3 +2111,19 @@ def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools(
     original = active_only + [{"type": "function", "function": {"name": "render_html"}}]
     assert not _gguf_has_genuine_tool_signal(repeat, TOOL_XML_SIGNALS, active_only)
     assert _gguf_has_genuine_tool_signal(repeat, TOOL_XML_SIGNALS, original)
+
+
+def test_gguf_rehearsal_prefix_and_tail_hold_recognise_spent_one_shot():
+    # The GGUF BUFFERING prefix check (~8641) and the STREAMING/flush tail-holds
+    # (~8585, ~8683) must use the ORIGINAL tool list (_detect_tools), so a spent
+    # one-shot's split repeat (bare ``render_html`` then ``[ARGS]{...}``) is held, not
+    # flushed as visible assistant text. With only the post-removal active tools the
+    # bare name is not recognised and leaks.
+    from core.inference.llama_cpp import _held_rehearsal_tail_len, _is_rehearsal_prefix
+
+    active_only = [{"type": "function", "function": {"name": "web_search"}}]
+    original = active_only + [{"type": "function", "function": {"name": "render_html"}}]
+    assert not _is_rehearsal_prefix("render_html", active_only)
+    assert _is_rehearsal_prefix("render_html", original)
+    assert _held_rehearsal_tail_len("answer render_html", active_only) == 0
+    assert _held_rehearsal_tail_len("answer render_html", original) == len("render_html")

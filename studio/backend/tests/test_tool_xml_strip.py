@@ -612,3 +612,22 @@ def test_gguf_history_sanitizer_forwards_enabled_tool_names_gate():
     assert "enabled_tool_names" in block.group(
         0
     ), "GGUF history sanitizer must pass enabled_tool_names to _strip_tool_xml_for_display"
+
+
+def test_route_history_and_passthrough_forward_the_display_gate():
+    # The safetensors and Anthropic assistant-history sanitisers and the Anthropic
+    # non-stream passthrough must forward an enabled-tool-name gate to
+    # _strip_tool_xml_for_display, like the GGUF history sanitiser and the live strips,
+    # so an inactive NAME[ARGS]{...} example is preserved in the replayed prompt / final
+    # text instead of deleted.
+    blocks = {
+        "safetensors history": r"Strip stale tool-call XML from prior assistant turns.*?\.strip\(\)",
+        "anthropic history": r"Strip stale tool-call XML via the protected display helper.*?\.strip\(\)",
+        "anthropic passthrough": r"Gate on the declared tools, like.*?\.strip\(\)",
+    }
+    for label, pat in blocks.items():
+        m = _re.search(pat, _src, _re.DOTALL)
+        assert m, f"could not locate {label} strip block"
+        assert "enabled_tool_names" in m.group(
+            0
+        ), f"{label} must forward enabled_tool_names to _strip_tool_xml_for_display"
