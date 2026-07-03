@@ -8199,6 +8199,12 @@ class LlamaCppBackend:
         # guard. Built from the ORIGINAL tools list so a spent one-shot tool still reads
         # as a tool name, not prose. ``None`` = no gate.
         _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+        # Rehearsal DETECTION must recognise the same names the strip gate does -- the
+        # ORIGINAL tool list, including a spent one-shot (render_html) that
+        # ``active_tools()`` drops after it runs. Otherwise its repeat ``render_html
+        # [ARGS]{...}`` is stripped from display yet never detected/drained, so it is not
+        # routed to the repeat nudge and the turn ends as a blank continuation.
+        _detect_tools = list(tools or [])
 
         def _reasoning_summary_event(started_at: float) -> dict:
             return {
@@ -8615,7 +8621,7 @@ class LlamaCppBackend:
                                                 # loop, not drained/parsed.
                                                 if (
                                                     _gguf_rehearsal_signal_pos(
-                                                        stripped_buf, active_tools
+                                                        stripped_buf, _detect_tools
                                                     )
                                                     >= 0
                                                 ):
@@ -8697,7 +8703,7 @@ class LlamaCppBackend:
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
                     if stripped_buf and _gguf_has_genuine_tool_signal(
-                        stripped_buf, _tool_xml_signals, active_tools
+                        stripped_buf, _tool_xml_signals, _detect_tools
                     ):
                         detect_state = _S_DRAINING
                     elif content_accum or reasoning_accum:
@@ -8735,7 +8741,7 @@ class LlamaCppBackend:
                     # before the tool XML.
                     _safety_tc = None
                     if _gguf_has_genuine_tool_signal(
-                        content_accum, _tool_xml_signals, active_tools
+                        content_accum, _tool_xml_signals, _detect_tools
                     ):
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
@@ -8866,7 +8872,7 @@ class LlamaCppBackend:
                             if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
                         ] or None
                     if not tool_calls and _gguf_has_genuine_tool_signal(
-                        content_accum, _tool_xml_signals, active_tools
+                        content_accum, _tool_xml_signals, _detect_tools
                     ):
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,

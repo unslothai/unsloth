@@ -790,6 +790,56 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
+    # After a one-shot tool (render_html) has run it is dropped from active_tools but
+    # kept in the ORIGINAL tool list. If the model re-emits ``render_html[ARGS]{...}``
+    # while another tool is still active, detection must still fire (gated on the
+    # original tools, matching the strip gate) so the repeat is drained and routed to
+    # the render_html_repeat no-op -- not stripped to a blank continuation. Previously
+    # detection used the post-removal active_tools, so the repeat was gated out,
+    # stripped from display, and the turn ended blank.
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+    turns = iter(
+        [
+            [
+                '<tool_call>{"name":"render_html","arguments":{"code":"<html>one</html>"}}</tool_call>'
+            ],
+            ['render_html[ARGS]{"code":"<html>two</html>"}'],  # spent one-shot rehearsal
+            ["The chart is above."],
+        ]
+    )
+
+    def gen(_messages, *, active_tools = None):
+        try:
+            chunks = next(turns)
+        except StopIteration:
+            return
+        acc = ""
+        for c in chunks:
+            acc += c
+            yield acc
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = gen,
+            messages = [{"role": "user", "content": "make a chart"}],
+            tools = [
+                {"type": "function", "function": {"name": "render_html"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            execute_tool = exec_fn,
+            max_tool_iterations = 5,
+        )
+    )
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    # render_html ran exactly once; the repeat was a no-op, not a second execution.
+    assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})], exec_fn.calls
+    # The loop continued past the repeat to the real answer (not a blank continuation).
+    assert any("The chart is above." in t for t in contents), contents
+    # The raw rehearsal markup never leaked as visible content.
+    assert not any("render_html[ARGS]" in t for t in contents), contents
+
+
 def test_rehearsal_call_name_is_not_streamed_before_args():
     # A rehearsal ``name[ARGS]{json}`` whose name and [ARGS] arrive together must
     # drain (mirroring the GGUF [ARGS] substring special-case) instead of streaming

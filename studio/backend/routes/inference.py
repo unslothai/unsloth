@@ -5987,9 +5987,14 @@ async def openai_chat_completions(
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                    # Gate on the enabled tool names, like the live-response strip, so a
+                    # prior assistant turn that documented an inactive ``foo[ARGS]{...}``
+                    # shape is preserved in the prompt context instead of being deleted
+                    # (the loop now treats it as prose, not a call).
                     _msg["content"] = _strip_tool_xml_for_display(
                         _msg["content"],
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                        enabled_tool_names = _gguf_display_tool_names,
                     ).strip()
 
             def gguf_generate_with_tools():

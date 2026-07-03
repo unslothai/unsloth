@@ -411,6 +411,12 @@ def run_safetensors_tool_loop(
     # ``None`` in unrestricted mode keeps the any-name behaviour. Built from the ORIGINAL
     # tools list so a spent one-shot tool still reads as a tool name, not prose.
     _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    # Rehearsal DETECTION must recognise the same names the strip gate does -- the
+    # ORIGINAL tool list, including a spent one-shot (render_html) that
+    # ``active_tools()`` drops after it runs. Otherwise its repeat ``render_html[ARGS]
+    # {...}`` is stripped from display yet never detected/drained, so it is not routed
+    # to the repeat nudge and the turn ends as a blank continuation.
+    _detect_tools = [] if unrestricted_tools else list(tools or [])
     tool_controller = ToolLoopController(
         tools = None if unrestricted_tools else tools,
         auto_heal_tool_calls = auto_heal_tool_calls,
@@ -528,7 +534,7 @@ def run_safetensors_tool_loop(
                 # Earliest genuine boundary: a bare ``[ARGS]`` in prose is skipped, and a
                 # real ``NAME[ARGS]`` is pulled back to NAME so the name is not flushed.
                 signal_pos = _earliest_tool_signal(
-                    candidate, tool_xml_signals, active_tools, unrestricted = unrestricted_tools
+                    candidate, tool_xml_signals, _detect_tools, unrestricted = unrestricted_tools
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
@@ -574,7 +580,7 @@ def run_safetensors_tool_loop(
                 # released once more prose follows, or by the end-of-stream flush.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
-                        cleaned, active_tools, unrestricted = unrestricted_tools
+                        cleaned, _detect_tools, unrestricted = unrestricted_tools
                     )
                     emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
                 else:
@@ -609,7 +615,7 @@ def run_safetensors_tool_loop(
                         _earliest_tool_signal(
                             stripped,
                             ("[ARGS]",),
-                            active_tools,
+                            _detect_tools,
                             unrestricted = unrestricted_tools,
                         )
                         >= 0
@@ -627,7 +633,7 @@ def run_safetensors_tool_loop(
                 not is_match
                 and not is_prefix
                 and tool_protocol_active
-                and _is_rehearsal_prefix(stripped, active_tools, unrestricted = unrestricted_tools)
+                and _is_rehearsal_prefix(stripped, _detect_tools, unrestricted = unrestricted_tools)
             ):
                 is_prefix = True
                 is_rehearsal_prefix = True
@@ -681,7 +687,7 @@ def run_safetensors_tool_loop(
                 # must not emit a bare name whose ``[ARGS]`` arrives next chunk.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
-                        cleaned, active_tools, unrestricted = unrestricted_tools
+                        cleaned, _detect_tools, unrestricted = unrestricted_tools
                     )
                     emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
                 else:
@@ -704,7 +710,7 @@ def run_safetensors_tool_loop(
                 and _has_genuine_tool_signal(
                     stripped,
                     tool_xml_signals,
-                    active_tools,
+                    _detect_tools,
                     unrestricted = unrestricted_tools,
                 )
             ):
@@ -731,7 +737,7 @@ def run_safetensors_tool_loop(
             saw_tool_signal = tool_protocol_active and _has_genuine_tool_signal(
                 content_accum,
                 tool_xml_signals,
-                active_tools,
+                _detect_tools,
                 unrestricted = unrestricted_tools,
             )
             if saw_tool_signal:

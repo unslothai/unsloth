@@ -579,3 +579,36 @@ def test_core_strip_gates_bare_rehearsal_on_enabled_tools():
     )
     assert _strip(text, final = True).strip() == "is just syntax."
     assert _strip(text, final = True, enabled_tool_names = None).strip() == "is just syntax."
+
+
+def test_route_display_strip_gate_preserves_inactive_history_rehearsal():
+    # The GGUF assistant-history sanitiser passes the enabled-tool-name gate, so a
+    # prior turn that documented an INACTIVE ``foo[ARGS]{...}`` shape survives in the
+    # replayed prompt context (the loop treats it as prose). Without the gate every
+    # ``NAME[ARGS]{...}`` is stripped, corrupting the history.
+    gate = _display_tool_name_gate([{"function": {"name": "web_search"}}])
+    text = 'To call it write foo[ARGS]{"x":1} in your reply.'
+    assert 'foo[ARGS]{"x":1}' in _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = gate
+    )
+    # An ACTIVE name is still stripped as a real rehearsed call.
+    assert "web_search[ARGS]" not in _strip_tool_xml_for_display(
+        'Result web_search[ARGS]{"q":"x"} done', auto_heal_tool_calls = True, enabled_tool_names = gate
+    )
+    # No gate (legacy) strips every NAME[ARGS]{...}.
+    assert "foo[ARGS]" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
+def test_gguf_history_sanitizer_forwards_enabled_tool_names_gate():
+    # Guard the wiring: the GGUF assistant-history strip must forward the display gate
+    # (like the live-response strip), else a documented inactive rehearsal is deleted
+    # from the replayed prompt context.
+    block = _re.search(
+        r"Strip stale tool-call XML from conversation history.*?\.strip\(\)",
+        _src,
+        _re.DOTALL,
+    )
+    assert block, "could not locate GGUF history sanitizer block"
+    assert "enabled_tool_names" in block.group(
+        0
+    ), "GGUF history sanitizer must pass enabled_tool_names to _strip_tool_xml_for_display"

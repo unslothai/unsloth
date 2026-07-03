@@ -2095,3 +2095,19 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
     # The inactive rehearsal is preserved as prose; the active one is stripped.
     assert any('foo[ARGS]{"a":1}' in t for t in content_texts), content_texts
     assert all("web_search[ARGS]" not in t for t in content_texts), content_texts
+
+
+def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools():
+    # The GGUF loop feeds rehearsal detection the ORIGINAL tool list (_detect_tools),
+    # so a spent one-shot (render_html, dropped from active_tools after it runs) is
+    # still detected when the model re-emits ``render_html[ARGS]{...}`` -- matching the
+    # strip gate. With only the post-removal active tools the repeat is missed and
+    # stripped to a blank continuation.
+    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+
+    repeat = 'render_html[ARGS]{"code":"<html>x</html>"}'
+    active_only = [{"type": "function", "function": {"name": "web_search"}}]
+    original = active_only + [{"type": "function", "function": {"name": "render_html"}}]
+    assert not _gguf_has_genuine_tool_signal(repeat, TOOL_XML_SIGNALS, active_only)
+    assert _gguf_has_genuine_tool_signal(repeat, TOOL_XML_SIGNALS, original)
