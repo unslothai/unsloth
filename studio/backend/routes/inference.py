@@ -784,6 +784,7 @@ def _set_stream_response_read_timeout(
 
 
 _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
+_OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 
 
 class _CompatSameTaskTimeout:
@@ -10890,41 +10891,73 @@ async def _openai_passthrough_stream(
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
+    client = None
+    resp = None
+    send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
+
+    async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            task_resp = await task
+            if task_resp is not None:
+                try:
+                    await task_resp.aclose()
+                except Exception:
+                    pass
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
-        # Dispatch BEFORE returning StreamingResponse so transport errors and
-        # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
-        # rely on status codes to raise APIError/BadRequestError.
+        # Keep the pre-header window short so accepted SSE clients receive
+        # immediate headers in the common timeout-reduced stall.
         client = httpx.AsyncClient(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
         )
-        resp = None
         _truncate_budget = (
             _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
         )
+
         while True:
             try:
                 req = client.build_request(
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                resp = await _send_stream_with_preheader_cancel(
-                    client, req, cancel_event, request = request
+                send_task = asyncio.create_task(
+                    _send_stream_with_preheader_cancel(client, req, cancel_event, request = request)
                 )
+                done, _ = await asyncio.wait(
+                    {send_task},
+                    timeout = _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S,
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
+                if send_task not in done:
+                    break
+
+                # Dispatch returned quickly enough to preserve pre-header status.
+                resp = await send_task
+                send_task = None
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                await _aclose_send_task(send_task)
                 await _aclose_stream_resources(resp = resp, client = client)
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
                 )
+            if resp is None and send_task is not None and not send_task.done():
+                break
             if resp is None:
                 api_monitor.finish(monitor_id, "cancelled")
+                await _aclose_send_task(send_task)
                 try:
                     await client.aclose()
                 except Exception:
@@ -10969,6 +11002,8 @@ async def _openai_passthrough_stream(
             api_monitor.fail(monitor_id, err_text[:500])
             raise _openai_passthrough_error(upstream_status, err_text)
 
+        # Keep tracker cleanup paired if pre-header dispatch is cancelled after we
+        # have already committed headers.
         async def _stream():
             # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
             # save resp.aiter_lines() so the finally block can aclose() it on
@@ -10976,10 +11011,10 @@ async def _openai_passthrough_stream(
             lines_iter = None
             # Watchers unblock aiter_lines() during prefill, before in-loop
             # cancel/disconnect checks can run.
-            cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
-            disconnect_watcher = asyncio.create_task(
-                _await_disconnect_then_close(request, resp, cancel_event)
-            )
+            cancel_watcher = None
+            disconnect_watcher = None
+
+            nonlocal resp, send_task, first_token_deadline, _truncate_budget
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -11112,6 +11147,79 @@ async def _openai_passthrough_stream(
                 return lines
 
             try:
+                while True:
+                    if send_task is not None and not send_task.done():
+                        try:
+                            resp = await send_task
+                        except httpx.RequestError as e:
+                            logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                            api_monitor.fail(monitor_id, _friendly_error(e))
+                            yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
+                            return
+                        send_task = None
+                    elif send_task is not None:
+                        try:
+                            resp = send_task.result()
+                        except httpx.RequestError as e:
+                            logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                            api_monitor.fail(monitor_id, _friendly_error(e))
+                            yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
+                            return
+                        send_task = None
+
+                    if resp is None:
+                        api_monitor.finish(monitor_id, "cancelled")
+                        return
+                    if resp.status_code == 200:
+                        break
+
+                    err_bytes = await resp.aread()
+                    err_text = err_bytes.decode("utf-8", errors = "replace")
+                    logger.error(
+                        "openai passthrough upstream error: status=%s body=%s",
+                        resp.status_code,
+                        err_text[:500],
+                    )
+                    upstream_status = resp.status_code
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = None
+                    if (
+                        _truncate_budget > 0
+                        and _classify_llama_generation_error(Exception(err_text))
+                        and _apply_overflow_truncation(body, err_text)
+                    ):
+                        _truncate_budget -= 1
+                        req = client.build_request(
+                            "POST", target_url, json = body, headers = {"Connection": "close"}
+                        )
+                        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                        send_task = asyncio.create_task(
+                            _send_stream_with_preheader_cancel(
+                                client, req, cancel_event, request = request
+                            )
+                        )
+                        continue
+
+                    upstream_error = _openai_passthrough_error(upstream_status, err_text)
+                    error_payload = (
+                        upstream_error.detail
+                        if isinstance(upstream_error.detail, dict)
+                        else openai_error_body(
+                            str(upstream_error.detail),
+                            status = upstream_status,
+                        )
+                    )
+                    api_monitor.fail(monitor_id, err_text[:500])
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    return
+
+                cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_close(request, resp, cancel_event)
+                )
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
                     lines_iter,
@@ -11298,6 +11406,7 @@ async def _openai_passthrough_stream(
                 err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
+                await _aclose_send_task(send_task)
                 await _aclose_stream_resources(
                     watchers = (cancel_watcher, disconnect_watcher),
                     iterator = lines_iter,
@@ -11311,6 +11420,7 @@ async def _openai_passthrough_stream(
             # finally never ran. Release the eagerly-opened upstream resp/client
             # and the cancel-registry entry here; the watchers and line iterator
             # are created inside _stream(), so there is nothing else to close.
+            await _aclose_send_task(send_task)
             await _aclose_stream_resources(resp = resp, client = client)
             _tracker.__exit__(None, None, None)
 
@@ -11325,6 +11435,8 @@ async def _openai_passthrough_stream(
             unstarted_cleanup = _unstarted_cleanup,
         )
     except BaseException:
+        await _aclose_send_task(send_task)
+        await _aclose_stream_resources(resp = resp, client = client)
         _tracker.__exit__(None, None, None)
         raise
 

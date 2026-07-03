@@ -1856,6 +1856,553 @@ class TestApiMonitorProviderAndCompletionStreams:
         chunks = [chunk async for chunk in response.body_iterator]
         return SimpleNamespace(chunks = chunks, body = "".join(chunks), monitor = monitor)
 
+    def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                return httpx.Response(200, content = b"")
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            assert "data: [DONE]\n\n" in "".join(chunks)
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_non_200_in_window(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(400, content = b'{"error":"bad"}')
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+            with pytest.raises(HTTPException) as exc:
+                await _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                )
+            assert exc.value.status_code == 400
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_request_error_in_window(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_send(*_args, **_kwargs):
+                raise httpx.ConnectError("connectivity issue")
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+            with pytest.raises(HTTPException) as exc:
+                await _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                )
+            assert exc.value.status_code == 502
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_delayed_non_200_returns_sse_error(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                return httpx.Response(400, content = b'{"error":"bad"}')
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            body = "".join(chunks)
+            assert "data:" in body
+            assert '"error"' in body
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "bad" in entry["error"]
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_delayed_context_error_keeps_error_envelope(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+            ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                return httpx.Response(400, content = ctx_msg.encode("utf-8"))
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 2048,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            body = "".join(chunks)
+            payload = json.loads(body.removeprefix("data: ").strip())
+            assert payload["error"]["code"] == "context_length_exceeded"
+            assert payload["error"]["param"] == "messages"
+            assert isinstance(payload["error"], dict)
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_delayed_context_error_retries_truncation(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+            calls = []
+            err_body = json.dumps(
+                {
+                    "error": {
+                        "message": "request (10000 tokens) exceeds the available context size (2048 tokens)",
+                        "n_prompt_tokens": 10000,
+                        "n_ctx": 2048,
+                    }
+                }
+            ).encode("utf-8")
+
+            async def fake_send(_client, req, *_args, **_kwargs):
+                calls.append(json.loads(req.content.decode("utf-8")))
+                if len(calls) == 1:
+                    await gate.wait()
+                    return httpx.Response(400, content = err_body)
+                return httpx.Response(200, content = b"")
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            messages = [
+                ChatMessage(role = "system", content = "system"),
+                *[
+                    ChatMessage(role = "user", content = f"turn {idx} " + ("x" * 1000))
+                    for idx in range(8)
+                ],
+            ]
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = messages,
+                stream = True,
+                context_overflow = "truncate_middle",
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 2048,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            assert "data: [DONE]\n\n" in "".join(chunks)
+            assert len(calls) == 2
+            assert len(calls[1]["messages"]) < len(calls[0]["messages"])
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_delayed_request_error_cleans_up(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+            cancel_id = "delayed-request-error-cancel"
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                raise httpx.ConnectError("delayed connectivity issue")
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
+
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            body = "".join(chunks)
+            assert "data:" in body
+            assert '"error"' in body
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "Lost connection" in entry["error"]
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_cancel_cleans_pending_send(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            entered = asyncio.Event()
+            cancelled = asyncio.Event()
+            cancel_id = "preheader-cancel-cleanup"
+
+            async def fake_send(*_args, **_kwargs):
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            task = asyncio.create_task(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout = 0.2)
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(cancelled.wait(), timeout = 0.2)
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_unstarted_cleanup_closes_completed_send_response(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+            returned = asyncio.Event()
+            cancel_id = "unstarted-completed-send-cleanup"
+
+            class Stream(httpx.AsyncByteStream):
+                async def __aiter__(self):
+                    if False:
+                        yield b""
+
+            stream = Stream()
+            upstream_response = httpx.Response(200, stream = stream)
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                returned.set()
+                return upstream_response
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
+
+            gate.set()
+            await asyncio.wait_for(returned.wait(), timeout = 0.2)
+            await asyncio.sleep(0)
+            await response._unstarted_cleanup()
+            assert upstream_response.is_closed
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+
+        asyncio.run(_run())
+
     def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
