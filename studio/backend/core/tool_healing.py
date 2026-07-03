@@ -22,6 +22,11 @@ Handles these serializations (see ``parse_tool_calls_from_text``):
 * ``name[ARGS]{json}`` (reasoning-model rehearsal)
 """
 
+# Keep PEP 604 (``X | None``) annotations import-safe on Python 3.9, which the
+# package still supports (requires-python >=3.9) and where external servers
+# import this module standalone.
+from __future__ import annotations
+
 import bisect
 import json
 import re
