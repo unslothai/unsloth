@@ -3507,8 +3507,14 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
         return {target_modules}
 
     is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
-    targets_mlp = "mlp" in target_modules or "ffn" in target_modules
-    if is_regex and "proj" in target_modules and targets_mlp:
+    # Key expert-LoRA detection on the projection names themselves: the auto
+    # q/k/v/o regex lists mlp|ffn as path segments, so a bare "mlp" substring
+    # check silently enabled expert LoRA for attention-only finetuning.
+    targets_mlp_proj = any(
+        name in target_modules
+        for name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+    )
+    if is_regex and targets_mlp_proj:
         return set(_MOE_BROAD_MLP_TARGETS)
 
     return set()
