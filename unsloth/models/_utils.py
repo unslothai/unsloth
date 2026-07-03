@@ -3636,14 +3636,14 @@ def make_fast_generate_wrapper(original_generate):
             )
 
         # A vLLM-style prompt (string, {"prompt":..., "multi_modal_data":...} dict, or a list/tuple
-        # of either) only works under vLLM; tokenize first when fast_inference=False. vLLM names this
-        # first argument `prompts`, so catch the keyword form as well, plus its tokenized kwargs
-        # (`prompt_token_ids` / `prompt_embeds`) which are not HuggingFace generate arguments.
-        prompt_arg = args[0] if len(args) > 0 else kwargs.get("prompts")
-        vllm_prompt_kwarg = (
-            kwargs.get("prompt_token_ids") is not None or kwargs.get("prompt_embeds") is not None
+        # of either) only works under vLLM; tokenize first when fast_inference=False. A positional
+        # arg may be HF token ids, so check it conservatively with _is_vllm_prompt. The `prompts` /
+        # `prompt_token_ids` / `prompt_embeds` keywords are vLLM-only names that HuggingFace generate
+        # does not accept, so any of them being present is a vLLM-style call (even a bare token list).
+        vllm_prompt_kwarg = any(
+            kwargs.get(k) is not None for k in ("prompts", "prompt_token_ids", "prompt_embeds")
         )
-        if _is_vllm_prompt(prompt_arg) or vllm_prompt_kwarg:
+        if (len(args) > 0 and _is_vllm_prompt(args[0])) or vllm_prompt_kwarg:
             raise ValueError(
                 "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
                 "`fast_inference=True` (vLLM). Since `fast_inference=False`, tokenize first:\n\n"
