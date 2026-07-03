@@ -512,9 +512,7 @@ def run_diffusion_lora_training(
             grad_norm = None
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # The returned value is the total PRE-clip norm, reported to the UI chart.
-                grad_norm = float(
-                    torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
-                )
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
             optimizer.step()
             lr_sched.step()
 
