@@ -823,22 +823,25 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     )
     fp = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
 
-    def _is_prefetch_call(node):
-        return (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "maybe_prefetch_hf_snapshot"
-        )
+    def _prefetch_call(node):
+        # a bare call statement, or one whose return is captured (e.g. _st_prefetched = ...)
+        value = node.value if isinstance(node, (ast.Expr, ast.Assign)) else None
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "maybe_prefetch_hf_snapshot"
+        ):
+            return value
+        return None
 
-    prefetch_pos = next((i for i, n in enumerate(fp.body) if _is_prefetch_call(n)), None)
+    prefetch_pos = next((i for i, n in enumerate(fp.body) if _prefetch_call(n)), None)
     return_pos = next((i for i, n in enumerate(fp.body) if isinstance(n, ast.Return)), len(fp.body))
     assert (
         prefetch_pos is not None
     ), "from_pretrained must call maybe_prefetch_hf_snapshot at top level"
     assert prefetch_pos < return_pos, "prefetch must run before any top-level return"
     # local_files_only must be forwarded so an offline load does not start a Hub download.
-    prefetch_call = fp.body[prefetch_pos].value
+    prefetch_call = _prefetch_call(fp.body[prefetch_pos])
     assert "local_files_only" in {
         kw.arg for kw in prefetch_call.keywords
     }, "prefetch must forward local_files_only"

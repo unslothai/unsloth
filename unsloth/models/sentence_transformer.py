@@ -1447,7 +1447,7 @@ class FastSentenceTransformer(FastModel):
         # Prefetch so the ST load below is a cache hit. weights_at_root stays False (ST component
         # weights live in per-module subfolders). Resolve the same cache the load uses: HF cache_dir,
         # else cache_folder, else SENTENCE_TRANSFORMERS_HOME, else default -- a wrong cache misses the warm.
-        maybe_prefetch_hf_snapshot(
+        _st_prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
             revision = revision,
@@ -1455,7 +1455,12 @@ class FastSentenceTransformer(FastModel):
             or kwargs.get("cache_folder")
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             local_files_only = kwargs.get("local_files_only", False),
+            # Forward force_download so the refresh happens in the killable child, then clear it so the
+            # in-process ST load reuses the warm cache instead of re-downloading over unguarded Xet.
+            force_download = kwargs.get("force_download", False),
         )
+        if _st_prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
 
         # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues
         if for_inference:
