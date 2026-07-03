@@ -45,10 +45,10 @@ from .vram_estimation import (
 )
 
 
-
 def export_capability() -> dict:
     """Return live export capability from the hardware module."""
     return _hardware.export_capability()
+
 
 __all__ = [
     "DeviceType",
