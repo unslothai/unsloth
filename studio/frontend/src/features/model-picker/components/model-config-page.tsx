@@ -11,24 +11,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useId, useMemo, useState } from "react";
+import { useId, useState } from "react";
 import { useDefaultChatTemplate } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
-  deletePerModelConfig,
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
+import { NumericValueInput } from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-7 items-center justify-between gap-4";
 const LABEL_CLASS =
@@ -38,10 +39,183 @@ const CONTROL_SURFACE =
 const SELECT_TRIGGER_CLASS = `grid h-7 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 const NUMBER_INPUT_CLASS = `h-7 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
+function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
+  return (
+    config.kvCacheDtype != null ||
+    (config.speculativeType ?? "auto") !== "auto" ||
+    config.specDraftNMax != null ||
+    config.tensorParallel ||
+    config.chatTemplateOverride != null
+  );
+}
+
+function resolveCustomContextLength(
+  value: number,
+  native: number | null,
+): number | null {
+  return native != null && value === native ? null : value;
+}
+
+function GgufAdvancedSettings({
+  config,
+  update,
+  isMtp,
+  onEditTemplate,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  isMtp: boolean;
+  onEditTemplate: () => void;
+}) {
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>KV Cache Dtype</span>
+          <InfoHint>
+            Lower KV cache precision to save VRAM at the cost of some quality.
+            f16/bf16 are full precision; q8_0/q5_1/q4_1 are quantized.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.kvCacheDtype ?? "f16"}
+          onValueChange={(v) =>
+            update({ kvCacheDtype: v === "f16" ? null : v })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="f16">f16</SelectItem>
+            <SelectItem value="bf16">bf16</SelectItem>
+            <SelectItem value="q8_0">q8_0</SelectItem>
+            <SelectItem value="q5_1">q5_1</SelectItem>
+            <SelectItem value="q4_1">q4_1</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Speculative Decoding</span>
+          <InfoHint>
+            Faster generation with no accuracy hit. Auto picks MTP / ngram based
+            on the model and platform. Pick a strategy to force it.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.speculativeType ?? "auto"}
+          onValueChange={(v) =>
+            update({
+              speculativeType: v,
+              specDraftNMax:
+                v === "mtp" || v === "mtp+ngram" ? config.specDraftNMax : null,
+            })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[124px] ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="auto">Auto</SelectItem>
+            <SelectItem value="mtp">MTP</SelectItem>
+            <SelectItem value="ngram">Ngram</SelectItem>
+            <SelectItem value="mtp+ngram">MTP+Ngram</SelectItem>
+            <SelectItem value="off">Off</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {isMtp && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Draft Tokens</span>
+            <InfoHint>
+              Max MTP draft tokens per step. Leave blank for the platform
+              default (2 on GPU, 3 on CPU/Mac).
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            step={1}
+            value={config.specDraftNMax ?? ""}
+            placeholder="auto"
+            onChange={(event) => {
+              const raw = event.target.value;
+              if (raw === "") {
+                update({ specDraftNMax: null });
+                return;
+              }
+              const parsed = Number.parseInt(raw, 10);
+              if (Number.isFinite(parsed)) {
+                update({ specDraftNMax: Math.max(1, Math.min(16, parsed)) });
+              }
+            }}
+            aria-label="Speculative decoding draft tokens"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Tensor Parallelism</span>
+          <InfoHint>
+            No effect on a single GPU. On multi-GPU setups, improves tokens/sec
+            for dense models. MoE models don't benefit.
+          </InfoHint>
+        </div>
+        <Switch
+          className="panel-switch shrink-0"
+          checked={config.tensorParallel}
+          onCheckedChange={(checked) => update({ tensorParallel: checked })}
+        />
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Chat Template</span>
+          <InfoHint>
+            Override the model's chat template with custom Jinja. Applies when
+            the model loads.
+          </InfoHint>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-[12px] text-muted-foreground">
+            {config.chatTemplateOverride ? "Custom" : "Default"}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
+            onClick={onEditTemplate}
+          >
+            Edit
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack: () => void;
-  onRun: (config: PerModelConfig, remember: boolean) => void;
+  onRun: (config: PerModelConfig) => void;
   loadedConfig?: PerModelConfig | null;
 }
 
@@ -53,15 +227,22 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
-  const initial = useMemo(() => {
+  // Seeds only. The page is keyed by target in the selector, so it remounts on
+  // model/variant change and these initializers re-read the stored config.
+  const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     return loadedConfig
       ? { config: loadedConfig, remembered: resolved.remembered }
       : resolved;
-  }, [target.id, target.ggufVariant, loadedConfig]);
-  const [config, setConfig] = useState<PerModelConfig>(initial.config);
-  const [remember, setRemember] = useState(initial.remembered);
+  };
+  const [config, setConfig] = useState<PerModelConfig>(
+    () => resolveInitial().config,
+  );
+  const [remember, setRemember] = useState(() => resolveInitial().remembered);
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(() =>
+    hasNonDefaultAdvanced(config),
+  );
   const templateDefaults = useDefaultChatTemplate(
     target.id,
     target.ggufVariant,
@@ -75,6 +256,19 @@ export function ModelConfigPage({
     config.speculativeType != null &&
     MTP_SPECULATIVE_TYPES.has(config.speculativeType);
   const nativeContextLength = target.meta.contextLength ?? null;
+  const minContext = 128;
+  const maxContext = nativeContextLength ?? 32768;
+  const contextValue = Math.min(
+    Math.max(
+      config.customContextLength ?? nativeContextLength ?? maxContext,
+      minContext,
+    ),
+    maxContext,
+  );
+  const setContextLength = (v: number) =>
+    update({
+      customContextLength: resolveCustomContextLength(v, nativeContextLength),
+    });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
 
@@ -85,10 +279,8 @@ export function ModelConfigPage({
         toast.error("Couldn't save settings for this model.");
         return;
       }
-    } else {
-      deletePerModelConfig(target.id, target.ggufVariant);
     }
-    onRun(config, remember);
+    onRun(config);
   };
 
   return (
@@ -116,199 +308,71 @@ export function ModelConfigPage({
         </div>
       </div>
 
-      <div className="-mr-1 max-h-[58vh] space-y-3.5 overflow-y-auto pr-1">
+      <div className="space-y-3.5">
         {target.isGguf && (
           <>
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className={LABEL_CLASS}>Context Length</span>
-                <InfoHint>
-                  Tokens of context to allocate. Leave blank for the model
-                  default. Higher uses more VRAM.
-                  {nativeContextLength != null
-                    ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
-                    : ""}
-                </InfoHint>
-              </div>
-              <input
-                type="number"
-                min={128}
-                max={nativeContextLength ?? undefined}
-                step={1}
-                value={config.customContextLength ?? ""}
-                placeholder="default"
-                onChange={(event) => {
-                  const raw = event.target.value;
-                  if (raw === "") {
-                    update({ customContextLength: null });
-                    return;
-                  }
-                  const parsed = Number.parseInt(raw, 10);
-                  if (!(Number.isFinite(parsed) && parsed >= 128)) {
-                    update({ customContextLength: null });
-                    return;
-                  }
-                  update({
-                    customContextLength:
-                      nativeContextLength != null
-                        ? Math.min(parsed, nativeContextLength)
-                        : parsed,
-                  });
-                }}
-                aria-label="Context Length"
-                className={NUMBER_INPUT_CLASS}
-              />
-            </div>
-
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className={LABEL_CLASS}>KV Cache Dtype</span>
-                <InfoHint>
-                  Lower KV cache precision to save VRAM at the cost of some
-                  quality. f16/bf16 are full precision; q8_0/q5_1/q4_1 are
-                  quantized.
-                </InfoHint>
-              </div>
-              <Select
-                value={config.kvCacheDtype ?? "f16"}
-                onValueChange={(v) =>
-                  update({ kvCacheDtype: v === "f16" ? null : v })
-                }
-              >
-                <SelectTrigger
-                  animateRadius={false}
-                  icon={ChevronDownStandardIcon}
-                  iconClassName="size-3.5"
-                  className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-                  <SelectItem value="f16">f16</SelectItem>
-                  <SelectItem value="bf16">bf16</SelectItem>
-                  <SelectItem value="q8_0">q8_0</SelectItem>
-                  <SelectItem value="q5_1">q5_1</SelectItem>
-                  <SelectItem value="q4_1">q4_1</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className={LABEL_CLASS}>Speculative Decoding</span>
-                <InfoHint>
-                  Faster generation with no accuracy hit. Auto picks MTP / ngram
-                  based on the model and platform. Pick a strategy to force it.
-                </InfoHint>
-              </div>
-              <Select
-                value={config.speculativeType ?? "auto"}
-                onValueChange={(v) =>
-                  update({
-                    speculativeType: v,
-                    specDraftNMax:
-                      v === "mtp" || v === "mtp+ngram"
-                        ? config.specDraftNMax
-                        : null,
-                  })
-                }
-              >
-                <SelectTrigger
-                  animateRadius={false}
-                  icon={ChevronDownStandardIcon}
-                  iconClassName="size-3.5"
-                  className={`w-[124px] ${SELECT_TRIGGER_CLASS}`}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-                  <SelectItem value="auto">Auto</SelectItem>
-                  <SelectItem value="mtp">MTP</SelectItem>
-                  <SelectItem value="ngram">Ngram</SelectItem>
-                  <SelectItem value="mtp+ngram">MTP+Ngram</SelectItem>
-                  <SelectItem value="off">Off</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {isMtp && (
+            <div className="space-y-3">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className={LABEL_CLASS}>Draft Tokens</span>
+                  <span className={LABEL_CLASS}>Context Length</span>
                   <InfoHint>
-                    Max MTP draft tokens per step. Leave blank for the platform
-                    default (2 on GPU, 3 on CPU/Mac).
+                    Tokens of context to allocate. Higher uses more VRAM.
+                    {nativeContextLength != null
+                      ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
+                      : ""}
                   </InfoHint>
                 </div>
-                <input
-                  type="number"
-                  min={1}
-                  max={16}
+                <NumericValueInput
+                  value={contextValue}
+                  min={minContext}
+                  max={maxContext}
                   step={1}
-                  value={config.specDraftNMax ?? ""}
-                  placeholder="auto"
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    if (raw === "") {
-                      update({ specDraftNMax: null });
-                      return;
-                    }
-                    const parsed = Number.parseInt(raw, 10);
-                    if (Number.isFinite(parsed)) {
-                      update({
-                        specDraftNMax: Math.max(1, Math.min(16, parsed)),
-                      });
-                    }
-                  }}
-                  aria-label="Speculative decoding draft tokens"
+                  onChange={setContextLength}
+                  ariaLabel="Context Length"
                   className={NUMBER_INPUT_CLASS}
+                  size={8}
                 />
               </div>
+              {nativeContextLength != null ? (
+                <Slider
+                  min={minContext}
+                  max={maxContext}
+                  step={128}
+                  value={[contextValue]}
+                  onValueChange={([v]) => setContextLength(v)}
+                  className="panel-slider"
+                  aria-label="Context Length"
+                />
+              ) : null}
+            </div>
+
+            {showAdvanced && (
+              <GgufAdvancedSettings
+                config={config}
+                update={update}
+                isMtp={isMtp}
+                onEditTemplate={() => setTemplateOpen(true)}
+              />
             )}
 
             <div className={ROW_CLASS}>
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className={LABEL_CLASS}>Tensor Parallelism</span>
+                <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-muted-foreground">
+                  Advanced settings
+                </span>
                 <InfoHint>
-                  No effect on a single GPU. On multi-GPU setups, improves
-                  tokens/sec for dense models. MoE models don't benefit.
+                  Extra options for how the model loads. Most setups don't need
+                  these.
                 </InfoHint>
               </div>
               <Switch
                 className="panel-switch shrink-0"
-                checked={config.tensorParallel}
-                onCheckedChange={(checked) =>
-                  update({ tensorParallel: checked })
-                }
+                checked={showAdvanced}
+                onCheckedChange={setShowAdvanced}
+                aria-label="Show advanced settings"
               />
             </div>
           </>
-        )}
-
-        {target.isGguf && (
-          <div className={ROW_CLASS}>
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className={LABEL_CLASS}>Chat Template</span>
-              <InfoHint>
-                Override the model's chat template with custom Jinja. Applies
-                when the model loads.
-              </InfoHint>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <span className="text-[12px] text-muted-foreground">
-                {config.chatTemplateOverride ? "Custom" : "Default"}
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
-                onClick={() => setTemplateOpen(true)}
-              >
-                Edit
-              </Button>
-            </div>
-          </div>
         )}
       </div>
 

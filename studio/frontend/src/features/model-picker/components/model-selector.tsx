@@ -34,7 +34,10 @@ import {
   useState,
 } from "react";
 import { Input } from "@/components/ui/input";
-import type { PerModelConfig } from "../model-config/per-model-config";
+import {
+  type PerModelConfig,
+  resolveInitialConfig,
+} from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
@@ -294,6 +297,23 @@ function defaultHubSection(): HubSection {
   );
 }
 
+const CONFIGURE_ON_LOAD_KEY = "unsloth_model_selector_configure_on_load";
+function loadConfigureOnLoad(): boolean {
+  try {
+    return localStorage.getItem(CONFIGURE_ON_LOAD_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveConfigureOnLoad(value: boolean): boolean {
+  try {
+    localStorage.setItem(CONFIGURE_ON_LOAD_KEY, value ? "1" : "0");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
@@ -464,6 +484,11 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  const [configureOnLoad, setConfigureOnLoad] = useState(loadConfigureOnLoad);
+  const handleConfigureOnLoadChange = (value: boolean) => {
+    setConfigureOnLoad(value);
+    saveConfigureOnLoad(value);
+  };
   useEffect(() => {
     if (!open) {
       setConfigTarget(null);
@@ -472,6 +497,13 @@ function ModelSelectorContent({
   const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
     if (meta.source === "external") {
       onSelect(id, meta);
+      return;
+    }
+    if (!configureOnLoad) {
+      onSelect(id, {
+        ...meta,
+        config: resolveInitialConfig(id, meta.ggufVariant).config,
+      });
       return;
     }
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
@@ -516,6 +548,7 @@ function ModelSelectorContent({
       >
         {configTarget ? (
           <ModelConfigPage
+            key={`${configTarget.id}::${configTarget.ggufVariant ?? ""}`}
             target={configTarget}
             onBack={() => setConfigTarget(null)}
             onRun={(config) =>
@@ -567,6 +600,8 @@ function ModelSelectorContent({
                 fit={true}
               />
             }
+            configureOnLoad={configureOnLoad}
+            onConfigureOnLoadChange={handleConfigureOnLoadChange}
           />
         ) : null}
 

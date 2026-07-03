@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -112,13 +113,28 @@ def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
     return _chat_template_from_processor_json(dir_path)
 
 
+_GGUF_SCAN_MAX_DEPTH = 2
+
+
+def _iter_ggufs(dir_path: Path) -> list[Path]:
+    # Bounded, symlink-safe scan: model snapshots keep GGUFs within a couple of
+    # levels, so cap the depth and never follow directory symlinks (avoids cycles
+    # and runaway traversal on unusual layouts).
+    root = str(dir_path)
+    found: list[Path] = []
+    for current, dirs, files in os.walk(root, followlinks = False):
+        depth = current[len(root):].count(os.sep)
+        if depth >= _GGUF_SCAN_MAX_DEPTH:
+            dirs[:] = []
+        for name in files:
+            if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
+                found.append(Path(current) / name)
+    return found
+
+
 def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[Path]:
     try:
-        ggufs = [
-            path
-            for path in sorted(dir_path.rglob("*.gguf"))
-            if "mmproj" not in path.name.lower()
-        ]
+        ggufs = sorted(_iter_ggufs(dir_path))
     except OSError:
         return None
     if not ggufs:

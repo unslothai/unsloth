@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { looksLikeLocalPath } from "@/features/hub/lib/local-path";
 import { getHfToken } from "@/features/hub/stores/hf-token-store";
 import { useEffect, useState } from "react";
 import { fetchDefaultChatTemplate } from "../api/templates";
@@ -11,7 +12,21 @@ export interface DefaultChatTemplateState {
   error: string | null;
 }
 
+const TEMPLATE_CACHE_MAX_ENTRIES = 50;
 const templateCache = new Map<string, string | null>();
+
+function cacheTemplate(key: string, template: string | null): void {
+  // Re-insert to move the key to the most-recent position for LRU eviction.
+  templateCache.delete(key);
+  templateCache.set(key, template);
+  while (templateCache.size > TEMPLATE_CACHE_MAX_ENTRIES) {
+    const oldest = templateCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    templateCache.delete(oldest);
+  }
+}
 
 export function useDefaultChatTemplate(
   modelId: string | null,
@@ -43,7 +58,11 @@ export function useDefaultChatTemplate(
     setState({ template: null, loading: true, error: null });
     fetchDefaultChatTemplate(modelId, ggufVariant, token, controller.signal)
       .then((template) => {
-        templateCache.set(cacheKey, template);
+        // A local model's template file may appear on disk later, so don't
+        // cache a negative result for it — let the next open re-fetch.
+        if (!(template === null && looksLikeLocalPath(modelId))) {
+          cacheTemplate(cacheKey, template);
+        }
         setState({ template, loading: false, error: null });
       })
       .catch((err: unknown) => {
