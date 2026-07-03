@@ -3,6 +3,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,11 +16,13 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
 import {
+  type DiffusionDatasetExample,
   type DiffusionTrainableFamily,
   type DiffusionTrainingInfo,
   type DiffusionTrainingStatus,
   getDiffusionTrainingInfo,
   getDiffusionTrainingStatus,
+  listDiffusionDatasetExamples,
   startDiffusionTraining,
   stopDiffusionTraining,
   uploadDiffusionDataset,
@@ -25,7 +30,7 @@ import {
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
 import { DatasetShowcase } from "./dataset-showcase";
 import { DiffusionCharts } from "./diffusion-charts";
-import { ExampleDatasetCards } from "./example-dataset-cards";
+import { ExampleDatasetCards, runExampleImport } from "./example-dataset-cards";
 
 // The families the Train tab can train, in the popularity order the user asked for. This is
 // the fallback used when the backend's /info does not yet report families (older backend);
@@ -73,6 +78,8 @@ const FAMILY_PRESETS: FamilyPreset[] = [
 
 const CUSTOM_BASE = "__custom__";
 const UPLOAD_DATASET = "__upload__";
+// Dataset-select option value prefix for a not-yet-imported example; picking it imports.
+const EXAMPLE_PREFIX = "example:";
 const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
 const selectClass = "h-8 w-full rounded-md border border-input bg-background px-2 text-xs";
 
@@ -159,6 +166,8 @@ export function DiffusionTrainPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [gridOpen, setGridOpen] = useState(false);
   const [gridRefresh, setGridRefresh] = useState(0);
+  const [examples, setExamples] = useState<DiffusionDatasetExample[]>([]);
+  const [importingId, setImportingId] = useState<string | null>(null);
 
   const [outputDir, setOutputDir] = useState("");
   const [instancePrompt, setInstancePrompt] = useState("");
@@ -198,6 +207,58 @@ export function DiffusionTrainPanel({
       });
     });
   }, [active, refreshInfo]);
+
+  // Load the curated example list once (for the dropdown group + the cards). Best-effort:
+  // an older backend without the endpoint just yields no examples.
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    listDiffusionDatasetExamples()
+      .then((list) => {
+        if (!cancelled) setExamples(list);
+      })
+      .catch(() => {
+        if (!cancelled) setExamples([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  // Examples whose folder is not on disk yet: shown in the dropdown's Examples group and as
+  // cards. An example imports into a folder named after its id, so a matching dataset name
+  // means it is already imported (and appears as a normal dataset instead).
+  const importedNames = useMemo(
+    () => new Set((info?.datasets ?? []).map((d) => d.name)),
+    [info?.datasets],
+  );
+  const pendingExamples = useMemo(
+    () => examples.filter((ex) => !importedNames.has(ex.id)),
+    [examples, importedNames],
+  );
+
+  // Import a curated example, then select the resulting folder. Seeds the trigger prompt from
+  // the example only when the field is meaningful (the import has no captions of its own).
+  const importExample = useCallback(
+    async (ex: DiffusionDatasetExample) => {
+      setImportingId(ex.id);
+      try {
+        const res = await runExampleImport(ex);
+        await refreshInfo();
+        setDataset(res.name);
+        setGridOpen(false);
+        setGridRefresh((k) => k + 1);
+        if (ex.suggested_trigger && res.caption_count === 0 && !instancePrompt.trim()) {
+          setInstancePrompt(ex.suggested_trigger);
+        }
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Import failed");
+      } finally {
+        setImportingId(null);
+      }
+    },
+    [refreshInfo, instancePrompt],
+  );
 
   // If the loaded generation model is a trainable family, jump the family selector to it
   // once (only when the panel first sees a loaded family).
@@ -267,6 +328,13 @@ export function DiffusionTrainPanel({
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
+  // A dataset where every image already ships a caption needs no trigger prompt; hide the
+  // field and explain why. Partial/no captions (or upload mode) still show it.
+  const fullyCaptioned = Boolean(
+    selectedDataset &&
+      selectedDataset.image_count > 0 &&
+      selectedDataset.caption_count >= selectedDataset.image_count,
+  );
 
   // Map the backend's paired history arrays into the chart component's {step,value} series.
   const lossHistory: TrainingSeriesPoint[] = useMemo(() => {
@@ -494,11 +562,18 @@ export function DiffusionTrainPanel({
           <select
             value={dataset}
             onChange={(e) => {
-              setDataset(e.target.value);
+              const v = e.target.value;
+              if (v.startsWith(EXAMPLE_PREFIX)) {
+                const ex = pendingExamples.find((x) => x.id === v.slice(EXAMPLE_PREFIX.length));
+                if (ex) void importExample(ex);
+                return; // controlled select snaps back to the current dataset while importing
+              }
+              setDataset(v);
               setGridOpen(false);
             }}
             className={selectClass}
             aria-label="Training images"
+            disabled={importingId !== null}
           >
             {(info?.datasets ?? []).map((d) => (
               <option key={d.name} value={d.name}>
@@ -506,8 +581,22 @@ export function DiffusionTrainPanel({
                 {d.caption_count > 0 ? `, ${d.caption_count} captions` : ""})
               </option>
             ))}
+            {pendingExamples.length > 0 && (
+              <optgroup label="Examples (one-click import)">
+                {pendingExamples.map((ex) => (
+                  <option key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
+                    {ex.label} ({ex.image_cap} images, {ex.license})
+                  </option>
+                ))}
+              </optgroup>
+            )}
             <option value={UPLOAD_DATASET}>Upload new images...</option>
           </select>
+          {importingId && (
+            <p className="text-[11px] text-muted-foreground">
+              Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
+            </p>
+          )}
 
           {dataset === UPLOAD_DATASET ? (
             <div className="grid gap-1.5 rounded-md border border-dashed border-border p-2">
@@ -578,14 +667,9 @@ export function DiffusionTrainPanel({
           )}
 
           <ExampleDatasetCards
-            onImported={(res, ex) => {
-              void refreshInfo();
-              setDataset(res.name);
-              setGridRefresh((k) => k + 1);
-              if (ex.suggested_trigger && !instancePrompt.trim()) {
-                setInstancePrompt(ex.suggested_trigger);
-              }
-            }}
+            examples={pendingExamples}
+            busyId={importingId}
+            onImport={(ex) => void importExample(ex)}
           />
         </div>
 
@@ -600,27 +684,40 @@ export function DiffusionTrainPanel({
             className="h-8 text-xs"
           />
         </div>
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Trigger prompt (how you&apos;ll invoke the style later)</Label>
-          <Input
-            value={instancePrompt}
-            placeholder="a photo in SKS style"
-            onChange={(e) => setInstancePrompt(e.target.value)}
-            className="h-8 text-xs"
-          />
-        </div>
+        {fullyCaptioned ? (
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            All {selectedDataset?.image_count} images have captions - no trigger prompt needed.
+            The style applies to any prompt after training.
+          </p>
+        ) : (
+          <div className="grid gap-1.5">
+            <Label className="text-xs">
+              Trigger prompt (how you&apos;ll invoke the style later)
+            </Label>
+            <Input
+              value={instancePrompt}
+              placeholder="a photo in SKS style"
+              onChange={(e) => setInstancePrompt(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+        )}
 
         {/* Collapsed training settings */}
-        <button
+        <Button
           type="button"
-          className="w-fit text-xs text-muted-foreground underline-offset-2 hover:underline"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-fit gap-1.5 px-1 text-xs text-muted-foreground hover:text-foreground"
           onClick={() => setShowAdvanced((s) => !s)}
           aria-expanded={showAdvanced}
         >
-          {showAdvanced
-            ? "Hide training settings"
-            : "Training settings (defaults suit a first run)"}
-        </button>
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            className={cn("size-3.5 transition-transform", showAdvanced && "rotate-180")}
+          />
+          {showAdvanced ? "Training settings" : "Training settings (defaults suit a first run)"}
+        </Button>
         {showAdvanced && (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
