@@ -805,10 +805,8 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
-        # NOTE: the base + tokenizer prefetch (the Xet -> HTTP stall fallback warm) runs AFTER the
-        # load-mode validation below, so an invalid load_in_4bit/8bit/16bit combination fails locally
-        # without first downloading a multi-GB snapshot. See the maybe_prefetch_hf_snapshot block placed
-        # right after that check.
+        # NOTE: the base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
+        # load_in_* combination fails without first downloading a snapshot. See the block after that check.
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -907,12 +905,10 @@ class FastBaseModel:
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
 
-        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
-        # in-process load below is a cache hit and cannot hang. Runs AFTER the load-mode validation
-        # above so an invalid load_in_* combination fails without first pulling a multi-GB snapshot.
-        # vLLM owns the weight download only when actually available; if fast_inference was requested
-        # but vLLM is missing, the load falls through to the in-process HF path (fast_inference_setup
-        # flips the flag below), so the weights must still be warmed here. Resolve availability now.
+        # Prefetch the repo (killable child) so the in-process load below is a cache hit. Runs after
+        # the load-mode validation above. vLLM owns the weight download only when actually available;
+        # if fast_inference was requested but vLLM is missing, the load falls through in-process, so
+        # weights must still be warmed here. Resolve availability now.
         _vllm_owns_weights = fast_inference and is_vLLM_available()
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
@@ -926,21 +922,19 @@ class FastBaseModel:
             use_safetensors = kwargs.get("use_safetensors"),
             from_tf = kwargs.get("from_tf", False),
             from_flax = kwargs.get("from_flax", False),
-            # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
-            # when a subfolder is set.
+            # Bare load reads only ROOT weights; skip subdir weights. Ignored when a subfolder is set.
             weights_at_root = True,
             variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
             gguf_file = kwargs.get(
                 "gguf_file"
             ),  # forward so the warm fetches the GGUF (else ignored)
         )
-        # Child already did the forced download; clear the flag so the load reuses the warm cache.
+        # Child did the forced download; clear the flag so the load reuses the warm cache.
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # Warm a SEPARATE tokenizer repo (explicit tokenizer_name); when it is model_name it is already
-        # covered. Do NOT warm model_name here on the vLLM path: this runs before fast_inference_setup may
-        # remap "*-unsloth-bnb-4bit" -> "*-bnb-4bit", so it would warm the wrong repo.
+        # Warm a SEPARATE tokenizer repo only (model_name is covered above). Not model_name here: this
+        # runs before fast_inference_setup may remap the repo, so it would warm the wrong one.
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )
@@ -1257,11 +1251,9 @@ class FastBaseModel:
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
 
-        # On the vLLM path the base warm above was skipped (vLLM owns the weight download) and the
-        # tokenizer warm was deferred because fast_inference_setup may remap model_name. Now that the
-        # final tokenizer repo is known, warm it (tokenizer-only) so the in-process processor / tokenizer
-        # load below is a cache hit rather than an unprotected in-process Xet fetch. A re-warm of an
-        # already-cached repo (or a local path) is a fast no-op.
+        # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).
+        # Now the final tokenizer repo is known, so warm it so the processor/tokenizer load below hits
+        # the cache. Re-warming an already-cached repo (or a local path) is a fast no-op.
         if _vllm_owns_weights and isinstance(tokenizer_name, str) and tokenizer_name:
             maybe_prefetch_hf_snapshot(
                 tokenizer_name,

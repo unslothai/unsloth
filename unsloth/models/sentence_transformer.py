@@ -1423,9 +1423,8 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # Validate the mutually-exclusive load modes BEFORE the prefetch (a config rejected locally must
-        # not first download many GB of weights). Only the non-for_inference path uses these flags; the
-        # for_inference branch below skips them, so guard the check to preserve its behavior.
+        # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights.
+        # Guard on not for_inference: that branch below never used these flags.
         if not for_inference:
             # sanity check, thanks Etherl:
             if full_finetuning and (load_in_4bit or load_in_8bit):
@@ -1445,11 +1444,9 @@ class FastSentenceTransformer(FastModel):
                     "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
                 )
 
-        # Pre-download in a killable subprocess (Xet -> HTTP on a stall) so the ST load below is a cache
-        # hit. weights_at_root stays False since ST component weights live in per-module subfolders.
-        # Resolve the cache the load uses: an explicit HF cache_dir wins (the FastModel fallback load
-        # forwards it), else cache_folder, else SENTENCE_TRANSFORMERS_HOME (which ST honors when
-        # cache_folder is unset), else the default HF cache -- a wrong-cache warm would be missed.
+        # Prefetch so the ST load below is a cache hit. weights_at_root stays False (ST component
+        # weights live in per-module subfolders). Resolve the same cache the load uses: HF cache_dir,
+        # else cache_folder, else SENTENCE_TRANSFORMERS_HOME, else default -- a wrong cache misses the warm.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -1490,10 +1487,8 @@ class FastSentenceTransformer(FastModel):
                 if k in kwargs:
                     st_kwargs[k] = kwargs[k]
 
-            # ST takes cache_folder, not cache_dir. Map an explicit HF cache_dir onto cache_folder so this
-            # native load reads the cache the prefetch warmed above (cache_dir wins, else the caller's
-            # cache_folder; None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch) -- else a
-            # cache_dir warm is missed and the load starts an unprotected in-process Xet download.
+            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm
+            # (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
             _st_cache = kwargs.get("cache_dir") or kwargs.get("cache_folder")
             if _st_cache is not None:
                 st_kwargs["cache_folder"] = _st_cache
@@ -1501,7 +1496,7 @@ class FastSentenceTransformer(FastModel):
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
-        # Load-mode validation + full_finetuning normalization already ran before the prefetch above.
+        # Load-mode validation already ran before the prefetch above.
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 
@@ -1598,9 +1593,8 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # ST takes cache_folder, not cache_dir; map an explicit HF cache_dir onto it so this load reads
-            # the cache the prefetch warmed (cache_dir wins, else cache_folder; None lets ST honor
-            # SENTENCE_TRANSFORMERS_HOME, matching the prefetch) -- a mismatched cache would miss the warm.
+            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm
+            # (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -1714,8 +1708,7 @@ class FastSentenceTransformer(FastModel):
 
         # No modules.json -> force 16-bit: saving is custom for these models and
         # 4-bit would need dequant in save_pretrained_merged, not worth it.
-        # Resolve the same cache the prefetch warmed: hf_hub_download (used here and by
-        # _load_modules) ignores SENTENCE_TRANSFORMERS_HOME, so passing bare cache_folder would miss it.
+        # Resolve the warmed cache: hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME, so pass it as cache_dir.
         has_modules_json = (
             FastSentenceTransformer._module_path(
                 model_name,
@@ -1736,10 +1729,8 @@ class FastSentenceTransformer(FastModel):
             load_in_4bit = False
             load_in_16bit = True
 
-        # The fallback FastModel weight load resolves its cache from the HF cache_dir, not ST's
-        # cache_folder / SENTENCE_TRANSFORMERS_HOME. Point it at the SAME cache the prefetch warmed above,
-        # else the weights miss the warm and start an unprotected in-process Xet download. Only set it when
-        # a custom ST cache is in play and the caller passed no explicit HF cache_dir (which wins).
+        # The fallback FastModel load reads HF cache_dir, not ST's cache_folder/SENTENCE_TRANSFORMERS_HOME.
+        # Point it at the warmed cache, but only when no explicit cache_dir was passed (which wins).
         _st_cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
@@ -1789,10 +1780,7 @@ class FastSentenceTransformer(FastModel):
             cache_dir = kwargs.get("cache_dir")
             or kwargs.get("cache_folder")
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
-            # Read the modules from the SAME revision the model weights load from (FastModel forwards
-            # revision to the weight load), so a revision-pinned repo hits the prefetch's warm instead
-            # of fetching default-branch module files in-process over Xet (and mixing them with the
-            # revision-pinned weights). A None revision resolves to the default branch as before.
+            # Same revision as the weight load so modules hit the warm (None = default branch).
             revision = revision,
         )
 

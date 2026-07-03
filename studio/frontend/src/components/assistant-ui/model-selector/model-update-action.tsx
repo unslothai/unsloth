@@ -42,8 +42,8 @@ export function ModelUpdateAction({
 }: ModelUpdateActionProps) {
   const [open, setOpen] = useState(false);
 
-  // When this repo+variant's managed download finishes, refresh the caller so the
-  // "update available" cue clears. A ref keeps the subscription stable across renders.
+  // Refresh the caller when this repo+variant's download finishes so the "update available" cue
+  // clears. A ref keeps the subscription stable across renders.
   const onUpdatedRef = useRef(onUpdated);
   onUpdatedRef.current = onUpdated;
   useEffect(() => {
@@ -58,8 +58,8 @@ export function ModelUpdateAction({
   }, [repoId, variant]);
 
   const handleConfirm = useCallback(() => {
-    // Start the background re-download and close the dialog; the Downloads panel owns
-    // progress + cancel. Only a failure to START toasts (a failed download shows in the panel).
+    // Start the re-download and close the dialog; the Downloads panel owns progress + cancel.
+    // Only a failure to START toasts (a failed download shows in the panel).
     void Promise.resolve()
       .then(onConfirm)
       .catch((err) => {

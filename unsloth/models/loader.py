@@ -866,26 +866,25 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            # Warm the adapter repo first: PeftModel downloads it in-process and can hang on Xet.
+            # Warm the adapter repo: PeftModel downloads it in-process and can hang on Xet.
             _prefetched = maybe_prefetch_hf_snapshot(
                 old_model_name,
                 token = token,
                 revision = revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
-                # The adapter loads in-process via PeftModel, not vLLM, so warm it even under
-                # fast_inference (vLLM owns only the base model's download path).
+                # Adapter always loads in-process via PeftModel, so warm it even under fast_inference.
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                # Leave use_safetensors auto: inheriting the base format could skip a safetensors-only
-                # adapter. adapter_only restricts the warm to the adapter's own files + root aux.
+                # Leave use_safetensors auto (inheriting base format could skip a safetensors-only
+                # adapter). adapter_only restricts the warm to the adapter files + root aux.
                 adapter_only = True,
             )
-            # Child already did the forced download; clear the flag so the load reuses the warm cache.
+            # Child did the forced download; clear the flag so the load reuses the warm cache.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
-            # Read the adapter from where the prefetch warmed it: forward cache_dir when set. subfolder
-            # is NOT forwarded (it targets the base checkpoint; an adapter usually lives at the root).
+            # Forward cache_dir so the load reads the warmed adapter. No subfolder (that targets the
+            # base checkpoint; adapters live at the root).
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
@@ -1815,26 +1814,25 @@ class FastModel(FastBaseModel):
 
                 _LoraModel._create_and_replace = _patched_car
 
-            # Warm the adapter repo first: PeftModel downloads it in-process and can hang on Xet.
+            # Warm the adapter repo: PeftModel downloads it in-process and can hang on Xet.
             _prefetched = maybe_prefetch_hf_snapshot(
                 old_model_name,
                 token = token,
                 revision = revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
-                # The adapter loads in-process via PeftModel, not vLLM, so warm it even under
-                # fast_inference (vLLM owns only the base model's download path).
+                # Adapter always loads in-process via PeftModel, so warm it even under fast_inference.
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                # Leave use_safetensors auto: inheriting the base format could skip a safetensors-only
-                # adapter. adapter_only restricts the warm to the adapter's own files + root aux.
+                # Leave use_safetensors auto (inheriting base format could skip a safetensors-only
+                # adapter). adapter_only restricts the warm to the adapter files + root aux.
                 adapter_only = True,
             )
-            # Child already did the forced download; clear the flag so the load reuses the warm cache.
+            # Child did the forced download; clear the flag so the load reuses the warm cache.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
-            # Read the adapter from where the prefetch warmed it: forward cache_dir when set. subfolder
-            # is NOT forwarded (it targets the base checkpoint; an adapter usually lives at the root).
+            # Forward cache_dir so the load reads the warmed adapter. No subfolder (that targets the
+            # base checkpoint; adapters live at the root).
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]

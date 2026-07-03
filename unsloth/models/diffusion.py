@@ -181,9 +181,8 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
-        # Pre-download the confirmed diffusion repo (Xet -> HTTP on a stall) so the weight load is a cache
-        # hit. subfolder is NOT forwarded: the pipeline loads the whole repo root (every component
-        # subfolder), so narrowing to one would leave unet/, vae/, text_encoder/ to in-process Xet.
+        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline
+        # loads every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -193,8 +192,7 @@ class FastDiffusionModel:
             fast_inference = False,
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
-            # Diffusion variants (variant="fp16") are common: forward it so the warm never drops a
-            # variant .bin for a non-variant safetensors.
+            # Forward variant (e.g. "fp16") so the warm keeps variant weights.
             variant = kwargs.get("variant"),
         )
 
@@ -208,14 +206,10 @@ class FastDiffusionModel:
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
-        # Honor an explicit weight format on the real load too, so it reads the format the prefetch
-        # warmed (else a mixed-format repo could pick the other and start an in-process Xet download).
-        # use_safetensors=None (auto) already matches the prefetch's heuristic.
+        # Match the load's weight format to the warm (None/auto already matches).
         if kwargs.get("use_safetensors") is not None:
             load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
-        # Forward the variant to the real load too, so it reads the variant weights the prefetch warmed.
-        # Without it the pipeline asks for the default weight variant, missing the warm (wrong precision,
-        # or a default weight a variant-only repo may not ship, fetched in-process over un-killable Xet).
+        # Forward variant to the real load so it reads the warmed variant weights.
         if kwargs.get("variant") is not None:
             load_kwargs["variant"] = kwargs["variant"]
 

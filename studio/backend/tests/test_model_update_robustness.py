@@ -5,9 +5,8 @@
 Covers:
   * GGUF variant listing computes update_available from the already-fetched
     sibling metadata instead of a second Hub call.
-  * hf_hub_download_with_xet_fallback forwards force_download through the
-    deduplicated shim to the shared unsloth_zoo helper (which owns the
-    try_to_load_from_cache cache-first early-return and its bypass).
+  * hf_hub_download_with_xet_fallback forwards force_download through the shim to the
+    shared unsloth_zoo helper (which owns the cache-first early-return and its bypass).
 
 The cache "Update" action now runs through the download manager as a normal
 managed download (so it shows in the Downloads panel with progress + cancel),
@@ -343,11 +342,8 @@ def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
 
 
 def test_force_download_is_forwarded_through_the_shim(monkeypatch):
-    """The deduplicated shim delegates to the shared unsloth_zoo helper, which owns the
-    try_to_load_from_cache early-return and its force_download bypass (covered by the zoo suite's
-    test_force_download_file_skips_cache_probe). The shim's own contract is to forward force_download
-    unchanged so Studio's model-update path re-fetches a newer blob; verify both force_download=False
-    and force_download=True reach the shared helper (X2/F2)."""
+    """The shim's contract is to forward force_download unchanged to the shared helper (which owns the
+    cache-first early-return and bypass). Verify both False and True reach it (X2/F2)."""
     import utils.hf_xet_fallback as X
 
     seen = []

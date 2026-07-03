@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio shim over the shared unsloth_zoo Xet -> HTTP stall fallback.
+"""Tests for the Studio shim over the shared unsloth_zoo Xet -> HTTP fallback.
 
-The watchdog and transport-policy matrix (cached short-circuit, cancel, error
-propagation, the single Xet -> HTTP retry, the snapshot variant, the knobs) is
-tested once in unsloth_zoo (tests/test_hf_xet_fallback.py). Here we assert only
-the Studio-specific seam: the shim re-exports the shared API and injects Studio's
-marker-aware prepare_cache_for_transport on the HTTP retry. CPU-only, no network,
-no real subprocess (the per-attempt download seam is monkeypatched).
+The transport-policy matrix is tested once in unsloth_zoo; here we assert only the
+Studio seam: re-exporting the shared API and injecting the marker-aware
+prepare_cache_for_transport on the HTTP retry. CPU-only, no network, no real subprocess.
 """
 
 from __future__ import annotations
@@ -23,8 +20,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy/unavailable deps before importing the module under test. Use the real structlog when
-# present; a bare stub would break later modules that log at import time.
+# Stub heavy/unavailable deps before importing the module under test. Use real structlog when present;
+# a bare stub would break later modules that log at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -38,9 +35,7 @@ import huggingface_hub
 try:
     import unsloth_zoo.hf_xet_fallback as _shared_mod
     shared = _shared_mod
-except Exception:  # noqa: BLE001
-    # Still collect the degraded-path test when unsloth_zoo is missing / too old / torch-less /
-    # GPU-less -- the same failure cases the shim itself degrades for.
+except Exception:  # noqa: BLE001 - still collect degraded-path tests when unsloth_zoo is unavailable
     shared = None
 
 import utils.hf_xet_fallback as xf
@@ -74,9 +69,8 @@ def test_child_should_disable_xet_truth_table():
 
 
 def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
-    """A stall on Xet retries over HTTP, and the shim runs Studio's marker-aware
-    ``prepare_cache_for_transport(..., 'http')`` before the retry (not the generic
-    delete-incompletes default)."""
+    """A Xet stall retries over HTTP and the shim runs Studio's marker-aware
+    ``prepare_cache_for_transport(..., 'http')`` before the retry."""
     _requires_shared()
     for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
         monkeypatch.delenv(var, raising = False)
@@ -133,9 +127,8 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
 
 
 def test_degrades_gracefully_without_shared_helper(monkeypatch):
-    """On an older unsloth_zoo that lacks the shared helper, the shim must still
-    import (Studio boots) and provide stub API that does plain HF downloads with
-    the watchdog disabled, instead of crashing at startup."""
+    """On an older unsloth_zoo lacking the shared helper, the shim still imports (Studio
+    boots) and exposes stub API doing plain HF downloads with the watchdog disabled."""
     import importlib
 
     class _BlockShared:
@@ -163,8 +156,7 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
         assert hasattr(event, "set") and not event.is_set()  # never fires
 
-        # Degraded mode still emits heartbeats so the orchestrator's inactivity
-        # deadline is not tripped during a long load.
+        # Degraded mode still emits heartbeats so the inactivity deadline is not tripped.
         import time as _time
 
         beats = []
@@ -193,8 +185,7 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         assert degraded.snapshot_download_with_xet_fallback("org/model") == "/snap-dir"
         assert called["repo_id"] == "org/model"
 
-        # Cancellation contract is preserved even in degraded mode: an already-set
-        # cancel_event must abort before starting the plain HF download.
+        # Cancellation still holds: an already-set cancel_event aborts before the HF download.
         import threading as _threading
 
         cancelled = _threading.Event()
@@ -213,11 +204,9 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
 
 
 def test_degrades_when_unsloth_zoo_entirely_absent():
-    """Studio-only test/build environments do not install unsloth_zoo at all. The
-    shim must degrade for that case too: ``import unsloth_zoo.hf_xet_fallback``
-    then raises ModuleNotFoundError(name='unsloth_zoo') (the top-level package),
-    not name='unsloth_zoo.hf_xet_fallback'. Regression guard for the shim re-raising
-    and breaking every Studio import that transitively pulls it in."""
+    """When unsloth_zoo is absent entirely, the import raises
+    ModuleNotFoundError(name='unsloth_zoo') (top-level package). Guard that the shim still
+    degrades and does not re-raise, breaking every Studio import that pulls it in."""
     import importlib
 
     class _BlockZoo:
@@ -227,8 +216,7 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
             path = None,
             target = None,
         ):
-            # Simulate the whole package being absent: the first missing component
-            # is 'unsloth_zoo', so that is what ModuleNotFoundError.name carries.
+            # Whole package absent, so ModuleNotFoundError.name is the top-level 'unsloth_zoo'.
             if name == "unsloth_zoo" or name.startswith("unsloth_zoo."):
                 raise ModuleNotFoundError("No module named 'unsloth_zoo'", name = "unsloth_zoo")
             return None
@@ -259,11 +247,8 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
 
 
 def test_degrades_when_shared_helper_import_raises_importerror():
-    """unsloth_zoo can be installed yet fail to import because a heavy dependency
-    it initializes at package import (torch) is missing -- a llama.cpp/GGUF-only
-    Studio install has no torch. That raises ImportError (not ModuleNotFoundError),
-    so the shim must degrade for it too rather than crash the Studio server at
-    startup. Regression guard for the inference E2E jobs."""
+    """unsloth_zoo can be installed yet fail to import when torch is missing (llama.cpp/GGUF-only
+    Studio), raising ImportError not ModuleNotFoundError. The shim must degrade for that too."""
     import importlib
 
     class _BlockWithImportError:
@@ -274,7 +259,7 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             target = None,
         ):
             if name == "unsloth_zoo.hf_xet_fallback":
-                # Mirror unsloth_zoo/__init__ on a torch-less install: a plain ImportError with no .name.
+                # Mirror a torch-less install: a plain ImportError with no .name.
                 raise ImportError("Unsloth: Pytorch is not installed.")
             return None
 
@@ -301,9 +286,8 @@ def test_degrades_when_shared_helper_import_raises_importerror():
 
 
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
-    """unsloth_zoo's __init__ runs GPU detection that raises NotImplementedError on a GPU-less host
-    (CPU GGUF Studio). The shim must retry the import under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 (its light
-    path), then restore the env; if even the retry fails, it degrades instead of crashing."""
+    """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
+    retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails."""
     import importlib
     import os
 
@@ -317,11 +301,10 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
             path = None,
             target = None,
         ):
-            # The crash is in unsloth_zoo's __init__ (the PARENT import fails before the submodule), so
-            # intercept "unsloth_zoo" itself (works whether or not it is installed; finder is first).
+            # Crash is in unsloth_zoo's __init__, so intercept "unsloth_zoo" itself (the parent).
             if name == "unsloth_zoo":
                 # Record the env each attempt sees; raise the no-GPU error both times so the shim
-                # degrades (the recovery-succeeds path is covered by real unsloth_zoo on a CPU host).
+                # degrades.
                 seen_env.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
                 raise NotImplementedError("Unsloth cannot find any torch accelerator")
             return None

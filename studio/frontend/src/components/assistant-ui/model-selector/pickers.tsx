@@ -1245,8 +1245,8 @@ export function HubModelPicker({
   onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
-  // The live model id from the runtime store (backend-mirrored active_model), not the
-  // dropdown highlight which can be a staged pick. Disables the update action for it.
+  // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
+  // highlight which can be a staged pick. Disables the update action for it.
   const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
