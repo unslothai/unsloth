@@ -590,6 +590,16 @@ class AnthropicPassthroughEmitter:
         for tc in tool_calls:
             tc_idx = tc.get("index", 0)
             fn = tc.get("function") or {}
+            if (
+                self._heal_disable_parallel
+                and tc_idx not in self._tool_call_states
+                and (self._healed_call_count + len(self._tool_call_states)) >= 1
+            ):
+                # disable_parallel_tool_use: a healed call already consumed the
+                # single allowed slot. The caller's chunk-level cap only sees
+                # native indexes, so drop this native call (and its later
+                # argument deltas, which never allocate a state either).
+                continue
             if tc_idx not in self._tool_call_states:
                 # New tool call — close prior block, open tool_use block
                 if self._current_block_type is not None:
@@ -699,7 +709,10 @@ class AnthropicPassthroughEmitter:
         # A healed call arrives complete, so its tool_use block opens, carries
         # one input_json_delta, and closes immediately; an open text block is
         # closed first (only the safe prefix ever streamed into it).
-        if self._heal_disable_parallel and self._healed_call_count >= 1:
+        if self._heal_disable_parallel and (
+            self._healed_call_count + len(self._tool_call_states)
+        ) >= 1:
+            # Healed and native calls share the single allowed slot.
             return []
         events: list[str] = []
         if self._current_block_type is not None:

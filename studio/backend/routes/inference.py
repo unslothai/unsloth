@@ -8830,6 +8830,17 @@ async def _responses_stream(
                     )
 
                 for tc in delta.get("tool_calls") or []:
+                    if (
+                        payload.parallel_tool_calls is False
+                        and healed_tc_index >= 1
+                        and tc.get("index", 0) not in tool_call_state
+                    ):
+                        # A healed call already consumed the single allowed slot;
+                        # _drop_parallel_tool_call_deltas only sees native indexes,
+                        # so a native index-0 call would still open a second
+                        # function_call item. Skip it (and its later argument
+                        # deltas, which never allocate a state either).
+                        continue
                     for event in _tool_call_delta_events(tc):
                         yield event
 
@@ -10994,6 +11005,16 @@ async def _openai_passthrough_stream(
                     # text (it preceded the call) and relay verbatim from here on.
                     lines = _healer_sse_lines(healer.structured_tool_call_seen())
                     if healed_call_index:
+                        if payload.parallel_tool_calls is False:
+                            # A healed call already consumed the single allowed
+                            # slot; the upstream SSE cap keeps native index 0, so
+                            # drop the native call here or the client gets two.
+                            del delta["tool_calls"]
+                            if delta or choice.get("finish_reason") or chunk_data.get("usage"):
+                                lines.append(
+                                    "data: " + json.dumps(chunk_data, ensure_ascii = False)
+                                )
+                            return lines
                         # A healed call already went out on index 0..n-1; OpenAI
                         # clients merge tool-call deltas by index, so shift the
                         # native calls into the next indexes or they would merge

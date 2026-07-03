@@ -182,3 +182,18 @@ class TestHealingPathUnaffected:
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
+
+    def test_closed_function_call_keeps_trailing_prose_out_of_arguments(self):
+        # allow_incomplete exists for truncated output; a call that DID close
+        # must parse identically to strict mode, leaving prose after
+        # </function> out of the last parameter and out of the removal span.
+        from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+        text = "<function=web_search><parameter=query>cats</parameter></function> trailing"
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert json.loads(call["function"]["arguments"]) == {"query": "cats"}
+        (span,) = spans
+        assert text[span[0] : span[1]] == (
+            "<function=web_search><parameter=query>cats</parameter></function>"
+        )

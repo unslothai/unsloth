@@ -924,6 +924,32 @@ class TestAnthropicEmitterHealing:
         ]
         assert len(starts) == 1
 
+    def test_disable_parallel_drops_native_after_healed(self):
+        # A healed call consumed the single allowed slot; a later native
+        # structured call (index 0, so it survives the caller's chunk-level
+        # cap) must not open a second tool_use block.
+        structured = [
+            {
+                "index": 0,
+                "id": "call_up",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }
+        ]
+        events = self._events(
+            self._emitter(disable_parallel_tool_use = True),
+            [
+                self._chunk(content = LOOKUP_XML),
+                self._chunk(tool_calls = structured),
+                self._chunk(finish_reason = "tool_calls"),
+            ],
+        )
+        starts = [
+            e
+            for e in events
+            if e.get("type") == "content_block_start" and e["content_block"]["type"] == "tool_use"
+        ]
+        assert len(starts) == 1
+
     def test_no_healing_means_verbatim_text(self):
         from core.inference.anthropic_compat import AnthropicPassthroughEmitter
 
@@ -1068,6 +1094,39 @@ class TestOpenaiStreamingRoute:
             )
             assert "<tool_call>" not in text
             assert chunks[-1] == "data: [DONE]\n\n"
+
+        asyncio.run(_run())
+
+    def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
+        async def _run():
+            # parallel_tool_calls=false: a healed call consumed the single
+            # allowed slot, and the upstream SSE cap keeps native index 0, so
+            # the route must drop the later native call itself.
+            xml = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+            native = (
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
+                '[{"index":0,"id":"call_up","type":"function","function":'
+                '{"name":"lookup","arguments":"{}"}}]}}]}'
+            )
+            lines = [
+                'data: {"id":"c1","model":"gguf","created":1,"choices":'
+                '[{"index":0,"delta":{"content":%s}}]}' % json.dumps(xml),
+                native,
+                'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(
+                monkeypatch, _payload(parallel_tool_calls = False), lines
+            )
+            payloads = _stream_payloads(chunks)
+            tool_deltas = [
+                tc
+                for p in payloads
+                for c in p.get("choices", [])
+                for tc in (c.get("delta") or {}).get("tool_calls") or []
+            ]
+            (call,) = tool_deltas
+            assert call["id"] == "call_0"  # the healed call; native was dropped
 
         asyncio.run(_run())
 

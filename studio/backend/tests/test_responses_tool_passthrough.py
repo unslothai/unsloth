@@ -2111,3 +2111,53 @@ class TestResponsesStreamHealing:
         assert [item["type"] for item in output] == ["message", "function_call", "message"]
         assert output[0]["content"][0]["text"] == "before "
         assert output[2]["content"][0]["text"] == " after."
+
+    def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
+        # parallel_tool_calls=false: a healed call consumed the single allowed
+        # slot; a later native structured call (index 0, so it survives
+        # _drop_parallel_tool_call_deltas) must not open a second
+        # function_call item.
+        TestResponsesStreamAdapter._install_stream_mock(
+            monkeypatch,
+            [
+                {"choices": [{"delta": {"content": self._XML}}]},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_up",
+                                        "function": {"name": "lookup", "arguments": "{}"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            ],
+        )
+        payload = ResponsesRequest(
+            input = "hi",
+            stream = True,
+            tools = [self._TOOL],
+            parallel_tool_calls = False,
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+
+        events = self._ordered_events(asyncio.run(run()))
+        calls = [
+            payload
+            for name, payload in events
+            if name == "response.output_item.added"
+            and payload["item"]["type"] == "function_call"
+        ]
+        assert len(calls) == 1
+        assert calls[0]["item"]["name"] == "lookup"
