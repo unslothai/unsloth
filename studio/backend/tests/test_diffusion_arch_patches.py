@@ -245,7 +245,10 @@ def test_krea2_forward_matches_stock():
 
     torch.manual_seed(4)
     blk = Krea2TransformerBlock(
-        hidden_size = D, intermediate_size = 2 * D, num_heads = H, num_kv_heads = H // 2,
+        hidden_size = D,
+        intermediate_size = 2 * D,
+        num_heads = H,
+        num_kv_heads = H // 2,
         norm_eps = 1e-6,
     ).eval()
     # Give the zero-init modulation table real values so all six scale/shift/gate
