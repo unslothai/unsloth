@@ -5725,6 +5725,10 @@ class LlamaCppBackend:
                 if extra_args:
                     cmd.extend(str(a) for a in extra_args)
                     logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
+                if is_vision and not load_mmproj:
+                    # Keep the first-class toggle authoritative even when a shell
+                    # or inherited same-model extras request llama.cpp auto-mmproj.
+                    cmd.append("--no-mmproj")
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
@@ -5760,6 +5764,10 @@ class LlamaCppBackend:
                         _ct_raw = (env.get(_ct_var) or "").strip().lower()
                         if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
                             env.pop(_ct_var, None)
+
+                if is_vision and not load_mmproj:
+                    env.pop("LLAMA_ARG_MMPROJ", None)
+                    env.pop("LLAMA_ARG_MMPROJ_AUTO", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default

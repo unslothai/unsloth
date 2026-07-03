@@ -354,6 +354,16 @@ def test_load_model_sets_threads_once():
     assert src.count('cmd.extend(["--threads", str(') == 1
 
 
+def test_load_mmproj_false_scrubs_inherited_auto_mmproj():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert 'cmd.append("--no-mmproj")' in src
+    assert 'env.pop("LLAMA_ARG_MMPROJ", None)' in src
+    assert 'env.pop("LLAMA_ARG_MMPROJ_AUTO", None)' in src
+    assert src.find('cmd.extend(str(a) for a in extra_args)') < src.find(
+        'cmd.append("--no-mmproj")'
+    )
+
+
 def test_llama_cpp_annotations_stay_python39_safe():
     src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
     helper_src = inspect.getsource(_extra_args_set_any_flag)

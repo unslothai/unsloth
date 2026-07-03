@@ -920,6 +920,7 @@ export function SharedComposer({
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
         ? chatTemplateOverride
         : null;
+      const compareVisionProjectorEnabled = store.visionProjectorEnabled;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
@@ -954,7 +955,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
-          load_mmproj: currentStore.visionProjectorEnabled,
+          load_mmproj: compareVisionProjectorEnabled,
         });
         if (
           validation.requires_trust_remote_code ||
@@ -989,7 +990,7 @@ export function SharedComposer({
           spec_draft_n_max: specSettings.specDraftNMax,
           // Honor the Tensor Parallelism toggle on compare loads too.
           tensor_parallel: currentStore.tensorParallel,
-          load_mmproj: currentStore.visionProjectorEnabled,
+          load_mmproj: compareVisionProjectorEnabled,
         });
         saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();

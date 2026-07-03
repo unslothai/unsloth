@@ -177,7 +177,7 @@ export function applyActiveModelStatusToStore(
       : status.chat_template;
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
-  const seedLoadParams = !prevState.modelLoading;
+  const seedLoadParams = !prevState.modelLoading && prevState.pendingSelection === null;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -226,7 +226,8 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    ...(status.load_mmproj !== undefined &&
+    ...(seedLoadParams &&
+      status.load_mmproj !== undefined &&
       prevState.loadedVisionProjectorEnabled === null && {
         visionProjectorEnabled: status.load_mmproj,
         loadedVisionProjectorEnabled: status.load_mmproj,

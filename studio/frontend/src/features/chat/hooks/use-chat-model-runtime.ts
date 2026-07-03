@@ -560,9 +560,12 @@ export function useChatModelRuntime() {
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
+          const currentGgufVariant = stateBeforeUnload.activeGgufVariant ?? null;
+          const nextGgufVariant = ggufVariant ?? null;
           const willResetPerModelLoadSettings =
             Boolean(currentCheckpoint) &&
-            currentCheckpoint !== modelId &&
+            (currentCheckpoint !== modelId ||
+              currentGgufVariant !== nextGgufVariant) &&
             !keepSpeculative;
           if (willResetPerModelLoadSettings) {
             loadVisionProjectorEnabled = true;

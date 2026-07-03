@@ -1314,6 +1314,7 @@ async function autoLoadSmallestModel(): Promise<{
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
+  const loadVisionProjectorEnabled = store.visionProjectorEnabled;
   const specSettings = resolveSpeculativeSettingsForLoad();
   const toastId = toast("Loading a model…", {
     description: "Auto-selecting the smallest downloaded model.",
@@ -1335,6 +1336,7 @@ async function autoLoadSmallestModel(): Promise<{
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
+      load_mmproj: loadVisionProjectorEnabled,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
@@ -1386,8 +1388,7 @@ async function autoLoadSmallestModel(): Promise<{
               trust_remote_code: trustRemoteCode,
               speculative_type: specSettings.speculativeType,
               spec_draft_n_max: specSettings.specDraftNMax,
-              load_mmproj:
-                useChatRuntimeStore.getState().visionProjectorEnabled,
+              load_mmproj: loadVisionProjectorEnabled,
             });
             saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
@@ -1483,8 +1484,7 @@ async function autoLoadSmallestModel(): Promise<{
             trust_remote_code: trustRemoteCode,
             speculative_type: specSettings.speculativeType,
             spec_draft_n_max: specSettings.specDraftNMax,
-            load_mmproj:
-              useChatRuntimeStore.getState().visionProjectorEnabled,
+            load_mmproj: loadVisionProjectorEnabled,
           });
           saveSpeculativeType(specSettings.speculativeType);
           useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
@@ -1573,7 +1573,7 @@ async function autoLoadSmallestModel(): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
-        load_mmproj: useChatRuntimeStore.getState().visionProjectorEnabled,
+        load_mmproj: loadVisionProjectorEnabled,
       });
       saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore
