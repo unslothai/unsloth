@@ -1115,9 +1115,7 @@ class TestOpenaiStreamingRoute:
                 'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
-            chunks = await _drive_stream(
-                monkeypatch, _payload(parallel_tool_calls = False), lines
-            )
+            chunks = await _drive_stream(monkeypatch, _payload(parallel_tool_calls = False), lines)
             payloads = _stream_payloads(chunks)
             tool_deltas = [
                 tc

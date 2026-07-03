@@ -11011,9 +11011,7 @@ async def _openai_passthrough_stream(
                             # drop the native call here or the client gets two.
                             del delta["tool_calls"]
                             if delta or choice.get("finish_reason") or chunk_data.get("usage"):
-                                lines.append(
-                                    "data: " + json.dumps(chunk_data, ensure_ascii = False)
-                                )
+                                lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
                             return lines
                         # A healed call already went out on index 0..n-1; OpenAI
                         # clients merge tool-call deltas by index, so shift the

@@ -709,9 +709,10 @@ class AnthropicPassthroughEmitter:
         # A healed call arrives complete, so its tool_use block opens, carries
         # one input_json_delta, and closes immediately; an open text block is
         # closed first (only the safe prefix ever streamed into it).
-        if self._heal_disable_parallel and (
-            self._healed_call_count + len(self._tool_call_states)
-        ) >= 1:
+        if (
+            self._heal_disable_parallel
+            and (self._healed_call_count + len(self._tool_call_states)) >= 1
+        ):
             # Healed and native calls share the single allowed slot.
             return []
         events: list[str] = []

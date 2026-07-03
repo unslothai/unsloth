@@ -2156,8 +2156,7 @@ class TestResponsesStreamHealing:
         calls = [
             payload
             for name, payload in events
-            if name == "response.output_item.added"
-            and payload["item"]["type"] == "function_call"
+            if name == "response.output_item.added" and payload["item"]["type"] == "function_call"
         ]
         assert len(calls) == 1
         assert calls[0]["item"]["name"] == "lookup"
