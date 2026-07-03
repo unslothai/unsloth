@@ -4,7 +4,7 @@
 from typing import Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
@@ -46,6 +46,15 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.embedding_model_settings import (
+    MAX_EMBEDDING_MODEL_LENGTH,
+    default_embedding_model,
+    get_rag_embedding_model,
+    get_stored_embedding_model,
+    reset_rag_embedding_model,
+    set_rag_embedding_model,
+    validate_embedding_model,
 )
 
 router = APIRouter()
@@ -227,6 +236,186 @@ def update_openai_auto_switch_override(
             log = logger,
         ) from exc
     return ModelOverridesResponse(overrides = get_model_overrides())
+
+
+class EmbeddingModelPayload(BaseModel):
+    embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    # Token for gated/private repos during verification (not stored).
+    hf_token: Optional[str] = Field(default = None, max_length = 512)
+    # Skip HF verification (offline installs, local paths HF can't see).
+    force: bool = False
+
+
+class EmbeddingModelResponse(BaseModel):
+    embedding_model: str
+    default_embedding_model: str
+    is_custom: bool
+
+
+def _embedding_model_response() -> EmbeddingModelResponse:
+    return EmbeddingModelResponse(
+        embedding_model = get_rag_embedding_model(),
+        default_embedding_model = default_embedding_model(),
+        is_custom = get_stored_embedding_model() is not None,
+    )
+
+
+def _llama_backend_active() -> bool:
+    """True when this install embeds via the llama-server (GGUF) backend."""
+    from core.rag import config as rag_config
+    from core.rag import embeddings
+
+    try:
+        raw = (rag_config.EMBED_BACKEND or "auto").strip().lower()
+        key = embeddings._resolve_auto() if raw in embeddings._AUTO_ALIASES else raw
+    except Exception:  # noqa: BLE001 - backend probe must never block saving
+        return False
+    return key in embeddings._LLAMA_ALIASES
+
+
+def _resolves_as_local_gguf(model: str) -> bool:
+    """True when ``model`` is a local .gguf file or a directory holding one, so
+    a save on the llama-server backend needs no HF verification (the artifact
+    itself is the proof)."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+    try:
+        return LlamaServerBackend._resolve_local_gguf(model) is not None
+    except Exception:  # noqa: BLE001 - dir without .gguf, filesystem oddity
+        return False
+
+
+def _local_gguf_backend_error(model: str) -> str | None:
+    """409 detail when ``model`` is a local dir without a .gguf but this install
+    embeds via llama-server (macOS/CPU default), which needs one. A
+    sentence-transformers-only folder would verify fine yet fail at first index.
+    None when not applicable. ``force`` skips this check like HF verification."""
+    from pathlib import Path
+
+    if not Path(model).expanduser().is_dir():
+        return None
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    if not _llama_backend_active():
+        return None
+    try:
+        LlamaServerBackend._resolve_local_gguf(model)
+        return None
+    except RuntimeError:
+        return (
+            f"{model!r} contains no .gguf file, but this install embeds with the "
+            "llama-server backend which requires one. Add a GGUF file to the "
+            "folder or use a Hugging Face repo."
+        )
+    except Exception:  # noqa: BLE001 - filesystem oddity: don't block saving
+        return None
+
+
+def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
+    """409 detail when the llama-server backend would find no .gguf for an HF
+    repo: neither the derived companion repo nor the repo itself has one. Saves
+    that verify as embedding models would otherwise fail at first index.
+    None when not applicable; ``force`` skips this like HF verification."""
+    from pathlib import Path
+
+    if Path(model).expanduser().exists():
+        return None  # local paths are handled by the local checks
+    if not _llama_backend_active():
+        return None
+    from core.rag import config as rag_config
+
+    candidates = [model] if rag_config._names_gguf(model) else [f"{model}-GGUF", model]
+    try:
+        from huggingface_hub import list_repo_files
+    except Exception:  # noqa: BLE001 - hub client unavailable: don't block saving
+        return None
+    for candidate in candidates:
+        try:
+            files = list_repo_files(candidate, token = hf_token)
+        except Exception:  # noqa: BLE001 - missing/gated repo: try next candidate
+            continue
+        if any(f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files):
+            return None
+    checked = " or ".join(repr(c) for c in candidates)
+    return (
+        f"No GGUF weights found in {checked}, but this install embeds with the "
+        "llama-server backend which requires them. Pick a model with a GGUF "
+        "companion repo or GGUF files in the repo itself."
+    )
+
+
+@router.get("/embedding-model", response_model = EmbeddingModelResponse)
+def get_embedding_model(
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResponse:
+    return _embedding_model_response()
+
+
+@router.put("/embedding-model", response_model = EmbeddingModelResponse)
+def update_embedding_model(
+    payload: EmbeddingModelPayload, current_subject: str = Depends(get_current_subject)
+) -> EmbeddingModelResponse:
+    """Set the RAG embedding model. Unless ``force`` is set, the repo is verified
+    to be an embedding model via HF metadata; an unverifiable model (wrong type,
+    typo, gated repo, or no network) returns 409 so the UI can offer "save anyway".
+    Documents indexed under the previous model must be re-uploaded."""
+    from utils.models import is_embedding_model
+
+    try:
+        model = validate_embedding_model(payload.embedding_model)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid embedding model."),
+            event = "settings.update_embedding_model_failed",
+            log = logger,
+        ) from exc
+    # The env/default model needs no verification; saving it is a no-op override.
+    # A local GGUF on the llama-server backend is accepted as-is: it is exactly
+    # what the backend loads, and HF metadata cannot verify a local path.
+    if (
+        model != default_embedding_model()
+        and not payload.force
+        and not (_llama_backend_active() and _resolves_as_local_gguf(model))
+    ):
+        hf_token = (payload.hf_token or "").strip() or None
+        from core.rag import config as rag_config
+
+        # A GGUF-named repo on the llama-server backend is loaded from its .gguf
+        # files, which rarely carry sentence-transformers metadata; verify the
+        # GGUF is available (below) rather than the ST embedding-metadata gate,
+        # which would wrongly 409 a valid online GGUF embedder.
+        gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
+        if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Could not verify {model!r} as an embedding model on "
+                    "Hugging Face (it may be the wrong model type, gated, or "
+                    "you may be offline)."
+                ),
+            )
+        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+        if gguf_error:
+            raise HTTPException(status_code = 409, detail = gguf_error)
+    set_rag_embedding_model(model)
+    logger.info(
+        "settings.embedding_model_updated subject=%s model=%s forced=%s",
+        current_subject,
+        model,
+        payload.force,
+    )
+    return _embedding_model_response()
+
+
+@router.delete("/embedding-model", response_model = EmbeddingModelResponse)
+def reset_embedding_model(
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResponse:
+    """Clear the override, returning to the env/default model."""
+    reset_rag_embedding_model()
+    logger.info("settings.embedding_model_reset subject=%s", current_subject)
+    return _embedding_model_response()
 
 
 class PreviewLinkRotateResponse(BaseModel):
