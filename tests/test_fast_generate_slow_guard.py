@@ -73,6 +73,9 @@ def test_fast_generate_slow_guard():
     assert _rejects(
         lambda: w(prompts = [1, 2, 3]), "fast_inference=True"
     )  # token-id list via vLLM-only `prompts` kwarg
+    assert _rejects(
+        lambda: w(prompts = None), "fast_inference=True"
+    )  # vLLM-only kwarg present even if None
     assert _rejects(lambda: w({"prompt": "hi"}, _SamplingParams()), "sampling_params")
     assert _rejects(
         lambda: w({"prompt": "hi"}, [_SamplingParams()]), "sampling_params"
@@ -84,7 +87,7 @@ def test_fast_generate_slow_guard():
     assert w(input_ids = "TOKENS", max_new_tokens = 8) == "ok" and state.get("hit")
     assert w([1, 2, 3], max_new_tokens = 8) == "ok"  # positional token ids
     assert w([], max_new_tokens = 8) == "ok"  # empty positional
-    print("12 reject + 3 pass fast_generate slow-mode guard cases passed")
+    print("13 reject + 3 pass fast_generate slow-mode guard cases passed")
 
 
 if __name__ == "__main__":

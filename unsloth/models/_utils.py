@@ -3639,9 +3639,10 @@ def make_fast_generate_wrapper(original_generate):
         # of either) only works under vLLM; tokenize first when fast_inference=False. A positional
         # arg may be HF token ids, so check it conservatively with _is_vllm_prompt. The `prompts` /
         # `prompt_token_ids` / `prompt_embeds` keywords are vLLM-only names that HuggingFace generate
-        # does not accept, so any of them being present is a vLLM-style call (even a bare token list).
+        # does not accept, so any of them being present is a vLLM-style call (even a bare token list,
+        # or an explicit None from a defaulted kwargs dict), hence membership rather than a value check.
         vllm_prompt_kwarg = any(
-            kwargs.get(k) is not None for k in ("prompts", "prompt_token_ids", "prompt_embeds")
+            k in kwargs for k in ("prompts", "prompt_token_ids", "prompt_embeds")
         )
         if (len(args) > 0 and _is_vllm_prompt(args[0])) or vllm_prompt_kwarg:
             raise ValueError(
