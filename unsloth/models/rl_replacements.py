@@ -1383,7 +1383,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     try:
                         import inspect as _pk_inspect
                         from unsloth_zoo.rl_replacements import RL_REPLACEMENTS as _pk_RL
-                        _pk_guard = "torch.where(_keep, new" in _pk_inspect.getsource(_pk_RL["grpo_compute_loss"])
+                        _pk_guard = "torch.where(_keep, new" in _pk_inspect.getsource(
+                            _pk_RL["grpo_compute_loss"]
+                        )
                     except Exception:
                         _pk_guard = False
                     unwrapped_model._unsloth_zoo_masked_col_guard = _pk_guard
