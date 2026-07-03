@@ -27,13 +27,14 @@ source-body check (``_body_has``) confirms the exact lines we rewrite are still 
 future diffusers that changed the block body simply leaves the block UNPATCHED (correctness
 first) rather than running a stale copy. Kill-switch: ``UNSLOTH_DIFFUSION_ARCH_PATCHES=0``.
 
-Implemented for all four families (extend by adding entries to ``_SPECS``):
+Implemented for all five families (extend by adding entries to ``_SPECS``):
   * qwen-image  ``QwenImageTransformerBlock._modulate`` -- modulation addcmul (all 4 sites).
   * z-image     ``ZImageTransformerBlock.forward``      -- the 2 gated-residual addcmuls.
   * flux.1      ``FluxTransformerBlock.forward`` (inline norm2 modulation + 4 gated residuals)
                 + ``FluxSingleTransformerBlock.forward`` (residual + gate*proj_out).
   * flux.2-klein ``Flux2TransformerBlock.forward`` (4 inline modulations + 4 gated residuals)
                 + ``Flux2SingleTransformerBlock.forward`` (inline modulation + gated residual).
+  * krea-2      ``Krea2TransformerBlock.forward`` (2 inline modulations + 2 gated residuals).
 """
 
 from __future__ import annotations
@@ -469,6 +470,53 @@ def _spec_flux2_single():
 
 
 # =====================================================================================
+# krea-2: Krea2TransformerBlock.forward  (2 inline modulations + 2 gated residuals)
+# =====================================================================================
+def _krea2_block_forward(
+    self,
+    hidden_states,
+    temb,
+    image_rotary_emb,
+    attention_mask = None,
+):
+    """diffusers 0.39 ``Krea2TransformerBlock.forward`` with the two inline modulations
+    ``(1 + scale) * norm(x) + shift`` and the two gated residuals ``x + gate * out`` each
+    fused to one ``torch.addcmul``."""
+    # temb: (B, 1, 6 * hidden_size), shared across all blocks; each block only learns an
+    # additive table.
+    modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
+    prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
+
+    norm1 = self.norm1(hidden_states)
+    attn_out = self.attn(
+        torch.addcmul(preshift, norm1, 1 + prescale),
+        attention_mask = attention_mask,
+        image_rotary_emb = image_rotary_emb,
+    )
+    hidden_states = torch.addcmul(hidden_states, pregate, attn_out)
+    norm2 = self.norm2(hidden_states)
+    ff_out = self.ff(torch.addcmul(postshift, norm2, 1 + postscale))
+    return torch.addcmul(hidden_states, postgate, ff_out)
+
+
+def _spec_krea2_forward():
+    try:
+        from diffusers.models.transformers.transformer_krea2 import Krea2TransformerBlock as cls
+    except Exception:  # noqa: BLE001
+        return None
+    orig = getattr(cls, "forward", None)
+    if orig is None or not _body_has(
+        orig,
+        "(1.0 + prescale) * self.norm1(hidden_states) + preshift",
+        "hidden_states = hidden_states + pregate * attn_out",
+        "(1.0 + postscale) * self.norm2(hidden_states) + postshift",
+        "hidden_states = hidden_states + postgate * ff_out",
+    ):
+        return None
+    return (cls, "forward", _krea2_block_forward)
+
+
+# =====================================================================================
 # registry + lifecycle
 # =====================================================================================
 # Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None (target absent /
@@ -480,6 +528,7 @@ _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_flux_single,
     _spec_flux2_double,
     _spec_flux2_single,
+    _spec_krea2_forward,
 )
 
 # (cls, attr) pairs we successfully patched, for an exact reverse.
