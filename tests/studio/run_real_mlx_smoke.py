@@ -403,10 +403,14 @@ def cmd_train(args) -> int:
     metrics["gguf_dir"] = str(gguf_dir)
     with Phase("save_gguf", metrics):
         try:
+            # q8_0 (the exporter default), not bf16: llama.cpp has optimized q8_0
+            # CPU kernels, whereas bf16 CPU decode is unusably slow on the runner
+            # and made the fresh-process llama-cli reload below time out. q8_0 is
+            # also what users deploy by default.
             model.save_pretrained_gguf(
                 str(gguf_dir),
                 tokenizer = tokenizer,
-                quantization_method = "not_quantized",
+                quantization_method = "fast_quantized",
             )
             gguf_files = sorted(gguf_dir.glob("*.gguf"))
             if not gguf_files:
@@ -565,31 +569,36 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
         raise SystemExit(f"no .gguf files in {save_dir}")
     gguf_path = gguf_files[0]
 
-    # This is a save/reload-integrity smoke; a few generated tokens are enough.
-    # Keep llama.cpp bounded on macOS runners where BF16 GGUF decode is CPU-bound.
+    # Save/reload-integrity smoke (assert below only needs a few chars). The GGUF is
+    # exported q8_0 (see save_gguf) because llama.cpp bf16 CPU decode is unusably slow
+    # on the runner. Run CPU-only (-ngl 0), cap the context (-c 256, the model
+    # advertises 32768), and keep generation short; all env-tunable.
     n_predict = os.environ.get("UNSLOTH_GGUF_RELOAD_N", "8")
     n_threads = os.environ.get("UNSLOTH_GGUF_RELOAD_THREADS", str(os.cpu_count() or 4))
+    n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
+    n_gpu_layers = os.environ.get("UNSLOTH_GGUF_RELOAD_NGL", "0")
     reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
-
+    argv = [
+        str(llama_cli),
+        "-m",
+        str(gguf_path),
+        "-p",
+        PROMPT,
+        "-n",
+        n_predict,
+        "-t",
+        n_threads,
+        "-c",
+        n_ctx,
+        "-ngl",
+        n_gpu_layers,
+        "--temp",
+        "0",
+        "--seed",
+        str(SEED),
+        "--no-warmup",
+    ]
     with Phase("reload_gguf", metrics):
-        argv = [
-            str(llama_cli),
-            "-m",
-            str(gguf_path),
-            "-p",
-            PROMPT,
-            "-n",
-            n_predict,
-            "-t",
-            n_threads,
-            "--temp",
-            "0",
-            "--seed",
-            str(SEED),
-            "-c",
-            "256",
-            "--no-warmup",
-        ]
         try:
             proc = subprocess.run(
                 argv,
@@ -606,6 +615,7 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
                     return stream.decode("utf-8", errors = "replace")
                 return stream or ""
 
+            print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
             print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
             print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
             raise
