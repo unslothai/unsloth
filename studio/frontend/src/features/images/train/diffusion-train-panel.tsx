@@ -446,11 +446,11 @@ export function DiffusionTrainPanel({
     if (!h) return [];
     return h.steps.map((step, i) => ({ step, value: h.loss[i] })).filter((p) => p.value != null);
   }, [status?.metric_history]);
-  const lrHistory: TrainingSeriesPoint[] = useMemo(() => {
+  const gradNormHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = status?.metric_history;
-    if (!h) return [];
+    if (!h?.grad_norm) return [];
     return h.steps
-      .map((step, i) => ({ step, value: h.lr[i] }))
+      .map((step, i) => ({ step, value: h.grad_norm?.[i] ?? null }))
       .filter((p): p is TrainingSeriesPoint => p.value != null);
   }, [status?.metric_history]);
 
@@ -1029,7 +1029,9 @@ export function DiffusionTrainPanel({
           <>
             <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold capitalize">{status?.status}</span>
+                <span className="text-sm font-semibold capitalize">
+                  {status?.status === "completed" ? "Training complete \u{1F389}" : status?.status}
+                </span>
                 <span className="text-xs text-muted-foreground">
                   {(status?.total_steps ?? 0) > 0
                     ? `${status?.step}/${status?.total_steps} steps`
@@ -1073,7 +1075,7 @@ export function DiffusionTrainPanel({
               )}
             </div>
 
-            <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
+            <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
           </>
         )}
 

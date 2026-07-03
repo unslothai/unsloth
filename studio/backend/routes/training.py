@@ -1270,6 +1270,7 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
         steps = snap.pop("metric_steps", []),
         loss = snap.pop("metric_loss", []),
         lr = snap.pop("metric_lr", []),
+        grad_norm = snap.pop("metric_grad_norm", []),
     )
     return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
 

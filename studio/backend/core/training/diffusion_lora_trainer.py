@@ -509,8 +509,12 @@ def run_diffusion_lora_training(
 
             # max_grad_norm <= 0 means "disable clipping" (the Studio payload sends 0.0 for that);
             # passing 0.0 to clip_grad_norm_ would scale every gradient to zero (no learning).
+            grad_norm = None
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
+                # The returned value is the total PRE-clip norm, reported to the UI chart.
+                grad_norm = float(
+                    torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
+                )
             optimizer.step()
             lr_sched.step()
 
@@ -535,6 +539,7 @@ def run_diffusion_lora_training(
                     loss = round(step_loss, 5),
                     avg_loss = round(running_loss / done, 5),
                     learning_rate = lr_sched.get_last_lr()[0],
+                    grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
                     samples_per_second = samples_per_second,
                     peak_memory_gb = peak_gb or None,
                 )

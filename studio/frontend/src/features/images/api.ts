@@ -304,6 +304,8 @@ export interface DiffusionMetricHistory {
   steps: number[];
   loss: number[];
   lr: Array<number | null>;
+  // Total pre-clip gradient norm per step (the training health signal the charts show).
+  grad_norm?: Array<number | null>;
 }
 
 // A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
@@ -317,6 +319,7 @@ export interface DiffusionTrainingStatus {
   loss: number | null;
   avg_loss: number | null;
   learning_rate: number | null;
+  grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
   output_dir: string | null;

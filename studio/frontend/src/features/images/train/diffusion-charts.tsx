@@ -4,12 +4,13 @@
 import { type ReactElement, useMemo } from "react";
 
 import type { TrainingSeriesPoint } from "@/features/training";
-// The loss + LR cards are pure presentational (props only), so reuse them directly. We do
-// NOT reuse ChartsSection/ChartsContent: those also render Grad Norm and an Eval Loss card,
-// which are meaningless for diffusion LoRA training and showed as an empty card and an
-// "Evaluation not configured" placeholder. This is a diffusion-only two-card layout.
+// The loss + grad-norm cards are pure presentational (props only), so reuse them directly.
+// We do NOT reuse ChartsSection/ChartsContent: those also render an LR and an Eval Loss
+// card, which add little for diffusion LoRA training (the LR curve is the deterministic
+// schedule the user just picked; eval is not configured). This is a diffusion-only
+// two-card layout: Training Loss + Grad Norm (the actual training health signal).
 // eslint-disable-next-line no-restricted-imports
-import { LearningRateChartCard } from "@/features/studio/sections/charts/learning-rate-chart-card";
+import { GradNormChartCard } from "@/features/studio/sections/charts/grad-norm-chart-card";
 // eslint-disable-next-line no-restricted-imports
 import { TrainingLossChartCard } from "@/features/studio/sections/charts/training-loss-chart-card";
 // eslint-disable-next-line no-restricted-imports
@@ -43,16 +44,16 @@ function fullStepDomain(steps: number[]): [number, number] {
   return [min, max];
 }
 
-// A diffusion-only metrics view: just Training Loss and Learning Rate, side by side, with a
-// note under the loss card explaining why per-step loss looks noisy. Always renders both
-// cards (even with no data) so the Train tab can show them grayed before a run starts; the
-// parent applies the grayed treatment via a wrapper, so we never early-return null here.
+// A diffusion-only metrics view: Training Loss and Grad Norm, side by side, with a note
+// under the loss card explaining why per-step loss looks noisy. Always renders both cards
+// (even with no data) so the parent can decide when to mount them; we never early-return
+// null here.
 export function DiffusionCharts({
   lossHistory,
-  lrHistory,
+  gradNormHistory,
 }: {
   lossHistory: TrainingSeriesPoint[];
-  lrHistory: TrainingSeriesPoint[];
+  gradNormHistory: TrainingSeriesPoint[];
 }): ReactElement {
   const lossItems = useMemo(() => toLossItems(lossHistory), [lossHistory]);
   const smoothed = useMemo(
@@ -73,23 +74,23 @@ export function DiffusionCharts({
     [reducedLoss],
   );
 
-  const lrData = useMemo(
+  const gradData = useMemo(
     () =>
       compressSeries(
-        lrHistory
+        gradNormHistory
           .filter((p) => Number.isFinite(p.value))
-          .map((p) => ({ step: p.step, lr: p.value, displayLr: p.value })),
+          .map((p) => ({ step: p.step, gradNorm: p.value, displayGradNorm: p.value })),
         MAX_RENDER_POINTS,
       ),
-    [lrHistory],
+    [gradNormHistory],
   );
 
   const steps = useMemo(() => {
     const set = new Set<number>();
     for (const p of lossData) set.add(p.step);
-    for (const p of lrData) set.add(p.step);
+    for (const p of gradData) set.add(p.step);
     return Array.from(set).sort((a, b) => a - b);
-  }, [lossData, lrData]);
+  }, [lossData, gradData]);
 
   const stepDomain = useMemo(() => fullStepDomain(steps), [steps]);
   const xAxisTicks = useMemo(
@@ -101,9 +102,9 @@ export function DiffusionCharts({
     () => buildYDomain(lossData.flatMap((p) => [p.displayLoss, p.displaySmoothed])),
     [lossData],
   );
-  const lrDomain = useMemo(
-    () => buildYDomain(lrData.map((p) => p.displayLr)),
-    [lrData],
+  const gradDomain = useMemo(
+    () => buildYDomain(gradData.map((p) => p.displayGradNorm)),
+    [gradData],
   );
 
   const avgRaw =
@@ -131,9 +132,9 @@ export function DiffusionCharts({
           the smoothed line for the trend, not the raw jitter.
         </p>
       </div>
-      <LearningRateChartCard
-        data={lrData}
-        domain={lrDomain}
+      <GradNormChartCard
+        data={gradData}
+        domain={gradDomain}
         visibleStepDomain={stepDomain}
         xAxisTicks={xAxisTicks}
         scale="linear"

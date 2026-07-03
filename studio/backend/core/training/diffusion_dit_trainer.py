@@ -1157,8 +1157,11 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             (loss / cfg.gradient_accumulation_steps).backward()
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
 
+        grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
+            # clip_grad_norm_ returns the total PRE-clip norm: the health signal the UI
+            # charts (an exploding norm shows up here even while the clip caps the update).
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         optimizer.step()
         lr_sched.step()
 
@@ -1185,6 +1188,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                 loss = round(step_loss, 5),
                 avg_loss = round(running_loss / done, 5),
                 learning_rate = lr_sched.get_last_lr()[0],
+                grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
                 samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,
             )
