@@ -2036,6 +2036,11 @@ class DiffusionStatusResponse(BaseModel):
         "txt2img, img2img, inpaint. Empty when nothing is loaded or on the native engine.",
     )
     engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    native_mode: Optional[str] = Field(
+        None,
+        description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
+        "(per-image sd-cli) | null (diffusers engine)",
+    )
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
@@ -2046,3 +2051,68 @@ class DiffusionStatusResponse(BaseModel):
         "LoRA picker's enabled state). False on unsupported families/quant (e.g. torchao fp8/int8 "
         "dense, GGUF-via-diffusers, or Qwen-Image on the native engine).",
     )
+
+
+# ── OpenAI-compatible images API (POST /v1/images/generations) ──
+#
+# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse so off-the-shelf
+# OpenAI clients work unchanged. The loaded image GGUF stands in for the model;
+# GPT-image-only knobs (quality, style, background, output_format, ...) are
+# accepted and ignored, exactly as dall-e-2 ignores them. The size string is
+# parsed and `stream` is rejected in the route, where the diffusion backend is
+# in reach; everything Pydantic can check declaratively lives here.
+
+
+class ImageGenerationRequest(BaseModel):
+    """OpenAI ``CreateImageRequest`` for ``POST /v1/images/generations``.
+
+    ``prompt`` is the only required field, per the spec. Unlisted OpenAI fields
+    are ignored (Pydantic's default), matching dall-e-2's treatment of the
+    GPT-image-only parameters."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text description of the image(s).")
+    model: Optional[str] = Field(
+        None, description = "Model id (informational; the loaded image model is used)."
+    )
+    n: int = Field(1, ge = 1, le = 10, description = "Number of images to generate (1-10).")
+    size: str = Field(
+        "auto", description = "'auto' or '<width>x<height>' (256-2048, each a multiple of 16)."
+    )
+    response_format: Literal["url", "b64_json"] = Field(
+        "url", description = "Return each image as a URL or a base64-encoded PNG."
+    )
+    user: Optional[str] = Field(None, description = "End-user identifier (accepted, unused).")
+    # gpt-image-only; declared so we can reject it with a clear error instead of
+    # silently returning JSON to a client that asked for an SSE stream.
+    stream: Optional[bool] = Field(
+        None, description = "Streaming image generation is not supported; omit or set false."
+    )
+
+    @field_validator("n", "size", "response_format", mode = "before")
+    @classmethod
+    def _null_means_default(cls, value, info):
+        # OpenAI marks these nullable WITH a default, so an explicit null means
+        # "use the default" — coalesce it instead of 400-ing a spec-valid body.
+        if value is None:
+            return cls.model_fields[info.field_name].default
+        return value
+
+
+class ImageGenerationData(BaseModel):
+    """One image in an ``ImagesResponse`` (OpenAI ``Image``). Exactly one of
+    ``url`` / ``b64_json`` is set, per the request's ``response_format``; the
+    route serializes with ``exclude_none`` so the unused key is omitted."""
+
+    b64_json: Optional[str] = Field(
+        None, description = "Base64-encoded PNG (response_format=b64_json)."
+    )
+    url: Optional[str] = Field(None, description = "URL to the PNG bytes (response_format=url).")
+
+
+class ImageGenerationResponse(BaseModel):
+    """OpenAI ``ImagesResponse``. dall-e-shaped: the GPT-image-only top-level
+    fields (background/output_format/size/quality/usage) are omitted, since our
+    sizes wouldn't satisfy their fixed enums and we report no token usage."""
+
+    created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
+    data: list[ImageGenerationData] = Field(..., description = "The generated images.")

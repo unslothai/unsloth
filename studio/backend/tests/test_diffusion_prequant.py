@@ -133,9 +133,13 @@ def _stub_torch_accelerate(
 
 
 def _good_ckpt(scheme = "fp8", base = "Tongyi-MAI/Z-Image-Turbo"):
+    meta = {"scheme": scheme, "base_model_id": base}
+    # fp8 checkpoints must record per-row granularity or the loader rejects them as stale.
+    if scheme == "fp8":
+        meta["fp8_granularity"] = "per_row"
     return {
         "format": PREQUANT_FORMAT,
-        "metadata": {"scheme": scheme, "base_model_id": base},
+        "metadata": meta,
         "state_dict": {"weight": object()},
     }
 
@@ -218,6 +222,23 @@ def test_load_scheme_mismatch_is_none(monkeypatch, tmp_path):
 
 def test_load_base_mismatch_is_none(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, _good_ckpt(base = "other/model")) is None
+
+
+def test_load_fp8_stale_per_tensor_is_rejected(monkeypatch, tmp_path):
+    # A pre-fix fp8 checkpoint has no fp8_granularity (old per-tensor layout); it must be
+    # rejected so the loader rebuilds instead of reproducing the noise failure.
+    stale = _good_ckpt(scheme = "fp8")
+    del stale["metadata"]["fp8_granularity"]
+    assert _load(monkeypatch, tmp_path, stale, scheme = "fp8") is None
+    # An explicit per-tensor granularity is likewise rejected.
+    per_tensor = _good_ckpt(scheme = "fp8")
+    per_tensor["metadata"]["fp8_granularity"] = "per_tensor"
+    assert _load(monkeypatch, tmp_path, per_tensor, scheme = "fp8") is None
+
+
+def test_load_int8_ignores_fp8_granularity(monkeypatch, tmp_path):
+    # The granularity gate is fp8-only: an int8 checkpoint without it still loads.
+    assert _load(monkeypatch, tmp_path, _good_ckpt(scheme = "int8"), scheme = "int8") is not None
 
 
 def test_load_missing_base_metadata_is_none(monkeypatch, tmp_path):
