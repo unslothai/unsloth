@@ -80,7 +80,7 @@ export function CommandPalette() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="w-[560px] max-w-[calc(100%-2rem)] sm:max-w-[560px]"
+      className="w-140 max-w-[calc(100%-2rem)] sm:max-w-140"
     >
       <PaletteContent />
     </CommandDialog>
@@ -92,7 +92,7 @@ function PaletteContent() {
   const navigate = useNavigate();
   const close = useCommandPaletteStore((s) => s.close);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  const { isDark, toggleTheme } = useAnimatedThemeToggle();
+  const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const [query, setQuery] = useState("");
   const hasQuery = query.trim().length > 0;
 
@@ -120,7 +120,7 @@ function PaletteContent() {
         value={query}
         onValueChange={setQuery}
       />
-      <CommandList className="max-h-[420px]">
+      <CommandList className="max-h-105">
         <CommandEmpty className="text-muted-foreground text-xs">
           {t("shell.commandPalette.noResults")}
         </CommandEmpty>
@@ -192,6 +192,7 @@ function PaletteContent() {
             <CommandShortcut>⌘K</CommandShortcut>
           </CommandItem>
           <CommandItem
+            ref={anchorRef as React.Ref<HTMLDivElement>}
             onSelect={runAndClose(() => void toggleTheme())}
             keywords={["theme"]}
           >
