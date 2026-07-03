@@ -585,3 +585,45 @@ def test_kimi_section_end_inside_arg_string_is_not_a_truncation():
     assert json.loads(calls[1]["function"]["arguments"]) == {
         "text": "the token <|tool_calls_section_end|> means end"
     }
+
+
+def test_closed_envelope_example_before_deepseek_block_runs_real_call():
+    # A CLOSED <tool_call>/<function> example in prose that ends BEFORE a genuine
+    # DeepSeek/Kimi block must not suppress the marker pre-pass: the real call has
+    # to be parsed, not the phantom tool named inside the prose example.
+    deepseek = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n"
+        "```json\n"
+        '{"query":"weather in Paris"}\n'
+        "```"
+        "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    prose = (
+        'A Qwen call looks like <tool_call>{"name":"example_tool","arguments":{}}</tool_call>.\n'
+    )
+    calls = parse_tool_calls_from_text(prose + deepseek)
+    assert [c["function"]["name"] for c in calls] == ["search_web"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {"query": "weather in Paris"}
+
+    kimi = (
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.lookup:0"
+        '<|tool_call_argument_begin|>{"id":7}<|tool_call_end|><|tool_calls_section_end|>'
+    )
+    calls_k = parse_tool_calls_from_text("Example: <function=demo>{}</function> and now:\n" + kimi)
+    assert [c["function"]["name"] for c in calls_k] == ["lookup"], calls_k
+
+
+def test_marker_inside_closed_outer_envelope_still_runs_outer_call():
+    # The guard must still fire when the marker genuinely sits INSIDE a closed outer
+    # <function>/<tool_call> envelope's arguments (a user asking about the syntax):
+    # the OUTER call is the real one, not the embedded marker.
+    outer = (
+        "<function=lookup><parameter=q>what does <｜tool▁calls▁begin｜> mean</parameter></function>"
+    )
+    calls = parse_tool_calls_from_text(outer)
+    # The outer envelope is the real call; the embedded DeepSeek marker must not
+    # hijack the parse into a spurious tool.
+    assert [c["function"]["name"] for c in calls] == ["lookup"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "q": "what does <｜tool▁calls▁begin｜> mean"
+    }

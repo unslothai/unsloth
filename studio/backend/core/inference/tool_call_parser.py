@@ -630,6 +630,11 @@ _EMBEDDED_MARKER_RE = re.compile(
 # both -- otherwise an attribute-form call whose argument embeds a DeepSeek/Kimi
 # marker is hijacked by the marker pre-pass and the wrong tool runs.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")')
+# The CLOSED forms of the outer envelopes above (first two ``_TOOL_CLOSED_PATS``
+# entries): ``<tool_call>...</tool_call>`` and ``<function...>...</function>``.
+# Used to tell a real leading envelope whose arguments embed a marker from a
+# closed syntax EXAMPLE that ends before a genuine DeepSeek/Kimi block.
+_OUTER_ENVELOPE_CLOSED_PATS = tuple(_TOOL_CLOSED_PATS[:2])
 
 
 def _marker_inside_leading_envelope(content: str) -> bool:
@@ -637,7 +642,17 @@ def _marker_inside_leading_envelope(content: str) -> bool:
     if marker is None:
         return False
     envelope = _OUTER_ENVELOPE_OPEN_RE.search(content)
-    return envelope is not None and envelope.start() < marker.start()
+    if envelope is None or envelope.start() >= marker.start():
+        return False
+    # A leading opener alone is not enough: a CLOSED ``<tool_call>``/``<function>``
+    # example that ends before the marker leaves the marker standing as a real
+    # DeepSeek/Kimi call, so the pre-pass must still run. Only treat the marker as
+    # embedded when removing the closed outer envelopes also removes every marker
+    # (i.e. the marker actually sat inside one).
+    residue = content
+    for _pat in _OUTER_ENVELOPE_CLOSED_PATS:
+        residue = _pat.sub("", residue)
+    return _EMBEDDED_MARKER_RE.search(residue) is None
 
 
 def parse_tool_calls_from_text(
