@@ -100,6 +100,21 @@ def _lm_eval_available() -> bool:
         return False
 
 
+def _lm_eval_version() -> tuple:
+    from importlib.metadata import PackageNotFoundError, version
+
+    for dist in ("lm_eval", "lm-eval"):
+        try:
+            parts = re.findall(r"\d+", version(dist))[:3]
+            return tuple(int(part) for part in parts)
+        except PackageNotFoundError:
+            continue
+        except Exception:
+            break
+    # unknown version: don't block devices the runtime may well support
+    return (999,)
+
+
 def _hf_device_error(device: str) -> Optional[str]:
     # lm-eval's HFLM only recognises 'cuda', canonical 'cuda:<i>', 'mps' and
     # 'mps:0'; anything else (cuda0, cuda:, cuda:01, an out-of-range index)
@@ -137,6 +152,13 @@ def _hf_device_error(device: str) -> Optional[str]:
         # an unavailable or out-of-range accelerator would also silently fall
         # back, so validate against the installed torch build like cuda above
         kind, index = match.group(1), int(match.group(2))
+        if kind in ("xpu", "hpu") and _lm_eval_version() < (0, 4, 10):
+            # HFLM only enumerated cuda/cpu/mps/npu before 0.4.10; xpu/hpu
+            # strings fell through to its silent default-device fallback
+            return (
+                f"--device {device} needs lm-eval >= 0.4.10 — upgrade with "
+                "`pip install -U lm_eval`."
+            )
         import torch
 
         backend_mod = getattr(torch, kind, None)
@@ -402,6 +424,13 @@ def resolve_tasks(
                     )
             if not name:
                 raise ValueError(f"Custom task file '{entry}' is missing a 'task:' name.")
+            # tag: (and legacy string group:) values register alias names in
+            # lm-eval's index, so generated datasets must avoid them too
+            for alias_key in ("tag", "group"):
+                alias_value = spec.get(alias_key)
+                for alias in alias_value if isinstance(alias_value, list) else [alias_value]:
+                    if isinstance(alias, str) and alias:
+                        sibling_names.add(alias)
             name = str(name)
             if name in reserved:
                 raise ValueError(

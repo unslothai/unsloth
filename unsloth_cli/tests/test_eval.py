@@ -1352,3 +1352,45 @@ def test_resolve_tasks_rejects_builtin_child_shadowed_in_subdirectory(tmp_path):
             tmp_path / "gen",
             reserved = frozenset({"gsm8k"}),
         )
+
+
+def test_hf_device_error_gates_xpu_hpu_on_lm_eval_version(monkeypatch):
+    # HFLM only enumerated xpu/hpu from 0.4.10; older versions silently fall back
+    _fake_torch(monkeypatch, xpu_available = True, xpu_count = 1)
+    monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 4))
+    assert "needs lm-eval >= 0.4.10" in evalmod._hf_device_error("xpu:0")
+    assert "needs lm-eval >= 0.4.10" in evalmod._hf_device_error("hpu:0")
+    # npu has been enumerated since 0.4.4
+    assert "NPU is not available" in evalmod._hf_device_error("npu:0")
+    monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 10))
+    assert evalmod._hf_device_error("xpu:0") is None
+
+
+def test_resolve_tasks_reserves_tag_aliases_for_datasets(tmp_path):
+    # a tag: alias registers under that name, so a dataset must not take it
+    (tmp_path / "custom.yaml").write_text(
+        yaml.safe_dump({"task": "foo", "tag": "qa", "dataset_path": "json"})
+    )
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(
+        f"{tmp_path / 'qa.jsonl'},{tmp_path / 'custom.yaml'}", "question", "answer", tmp_dir
+    )
+
+    assert names == ["qa_2", "foo"]
+
+
+def test_resolve_tasks_reserves_string_group_alias_for_datasets(tmp_path):
+    # legacy string group: on a single task acts as a tag alias
+    (tmp_path / "custom.yaml").write_text(
+        yaml.safe_dump({"task": "foo", "group": "myalias", "dataset_path": "json"})
+    )
+    (tmp_path / "myalias.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(
+        f"{tmp_path / 'custom.yaml'},{tmp_path / 'myalias.jsonl'}", "question", "answer", tmp_dir
+    )
+
+    assert names == ["foo", "myalias_2"]
