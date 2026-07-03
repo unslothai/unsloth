@@ -2065,6 +2065,39 @@ async def scan_diffusion_loras(
     }
 
 
+@router.get("/diffusion-controlnets")
+async def scan_diffusion_controlnets(
+    family: Optional[str] = Query(
+        default = None, description = "Filter to ControlNets compatible with this diffusion family"
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """List diffusion ControlNet models for the Images workflow.
+
+    Merges the curated, family-tagged catalog with local model folders in
+    ``<studio_home>/controlnets/diffusion``, optionally filtered to the loaded model's family.
+    Cheap: one directory scan, no network (a hub model is only downloaded when selected).
+    """
+    from core.inference import diffusion_controlnet
+
+    entries = diffusion_controlnet.list_controlnets(family = family)
+    return {
+        "controlnets": [
+            {
+                "id": e.id,
+                "display_name": e.display_name,
+                "source": e.source,
+                "families": list(e.families),
+                "control_types": list(e.control_types),
+                "is_union": e.is_union,
+            }
+            for e in entries
+        ],
+        "control_types": list(diffusion_controlnet.CONTROL_TYPES),
+        "controlnets_dir": str(diffusion_controlnet.controlnets_dir()),
+    }
+
+
 def _is_path_under(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())

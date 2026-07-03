@@ -44,6 +44,13 @@ class DiffusionFamily:
     # UI gates the workflow off). The base text-to-image pipeline is ``pipeline_class``.
     img2img_pipeline_class: Optional[str] = None
     inpaint_pipeline_class: Optional[str] = None
+    # ControlNet: the diffusers ControlNet pipeline + model classes for this family. The backend
+    # loads the (small) ControlNet model via from_pretrained and builds the pipeline via
+    # ``Pipeline.from_pipe(base, controlnet=model)`` around the resident modules (no reload),
+    # then passes the control image + conditioning scale at generate time. None on both = the
+    # family has no diffusers ControlNet support and the UI gates the workflow off.
+    controlnet_pipeline_class: Optional[str] = None
+    controlnet_model_class: Optional[str] = None
     # True when the inpaint pipeline keeps the input canvas size, so it can also drive
     # outpaint (extend), where the padded canvas is LARGER than the original. False for
     # FLUX.2 (its pipelines scale any >1MP input down to ~1MP, which shrinks an outpaint
@@ -116,6 +123,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("flux1", "flux-1"),
         img2img_pipeline_class = "FluxImg2ImgPipeline",
         inpaint_pipeline_class = "FluxInpaintPipeline",
+        controlnet_pipeline_class = "FluxControlNetPipeline",
+        controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = (
             ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", "clip_l"),
@@ -211,6 +220,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("qwen_image", "qwenimage"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
+        controlnet_pipeline_class = "QwenImageControlNetPipeline",
+        controlnet_model_class = "QwenImageControlNetModel",
         sd_cpp_vae = ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
         # The Qwen2.5-VL text encoder as a Q4_K_M GGUF keeps the CPU RAM win (the
         # bf16 safetensors encoder is ~15 GB). sd-cli's --qwen2vl is an alias of --llm.

@@ -752,3 +752,25 @@ def test_generate_zero_weight_loras_are_noop(monkeypatch):
     b.generate(prompt = "x", steps = 4, seed = 1, loras = [("id1", 0.0)])
     _, params, _, _ = eng.calls[0]
     assert params.lora_dir is None  # nothing applied
+
+
+def test_generate_rejects_controlnet_on_native_engine():
+    # ControlNet is diffusers-only. The route passes `controlnet` to whichever engine is
+    # active, so the native backend must reject it with a clean ValueError (-> 400) rather
+    # than TypeError on an unexpected kwarg (-> opaque 500).
+    b = _loaded_backend(engine = _FakeEngine())
+    with pytest.raises(ValueError, match = "ControlNet is not yet supported on the native"):
+        b.generate(prompt = "x", steps = 4, seed = 1, controlnet = ("id", "img", "canny", 1.0, 0.0, 1.0))
+
+
+def test_generate_rejects_image_conditioned_on_native_engine():
+    # img2img / inpaint / reference / upscale are likewise diffusers-only; a direct API call
+    # with an init image on the native engine gets a clean ValueError, not a silent txt2img.
+    b = _loaded_backend(engine = _FakeEngine())
+    with pytest.raises(ValueError, match = "not yet supported on the native"):
+        b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")
+
+
+def test_status_native_reports_supports_controlnet_false():
+    b = _loaded_backend()
+    assert b.status()["supports_controlnet"] is False

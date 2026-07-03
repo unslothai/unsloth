@@ -713,6 +713,10 @@ class SdCppDiffusionBackend:
         # path: <lora:ALIAS:w> prompt tags for one-shot sd-cli, structured `lora` entries
         # for the resident sd-server. None/empty = no LoRA.
         loras: Optional[list[tuple[str, float]]] = None,
+        # Accepted for the uniform engine interface; the guard below rejects it on the native
+        # engine (ControlNet is diffusers-only) like img2img/inpaint, so a direct API call with
+        # ControlNet set fails clearly instead of TypeError'ing on an unexpected kwarg.
+        controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -732,6 +736,11 @@ class SdCppDiffusionBackend:
             raise ValueError(
                 "img2img / inpaint / reference / upscale are not yet supported on the native "
                 "sd.cpp engine; run on a GPU (diffusers) for image-conditioned workflows."
+            )
+        if controlnet is not None:
+            raise ValueError(
+                "ControlNet is not yet supported on the native sd.cpp engine; run on a GPU "
+                "(diffusers) for ControlNet conditioning."
             )
 
         cancel = threading.Event()
@@ -1108,6 +1117,7 @@ class SdCppDiffusionBackend:
                 "engine": "sd_cpp",
                 "native_mode": None,
                 "supports_lora": False,
+                "supports_controlnet": False,
                 "workflows": [],
             }
         from core.inference import diffusion_lora
@@ -1140,6 +1150,8 @@ class SdCppDiffusionBackend:
                 model_kind = "gguf",
                 transformer_quant = None,
             ),
+            # ControlNet is diffusers-only; the native engine's generate() rejects it.
+            "supports_controlnet": False,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
             # The native engine supports plain text-to-image only (generate() rejects
