@@ -3,12 +3,17 @@
 
 """Local diffusion (text-to-image) backend.
 
-A torch-only singleton: it dequantises a single-file GGUF on-device via
-``GGUFQuantizationConfig`` and pulls the rest of the pipeline (VAE, text
-encoders, scheduler) from the matching base repo. torch/diffusers are imported
-lazily so this stays importable in a no-torch runtime. ``begin_load`` runs on a
-background thread; poll ``load_progress`` for the download bar. GPU-handoff
-policy lives in the arbiter the routes call, not here.
+A torch-only singleton that loads one of three "kinds" (see ``resolve_model_kind``):
+a single-file GGUF transformer dequantised on-device via ``GGUFQuantizationConfig``,
+a single-file safetensors transformer (e.g. fp8), or a full diffusers pipeline via
+``from_pretrained`` (which re-applies an embedded quant config such as bnb-4bit). The
+single-file kinds pull the rest of the pipeline (VAE, text encoders, scheduler) from
+the matching base repo; the pipeline kind pulls everything from the repo itself.
+Non-GGUF kinds are gated to the ``unsloth/*`` org (or a local path) for safety.
+
+torch/diffusers are imported lazily so this stays importable in a no-torch runtime.
+``begin_load`` runs on a background thread; poll ``load_progress`` for the download
+bar. GPU-handoff policy lives in the arbiter the routes call, not here.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from .diffusion_families import (
     detect_family_for_pick,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -41,14 +47,17 @@ from .diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
+    estimate_safetensors_dense_mib,
     file_size_mib,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    compile_eligible,
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
@@ -57,6 +66,8 @@ from .diffusion_attention import (
     apply_attention_backend,
     select_attention_backend,
 )
+from . import diffusion_compile_cache as compile_cache
+from . import diffusion_gguf_compile as gguf_compile
 from .diffusion_cache import apply_step_cache
 from .diffusion_precision import quantize_text_encoders
 from .diffusion_prequant import (
@@ -72,6 +83,124 @@ from .diffusion_transformer_quant import (
 )
 
 logger = get_logger(__name__)
+
+
+# A load resolves to exactly one of these "kinds", which decide how the transformer
+# (and the rest of the pipeline) is built:
+#   "gguf"        -- a single-file GGUF transformer dequantised on-device via
+#                    GGUFQuantizationConfig; the VAE / text encoders / scheduler come
+#                    from the companion base diffusers repo. The original behaviour.
+#   "single_file" -- a single-file *.safetensors transformer loaded with from_single_file
+#                    WITHOUT the GGUF dequant config (e.g. an fp8 checkpoint); companions
+#                    still come from the base repo.
+#   "pipeline"    -- a full diffusers repo loaded with pipeline_cls.from_pretrained(repo_id),
+#                    which pulls every component (transformer included) and re-applies any
+#                    embedded quantization_config (e.g. a bnb-4bit pipeline) automatically.
+_MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
+
+
+def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] = None) -> str:
+    """Classify a load request into one of ``_MODEL_KINDS``.
+
+    An explicit ``model_kind`` wins (validated). Otherwise the kind is inferred from
+    the single-file name: a ``.gguf`` name is ``"gguf"``, any other single-file name is
+    ``"single_file"``, and the absence of a name is a full ``"pipeline"`` load. Pure and
+    network-free, so the route, validation, and load paths all agree on the kind."""
+    if model_kind:
+        kind = model_kind.strip().lower()
+        if kind not in _MODEL_KINDS:
+            raise ValueError(
+                f"Unknown model_kind '{model_kind}'. Expected one of {sorted(_MODEL_KINDS)}."
+            )
+        return kind
+    name = (gguf_filename or "").strip()
+    if not name:
+        return "pipeline"
+    if name.lower().endswith(".gguf"):
+        return "gguf"
+    return "single_file"
+
+
+def _decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
+    """Decode a base64 (optionally ``data:`` URL) image string to a PIL image.
+
+    The image-conditioned workflows (img2img / inpaint / edit) transport the input
+    image and mask as base64 in the JSON request, so this is the single decode path.
+    A mask is decoded as single-channel ``L``; the source image as ``RGB``."""
+    import base64
+    import binascii
+    import io
+
+    from PIL import Image
+
+    raw = data.strip()
+    if raw.startswith("data:"):
+        # data:[<mime>][;base64],<payload>
+        _, _, raw = raw.partition(",")
+    try:
+        blob = base64.b64decode(raw, validate = False)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"Invalid base64 image data: {exc}") from exc
+    # Bound the decoded size. Every image-conditioned workflow (img2img / inpaint / upscale /
+    # reference / edit) decodes through here, so this single guard protects init, mask, and
+    # each reference image uniformly. PIL only WARNS in its 89-178MP "decompression bomb" soft
+    # zone and still loads (~0.5 GB RGB each, times up to 4 with multi-reference); cap the side
+    # well below that. 4096px covers txt2img's 2048 max, upscales, and normal outpaint canvases;
+    # anything larger is rejected with a clear 400 instead of risking an OOM.
+    max_side = 4096
+    try:
+        img = Image.open(io.BytesIO(blob))
+        # Read the declared dimensions from the header (Image.open is lazy) and reject an
+        # over-limit image BEFORE img.load() decompresses its pixels, so a crafted
+        # small-payload/huge-dimension file can't spike memory before the guard runs.
+        w, h = img.size
+        if w > max_side or h > max_side:
+            raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+        img.load()
+    except ValueError:
+        raise  # the size guard's own message; don't wrap it as a decode error
+    except Exception as exc:  # noqa: BLE001 — surfaced as a 400 to the client
+        raise ValueError(f"Could not decode image: {exc}") from exc
+    return img.convert(mode)
+
+
+def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
+    """Resize a PIL image so both sides are multiples of ``multiple`` (rounded to nearest,
+    minimum one multiple), preserving content with a high-quality resample.
+
+    Image-conditioned pipelines (Z-Image / Qwen / FLUX: 8x VAE downsample + 2x patch) reject
+    sizes that are not divisible by 16. Rather than error on an odd-sized upload, snap it so
+    the workflow just works; rounding to nearest keeps the rescale minimal/accurate."""
+    from PIL import Image
+
+    w, h = img.size
+    nw = max(multiple, int(round(w / multiple)) * multiple)
+    nh = max(multiple, int(round(h / multiple)) * multiple)
+    if (nw, nh) != (w, h):
+        img = img.resize((nw, nh), Image.LANCZOS)
+    return img
+
+
+def _is_trusted_diffusion_repo(repo_id: str) -> bool:
+    """Whether a NON-GGUF load is allowed for ``repo_id``.
+
+    Making ``gguf_filename`` optional opens a ``from_pretrained`` / ``from_single_file``
+    on an arbitrary repo, which fetches and deserialises third-party weights. So the
+    non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models) and
+    to local paths the user explicitly pointed at (already on their disk). The GGUF path
+    is unchanged and stays open to any repo, as before.
+
+    A bare ``owner/name`` HF id is never a real filesystem path, and an id with invalid
+    characters makes ``Path.exists()`` raise OSError; treat any such failure as "not a
+    local path" so the trust decision falls through to the unsloth/ check (the loader's
+    validate_load_request raises the clear FileNotFoundError for a genuinely missing
+    local pick)."""
+    try:
+        if Path(repo_id).expanduser().exists():
+            return True
+    except OSError:
+        pass
+    return repo_id.strip().lower().startswith("unsloth/")
 
 
 @dataclass(frozen = True)
@@ -90,6 +219,10 @@ class _LoadState:
     offload_policy: str = OFFLOAD_NONE
     vae_tiling: bool = False
     memory_mode: str = "auto"
+    # The resolved load kind: "gguf" | "single_file" | "pipeline". Surfaced in status so the
+    # UI can gate GGUF-only controls (the dense transformer_quant fast path only engages on
+    # the gguf kind; on single_file/pipeline it is a silent no-op).
+    kind: str = "gguf"
     # The opt-in speed profile (Phase 3).
     speed_mode: str = SPEED_OFF
     speed_optims: tuple = ()
@@ -107,6 +240,12 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Step cache engaged ("fbcache") or None. Opt-in, for many-step models.
     transformer_cache: Optional[str] = None
+    # Shared eager monkey-patches (diffusion_eager_patches) installed for this load (any
+    # non-off speed tier). Uninstalled on unload so a later `off` load is bit-identical.
+    eager_patched: bool = False
+    # Pre-warmed torch.compile cache context (diffusion_compile_cache.CacheContext) when a
+    # compiled tier ran, else None. Carries the per-key inductor dir + bundle for save/restore.
+    compile_cache_ctx: Any = None
 
 
 @dataclass
@@ -183,6 +322,11 @@ class DiffusionBackend:
         # The callback mutates _gen and generate_progress() reads it, both lock-free,
         # so per-step progress polling stays live during a generation.
         self._gen: Optional[_GenState] = None
+        # Cache of image-conditioned workflow pipelines (img2img / inpaint) built via
+        # Pipeline.from_pipe around the loaded text-to-image pipe. They share its already
+        # resident modules (no extra VRAM, no reload), so we build each once per load and
+        # reuse it. Keyed by pipeline class name; cleared on unload with the base pipe.
+        self._aux_pipes: dict[str, Any] = {}
 
     @property
     def is_loaded(self) -> bool:
@@ -280,28 +424,30 @@ class DiffusionBackend:
         *,
         gguf_filename: Optional[str] = None,
         family_override: Optional[str] = None,
+        model_kind: Optional[str] = None,
     ) -> DiffusionFamily:
         """Cheap, network-free validation shared by the route (before it evicts the
-        chat model) and both load paths, so an unloadable pick fails BEFORE the GPU
-        handoff. Raises ValueError for a missing gguf_filename or undetectable
-        family, and ValueError/FileNotFoundError for a bad local GGUF path. Touches
-        no GPU, network, or state."""
-        if not gguf_filename:
-            raise ValueError(
-                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
-            )
-        # Reject a non-GGUF single-file name (e.g. README.md, config.json) here, before
-        # the route hands the GPU over: without this a family-looking repo_id paired with
-        # a non-GGUF filename passes preflight, evicts the chat model, and only fails in
-        # the background from_single_file -- exactly the eviction this validation prevents.
-        if not gguf_filename.lower().endswith(".gguf"):
-            raise ValueError(
-                f"gguf_filename must name a .gguf single-file checkpoint; got '{gguf_filename}'."
-            )
+        chat model) and the load paths, so an unloadable pick fails BEFORE the GPU
+        handoff. Resolves the load kind (gguf / single_file / pipeline), then raises
+        ValueError for a missing single-file name, a non-unsloth non-GGUF repo, or an
+        undetectable family, and ValueError/FileNotFoundError for a bad local path.
+        Touches no GPU, network, or state."""
+        kind = resolve_model_kind(gguf_filename, model_kind)
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
+                f"'{repo_id}' is not a supported diffusion image model. Supported families: "
+                f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
+                f"pass family_override with that family name. (Video models and image models "
+                f"whose diffusers transformer has no single-file loader are not supported.)"
+            )
+        # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
+        # are gated to the unsloth org or a local path -- they fetch + deserialise
+        # weights, so an arbitrary remote repo is rejected here, before any work.
+        if kind != "gguf" and not _is_trusted_diffusion_repo(repo_id):
+            raise ValueError(
+                f"Non-GGUF diffusion loads are restricted to unsloth/* repos (or a local "
+                f"path); got '{repo_id}'. Pass a gguf_filename to load a GGUF instead."
             )
         # Reject a bad LOCAL pick now (the same checks the load would hit later), so
         # the route never evicts a working chat model for a request that can't load.
@@ -309,15 +455,58 @@ class DiffusionBackend:
         # missing one is an error here; a bare "org/name" id is a remote HF repo and
         # is left for the background load to resolve.
         local_root = Path(repo_id).expanduser()
-        if local_root.exists():
-            resolve_local_gguf_child(local_root, gguf_filename)
-        elif (
-            # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and their Windows .\ ..\
-            # forms), a Windows separator anywhere (never present in a bare "org/name" HF
-            # id), or an absolute path on this OS.
+        # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and their Windows .\ ..\
+        # forms), a Windows separator anywhere (never present in a bare "org/name" HF
+        # id), or an absolute path on this OS.
+        path_shaped = (
             repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or local_root.is_absolute()
-        ):
-            raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
+        )
+        if kind in ("gguf", "single_file"):
+            if not gguf_filename:
+                raise ValueError(f"a single-file checkpoint name is required for a '{kind}' load.")
+            # Fail a kind/extension mismatch here (before the route evicts chat and grabs the
+            # GPU), instead of deep in the background from_single_file: a "gguf" load needs a
+            # .gguf file, and a "single_file" load must not be handed a .gguf.
+            is_gguf_name = gguf_filename.lower().endswith(".gguf")
+            if kind == "gguf" and not is_gguf_name:
+                raise ValueError("a 'gguf' load requires a .gguf checkpoint name.")
+            if kind == "single_file" and is_gguf_name:
+                raise ValueError("a .gguf checkpoint needs model_kind 'gguf', not 'single_file'.")
+            # A single-file load must name an actual checkpoint: an arbitrary repo file
+            # (README.md, config.json) would pass preflight, evict the chat model, and
+            # only fail in the background from_single_file -- the eviction this
+            # validation exists to prevent.
+            if kind == "single_file" and not gguf_filename.lower().endswith(".safetensors"):
+                raise ValueError(
+                    f"'{gguf_filename}' is not a loadable single-file checkpoint "
+                    f"(expected a .safetensors name; use a .gguf name for a GGUF load)."
+                )
+            if local_root.exists():
+                resolve_local_gguf_child(local_root, gguf_filename)
+            elif path_shaped:
+                raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
+        else:  # pipeline
+            if gguf_filename:
+                raise ValueError(
+                    "a 'pipeline' load takes a full diffusers repo, not a single-file name."
+                )
+            if local_root.exists():
+                if not (local_root / "model_index.json").exists():
+                    raise FileNotFoundError(
+                        f"Local pipeline directory has no model_index.json: {repo_id}"
+                    )
+            elif path_shaped:
+                raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
+            elif repo_id.upper().endswith("-GGUF"):
+                # A remote "*-GGUF" id is a single-file GGUF repo, not a full diffusers
+                # pipeline: loading it as a pipeline passes the trusted-repo check, evicts
+                # chat, then fails in the background when from_pretrained finds no
+                # model_index.json. Reject the certain case here (no network round-trip)
+                # so the bad pick fails before the GPU handoff, as the route expects.
+                raise ValueError(
+                    f"'{repo_id}' is a single-file GGUF repo; load it with model_kind 'gguf' "
+                    f"and a .gguf filename, not as a full pipeline."
+                )
         return fam
 
     # ── Background load + progress ─────────────────────────────────────────
@@ -340,13 +529,17 @@ class DiffusionBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token (the Studio default when none is configured) must mean
         # "anonymous", not an explicit empty credential the Hub rejects with 401.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
-            repo_id, gguf_filename = gguf_filename, family_override = family_override
+            repo_id,
+            gguf_filename = gguf_filename,
+            family_override = family_override,
+            model_kind = model_kind,
         )
 
         with self._lock:
@@ -380,6 +573,7 @@ class DiffusionBackend:
                 attention_backend = attention_backend,
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
+                model_kind = model_kind,
                 _load_token = token,
             ),
             daemon = True,
@@ -395,21 +589,30 @@ class DiffusionBackend:
             fam = detect_family_for_pick(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
             )
-            base = _resolve_base_repo(
-                kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
-            )
+            kind = resolve_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
+            if kind == "pipeline":
+                # The full pipeline IS the repo: from_pretrained pulls every component
+                # (transformer included) from it, so the base repo is the repo itself.
+                base = kwargs["repo_id"]
+            else:
+                base = _resolve_base_repo(
+                    kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
+                )
             kwargs["base_repo"] = base
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
                 base,
                 kwargs.get("hf_token"),
+                kind = kind,
                 # The dense transformer-quant path downloads the base repo's
                 # transformer/ shards via from_pretrained(subfolder="transformer")
                 # INSIDE the locked finalize phase, where unload/cancellation cannot
                 # preempt the multi-GB pull. When that path can actually run, pull the
-                # shards here in the preemptible prefetch instead.
-                include_transformer = self._dense_quant_prefetch_needed(fam, kwargs),
+                # shards here in the preemptible prefetch instead. (Pipeline loads
+                # already include transformer/ via their own filter.)
+                include_transformer = kind == "gguf"
+                and self._dense_quant_prefetch_needed(fam, kwargs),
             )
             with self._lock:
                 # Stamp progress only if this load is still current; a superseding
@@ -454,7 +657,11 @@ class DiffusionBackend:
         if loading is None:
             return _progress("ready" if self._state is not None else None)
 
-        downloaded = self._cache_bytes(loading.repo_id) + self._cache_bytes(loading.base_repo)
+        # Sum the checkpoint repo + companion base cache. For a full-pipeline load the
+        # base IS the repo, so count it once (else the bar double-counts to "finalizing").
+        downloaded = self._cache_bytes(loading.repo_id)
+        if loading.base_repo and loading.base_repo != loading.repo_id:
+            downloaded += self._cache_bytes(loading.base_repo)
         expected = loading.expected_bytes
         # Downloads done but pipeline still dequantising / moving to GPU. The cache
         # scan can slightly exceed the estimate (extra cached quants, blob padding),
@@ -483,16 +690,29 @@ class DiffusionBackend:
         base_repo: str,
         hf_token: Optional[str],
         *,
+        kind: str = "gguf",
         include_transformer: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
-        fetch (the prefetch reuses this list, so the base is listed only once)."""
+        fetch (the prefetch reuses this list, so the base is listed only once).
+
+        For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
+        repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
+        single-file paths, where the transformer is the single file and the base repo
+        supplies only the companions."""
         from huggingface_hub import HfApi
 
         api = HfApi()
         total = 0
         base_files: list[str] = []
         try:
+            if kind == "pipeline":
+                info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                for s in info.siblings:
+                    if _pipeline_file_downloaded(s.rfilename):
+                        base_files.append(s.rfilename)
+                        total += s.size or 0
+                return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info(repo_id) would
             # raise on a filesystem path and (caught below) skip the base-repo lookup too,
             # so the companion VAE/text-encoder files would never be prefetched and would
@@ -526,6 +746,30 @@ class DiffusionBackend:
         return total
 
     @staticmethod
+    def _local_dir_weight_bytes(path: Path, *, exclude_transformer: bool) -> int:
+        """Sum the on-disk weight files under a local diffusers directory. The HF blob
+        cache is empty for a local path, so this is the only size signal for auto memory
+        planning; without it a large local model folds to zero and the planner skips
+        offload and OOMs. ``exclude_transformer`` drops the ``transformer/`` subfolder
+        for GGUF/single-file loads (their transformer is the single file, not resident
+        here); a full pipeline load keeps it (the whole repo is resident)."""
+        total = 0
+        for f in path.rglob("*"):
+            if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
+                continue
+            try:
+                rel = f.relative_to(path)
+            except ValueError:
+                continue
+            if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
+                continue
+            try:
+                total += f.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    @staticmethod
     def _companion_cache_bytes(base: str) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan.
 
@@ -536,21 +780,7 @@ class DiffusionBackend:
         weights to zero and auto planning can pick a resident placement that OOMs."""
         local = Path(base).expanduser()
         if local.is_dir():
-            total = 0
-            for f in local.rglob("*"):
-                if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
-                    continue
-                try:
-                    rel = f.relative_to(local)
-                except ValueError:
-                    continue
-                if rel.parts and rel.parts[0] == "transformer":
-                    continue  # supplied by the GGUF single-file; not resident here
-                try:
-                    total += f.stat().st_size
-                except OSError:
-                    continue
-            return total
+            return DiffusionBackend._local_dir_weight_bytes(local, exclude_transformer = True)
         return DiffusionBackend._cache_bytes(base)
 
     # ── Synchronous load / generate / unload ───────────────────────────────
@@ -573,6 +803,7 @@ class DiffusionBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -581,9 +812,17 @@ class DiffusionBackend:
         # load anonymously, not 401 as an explicit empty credential.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
-            repo_id, gguf_filename = gguf_filename, family_override = family_override
+            repo_id,
+            gguf_filename = gguf_filename,
+            family_override = family_override,
+            model_kind = model_kind,
         )
-        base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        kind = resolve_model_kind(gguf_filename, model_kind)
+        # For a full pipeline the repo itself supplies every component, so it is its
+        # own base; the single-file kinds resolve the companion base diffusers repo.
+        base = (
+            repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        )
         target = self._resolve_device_target(fam)
         device, dtype = target.device, target.dtype
 
@@ -614,7 +853,13 @@ class DiffusionBackend:
                 # checkpoints never sit in VRAM at once.
                 self._unload_locked()
 
-                gguf_path = self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
+                # The single-file kinds resolve a checkpoint path (GGUF or safetensors);
+                # the pipeline kind has none (from_pretrained pulls the repo directly).
+                single_file_path = (
+                    self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
+                    if kind in ("gguf", "single_file")
+                    else None
+                )
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
@@ -622,17 +867,30 @@ class DiffusionBackend:
                 # the real budget) -- this also doubles as the dense-quant preflight: the
                 # dense bf16 transformer must fit resident, so the fast path is offered only
                 # when the plan is `none`.
-                plan = self._plan_memory(target, gguf_path, base, fam, memory_mode, cpu_offload)
+                plan = self._plan_memory(
+                    target,
+                    single_file_path,
+                    base,
+                    fam,
+                    memory_mode,
+                    cpu_offload,
+                    kind = kind,
+                    repo_id = repo_id,
+                )
 
                 # Opt-in fast path: load the DENSE bf16 transformer and torchao-quantise it
                 # (int8 / fp8 / fp4 tensor cores), which beats GGUF's bf16-rate per-matmul
                 # dequant on both speed and quality, at the cost of a higher-memory dense
                 # load. Gated on CUDA + bf16 + a resident fit; ANY failure (unsupported arch
-                # / scheme, OOM, partial quant) falls back to the GGUF build below.
+                # / scheme, OOM, partial quant) falls back to the GGUF build below. Only the
+                # GGUF kind offers it: it materialises the dense bf16 transformer from the
+                # base repo, which the safetensors kinds (a single-file or already-quantized
+                # pipeline) do not have.
                 pipe = None
                 transformer_quant_engaged = None
                 if (
-                    normalize_transformer_quant(transformer_quant) is not None
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
                     and plan.offload_policy == OFFLOAD_NONE
                 ):
@@ -665,30 +923,47 @@ class DiffusionBackend:
                         clear_gpu_cache()
 
                 if pipe is None:
-                    # Default: dequantise the single-file GGUF transformer on-device; the
-                    # VAE / text-encoder / scheduler come from the base diffusers repo
-                    # (GGUF is transformer-only).
-                    transformer = transformer_cls.from_single_file(
-                        gguf_path,
-                        quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
-                        torch_dtype = dtype,
-                        config = base,
-                        subfolder = "transformer",
-                        # Forward the token: the config is fetched from the (possibly gated)
-                        # base repo before from_pretrained gets a chance to authenticate.
-                        token = hf_token,
-                    )
+                    if kind == "pipeline":
+                        # Full diffusers repo: from_pretrained pulls every component
+                        # (transformer + VAE + text encoders + scheduler) from the repo
+                        # and re-applies any embedded quantization_config (e.g. bnb-4bit),
+                        # so a pre-quantized pipeline reloads quantized with no extra config.
+                        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+                        if hf_token:
+                            pipe_kwargs["token"] = hf_token
+                        pipe = pipeline_cls.from_pretrained(repo_id, **pipe_kwargs)
+                    else:
+                        # Single-file transformer; the VAE / text-encoder / scheduler come
+                        # from the base diffusers repo (the single file is transformer-only).
+                        sf_kwargs: dict[str, Any] = {
+                            "torch_dtype": dtype,
+                            "config": base,
+                            "subfolder": "transformer",
+                            # Forward the token: the config is fetched from the (possibly
+                            # gated) base repo before from_pretrained can authenticate.
+                            "token": hf_token,
+                        }
+                        if kind == "gguf":
+                            # Dequantise the GGUF transformer on-device at the compute dtype.
+                            sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
+                                compute_dtype = dtype
+                            )
+                        # A safetensors single-file (e.g. fp8) carries its own dtype, so no
+                        # GGUF dequant config is passed.
+                        transformer = transformer_cls.from_single_file(
+                            single_file_path, **sf_kwargs
+                        )
 
-                    pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
-                    if hf_token:
-                        pipe_kwargs["token"] = hf_token
-                    pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+                        pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
+                        if hf_token:
+                            pipe_kwargs["token"] = hf_token
+                        pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
                 # Resolve the effective speed mode: GGUF models default to the
                 # near-lossless `default` profile (compile is ~2.2x and sits below
                 # the quant noise floor), dense models stay bit-identical `off`. An
                 # explicit speed_mode (incl. "off") is honored verbatim.
-                effective_speed = resolve_speed_mode(speed_mode, is_gguf = bool(gguf_filename))
+                effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                 # A torchao-quantized dense transformer runs its matmuls through the
                 # regional torch.compile; UNcompiled (eager) it is ~30x slower and would
                 # lose to the GGUF fallback. A dense model otherwise resolves to `off`, so
@@ -732,17 +1007,86 @@ class DiffusionBackend:
                     quant_active = transformer_quant_engaged is not None or bool(gguf_filename),
                     logger = logger,
                 )
-                # apply_speed_optims flips the process-global TF32 / cudnn.benchmark
-                # flags. If a later step here (text-encoder quant, memory plan) then
-                # raises -- e.g. OOM -- those flags would leak flipped and a subsequent
-                # `off` load would no longer be bit-identical. Restore the snapshot
-                # unless we reach the commit (unload restores on the happy path).
-                committed = False
+                # Install the shared compile-safe eager patches (fused RMSNorm /
+                # AdaLayerNorm) for any active speed tier. They are class-level, idempotent
+                # and math-equivalent (FMA / fused -> neutral under compile, equal-or-more
+                # accurate), so they help eager AND compiled runs. The bit-identical `off`
+                # reference path must run with them UNINSTALLED, so uninstall there.
+                #
+                # Everything from here to the _LoadState commit mutates PROCESS-WIDE state
+                # (class patches, TORCHINDUCTOR_CACHE_DIR, backend flags). _unload_locked only
+                # reverses it via _state, so a failure BEFORE the commit would leak it (and
+                # break the next `off` load's bit-identity). Guard the whole block: on any
+                # pre-commit failure, restore everything; on success the commit transfers
+                # ownership to _state and _unload_locked takes over.
+                # The GGUF-specific speed lever (compiled dequant) applies only when the
+                # GGUF transformer was ACTUALLY loaded. On the dense torchao-quant
+                # fast path (fp8 / int8 / fp4) `gguf_filename` is still set as the fallback,
+                # but `pipe.transformer` is dense (no GGUFLinear), and those schemes need the
+                # REGIONAL block compile (dynamic quant is ~30x slower eager), not the GGUF
+                # dequant compile -- so treat the transformer as non-GGUF here. The
+                # safetensors kinds (single_file / pipeline) likewise have no GGUFLinear.
+                gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+
+                eager_patched = False
+                compile_ctx = None
+                state_committed = False
+                # Lazy import: these patch modules import torch at module level, so
+                # importing them here (not at module load) keeps diffusion.py torch-free
+                # to import, letting get_diffusion_backend() run on a torchless native install.
+                from .diffusion_eager_patches import (
+                    install_compile_safe_patches,
+                    uninstall_patches,
+                )
+                from .diffusion_arch_patches import (
+                    install_arch_patches,
+                    uninstall_arch_patches,
+                )
+
                 try:
+                    if effective_speed != SPEED_OFF:
+                        install_compile_safe_patches()
+                        # Per-arch compile-safe fusions (qwen _modulate / z-image residual
+                        # addcmul, etc.). Also neutral under compile, so on for every active
+                        # tier; tracked by the same eager_patched flag for uninstall.
+                        install_arch_patches()
+                        eager_patched = True
+                    else:
+                        uninstall_patches()
+                        uninstall_arch_patches()
+
+                    # Pre-warmed torch.compile cache (Mega-cache): when a compiled tier will
+                    # run, point inductor at a per-fingerprint dir and load a matching bundle
+                    # BEFORE the first compiled forward, so the one-time 25-58s compile can be
+                    # paid once (by us / a first run) and reused. A miss is silent -> local
+                    # compile, exactly as today.
+                    if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
+                        target, is_gguf = gguf_transformer, family = fam
+                    ):
+                        compile_ctx = compile_cache.begin(
+                            family = fam.name,
+                            transformer = getattr(pipe, "transformer", None),
+                            dtype = getattr(target, "dtype", None),
+                            quant = transformer_quant_engaged,
+                            attention_backend = attention_engaged,
+                            compile_kwargs = {
+                                # Mirrors apply_speed_optims' fullgraph decision: an active
+                                # step cache OR a planned offload graph-breaks, so the cached
+                                # bundle must be keyed on the same fullgraph setting.
+                                "fullgraph": cache_engaged is None
+                                and plan.offload_policy == OFFLOAD_NONE,
+                                "dynamic": effective_speed != SPEED_MAX,
+                                "mode": "max-autotune-no-cudagraphs"
+                                if effective_speed == SPEED_MAX
+                                else "default",
+                            },
+                            logger = logger,
+                        )
+
                     speed_applied = apply_speed_optims(
                         pipe,
                         target,
-                        is_gguf = bool(gguf_filename),
+                        is_gguf = gguf_transformer,
                         family = fam,
                         speed_mode = effective_speed,
                         cache_active = cache_engaged is not None,
@@ -774,8 +1118,8 @@ class DiffusionBackend:
                     # the model's estimated resident size). apply_memory_plan returns the
                     # (policy, tiling) ACTUALLY engaged (it may fall back to whole-module
                     # offload, and tiling is a no-op on a pipeline with no tiling control), so
-                    # status stays honest. The dense fast path already placed the pipe resident;
-                    # for the `none` policy this is an idempotent re-placement.
+                    # status stays honest. The dense fast path already placed the pipe
+                    # resident; for the `none` policy this is an idempotent re-placement.
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe, plan, device = device, logger = logger
                     )
@@ -787,6 +1131,7 @@ class DiffusionBackend:
                         base_repo = base,
                         device = device,
                         dtype = str(dtype).replace("torch.", ""),
+                        kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
                         offload_policy = effective_policy,
                         vae_tiling = effective_tiling,
@@ -798,14 +1143,24 @@ class DiffusionBackend:
                         transformer_quant = transformer_quant_engaged,
                         attention_backend = attention_engaged,
                         transformer_cache = cache_engaged,
+                        eager_patched = eager_patched,
+                        compile_cache_ctx = compile_ctx,
                     )
-                    committed = True
+                    state_committed = True
                 finally:
-                    if not committed:
-                        # Restore the flags AND free the half-built pipe's VRAM: the
-                        # failed load never commits _state, so nothing else reclaims it
-                        # until the next unload.
+                    # Pre-commit failure: nothing owns the process-wide mutations yet, so
+                    # roll them back here (symmetric with _unload_locked).
+                    if not state_committed:
                         restore_backend_flags(backend_flags_before)
+                        compile_cache.restore(compile_ctx)
+                        # apply_speed_optims may have installed the compiled GGUF dequant
+                        # before a later step failed; uninstall is idempotent.
+                        gguf_compile.uninstall_all()
+                        if eager_patched:
+                            uninstall_patches()
+                            uninstall_arch_patches()
+                        # Also free the half-built pipe's VRAM: the failed load never
+                        # commits _state, so nothing else reclaims it until the next unload.
                         clear_gpu_cache()
 
         logger.info(
@@ -915,34 +1270,68 @@ class DiffusionBackend:
     def _plan_memory(
         self,
         target: DiffusionDeviceTarget,
-        gguf_path: str,
+        single_file_path: Optional[str],
         base: str,
         fam: DiffusionFamily,
         memory_mode: Optional[str],
         cpu_offload: bool,
+        *,
+        kind: str = "gguf",
+        repo_id: Optional[str] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
         offload policy + VAE memory savers. Kept on the backend so the cached base
-        repo (companion text-encoder / VAE) feeds the size estimate."""
+        repo (companion text-encoder / VAE) feeds the size estimate.
+
+        The size estimate is per-kind: diffusers keeps GGUF weights packed (per-matmul
+        transient dequant), so a GGUF loads near its on-disk size; a safetensors
+        single-file loads near its on-disk size (it carries its dtype); and a full
+        pipeline is one cached download (transformer + companions), already compressed."""
         device_memory = snapshot_device_memory(target)
-        transformer_resident = estimate_gguf_resident_mib(file_size_mib(gguf_path))
-        # The companion components (VAE + text encoders) load near their on-disk
-        # size; sum whatever the prefetch placed in the base-repo cache, or -- for a
-        # LOCAL diffusers base -- the on-disk component weights (the blob cache is
-        # empty for a local path, which would otherwise fold multi-GB companions to 0
-        # and let auto planning pick a resident placement that OOMs).
-        companion = self._companion_cache_bytes(base)
-        companion_mib = int(companion // (1024 * 1024)) if companion else None
-        model_dense_mib = None
-        if transformer_resident is not None:
-            model_dense_mib = transformer_resident + (companion_mib or 0)
-        # Feed the variant hint (gguf filename + base repo) next to the family name so
-        # estimate_image_runtime_mib sees distilled markers ("turbo"/"schnell") that
+        if kind == "pipeline":
+            # The whole repo (transformer + companions) is one cached download; the
+            # cached bytes are the resident estimate (bnb-4bit / fp8 stay compressed).
+            # A LOCAL pipeline path isn't in the HF blob cache, so sum its on-disk weights
+            # (transformer included) instead of folding to zero and skipping offload.
+            local_repo = Path(repo_id).expanduser() if repo_id else None
+            if local_repo is not None and local_repo.is_dir():
+                cached = self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
+            else:
+                cached = self._cache_bytes(repo_id) if repo_id else 0
+            cached_mib = int(cached // (1024 * 1024)) if cached else None
+            model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
+            companion_mib = None
+        else:
+            if kind == "single_file":
+                # Safetensors single-file: no dequant expansion (it carries its dtype).
+                transformer_resident = estimate_safetensors_dense_mib(
+                    file_size_mib(single_file_path)
+                )
+            else:
+                transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
+            # The companion components (VAE + text encoders) load near their on-disk
+            # size; sum whatever the prefetch placed in the base-repo cache, or -- for a
+            # LOCAL diffusers base -- the on-disk component weights (the blob cache is
+            # empty for a local path, which would otherwise fold multi-GB companions to 0
+            # and let auto planning pick a resident placement that OOMs).
+            companion = self._companion_cache_bytes(base)
+            companion_mib = int(companion // (1024 * 1024)) if companion else None
+            model_dense_mib = None
+            if transformer_resident is not None:
+                model_dense_mib = transformer_resident + (companion_mib or 0)
+        # Feed the variant hint (single-file basename + base/repo) next to the family name
+        # so estimate_image_runtime_mib sees distilled markers ("turbo"/"schnell") that
         # detect_family normalizes out of fam.name -- distilled models need ~15% less
         # activation headroom, and over-reserving can force needless offload / tiling.
         variant_hint = " ".join(
-            p for p in (fam.name, Path(gguf_path).name if gguf_path else "", base or "") if p
+            p
+            for p in (
+                fam.name,
+                Path(single_file_path).name if single_file_path else "",
+                repo_id or base or "",
+            )
+            if p
         )
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
         return plan_diffusion_memory(
@@ -954,6 +1343,60 @@ class DiffusionBackend:
             requested_mode = memory_mode,
             explicit_offload = cpu_offload,
         )
+
+    def _workflow_pipe(self, state: _LoadState, class_name: Optional[str], workflow: str) -> Any:
+        """The diffusers pipeline for an image-conditioned ``workflow``, built once and
+        cached. ``Pipeline.from_pipe`` re-wires the loaded text-to-image pipe's resident
+        modules (transformer/VAE/text-encoder, incl. any compiled/quantised state) into
+        the workflow pipeline class, so there is no extra VRAM and no reload. Raises a
+        clear ValueError when the family does not support the workflow."""
+        if not class_name:
+            raise ValueError(
+                f"{workflow} is not supported for the '{state.family.name}' model family."
+            )
+        cached = self._aux_pipes.get(class_name)
+        if cached is not None:
+            return cached
+        import diffusers
+
+        # torch_dtype=None is load-bearing: diffusers' from_pipe defaults torch_dtype to
+        # torch.float32 and then runs new_pipeline.to(dtype=float32) over EVERY component.
+        # That recast (a) needlessly upcasts the reused bf16 modules and (b) hard-crashes
+        # on the dense-quant fast path -- a torchao-quantized + torch.compiled transformer
+        # has tensor-subclass Linear weights that torch.nn.Module._apply cannot swap_tensors
+        # ("Couldn't swap Linear.weight"). Passing None makes from_pipe skip the cast and
+        # reuse the resident modules AT THEIR LOADED dtype, which is the whole point of
+        # from_pipe (component reuse, no reload, no extra VRAM).
+        pipe = getattr(diffusers, class_name).from_pipe(state.pipe, torch_dtype = None)
+        # Only publish to the shared aux cache if THIS load is still current. from_pipe runs
+        # under _generate_lock but NOT _lock, so an unload()/superseding load can clear
+        # _aux_pipes and null _state while it builds; caching unconditionally would re-insert
+        # a wrapper over now-stale modules that a later same-workflow load would reuse (or
+        # keep the old VRAM pinned). This generation still uses the returned pipe.
+        with self._lock:
+            if self._state is state:
+                self._aux_pipes[class_name] = pipe
+        return pipe
+
+    @staticmethod
+    def _align_vae_dtype(pipe: Any) -> None:
+        """Cast the VAE to the transformer's compute dtype before an image-conditioned
+        call. The img2img/inpaint pipelines VAE-encode the input image at the text-
+        encoder dtype (bf16), but a prior txt2img DECODE may have left the shared VAE
+        upcast to fp32 (its ``force_upcast`` path), so the encode would mismatch
+        (bf16 image vs fp32 VAE). Re-aligning here is safe: our families run bf16 or
+        fp32 only (the fp16 guard promotes fp16), and a later txt2img decode re-upcasts
+        as needed. Best-effort; a no-op when already aligned."""
+        transformer = getattr(pipe, "transformer", None)
+        vae = getattr(pipe, "vae", None)
+        if transformer is None or vae is None:
+            return
+        try:
+            target_dtype = transformer.dtype
+            if next(vae.parameters()).dtype != target_dtype:
+                vae.to(dtype = target_dtype)
+        except (StopIteration, AttributeError, RuntimeError):
+            pass
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
@@ -989,8 +1432,22 @@ class DiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
+        # Image-conditioned workflows (base64 / data-URL): an init image alone selects
+        # img2img; an init image + mask selects inpaint. ``strength`` is the img2img/
+        # inpaint denoise strength (0 = keep source, 1 = full redraw). None = txt2img.
+        init_image: Optional[str] = None,
+        mask_image: Optional[str] = None,
+        strength: Optional[float] = None,
+        # Upscale (hires fix): a factor > 1 with an init image enlarges the input and
+        # re-denoises it at low strength to paint detail at the higher resolution.
+        upscale: Optional[float] = None,
+        # Reference workflow (FLUX.2): ADDITIONAL reference images beyond ``init_image``. The
+        # pipeline accepts a list, so multiple references can be combined (subject + style,
+        # character + scene). Ignored by non-reference workflows.
+        reference_images: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         import torch
+        from PIL import Image
 
         # A per-generation cancel Event: unload()/a superseding load set THIS event
         # (registered under _lock below) to abort just this denoise. _generate_lock
@@ -1020,10 +1477,121 @@ class DiffusionBackend:
                     seed = int(seed)
                 generator.manual_seed(seed)
 
+                # Select the pipeline for this workflow. txt2img uses the loaded pipe;
+                # img2img/inpaint reuse its resident modules via from_pipe (no reload);
+                # an edit model's OWN loaded pipe is already the edit pipeline.
+                pipe = state.pipe
+                init_pil = mask_pil = None
+                ref_extra: list = []
+                # Validate parameter dependencies up front: mask / upscale / reference all
+                # need an input image, and reference conditioning needs a family that
+                # supports it. Without these guards an unsupported combination would be
+                # silently ignored and quietly fall back to txt2img / img2img.
+                if init_image is None:
+                    if mask_image is not None:
+                        raise ValueError("mask_image requires an input image (init_image).")
+                    if upscale is not None and upscale > 1.0:
+                        raise ValueError("upscale requires an input image (init_image).")
+                    if reference_images:
+                        raise ValueError("reference_images require an input image (init_image).")
+                if reference_images and not getattr(state.family, "reference", False):
+                    raise ValueError(
+                        f"Reference images are not supported for the '{state.family.name}' "
+                        "model family."
+                    )
+                if getattr(state.family, "edit", False):
+                    # Instruction editing: the loaded pipe is the edit pipeline. It always
+                    # needs an input image; the prompt is the edit instruction. No mask, no
+                    # from_pipe (the model has no plain text-to-image mode).
+                    if init_image is None:
+                        raise ValueError(
+                            f"{state.family.name} is an image-editing model: provide an input image."
+                        )
+                    workflow = "edit"
+                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                elif mask_image is not None and init_image is not None:
+                    workflow = "inpaint"
+                    pipe = self._workflow_pipe(state, state.family.inpaint_pipeline_class, workflow)
+                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    mask_pil = _decode_b64_image(mask_image, mode = "L")
+                elif init_image is not None and upscale is not None and upscale > 1.0:
+                    # Upscale (hires fix): enlarge the input with Lanczos, then re-run the
+                    # img2img pipeline on it at a low denoise strength so the transformer
+                    # adds high-frequency detail without redrawing the content. Shares the
+                    # img2img pipeline/modules via from_pipe (no extra VRAM, no reload).
+                    workflow = "upscale"
+                    pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
+                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    iw, ih = init_pil.size
+                    # Cap the factor, THEN cap the absolute output: a large input times the
+                    # factor (e.g. 1024 at 4x = 4096, or a big upload) would otherwise OOM the
+                    # VAE/transformer. Bound the longest side to 2048 (txt2img's own max),
+                    # scaling both dims to keep the aspect ratio; round to a multiple of 16
+                    # (VAE downsample + patch size require it for our families).
+                    factor = max(1.0, min(float(upscale), 4.0))
+                    tw_f, th_f = iw * factor, ih * factor
+                    max_side = 2048
+                    fit = min(1.0, max_side / max(tw_f, th_f))
+                    tw = max(16, int(round(tw_f * fit / 16.0)) * 16)
+                    th = max(16, int(round(th_f * fit / 16.0)) * 16)
+                    # After the absolute cap, the target must still exceed the input, or
+                    # "upscale" would shrink it (e.g. a 3000px source at 2x clamps to 2048).
+                    # Reject rather than silently return a smaller image than uploaded.
+                    if max(tw, th) <= max(iw, ih):
+                        raise ValueError(
+                            f"Upscale would not enlarge this image: its longest side "
+                            f"({max(iw, ih)}px) already meets the {max_side}px output limit. "
+                            f"Use a smaller source image."
+                        )
+                    init_pil = init_pil.resize((tw, th), Image.LANCZOS)
+                    if strength is None:
+                        # Hires-fix default: low enough to preserve content, high enough to
+                        # synthesise new detail at the higher resolution.
+                        strength = 0.35
+                elif getattr(state.family, "reference", False) and init_image is not None:
+                    # FLUX.2-style reference conditioning: the loaded pipe (Flux2KleinPipeline)
+                    # takes the reference image directly via its `image` arg and generates a
+                    # fresh image at the REQUESTED size, guided by both the prompt and the
+                    # reference. No from_pipe (the loaded pipe already supports it), no strength
+                    # (reference-conditioning, not a denoise blend), and the output size comes
+                    # from the sliders (the pipeline resizes the reference to ~1MP itself).
+                    # Checked AFTER inpaint/upscale so a mask/upscale request on a reference
+                    # family (FLUX.2-klein also has an inpaint pipeline) still routes correctly.
+                    workflow = "reference"
+                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    # Additional references (FLUX.2 accepts a list): decode them so the
+                    # conditioning combines all of them. Capped to keep VRAM bounded.
+                    ref_extra = [
+                        _decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
+                    ]
+                elif init_image is not None:
+                    workflow = "img2img"
+                    pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
+                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                else:
+                    workflow = "txt2img"
+                # Auto-resize odd-sized inputs to a multiple of 16 for the workflows whose
+                # OUTPUT size is taken from the input image (img2img / inpaint / extend / edit),
+                # so an upload like 186px tall no longer fails the pipeline's divisibility check.
+                # txt2img/reference use the validated slider size; upscale already produced a /16
+                # target. The mask is matched to the snapped image so inpaint stays aligned.
+                if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
+                    init_pil = _snap_to_multiple(init_pil, 16)
+                    if mask_pil is not None and mask_pil.size != init_pil.size:
+                        from PIL import Image as _PILImage
+                        mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
+                if init_pil is not None:
+                    # Keep the VAE encode dtype consistent with the input image.
+                    self._align_vae_dtype(pipe)
+
+                # Pipelines vary in which kwargs they accept (img2img derives size from the
+                # input image and may reject width/height; a distilled pipe may take no
+                # negative prompt or step callback), so gate every optional kwarg on the
+                # actual signature.
+                call_params = inspect.signature(pipe.__call__).parameters
+
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
-                    "width": width,
-                    "height": height,
                     "num_inference_steps": steps,
                     # Most pipelines take guidance via "guidance_scale"; Qwen-Image
                     # uses "true_cfg_scale" (its distilled guidance is off).
@@ -1033,10 +1601,33 @@ class DiffusionBackend:
                     # share this call's seed, drawn sequentially from one generator.
                     "num_images_per_prompt": batch_size,
                 }
-                # Pipelines vary in which kwargs they accept (a distilled pipeline may
-                # take neither a negative prompt nor a step callback), so only pass
-                # those where the signature has them.
-                call_params = inspect.signature(state.pipe.__call__).parameters
+                if init_pil is not None:
+                    # Reference with extra images passes the whole list (FLUX.2 combines them);
+                    # every other workflow takes the single image.
+                    kwargs["image"] = [init_pil, *ref_extra] if ref_extra else init_pil
+                    if mask_pil is not None and "mask_image" in call_params:
+                        kwargs["mask_image"] = mask_pil
+                    if strength is not None and "strength" in call_params:
+                        kwargs["strength"] = strength
+                # width/height. txt2img uses the requested slider size. Image-conditioned
+                # pipes must use the INPUT IMAGE's own size, NOT the slider: the output is
+                # the redrawn/extended input, and the denoise builds latents from the image,
+                # so a slider size that differs from the image mismatches (e.g. a 1536px
+                # outpaint vs a 1024 slider -> "tensor a (128) must match tensor b (192)").
+                # Many img2img/inpaint pipelines drop width/height entirely; pass them only
+                # when accepted, derived from the image so they are always consistent.
+                if workflow in ("txt2img", "reference"):
+                    # txt2img and FLUX.2 reference both generate at the REQUESTED size; the
+                    # reference pipe resizes the conditioning image itself, so it must not be
+                    # pinned to the input image's size like img2img/inpaint/upscale are.
+                    kwargs["width"] = width
+                    kwargs["height"] = height
+                elif init_pil is not None:
+                    iw, ih = init_pil.size
+                    if "width" in call_params:
+                        kwargs["width"] = iw
+                    if "height" in call_params:
+                        kwargs["height"] = ih
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
 
@@ -1071,13 +1662,20 @@ class DiffusionBackend:
                     # inference_mode is strictly faster than the no_grad diffusers
                     # uses internally and numerically identical for inference.
                     with torch.inference_mode():
-                        images = state.pipe(**kwargs).images
+                        images = pipe(**kwargs).images
                 finally:
                     self._gen = None
                 # A cancelled denoise returns early with a partial/garbage image;
                 # don't hand it back to be persisted.
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                # The first compiled generation just paid the compile cost; persist the
+                # warm torch.compile cache bundle when saving is enabled (distributor /
+                # first-run warm). Idempotent + best-effort -- never fails a generation.
+                try:
+                    compile_cache.save(state.compile_cache_ctx, logger = logger)
+                except Exception:  # noqa: BLE001 — cache persistence is best-effort
+                    pass
                 # Return the PIL images (not yet encoded): the route embeds each
                 # image's recipe and persists it via the gallery.
                 return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}
@@ -1133,6 +1731,24 @@ class DiffusionBackend:
         # Restore the process-wide backend flags (TF32 / cudnn.benchmark) this load
         # may have flipped, so the next `off` load is bit-identical again.
         restore_backend_flags(state.backend_flags_before)
+        # Restore TORCHINDUCTOR_CACHE_DIR and uninstall the shared eager patches, so a
+        # later `off` load runs the bit-identical reference path. Both are idempotent.
+        compile_cache.restore(state.compile_cache_ctx)
+        # Uninstall the GGUF dequant accelerators (compiled dequant / global weight
+        # buffer) this load may have installed, so a later `off` load runs the stock,
+        # bit-identical dequant. Idempotent.
+        gguf_compile.uninstall_all()
+        if state.eager_patched:
+            # Lazy import (torch at module level) to keep diffusion.py torch-free to import.
+            from .diffusion_eager_patches import uninstall_patches
+            from .diffusion_arch_patches import uninstall_arch_patches
+
+            uninstall_patches()
+            uninstall_arch_patches()
+        # Drop the workflow pipes built around this load's modules so they don't pin the
+        # freed pipeline (they only re-wire its components, but holding the wrappers
+        # would keep the modules alive past unload).
+        self._aux_pipes.clear()
         self._state = None
         del state
         clear_gpu_cache()
@@ -1147,6 +1763,7 @@ class DiffusionBackend:
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
+                "model_kind": None,
                 "cpu_offload": False,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -1157,6 +1774,7 @@ class DiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "workflows": [],
             }
         return {
             "loaded": True,
@@ -1165,6 +1783,7 @@ class DiffusionBackend:
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": state.dtype,
+            "model_kind": state.kind,
             "cpu_offload": state.cpu_offload,
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,
@@ -1175,7 +1794,35 @@ class DiffusionBackend:
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            # Image-conditioned workflows the loaded family supports, so the UI can gate
+            # its tabs. txt2img is always available on the diffusers engine.
+            "workflows": _family_workflows(state.family),
         }
+
+
+def _family_workflows(fam: DiffusionFamily) -> list[str]:
+    """The workflow ids the diffusers engine can run for ``fam`` (drives UI gating)."""
+    # Instruction-editing families have no plain text-to-image mode: their pipeline always
+    # takes an input image + instruction, so they expose only the "edit" workflow.
+    if getattr(fam, "edit", False):
+        return ["edit"]
+    workflows = ["txt2img"]
+    # Reference families (FLUX.2) keep txt2img and add reference conditioning via their own
+    # pipeline's optional image arg (no img2img/inpaint classes needed).
+    if getattr(fam, "reference", False):
+        workflows.append("reference")
+    if getattr(fam, "img2img_pipeline_class", None):
+        # Upscale (hires fix) runs on the img2img pipeline, so it is available exactly
+        # when img2img is.
+        workflows.append("img2img")
+        workflows.append("upscale")
+    if getattr(fam, "inpaint_pipeline_class", None):
+        workflows.append("inpaint")
+        # Outpaint (extend) reuses the inpaint pipeline with a padded canvas + border mask,
+        # so it needs an inpaint pipeline that preserves the (larger) canvas size.
+        if getattr(fam, "inpaint_preserves_size", True):
+            workflows.append("outpaint")
+    return workflows
 
 
 def _resolve_base_repo(
@@ -1218,6 +1865,19 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     ``_dense_quant_prefetch_needed``)."""
     if rfilename.startswith("transformer/"):
         return include_transformer
+    if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
+        return rfilename == "model_index.json"
+    return not rfilename.startswith("assets/")
+
+
+def _pipeline_file_downloaded(rfilename: str) -> bool:
+    """True for files a full-pipeline ``from_pretrained`` fetches.
+
+    Like ``_base_file_downloaded`` but for the ``pipeline`` kind, where the repo
+    supplies its OWN transformer weights, so the ``transformer/`` subfolder is kept.
+    Top-level docs (README/PDF/images) and ``assets/`` are still skipped so the
+    progress estimate matches what actually lands on disk.
+    """
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
     return not rfilename.startswith("assets/")

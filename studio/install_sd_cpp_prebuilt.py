@@ -25,18 +25,41 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
+import shutil
 import stat
 import sys
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-REPO = "leejet/stable-diffusion.cpp"
-RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+# Default upstream source. Overridable with UNSLOTH_SD_CPP_REPO so a pinned unslothai
+# mirror (built the same way as unslothai/llama.cpp's prebuilts) can be used without a
+# code change once it exists; otherwise this falls back to leejet upstream.
+DEFAULT_REPO = "leejet/stable-diffusion.cpp"
+# Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary
+# under users on every upstream push. Override with UNSLOTH_SD_CPP_TAG; set it empty to
+# track latest. If the pinned tag is gone upstream, install falls back to latest.
+DEFAULT_TAG = "master-737-3b6c9ca"
+
+# Back-compat alias (some callers/tests import REPO).
+REPO = DEFAULT_REPO
+
+
+def _repo() -> str:
+    return (os.environ.get("UNSLOTH_SD_CPP_REPO") or DEFAULT_REPO).strip() or DEFAULT_REPO
+
+
+def _pinned_tag() -> Optional[str]:
+    """The release tag to install: env override, else the pinned default; '' = latest."""
+    val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
+    return val or None
+
 
 # accelerator -> the token that must appear in a Linux/Windows asset name.
 _LINUX_ACCEL_TOKEN = {"rocm": "rocm", "vulkan": "vulkan"}
@@ -108,14 +131,64 @@ def resolve_release_asset(
     return sel[0] if sel else None
 
 
-def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0) -> dict:
-    """GET the latest-release JSON from GitHub (token optional, lifts rate limit)."""
-    req = urllib.request.Request(RELEASES_API, headers = {"Accept": "application/vnd.github+json"})
+def _fetch_release(
+    tag: Optional[str] = None,
+    *,
+    repo: Optional[str] = None,
+    token: Optional[str] = None,
+    timeout: float = 30.0,
+) -> dict:
+    """GET a release JSON from GitHub. With ``tag`` set, fetch that exact release (and fall
+    back to latest if the tag is gone upstream); otherwise fetch latest. ``token`` is
+    optional and lifts the API rate limit."""
+    repo = repo or _repo()
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310 (fixed https host)
-        return json.loads(resp.read().decode("utf-8"))
+
+    def _get(url: str) -> dict:
+        req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310 (fixed https host)
+            return json.loads(resp.read().decode("utf-8"))
+
+    base = f"https://api.github.com/repos/{repo}/releases"
+    if tag:
+        try:
+            return _get(f"{base}/tags/{tag}")
+        except urllib.error.HTTPError as exc:  # pinned tag removed upstream -> latest
+            if exc.code != 404:
+                raise
+            print(
+                f"sd-cli: pinned tag {tag} not found on {repo}; falling back to latest", flush = True
+            )
+    return _get(f"{base}/latest")
+
+
+# Back-compat alias: the old name fetched latest.
+def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0) -> dict:
+    return _fetch_release(None, token = token, timeout = timeout)
+
+
+def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
+    """Verify ``path`` against a GitHub asset ``digest`` ('sha256:<hex>'). Integrity check
+    against a corrupted/tampered download before we extract + execute the binary. When the
+    release publishes no digest (older releases), warn and proceed rather than hard-fail."""
+    if not expected_digest:
+        print(f"sd-cli: WARNING no digest for {path.name}; cannot verify integrity", flush = True)
+        return
+    algo, _, want = expected_digest.partition(":")
+    if algo.lower() != "sha256" or not want:
+        print(
+            f"sd-cli: WARNING unrecognised digest {expected_digest!r}; skipping check", flush = True
+        )
+        return
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    got = h.hexdigest()
+    if got != want.lower():
+        raise RuntimeError(f"sha256 mismatch for {path.name}: expected {want.lower()}, got {got}")
 
 
 def default_install_dir() -> Path:
@@ -158,7 +231,8 @@ def _download(
     timeout: float = 300.0,
 ) -> None:
     """Stream ``url`` to ``dest`` with an explicit timeout. ``urlretrieve`` takes no
-    timeout and can hang forever on a stalled socket."""
+    timeout and can hang forever on a stalled socket. A User-Agent is set because the
+    GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
     import shutil
 
     req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
@@ -199,6 +273,10 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
     print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
     try:
         _download(cudart["browser_download_url"], dest)
+        # Verify integrity BEFORE extracting, like the main sd-cli archive: these DLLs are
+        # loaded into sd-cli.exe at runtime, so a corrupt/tampered runtime archive must be
+        # rejected rather than extracted next to the binary.
+        _verify_sha256(dest, cudart.get("digest"))
         with zipfile.ZipFile(dest) as zf:
             _safe_extractall(zf, target)
     finally:
@@ -217,7 +295,8 @@ def install(
     build from source) or the archive has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
-    release = _fetch_latest_release(token = token)
+    release = _fetch_release(_pinned_tag(), token = token)
+    print(f"sd-cli: source {_repo()} release {release.get('tag_name', '?')}", flush = True)
     names = [a["name"] for a in release.get("assets", [])]
     chosen = resolve_release_asset(
         names,
@@ -229,19 +308,26 @@ def install(
         raise RuntimeError(
             f"No prebuilt sd-cli for {platform.system()}/{platform.machine()} "
             f"(accelerator={accelerator}). Build from source: "
-            f"https://github.com/{REPO}"
+            f"https://github.com/{_repo()}"
         )
-    url = next(a["browser_download_url"] for a in release["assets"] if a["name"] == chosen)
+    asset = next(a for a in release["assets"] if a["name"] == chosen)
+    url = asset["browser_download_url"]
     target.mkdir(parents = True, exist_ok = True)
     archive = target / chosen
     print(f"downloading {chosen} -> {archive}", flush = True)
-    _download(url, archive)
-    print("extracting ...", flush = True)
-    with zipfile.ZipFile(archive) as zf:
-        _safe_extractall(zf, target)
-    archive.unlink(missing_ok = True)
-    # Windows CUDA builds need the separately-published cudart runtime DLLs.
-    _maybe_fetch_windows_cudart(release, chosen, target)
+    try:
+        _download(url, archive)
+        # Verify integrity BEFORE extracting + executing.
+        _verify_sha256(archive, asset.get("digest"))
+        print("extracting ...", flush = True)
+        with zipfile.ZipFile(archive) as zf:
+            _safe_extractall(zf, target)
+        # Windows CUDA builds need the separately-published cudart runtime DLLs.
+        _maybe_fetch_windows_cudart(release, chosen, target)
+    finally:
+        # Always drop the archive: on a sha256 mismatch / corrupt zip / network error it
+        # must not linger (and a stale partial would defeat a later retry).
+        archive.unlink(missing_ok = True)
     sd_cli = _locate_sd_cli(target)
     if not sd_cli:
         raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
@@ -270,7 +356,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
 
     if args.print_asset:
-        release = _fetch_latest_release()
+        release = _fetch_release(_pinned_tag())
         names = [a["name"] for a in release.get("assets", [])]
         chosen = resolve_release_asset(
             names,

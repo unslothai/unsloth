@@ -14,8 +14,10 @@ import types
 
 import pytest
 
+from core.inference import diffusion_speed as ds_mod
 from core.inference.diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_EAGER,
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
@@ -25,6 +27,20 @@ from core.inference.diffusion_speed import (
     restore_backend_flags,
     snapshot_backend_flags,
 )
+
+
+def _stub_gguf_accel(monkeypatch):
+    """Replace the real compiled-dequant installer (which touches torch.compile /
+    diffusers) with a recorder, so the tier-gating logic in apply_speed_optims is tested
+    in isolation. Returns a dict of how many times it was called."""
+    called = {"compiled_dequant": 0}
+
+    def _install(logger = None):
+        called["compiled_dequant"] += 1
+        return True
+
+    monkeypatch.setattr(ds_mod.gguf_compile, "install_compiled_dequant", _install)
+    return called
 
 
 def _target(
@@ -194,14 +210,18 @@ def test_speed_off_applies_nothing(monkeypatch):
         "tf32": False,
         "fused_qkv": False,
         "compiled": False,
+        "compiled_dequant": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (bit-identical reference path).
     assert torch.backends.cudnn.benchmark is False
 
 
-def test_speed_default_channels_last_compile_and_cudnn_benchmark(monkeypatch):
+def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
+    # A DENSE model has no GGUF dequant to compile, so `default` falls back to the
+    # regional block compile (its only compile lever) -- and no GGUF accelerators.
     torch = _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
@@ -214,18 +234,22 @@ def test_speed_default_channels_last_compile_and_cudnn_benchmark(monkeypatch):
     # default also autotunes the VAE convs but does NOT flip TF32 or fuse QKV.
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
     assert applied["tf32"] is False and applied["fused_qkv"] is False
+    # No GGUF dequant on a dense model.
+    assert applied["compiled_dequant"] is False
+    assert called == {"compiled_dequant": 0}
 
 
 def test_offload_active_drops_fullgraph(monkeypatch):
     # Group/model/sequential offload installs a torch.compiler.disable'd onload hook;
     # compiling with fullgraph=True then crashes at the first denoise step. Same reason
     # as an active step cache -> fullgraph must drop to False when offload is planned.
+    # (Dense model: on this branch GGUF `default` takes the compiled-dequant path.)
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
         pipe,
         _target(),
-        is_gguf = True,
+        is_gguf = False,
         family = _family(),
         speed_mode = SPEED_DEFAULT,
         offload_active = True,
@@ -234,15 +258,50 @@ def test_offload_active_drops_fullgraph(monkeypatch):
     assert pipe.compile_kwargs["fullgraph"] is False
 
 
-def test_speed_default_compiles_gguf(monkeypatch):
+def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
+    # GGUF `default` is the LIGHT path: compile ONLY the dequant op chain, NOT the
+    # regional block compile.
     _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["channels_last"] is True
-    # GGUF now compiles (the big near-lossless win).
+    assert applied["compiled_dequant"] is True
+    # The transformer block is NOT regionally compiled under GGUF default.
+    assert applied["compiled"] is False and pipe.compiled is False
+    assert called == {"compiled_dequant": 1}
+
+
+def test_speed_eager_gguf_installs_no_accelerator(monkeypatch):
+    # eager = lossless-but-no-compile: neither the compiled dequant nor the regional
+    # block compile run; only the process-wide lossless levers (channels_last, cudnn)
+    # and the shared/per-arch eager monkey-patches (installed elsewhere) engage.
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_EAGER
+    )
+    assert applied["compiled_dequant"] is False and applied["compiled"] is False
+    assert pipe.compiled is False
+    assert called == {"compiled_dequant": 0}
+
+
+def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
+    # GGUF `max` = the FULL regional block compile (which fuses the dequant inline), so
+    # the standalone compiled dequant is deliberately OFF.
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
     assert applied["compiled"] is True and pipe.compiled is True
+    assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
+    assert applied["compiled_dequant"] is False
+    assert called == {"compiled_dequant": 0}
 
 
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):

@@ -42,6 +42,7 @@ from core.inference.diffusion_families import (
     family_sd_cpp_supported,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -270,7 +271,7 @@ def _map_guidance(
     classifier-free ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a
     value > 1 is real CFG. Mirrors the engine mapping validated in the CPU benchmark.
     """
-    if fam.name in ("flux.1", "flux.2-klein"):
+    if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
         return None, (float(guidance) if guidance is not None else None)
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
@@ -366,6 +367,9 @@ class SdCppDiffusionBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        # Accepted for a uniform engine interface; the native engine is GGUF-only, so a
+        # non-GGUF kind never routes here (the router forces diffusers for those).
+        model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # An empty / whitespace token is "no token": passing "" verbatim to HfApi /
@@ -381,7 +385,11 @@ class SdCppDiffusionBackend:
         # validation and then dead-end here on a no-GPU (native-routed) host.
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
-            raise ValueError(f"Could not infer a diffusion family for '{repo_id}'.")
+            raise ValueError(
+                f"'{repo_id}' is not a supported diffusion image model. Supported families: "
+                f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
+                f"pass family_override with that family name."
+            )
         if not family_sd_cpp_supported(fam):
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
@@ -687,7 +695,36 @@ class SdCppDiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
+        # Accepted for a uniform engine interface. The native engine is text-to-image
+        # only for now (sd-cli's init-img/mask plumbing is not wired), so an image-
+        # conditioned request is rejected clearly rather than silently dropping the input.
+        init_image: Optional[str] = None,
+        mask_image: Optional[str] = None,
+        strength: Optional[float] = None,
+        # Accepted for the uniform engine interface; upscale needs an init image, so the
+        # init_image guard below rejects it on the native engine like img2img/inpaint.
+        upscale: Optional[float] = None,
+        # Reference workflow is GPU/diffusers-only (FLUX.2); accepted for interface parity.
+        reference_images: Optional[list[str]] = None,
     ) -> dict[str, Any]:
+        import tempfile
+
+        from PIL import Image
+
+        if (
+            init_image is not None
+            or mask_image is not None
+            or reference_images
+            or (upscale is not None and upscale > 1)
+        ):
+            # upscale needs an input image, so a direct API call with upscale > 1 but no
+            # init_image must be rejected too rather than silently returning a plain,
+            # un-upscaled text-to-image result (the diffusers backend rejects the same).
+            raise ValueError(
+                "img2img / inpaint / reference / upscale are not yet supported on the native "
+                "sd.cpp engine; run on a GPU (diffusers) for image-conditioned workflows."
+            )
+
         cancel = threading.Event()
         with self._generate_lock:
             with self._lock:
@@ -987,6 +1024,7 @@ class SdCppDiffusionBackend:
                 "transformer_cache": None,
                 "engine": "sd_cpp",
                 "native_mode": None,
+                "workflows": [],
             }
         return {
             "loaded": True,
@@ -1012,6 +1050,11 @@ class SdCppDiffusionBackend:
             "engine": "sd_cpp",
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
+            # The native engine supports plain text-to-image only (generate() rejects
+            # img2img / inpaint / reference / upscale), so advertise just txt2img. Without
+            # this the status omits workflows, the UI reads [], and it disables the Create
+            # tab for a loaded native model, stranding the user on an image-only tab.
+            "workflows": ["txt2img"],
         }
 
 

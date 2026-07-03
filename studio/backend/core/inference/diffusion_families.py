@@ -37,6 +37,32 @@ class DiffusionFamily:
     # Pipeline kwarg carrying the guidance value. Most use "guidance_scale";
     # Qwen-Image's distilled guidance is off, so its real CFG is "true_cfg_scale".
     cfg_kwarg: str = "guidance_scale"
+    # Optional diffusers pipeline classes for image-conditioned workflows. The backend
+    # builds these around the ALREADY-loaded transformer/VAE/text-encoder via
+    # ``Pipeline.from_pipe`` (no extra weights, no reload), so a family only needs the
+    # class name here to gain the workflow. None = the family does not support it (the
+    # UI gates the workflow off). The base text-to-image pipeline is ``pipeline_class``.
+    img2img_pipeline_class: Optional[str] = None
+    inpaint_pipeline_class: Optional[str] = None
+    # True when the inpaint pipeline keeps the input canvas size, so it can also drive
+    # outpaint (extend), where the padded canvas is LARGER than the original. False for
+    # FLUX.2 (its pipelines scale any >1MP input down to ~1MP, which shrinks an outpaint
+    # canvas back and defeats the extend). Such families get Inpaint but not Extend.
+    inpaint_preserves_size: bool = True
+    # True for instruction-editing families (Qwen-Image-Edit / FLUX Kontext): the model's
+    # OWN pipeline (``pipeline_class``) is the edit pipeline -- it takes an input image plus
+    # a text instruction and has no plain text-to-image mode. So these expose only the
+    # "edit" workflow, require an input image at generate time, and the loaded pipe is used
+    # directly (no from_pipe). ``base_repo`` here is the matching diffusers repo that
+    # supplies the VAE / text-encoder / processor / scheduler for the GGUF transformer.
+    edit: bool = False
+    # True for families whose OWN text-to-image pipeline ALSO accepts reference image(s)
+    # (FLUX.2: Flux2KleinPipeline takes an optional ``image`` arg). Unlike ``edit`` these
+    # families still do plain text-to-image (no image), and unlike img2img the conditioning
+    # is reference-based, not a denoise blend: there is no ``strength`` and the output size
+    # comes from the requested width/height, not the reference's size. The loaded pipe is
+    # used directly (no from_pipe). Exposes a "reference" workflow alongside "txt2img".
+    reference: bool = False
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16's finite range
@@ -78,9 +104,9 @@ class DiffusionFamily:
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
 # is read from its HF base_model tag at load time, so one entry covers Turbo/full,
 # schnell/dev, etc. base_repo here is only a fallback. Only archs whose diffusers
-# transformer supports from_single_file load here (ERNIE-Image does not, yet).
-# FLUX.2-dev and FLUX.2-klein-9B are left out only because their base diffusers
-# repos are gated; the open klein-4B base stands in for the klein family below.
+# transformer supports from_single_file load here (ERNIE-Image does not, yet; LTX
+# video models are out of scope). FLUX.2-klein-9B shares the klein family (its base
+# repo is resolved per-variant), and FLUX.2-dev has its own family below.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -88,6 +114,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
         aliases = ("flux1", "flux-1"),
+        img2img_pipeline_class = "FluxImg2ImgPipeline",
+        inpaint_pipeline_class = "FluxInpaintPipeline",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         sd_cpp_text_encoders = (
             ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", "clip_l"),
@@ -95,14 +123,21 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
     ),
     # FLUX.2-klein is a distinct pipeline (Flux2KleinPipeline) with a Qwen3 text
-    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic
-    # flux match. The base Flux2Pipeline (FLUX.2-dev) is gated, so it's omitted.
+    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic flux
+    # match. The Mistral-based Flux2Pipeline is the separate flux.2-dev family below.
     DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         aliases = ("flux2-klein",),
+        # Flux2KleinPipeline natively accepts reference image(s) via its `image` arg, so it
+        # exposes a "reference" workflow on top of plain text-to-image. It has a dedicated
+        # inpaint pipeline too (no img2img one), so it also gets inpaint + extend (outpaint).
+        reference = True,
+        inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
+        # FLUX.2 scales >1MP inputs down to ~1MP, so outpaint (a larger canvas) can't grow.
+        inpaint_preserves_size = False,
         # FLUX.2 uses a distinct 32-channel autoencoder; sd-cli needs the latent
         # format override. The single-file VAE ships in Comfy-Org/flux2-dev (the
         # klein-4B repo only has a sharded diffusers VAE). Shares Qwen3-4B with z-image.
@@ -112,6 +147,61 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
         ),
     ),
+    # FLUX.2-dev is the full (non-distilled) FLUX.2. It uses the Mistral-based
+    # Flux2Pipeline, distinct from klein's Qwen3-based Flux2KleinPipeline, so it needs
+    # its own entry. Its base diffusers repo is gated (gated=auto) but reachable with an
+    # HF token. text-to-image only: diffusers 0.38 ships no Flux2 img2img / inpaint
+    # pipeline for dev. VAE + Mistral text encoder come from the open Comfy-Org/flux2-dev
+    # mirror for the sd-cli path (shares the FLUX.2 32-channel AE with klein).
+    DiffusionFamily(
+        name = "flux.2-dev",
+        pipeline_class = "Flux2Pipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-dev",
+        aliases = ("flux2-dev", "flux2dev"),
+        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae_format = "flux2",
+        sd_cpp_text_encoders = (
+            (
+                "Comfy-Org/flux2-dev",
+                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+                "llm",
+            ),
+        ),
+    ),
+    DiffusionFamily(
+        # Instruction editing with FLUX. FluxKontextPipeline takes an input image + an edit
+        # instruction; the GGUF transformer is the standard FluxTransformer2DModel, with the
+        # T5/CLIP text encoders + VAE from the base diffusers repo. cfg defaults to
+        # guidance_scale (FLUX). Most-specific aliases first so detect_family prefers this
+        # over the plain "flux.1" family and un-rejects the "kontext" keyword for it.
+        name = "flux.1-kontext",
+        pipeline_class = "FluxKontextPipeline",
+        transformer_class = "FluxTransformer2DModel",
+        base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
+        edit = True,
+    ),
+    DiffusionFamily(
+        # Instruction editing (image-in + text-instruction-out). The 2511 checkpoint ships
+        # as QwenImageEditPlusPipeline (multi-image-capable); the GGUF transformer is the
+        # standard QwenImageTransformer2DModel, with the VAE / Qwen2.5-VL text-encoder /
+        # image processor / scheduler coming from the base diffusers repo. Most-specific
+        # aliases first so detect_family prefers this over the plain "qwen-image" family.
+        name = "qwen-image-edit",
+        pipeline_class = "QwenImageEditPlusPipeline",
+        transformer_class = "QwenImageTransformer2DModel",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        cfg_kwarg = "true_cfg_scale",
+        aliases = (
+            "qwen-image-edit-2511",
+            "qwen-image-edit-2509",
+            "qwen-image-edit",
+            "qwen_image_edit",
+            "qwenimageedit",
+        ),
+        edit = True,
+    ),
     DiffusionFamily(
         name = "qwen-image",
         pipeline_class = "QwenImagePipeline",
@@ -119,6 +209,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        img2img_pipeline_class = "QwenImageImg2ImgPipeline",
+        inpaint_pipeline_class = "QwenImageInpaintPipeline",
         sd_cpp_vae = ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
         # The Qwen2.5-VL text encoder as a Q4_K_M GGUF keeps the CPU RAM win (the
         # bf16 safetensors encoder is ~15 GB). sd-cli's --qwen2vl is an alias of --llm.
@@ -139,6 +231,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         aliases = ("zimage", "z_image"),
+        img2img_pipeline_class = "ZImageImg2ImgPipeline",
+        inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
         sd_cpp_vae = ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"),
@@ -150,15 +244,45 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 
 # Editing / inpaint checkpoints share an arch keyword but need a different
 # pipeline and an input image, which this text-to-image backend doesn't drive.
-_EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "inpainting")
+# "layered" rejects Qwen-Image-Layered: its transformer sets additional_t_cond=True
+# and expects an extra addition_t_cond input that the standard QwenImagePipeline
+# never supplies, so it loads but crashes at the first denoise step. Rejecting it
+# here fails the load fast with a clear message and hides it from the picker.
+_EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
+
+
+def _token_in_needle(token: str, needle: str) -> bool:
+    """True when ``token`` appears in ``needle`` as a whole path/name segment, i.e.
+    delimited by a separator (``- _ . / \\``) or a string boundary, not merely as a
+    raw substring. This keeps multi-part tokens matching where they should
+    ('qwen-image-edit' in 'qwen-image-edit-2511') while preventing a short token from
+    matching inside an unrelated word ('kontext' must not match 'kontextual', 'edit'
+    must not match 'edition')."""
+    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+
+
+def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
+    """The family whose name/alias is the LONGEST whole-segment token of ``needle``.
+    Longest = most specific, so an edit checkpoint ('...qwen-image-edit-2511...')
+    matches the 'qwen-image-edit' family rather than the generic 'qwen-image' one.
+    Segment matching (not raw substring) stops a short alias like 'kontext' from
+    hijacking an unrelated path such as '.../kontextual/z-image-...gguf'."""
+    best: Optional[tuple[DiffusionFamily, int]] = None
+    for fam in _FAMILIES:
+        for token in (fam.name, *fam.aliases):
+            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
+                best = (fam, len(token))
+    return best[0] if best else None
 
 
 def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[DiffusionFamily]:
     """Resolve a ``DiffusionFamily`` from a repo id, or an explicit override.
 
-    ``override`` matches a family ``name`` or alias exactly; otherwise the repo
-    id is scanned for the first family whose name/alias appears in it. Image
-    editing checkpoints are rejected (None) since this backend is text-to-image.
+    ``override`` matches a family ``name`` or alias exactly. Otherwise the most-specific
+    family whose name/alias is a substring of the repo id wins. Supported editing families
+    (Qwen-Image-Edit) match here; unsupported editing/inpaint/layered checkpoints that only
+    share a base family's arch keyword are still rejected (None), because they need a
+    different pipeline + input this backend's base text-to-image path doesn't drive.
     """
     if override:
         key = override.strip().lower()
@@ -167,22 +291,31 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
                 return fam
         return None
     needle = repo_id.lower()
-    # Match edit keywords as whole id segments, not raw substrings, so a normal
-    # text-to-image repo like ".../some-image-edition" isn't misread as an editing
-    # checkpoint. Qwen-Image-Edit / FLUX.1-Kontext still match (edit/kontext are
-    # whole tokens there). Scope the check to the LAST path component (the model id
-    # or filename), not arbitrary parent directories: a valid file selected as
-    # repo_id `/models/edit` + filename `Z-Image-Turbo-Q4.gguf` must not be rejected
-    # just because a parent folder happens to be named `edit`. The combined
-    # `repo_id/gguf_filename` fallback passes the filename as that last segment.
-    basename = re.split(r"[/\\]+", needle)[-1]
-    segments = set(re.split(r"[-_.]+", basename))
-    if any(kw in segments for kw in _EDIT_KEYWORDS):
-        return None
-    for fam in _FAMILIES:
-        if fam.name in needle or any(alias in needle for alias in fam.aliases):
-            return fam
+    match = _best_family_match(needle)
+    if match is not None:
+        # Don't let a generic base family (e.g. qwen-image) swallow a variant it can't run
+        # (qwen-image-LAYERED, ...-Inpaint): if the id still carries a reject keyword the
+        # matched family does not itself declare, reject so the load fails fast + clearly.
+        # Scope the keyword check to the LAST path component (the model id or
+        # filename), not arbitrary parent directories: a valid file selected as
+        # repo_id `/models/edit` + filename `Z-Image-Turbo-Q4.gguf` must not be
+        # rejected because a parent folder happens to be named `edit`. The
+        # combined `repo_id/gguf_filename` fallback passes the filename last.
+        basename = re.split(r"[/\\]+", needle)[-1]
+        matched_tokens = (match.name, *match.aliases)
+        if any(
+            _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
+            for kw in _EDIT_KEYWORDS
+        ):
+            return None
+        return match
     return None
+
+
+def supported_family_names() -> tuple[str, ...]:
+    """Family names accepted as ``family_override`` and shown in the unknown-model
+    error. Kept in registry order so the message lists what the backend can load."""
+    return tuple(fam.name for fam in _FAMILIES)
 
 
 def detect_family_for_pick(

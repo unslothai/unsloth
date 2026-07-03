@@ -17,13 +17,25 @@ _STUDIO = Path(__file__).resolve().parents[2]
 if str(_STUDIO) not in sys.path:
     sys.path.insert(0, str(_STUDIO))
 
+import hashlib  # noqa: E402
+import io  # noqa: E402
+import json  # noqa: E402
+import urllib.error  # noqa: E402
 import zipfile  # noqa: E402
 
 import pytest  # noqa: E402
 
+import install_sd_cpp_prebuilt as sdmod  # noqa: E402
 from install_sd_cpp_prebuilt import (  # noqa: E402
+    DEFAULT_REPO,
+    DEFAULT_TAG,
+    _fetch_release,
+    _pinned_tag,
+    _repo,
     _safe_extractall,
+    _verify_sha256,
     default_install_dir,
+    install,
     resolve_release_asset,
 )
 
@@ -122,6 +134,136 @@ def test_default_install_dir_is_sibling_of_llama(monkeypatch):
     d = default_install_dir()
     assert d.name == "stable-diffusion.cpp"
     assert d.parent.name == ".unsloth"
+
+
+# ── version pin + source repo (reproducibility) ─────────────────────────────
+
+
+def test_pinned_tag_default_and_override(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    assert _pinned_tag() == DEFAULT_TAG  # pinned, not "latest"
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-999-deadbee")
+    assert _pinned_tag() == "master-999-deadbee"
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "")  # explicit empty -> track latest
+    assert _pinned_tag() is None
+
+
+def test_repo_default_and_mirror_override(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    assert _repo() == DEFAULT_REPO == "leejet/stable-diffusion.cpp"
+    monkeypatch.setenv("UNSLOTH_SD_CPP_REPO", "unslothai/stable-diffusion.cpp")
+    assert _repo() == "unslothai/stable-diffusion.cpp"
+
+
+# ── sha256 integrity check ──────────────────────────────────────────────────
+
+
+def test_verify_sha256_accepts_matching_digest(tmp_path):
+    f = tmp_path / "asset.zip"
+    f.write_bytes(b"hello sd-cli")
+    digest = "sha256:" + hashlib.sha256(b"hello sd-cli").hexdigest()
+    _verify_sha256(f, digest)  # no raise
+
+
+def test_verify_sha256_rejects_mismatch(tmp_path):
+    f = tmp_path / "asset.zip"
+    f.write_bytes(b"tampered")
+    bad = "sha256:" + hashlib.sha256(b"original").hexdigest()
+    with pytest.raises(RuntimeError, match = "sha256 mismatch"):
+        _verify_sha256(f, bad)
+
+
+def test_verify_sha256_skips_when_absent_or_unknown(tmp_path):
+    f = tmp_path / "asset.zip"
+    f.write_bytes(b"x")
+    _verify_sha256(f, None)  # no digest published -> warn + proceed (no raise)
+    _verify_sha256(f, "md5:abc")  # unrecognised algo -> skip (no raise)
+
+
+# ── _fetch_release: pinned-tag 404 -> latest fallback ───────────────────────
+
+
+def test_fetch_release_falls_back_to_latest_on_404(monkeypatch):
+    calls: list[str] = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"tag_name": "latest-xyz", "assets": []}).encode()
+
+    def fake_urlopen(req, timeout = 30.0):
+        url = getattr(req, "full_url", req)
+        calls.append(url)
+        if "/tags/" in url:
+            raise urllib.error.HTTPError(url, 404, "not found", None, None)
+        return _Resp()
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", fake_urlopen)
+    rel = _fetch_release("gone-tag", repo = "leejet/stable-diffusion.cpp")
+    assert rel["tag_name"] == "latest-xyz"
+    assert any("/tags/gone-tag" in c for c in calls) and any(c.endswith("/latest") for c in calls)
+
+
+def test_fetch_release_propagates_non_404(monkeypatch):
+    def fake_urlopen(req, timeout = 30.0):
+        url = getattr(req, "full_url", req)
+        raise urllib.error.HTTPError(url, 403, "rate limited", None, None)
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(urllib.error.HTTPError):
+        _fetch_release("any-tag")
+
+
+# ── install(): download -> verify -> extract -> locate (offline) ────────────
+
+
+def _zip_with_sd_cli() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"#!/bin/sh\necho sd-cli\n")
+    return buf.getvalue()
+
+
+def _stub_release(monkeypatch, *, zip_bytes: bytes, digest: str):
+    name = "sd-master-deadbee-bin-Linux-Ubuntu-24.04-x86_64.zip"
+    release = {
+        "tag_name": "master-1-deadbee",
+        "assets": [
+            {
+                "name": name,
+                "browser_download_url": f"https://example.invalid/{name}",
+                "digest": digest,
+            }
+        ],
+    }
+    monkeypatch.setattr(sdmod, "_fetch_release", lambda *a, **k: release)
+    monkeypatch.setattr(sdmod, "_download", lambda url, dest, **k: dest.write_bytes(zip_bytes))
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "x86_64")
+    return name
+
+
+def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
+    zb = _zip_with_sd_cli()
+    name = _stub_release(
+        monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest()
+    )
+    sd_cli = install(install_dir = tmp_path)
+    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert not (tmp_path / name).exists()  # archive cleaned up after extract
+
+
+def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):
+    zb = _zip_with_sd_cli()
+    name = _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + "0" * 64)
+    with pytest.raises(RuntimeError, match = "sha256 mismatch"):
+        install(install_dir = tmp_path)
+    assert not (tmp_path / name).exists()  # the finally: drops the bad archive
 
 
 # ── safe extraction (Zip-Slip guard) ─────────────────────────────────────────

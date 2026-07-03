@@ -1688,9 +1688,19 @@ class AnthropicMessagesResponse(BaseModel):
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
-    model_path: str = Field(..., description = "Diffusion GGUF repo id or local path")
-    gguf_filename: str = Field(
-        ..., description = "The chosen single-file GGUF quant inside model_path"
+    model_path: str = Field(..., description = "Diffusion repo id or local path")
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
+        "model_path. Required for the gguf / single_file kinds; omit for a full pipeline.",
+    )
+    model_kind: Optional[Literal["gguf", "single_file", "pipeline"]] = Field(
+        None,
+        description = "How to load the model (null = auto-detect from gguf_filename): gguf "
+        "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
+        "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
+        "from_pretrained, embedded quant auto-applied). Non-GGUF kinds are restricted to "
+        "unsloth/* repos (or a local path).",
     )
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
@@ -1707,10 +1717,12 @@ class DiffusionLoadRequest(BaseModel):
         "cut), low_vram (offload every component, lowest VRAM, slower). "
         "Overrides cpu_offload when set.",
     )
-    speed_mode: Optional[Literal["off", "default", "max"]] = Field(
+    speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
-        "default (channels_last + regional torch.compile where eligible), "
+        "eager (channels_last + cudnn + attention + fused RMSNorm/AdaLayerNorm patches, "
+        "NO torch.compile -> fast first image, no compile tax), "
+        "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
     text_encoder_quant: Optional[Literal["fp8", "nvfp4"]] = Field(
@@ -1823,6 +1835,55 @@ class DiffusionGenerateRequest(BaseModel):
     batch_size: int = Field(
         1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
     )
+    # Image-conditioned workflows (base64 or data-URL). An init_image alone runs img2img;
+    # init_image + mask_image runs inpaint. Both require a model family with the matching
+    # pipeline (img2img/inpaint) or the load is rejected with a clear message.
+    # Cap each base64 image string so a single request can't buffer a multi-GB payload (the
+    # decoded dimensions are bounded separately in the backend). ~32 MiB comfortably fits a
+    # full 4096px image yet rejects abuse.
+    init_image: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL source image for img2img or inpaint (omit for txt2img)",
+    )
+    mask_image: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL mask for inpaint (white = repaint, black = keep). "
+        "Requires init_image.",
+    )
+    strength: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "img2img/inpaint denoise strength: 0 keeps the source, 1 fully "
+        "redraws it. Ignored for txt2img.",
+    )
+    upscale: Optional[float] = Field(
+        None,
+        ge = 1.0,
+        le = 4.0,
+        description = "Upscale (hires fix) factor for an init_image: enlarges the source "
+        "by this multiple and re-denoises at low strength. Requires init_image; "
+        "ignored for txt2img/inpaint/edit.",
+    )
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 3,
+        description = "Additional reference images (base64/data-URL) for the FLUX.2 reference "
+        "workflow, combined with init_image. Up to 3; ignored by other workflows.",
+    )
+
+    @field_validator("reference_images")
+    @classmethod
+    def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        # Each reference is a base64 image; bound its length like init_image/mask_image so a
+        # request carrying several references can't buffer a multi-GB payload.
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference image must be at most 32 MiB (base64)")
+        return value
 
     @field_validator("width", "height")
     @classmethod
@@ -1899,6 +1960,9 @@ class DiffusionStatusResponse(BaseModel):
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
+    model_kind: Optional[str] = Field(
+        None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | sequential"
@@ -1923,6 +1987,11 @@ class DiffusionStatusResponse(BaseModel):
         "_native_cudnn), or null for the default SDPA",
     )
     transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    workflows: list[str] = Field(
+        default_factory = list,
+        description = "Image workflows the loaded family supports (drives UI tab gating): "
+        "txt2img, img2img, inpaint. Empty when nothing is loaded or on the native engine.",
+    )
     engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
     native_mode: Optional[str] = Field(
         None,

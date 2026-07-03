@@ -11051,7 +11051,7 @@ def _guard_diffusion_load_against_training() -> None:
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
-    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion import get_diffusion_backend, resolve_model_kind
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_engine_router import (
         annotate_status,
@@ -11062,14 +11062,18 @@ async def load_diffusion_model(
 
     backend = get_diffusion_backend()
     try:
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation,
+        # engine selection, and the load all agree. A bad explicit kind raises here -> 400.
+        kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
-        # missing local GGUF) must not evict a working chat model and then 400. The
-        # validated family also drives engine selection below.
+        # missing local GGUF, a non-unsloth non-GGUF repo) must not evict a working chat
+        # model and then 400. The validated family also drives engine selection below.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
+            model_kind = kind,
         )
         # Refuse while training is running: a multi-GB diffusion pipeline would
         # compete with the training subprocess for VRAM. The chat path does the
@@ -11077,15 +11081,17 @@ async def load_diffusion_model(
         _guard_diffusion_load_against_training()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
         # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
-        # native fallback never strands a half-loaded state.
-        engine = await asyncio.to_thread(select_and_activate_engine, fam, hf_token = request.hf_token)
+        # native fallback never strands a half-loaded state. Non-GGUF kinds force diffusers.
+        engine = await asyncio.to_thread(
+            select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
+        )
         # Take the GPU from the chat backend only when this load will actually use it,
         # which is exactly the resolved device being non-CPU. diffusers on an accelerator
         # and a force-native sd.cpp load on CUDA/XPU/MPS both resolve to that device; a
         # native sd.cpp load on a pure-CPU host does not. Crucially, a CPU-only host with
         # no usable sd-cli falls back to diffusers ON CPU -- that also never touches GPU
         # memory, so keying off the engine name (not the device) would wrongly evict a
-        # resident chat model for a load that can't use the GPU. Gate on the device.
+        # resident chat model for a load that cannot use the GPU. Gate on the device.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
         if needs_gpu:
@@ -11117,6 +11123,7 @@ async def load_diffusion_model(
             attention_backend = request.attention_backend,
             transformer_cache = request.transformer_cache,
             transformer_cache_threshold = request.transformer_cache_threshold,
+            model_kind = kind,
         )
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
@@ -11149,7 +11156,16 @@ async def generate_diffusion_image(
             guidance = request.guidance,
             seed = request.seed,
             batch_size = request.batch_size,
+            init_image = request.init_image,
+            mask_image = request.mask_image,
+            strength = request.strength,
+            upscale = request.upscale,
+            reference_images = request.reference_images,
         )
+    except ValueError as exc:
+        # Bad client input (undecodable image/mask, or a workflow the loaded family
+        # doesn't support) — a 400 with the reason, not a generic 500.
+        raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
         # Only "no model loaded" / user-cancelled are client-state (409); both engines
         # raise these two EXACT messages. The native sd.cpp engine also raises
@@ -11161,10 +11177,10 @@ async def generate_diffusion_image(
         msg = str(exc)
         if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
             raise HTTPException(status_code = 409, detail = msg)
-        logger.error("diffusion.generate_failed: %s", exc)
+        logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
     except Exception as exc:
-        logger.error("diffusion.generate_failed: %s", exc)
+        logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
     # Persist each image with its full recipe embedded. The diffusers batch shares
@@ -11187,8 +11203,13 @@ async def generate_diffusion_image(
                     {
                         "prompt": request.prompt,
                         "negative_prompt": request.negative_prompt,
-                        "width": request.width,
-                        "height": request.height,
+                        # Persist the ACTUAL output size, not the request sliders: Transform/
+                        # Inpaint/Edit derive it from the uploaded image, Extend grows the
+                        # canvas, and Upscale resizes it, so request.width/height would record
+                        # (and later restore) the wrong dimensions for those workflows. For
+                        # plain txt2img the image size equals the sliders anyway.
+                        "width": getattr(image, "width", None) or request.width,
+                        "height": getattr(image, "height", None) or request.height,
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,
