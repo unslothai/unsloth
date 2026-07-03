@@ -5,9 +5,11 @@ import asyncio
 import importlib.util
 import os
 import re
+import sys
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -22,6 +24,7 @@ from utils.hardware import (
     estimate_required_model_memory_gb,
     get_backend_visible_gpu_info,
     get_device_map,
+    get_gpu_utilization,
     get_offloaded_device_map_entries,
     get_parent_visible_gpu_ids,
     get_visible_gpu_utilization,
@@ -31,6 +34,24 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
+
+
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
+def _fake_unsloth_attention_modules(resolver):
+    unsloth_module = ModuleType("unsloth")
+    models_module = ModuleType("unsloth.models")
+    utils_module = ModuleType("unsloth.models._utils")
+    utils_module.resolve_attention_implementation = resolver
+    models_module._utils = utils_module
+    unsloth_module.models = models_module
+    return {
+        "unsloth": unsloth_module,
+        "unsloth.models": models_module,
+        "unsloth.models._utils": utils_module,
+    }
 
 
 def _load_route_module(name: str, relative_path: str):
@@ -122,6 +143,139 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
+    def test_gpu_utilization_preserves_primary_shape_with_devices(self):
+        devices = [
+            {
+                "index": 5,
+                "visible_ordinal": 0,
+                "gpu_utilization_pct": 11.0,
+                "temperature_c": 40.0,
+                "vram_used_gb": 4.0,
+                "vram_total_gb": 24.0,
+                "vram_utilization_pct": 16.7,
+                "power_draw_w": 80.0,
+                "power_limit_w": 300.0,
+                "power_utilization_pct": 26.7,
+            },
+            {
+                "index": 3,
+                "visible_ordinal": 1,
+                "gpu_utilization_pct": 22.0,
+                "temperature_c": 50.0,
+                "vram_used_gb": 8.0,
+                "vram_total_gb": 24.0,
+                "vram_utilization_pct": 33.3,
+                "power_draw_w": 120.0,
+                "power_limit_w": 300.0,
+                "power_utilization_pct": 40.0,
+            },
+        ]
+
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"raw": "5,3", "numeric_ids": [5, 3]},
+            ),
+            patch(
+                "utils.hardware.hardware._smi_query",
+                return_value = {
+                    "available": True,
+                    "devices": devices,
+                    "backend_cuda_visible_devices": "5,3",
+                    "parent_visible_gpu_ids": [5, 3],
+                    "index_kind": "physical",
+                },
+            ),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertIsInstance(result, dict)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend"], "cuda")
+        self.assertEqual(result["index"], 5)
+        self.assertEqual(result["visible_ordinal"], 0)
+        self.assertEqual(result["vram_total_gb"], 24.0)
+        self.assertEqual(result["parent_visible_gpu_ids"], [5, 3])
+        self.assertEqual([device["index"] for device in result["devices"]], [5, 3])
+
+    def test_gpu_utilization_cpu_returns_legacy_unavailable_object(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+            result = get_gpu_utilization()
+
+        self.assertEqual(result, {"available": False, "backend": "cpu", "devices": []})
+
+    def test_gpu_utilization_mlx_stays_available_without_agx_stats(self):
+        fake_psutil = ModuleType("psutil")
+        fake_psutil.virtual_memory = lambda: SimpleNamespace(total = 64 * 1024**3)
+
+        with (
+            patch.dict(sys.modules, {"psutil": fake_psutil}),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch("utils.hardware.hardware._read_apple_gpu_stats", return_value = {}),
+            patch(
+                "core.training.get_training_backend",
+                return_value = SimpleNamespace(_progress = None),
+            ),
+            patch("utils.hardware.apple.read_gpu_temperature_c", return_value = None),
+            patch("utils.hardware.apple.read_gpu_power_w", return_value = None),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend"], "mlx")
+        self.assertIsNone(result["gpu_utilization_pct"])
+        self.assertEqual(result["vram_used_gb"], 0)
+        self.assertEqual(result["vram_total_gb"], 64.0)
+        self.assertEqual(len(result["devices"]), 1)
+
+    def test_gpu_utilization_xpu_uses_visible_devices(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.hardware.get_visible_gpu_utilization",
+                return_value = {
+                    "available": True,
+                    "backend": "xpu",
+                    "parent_visible_gpu_ids": [2, 0],
+                    "index_kind": "physical",
+                    "devices": [
+                        {
+                            "index": 2,
+                            "visible_ordinal": 1,
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": 3.0,
+                            "vram_total_gb": 16.0,
+                            "vram_utilization_pct": 18.8,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        },
+                        {
+                            "index": 0,
+                            "visible_ordinal": 0,
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": 1.0,
+                            "vram_total_gb": 16.0,
+                            "vram_utilization_pct": 6.3,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        },
+                    ],
+                },
+            ),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertEqual(result["backend"], "xpu")
+        self.assertEqual(result["index"], 0)
+        self.assertEqual(result["visible_ordinal"], 0)
+        self.assertEqual([device["index"] for device in result["devices"]], [0, 2])
+
     def test_visible_gpu_utilization_filters_to_parent_visible_ids(self):
         smi_output = "\n".join(
             [
@@ -272,6 +426,14 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_get_offloaded_device_map_entries_handles_models_without_device_map(self):
         self.assertEqual(get_offloaded_device_map_entries(SimpleNamespace()), {})
 
+    @patch(
+        "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+        new = lambda model_name, **_: model_name,
+    )
+    @patch(
+        "utils.hardware.hardware._load_config_for_gpu_estimate",
+        new = lambda *_args, **_kwargs: None,
+    )
     def test_estimate_required_memory_formulas(self):
         eight_gb = 8 * (1024**3)
 
@@ -432,6 +594,7 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_prepare_gpu_selection_preserves_explicit_ids_without_auto_selection(self):
         with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.resolve_requested_gpu_ids",
                 return_value = [2, 3],
@@ -464,6 +627,7 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_prepare_gpu_selection_preserves_uuid_parent_visibility_in_auto_mode(self):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
                 return_value = (
@@ -582,6 +746,7 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch(
                 "core.training.training._CTX.Queue",
                 side_effect = [dummy_queue, dummy_queue],
@@ -709,14 +874,23 @@ class TestRouteErrors(unittest.TestCase):
             has_audio_input = False,
         )
 
-        with patch.object(
-            inference_route.ModelConfig,
-            "from_identifier",
-            return_value = model_config,
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(
+                inference_route,
+                "_guard_chat_load_against_training",
+                return_value = None,
+            ),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(
+                    inference_route._load_model_impl(
                         request,
                         SimpleNamespace(
                             app = SimpleNamespace(
@@ -835,9 +1009,9 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(
-                inference_route.ModelConfig,
-                "from_identifier",
-                return_value = model_config,
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
             patch.object(
                 inference_route,
@@ -849,6 +1023,13 @@ class TestRouteErrors(unittest.TestCase):
                 "get_llama_cpp_backend",
                 return_value = SimpleNamespace(is_loaded = False),
             ),
+            patch.object(
+                inference_route,
+                "_guard_chat_load_against_training",
+                return_value = None,
+            ),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
             patch(
                 "core.export.get_export_backend",
                 return_value = SimpleNamespace(current_checkpoint = None),
@@ -856,7 +1037,7 @@ class TestRouteErrors(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(
+                    inference_route._load_model_impl(
                         request,
                         SimpleNamespace(
                             app = SimpleNamespace(
@@ -899,9 +1080,9 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(
-                inference_route.ModelConfig,
-                "from_identifier",
-                return_value = model_config,
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
             patch.object(
                 inference_route,
@@ -913,6 +1094,13 @@ class TestRouteErrors(unittest.TestCase):
                 "get_llama_cpp_backend",
                 return_value = SimpleNamespace(is_loaded = False),
             ),
+            patch.object(
+                inference_route,
+                "_guard_chat_load_against_training",
+                return_value = None,
+            ),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
             patch(
                 "core.export.get_export_backend",
                 return_value = SimpleNamespace(current_checkpoint = None),
@@ -920,7 +1108,7 @@ class TestRouteErrors(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
-                    inference_route.load_model(
+                    inference_route._load_model_impl(
                         request,
                         SimpleNamespace(
                             app = SimpleNamespace(
@@ -1102,10 +1290,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
             cfg._attn_implementation = "eager"
             return "eager"
 
-        with patch(
-            "unsloth.models._utils.resolve_attention_implementation",
-            side_effect = _stub_resolver,
-        ):
+        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
             hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
         self.assertFalse(hasattr(config, "_attn_implementation"))
@@ -1133,10 +1318,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
         with (
             patch.object(AutoModelForCausalLM, "_model_mapping", new = None),
             patch.object(AutoModel, "_model_mapping", new = None),
-            patch(
-                "unsloth.models._utils.resolve_attention_implementation",
-                side_effect = _stub_resolver,
-            ),
+            patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)),
         ):
             result = hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
@@ -1173,10 +1355,7 @@ class TestPerGpuFitGuardAllCounts(unittest.TestCase):
                 inner._attn_implementation = "eager"
             return "eager"
 
-        with patch(
-            "unsloth.models._utils.resolve_attention_implementation",
-            side_effect = _stub_resolver,
-        ):
+        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
             hardware_module._determine_attention_impl_for_gpu_estimate(config)
 
         self.assertFalse(hasattr(config, "_attn_implementation"))
