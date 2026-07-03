@@ -3636,8 +3636,10 @@ def make_fast_generate_wrapper(original_generate):
             )
 
         # A vLLM-style prompt (string, {"prompt":..., "multi_modal_data":...} dict, or a list/tuple
-        # of either) only works under vLLM; tokenize first when fast_inference=False
-        if len(args) > 0 and _is_vllm_prompt(args[0]):
+        # of either) only works under vLLM; tokenize first when fast_inference=False. vLLM names this
+        # first argument `prompts`, so catch the keyword form as well.
+        prompt_arg = args[0] if len(args) > 0 else kwargs.get("prompts")
+        if _is_vllm_prompt(prompt_arg):
             raise ValueError(
                 "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
                 "`fast_inference=True` (vLLM). Since `fast_inference=False`, tokenize first:\n\n"
