@@ -1432,12 +1432,28 @@ def test_write_hermes_config_fresh(hermes_config):
     # Pin the real context window (top-level override) and compact at 90% of it.
     assert config["model"]["context_length"] == MODEL["context_length"]
     assert config["compression"] == {"enabled": True, "threshold": 0.9}
+    # Windows at or above Hermes' floor need no auxiliary compression override.
+    assert "auxiliary" not in config
     provider = config["providers"]["unsloth"]
     assert provider["base_url"] == f"{BASE}/v1"
     assert provider["api_mode"] == "openai"
     assert provider["key_env"] == "UNSLOTH_API_KEY"
     # The key is resolved from the launch env, never written to disk.
     assert "sk-unsloth" not in hermes_config.read_text()
+
+
+def test_write_hermes_config_small_window_claims_floor(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    small = {"id": "unsloth/Qwen3-1.7B-GGUF", "context_length": 40960}
+    start.write_hermes_config(BASE, small, hermes_config)
+    config = yaml.safe_load(hermes_config.read_text())
+    # Hermes refuses to initialize below its 64,000-token floor, so the recipe
+    # claims the floor and scales the compaction threshold so it still fires at
+    # 90% of the REAL window: 0.9 * 40960 / 65536.
+    assert config["model"]["context_length"] == 65536
+    assert config["compression"] == {"enabled": True, "threshold": 0.5625}
+    # The same floor check runs against the compression model mid-session.
+    assert config["auxiliary"]["compression"]["context_length"] == 65536
 
 
 def test_write_hermes_config_preserves_and_idempotent(hermes_config):

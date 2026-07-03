@@ -101,7 +101,9 @@ jobs:
     env:
       # gemma-4-E4B (128K context, capable enough to drive every agent for a
       # trivial reply; the 270m model produced empty/failed responses for
-      # codex/openclaw and is below hermes' 64K context floor). Served as a flat
+      # codex/openclaw). Hermes' 64K context floor no longer constrains the model
+      # choice: write_hermes_config claims the floor for smaller windows and
+      # scales compaction back to the real window. Served as a flat
       # GGUF file (the -MTP- repo ships no separate draft, so this is plain 4B).
       GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
       GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf

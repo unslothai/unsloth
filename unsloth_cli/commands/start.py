@@ -44,6 +44,11 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
+# Hermes refuses to initialize when the model window is under 64,000 tokens; its
+# error message points at the model.context_length / auxiliary.compression
+# overrides in config.yaml. write_hermes_config claims this value for smaller
+# windows and scales the compaction threshold back down to the real window.
+_HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
@@ -1111,12 +1116,25 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
     )
     window = model.get("context_length") or model.get("max_context_length")
     if window:
+        window = int(window)
         # Hermes auto-detects context from GET /v1/models, but OpenAI's schema has no
         # context field, so it can fall back to a 256k default that overflows a small
         # local model. Pin the real window (top-level model.context_length is the
         # highest-priority override) and compact at 90% of it (Hermes defaults to 50%).
-        _subdict(config, "model")["context_length"] = int(window)
-        _subdict(config, "compression").update(enabled = True, threshold = 0.9)
+        if window >= _HERMES_MIN_CONTEXT:
+            _subdict(config, "model")["context_length"] = window
+            _subdict(config, "compression").update(enabled = True, threshold = 0.9)
+        else:
+            # Below Hermes' 64,000-token floor it refuses to initialize, so claim
+            # the floor and shrink the threshold so compaction still fires at 90%
+            # of the REAL window (the threshold is a fraction of the claimed
+            # context_length). The auxiliary override keeps the same floor check
+            # from rejecting the compression model mid-session.
+            _subdict(config, "model")["context_length"] = _HERMES_MIN_CONTEXT
+            threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
+            _subdict(config, "compression").update(enabled = True, threshold = threshold)
+            auxiliary = _subdict(_subdict(config, "auxiliary"), "compression")
+            auxiliary["context_length"] = _HERMES_MIN_CONTEXT
     _subdict(config, "providers")[_HERMES_PROVIDER] = {
         "base_url": f"{base}/v1",
         "api_mode": "openai",
