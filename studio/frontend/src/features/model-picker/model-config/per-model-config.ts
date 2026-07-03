@@ -32,7 +32,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 };
 
 export const MAX_SEQ_LENGTH_MIN = 128;
-export const MAX_SEQ_LENGTH_MAX = 32768;
+export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
 
 export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;

@@ -1365,17 +1365,6 @@ export function ChatSettingsPanel({
                 info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
               />
             ) : null}
-            {!isExternalModel && !isGguf && (
-              <ParamSlider
-                label="Max Seq Length"
-                value={params.maxSeqLength}
-                min={128}
-                max={32768}
-                step={128}
-                onChange={set("maxSeqLength")}
-                info="Maximum context window size in tokens — input prompt plus generated output combined. Capped by the model's trained limit."
-              />
-            )}
             <ParamSlider
               label="Max Tokens"
               value={params.maxTokens}

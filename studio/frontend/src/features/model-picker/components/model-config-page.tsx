@@ -19,7 +19,10 @@ import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
-import { useDefaultChatTemplate } from "../hooks/use-model-defaults";
+import {
+  useDefaultChatTemplate,
+  useModelMaxPositionEmbeddings,
+} from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
   DEFAULT_PER_MODEL_CONFIG,
@@ -98,9 +101,11 @@ function ChatTemplateSetting({
 
 function MaxSeqLengthSetting({
   value,
+  max,
   onChange,
 }: {
   value: number;
+  max: number;
   onChange: (value: number) => void;
 }) {
   return (
@@ -115,7 +120,7 @@ function MaxSeqLengthSetting({
         <NumericValueInput
           value={value}
           min={MAX_SEQ_LENGTH_MIN}
-          max={MAX_SEQ_LENGTH_MAX}
+          max={max}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
           ariaLabel="Max Seq Length"
@@ -125,7 +130,7 @@ function MaxSeqLengthSetting({
       </div>
       <Slider
         min={MAX_SEQ_LENGTH_MIN}
-        max={MAX_SEQ_LENGTH_MAX}
+        max={max}
         step={MAX_SEQ_LENGTH_STEP}
         value={[value]}
         onValueChange={([next]) => onChange(next)}
@@ -134,6 +139,11 @@ function MaxSeqLengthSetting({
       />
     </div>
   );
+}
+
+function clampMaxSeqLength(value: number, max: number): number {
+  const normalized = normalizeMaxSeqLength(value) ?? MAX_SEQ_LENGTH_MIN;
+  return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(max, normalized));
 }
 
 function GgufAdvancedSettings({
@@ -310,6 +320,10 @@ export function ModelConfigPage({
     target.ggufVariant,
     templateOpen,
   );
+  const modelMaxPosition = useModelMaxPositionEmbeddings(
+    target.id,
+    !target.isGguf,
+  );
 
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
@@ -333,12 +347,32 @@ export function ModelConfigPage({
     });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
+  const maxSeqLengthMax =
+    normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
+    MAX_SEQ_LENGTH_MAX;
   const maxSeqLengthValue =
-    normalizeMaxSeqLength(config.maxSeqLength) ?? initialMaxSeqLength;
+    clampMaxSeqLength(
+      normalizeMaxSeqLength(config.maxSeqLength) ?? initialMaxSeqLength,
+      maxSeqLengthMax,
+    );
+
+  const runtimeConfig = target.isGguf
+    ? config
+    : {
+        ...config,
+        maxSeqLength:
+          config.maxSeqLength == null
+            ? null
+            : clampMaxSeqLength(config.maxSeqLength, maxSeqLengthMax),
+      };
 
   const handleRun = () => {
     if (remember) {
-      const saved = savePerModelConfig(target.id, target.ggufVariant, config);
+      const saved = savePerModelConfig(
+        target.id,
+        target.ggufVariant,
+        runtimeConfig,
+      );
       if (!saved) {
         toast.error("Couldn't save settings for this model.");
         return;
@@ -346,7 +380,7 @@ export function ModelConfigPage({
     } else {
       deletePerModelConfig(target.id, target.ggufVariant);
     }
-    onRun(config);
+    onRun(runtimeConfig);
   };
 
   return (
@@ -444,8 +478,11 @@ export function ModelConfigPage({
           <>
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
+              max={maxSeqLengthMax}
               onChange={(value) =>
-                update({ maxSeqLength: normalizeMaxSeqLength(value) })
+                update({
+                  maxSeqLength: clampMaxSeqLength(value, maxSeqLengthMax),
+                })
               }
             />
             <ChatTemplateSetting
