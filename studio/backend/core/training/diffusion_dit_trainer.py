@@ -285,25 +285,41 @@ def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp
     free VRAM at decision time. bf16 + regional compile is the measured speed winner
     (2.3-2.6x over nf4 on B200); fp8 stays an explicit opt-in because torchao float8's
     dynamic-scaling overhead made it SLOWER than compiled bf16 at LoRA-training shapes on
-    the same hardware. ``capability``/``has_fp8`` remain parameters so the policy can be
-    revisited per GPU generation without changing callers."""
+    the same hardware. int8 must still materialise the full bf16 transformer before
+    ``quantize_`` shrinks it module-by-module, so its band requires the dense-load
+    transient (1.15x dense) to fit -- what int8 buys in that band is steady-state
+    headroom for activations and the latent cache, not load-time memory.
+    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
+    generation without changing callers."""
     _ = capability, has_fp8
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
-    headroom = 1.5
-    if free_gb > dense_gb * headroom:
+    if free_gb > dense_gb * 1.5:
         return "bf16"
-    if free_gb > dense_gb * 0.55 * headroom:
+    if free_gb > dense_gb * 1.15:
         return "int8"
     return "nf4"
 
 
 def _resolve_base_precision(cfg, spec, device) -> str:
     """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads);
-    explicit modes pass through (normalized() already validated them)."""
+    explicit modes pass through (normalized() already validated them against the repo and
+    compute dtype) but are re-checked against the live device here: the dense modes are
+    CUDA-only, and /info never advertises them on a host without a GPU, so an explicit
+    request from a stale or direct client fails fast instead of loading a full dense
+    transformer onto the CPU."""
     mode = (cfg.base_precision or "nf4").strip().lower()
     if mode != "auto":
+        if mode in ("bf16", "int8", "fp8") and device != "cuda":
+            raise ValueError(
+                f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
+                f"Use base_precision='nf4' or 'auto'."
+            )
         return mode
+    # auto may only resolve to the dense modes when the run uses bf16 compute, mirroring
+    # the normalized() rule for explicit dense modes; otherwise stay on the nf4 floor.
+    if getattr(cfg, "mixed_precision", "bf16") != "bf16":
+        return "nf4"
     prequant = repo_is_prequantized(cfg.base_model)
     free_gb = None
     capability = None
