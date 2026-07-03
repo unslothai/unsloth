@@ -5337,6 +5337,13 @@ class LlamaCppBackend:
                     # True. An explicit context is honored (--fit optimizes around
                     # it); 0 lets --fit size it.
                     if gpu_memory_mode == "manual" and gpu_layers < 0:
+                        if tensor_parallel:
+                            logger.info(
+                                "Manual mode with Auto layers hands memory "
+                                "management to llama.cpp --fit, which is "
+                                "incompatible with tensor parallelism; ignoring "
+                                "the tensor split."
+                            )
                         gpus = []
                         tensor_parallel = False
                         effective_ctx = requested_ctx if requested_ctx > 0 else 0
