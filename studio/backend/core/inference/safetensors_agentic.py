@@ -25,6 +25,7 @@ from core.inference.tool_call_parser import (
     _balanced_brace_end,
     _strip_function_xml_calls,
     _strip_mistral_closed_calls,
+    _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -96,6 +97,12 @@ def strip_tool_markup_streaming(
     # Mirror the final strip: Mistral blocks then a parser-accurate function-XML scan
     # before the regex arms, so a literal ``<function=...>`` in a value doesn't eat trailing prose.
     # No final trim so the streaming loop's length comparisons still hold.
+    # Drop a leading Magistral ``[THINK]...[/THINK]`` block (bracket form, not the
+    # ``<think>`` the reasoning channel renders): without this the raw chain-of-thought
+    # leaks into the streamed safetensors content instead of the reasoning drawer. An
+    # unclosed ``[THINK]`` holds from the marker on until ``[/THINK]`` arrives, so the
+    # cleaned text stays monotonic and nothing flickers.
+    text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
     text = _strip_function_xml_calls(text, final = True)
     for pat in _TOOL_ALL_PATS:

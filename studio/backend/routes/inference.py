@@ -1330,6 +1330,7 @@ def _sf_reasoning_prefill_mode(
     features: dict,
     enable_thinking: Optional[bool],
     template: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> bool:
     """Whether this request begins INSIDE an unclosed ``<think>`` (Qwen3/Qwen3.5/GLM prefill it).
 
@@ -1346,7 +1347,16 @@ def _sf_reasoning_prefill_mode(
         return True
     if not features.get("supports_reasoning"):
         return False
-    return enable_thinking is not False
+    if enable_thinking is False:
+        return False
+    # A reasoning_effort="none" request disables thinking for enable_thinking_effort
+    # (GLM-5.2) models the same way enable_thinking=False does (see
+    # ``_request_reasoning_kwargs``). Without this, the model emits no ``</think>`` and
+    # a plain answer is swallowed whole into reasoning_content, leaving the visible
+    # response empty.
+    if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
+        return False
+    return True
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -6545,7 +6555,7 @@ async def openai_chat_completions(
     )
     # Prefilled-open only for prefill styles with thinking on this request; gpt-oss excluded.
     _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features, payload.enable_thinking, _sf_tpl
+        _sf_features, payload.enable_thinking, _sf_tpl, payload.reasoning_effort
     )
 
     def _new_sf_reasoning_extractor():

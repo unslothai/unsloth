@@ -248,6 +248,22 @@ class TestParser:
         # Streaming and final strip agree on the visible text (final also trims).
         assert strip_tool_markup_streaming(raw) == strip_tool_markup(raw, final = True)
 
+    def test_streaming_strip_drops_leading_magistral_reasoning(self):
+        # Magistral emits reasoning as a leading ``[THINK]...[/THINK]`` bracket block
+        # (not the ``<think>`` the reasoning channel renders). The streaming display
+        # strip must drop it so the raw chain-of-thought does not leak into the
+        # safetensors content; GGUF routes it to reasoning_content natively.
+        closed = "[THINK]Let me think. 2+2 is 4.[/THINK]The answer is 4."
+        assert strip_tool_markup_streaming(closed) == "The answer is 4."
+        assert strip_tool_markup_streaming(closed) == strip_tool_markup(closed, final = True)
+        # Unclosed mid-stream reasoning is held from the marker on (nothing leaks, and
+        # the cleaned text only grows as the answer streams in after ``[/THINK]``).
+        assert strip_tool_markup_streaming("[THINK]still thinking") == ""
+        assert strip_tool_markup_streaming("[THINK]r[/THINK]The") == "The"
+        assert strip_tool_markup_streaming("[THINK]r[/THINK]The answer") == "The answer"
+        # A non-leading ``[THINK]`` is ordinary prose and is left untouched.
+        assert strip_tool_markup_streaming("hi [THINK] later") == "hi [THINK] later"
+
 
 class TestParserMultiFormat:
     """Parser coverage for Llama-3 / Mistral / Gemma 4 emission formats.
