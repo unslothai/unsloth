@@ -1,1 +1,0 @@
-- PENDING: verify PR #6717 gates
