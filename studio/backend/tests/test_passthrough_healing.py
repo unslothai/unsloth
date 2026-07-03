@@ -703,8 +703,9 @@ class TestOpenaiNonStreamingRoute:
 
         asyncio.run(_run())
 
-
-    def test_same_chunk_role_content_finish_delays_finish_until_after_healed_tool(self, monkeypatch):
+    def test_same_chunk_role_content_finish_delays_finish_until_after_healed_tool(
+        self, monkeypatch
+    ):
         async def _run():
             lines = [
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":'
