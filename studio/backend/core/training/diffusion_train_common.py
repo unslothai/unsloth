@@ -376,11 +376,7 @@ def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
 
 
 def _plan_cache_variants(
-    num_images: int,
-    cache_variants: int,
-    center_crop: bool,
-    random_flip: bool,
-    seed: int,
+    num_images: int, cache_variants: int, center_crop: bool, random_flip: bool, seed: int
 ) -> list[list[tuple[float, float, bool]]]:
     """Seed-deterministic crop/flip plan for the latent cache: per image, up to
     ``cache_variants`` draws of (u_left, u_top, flip) with the crop as unit fractions the
@@ -405,7 +401,9 @@ def _plan_cache_variants(
 
 
 def _apply_perf_flags(
-    cfg: "DiffusionLoraConfig", device: str, cudnn_benchmark: bool = False
+    cfg: "DiffusionLoraConfig",
+    device: str,
+    cudnn_benchmark: bool = False,
 ) -> dict:
     """Set the run-scoped torch backend knobs: TF32 matmuls + high fp32 matmul precision
     (under ``cfg.enable_tf32``), plus cudnn autotuning when the caller opts in. Autotune is
@@ -444,7 +442,6 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
     if snap.get("matmul_precision"):
         try:
             import torch
-
             torch.set_float32_matmul_precision(snap["matmul_precision"])
         except Exception:  # noqa: BLE001 -- best-effort restore
             pass
