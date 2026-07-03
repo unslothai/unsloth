@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -69,6 +70,39 @@ def _html(raw: str) -> list[Page]:
     return [_page("\n".join(parser.out), 1)]
 
 
+# pymupdf4llm rebuilds text from positioned glyphs, which mangles complex-shaping
+# scripts (RTL Arabic/Hebrew emerge as shaped Presentation Forms, Indic matras drop to
+# U+FFFD) and can silently drop most of a heavy-RTL page. When Markdown trips these
+# signals we fall back to PyMuPDF's logical-order get_text(). Thresholds mirror the chat
+# extractor guard (unslothai/unsloth#5351 review).
+_SHAPED_PRESENTATION_FORMS = re.compile("[\ufb1d-\ufdff\ufe70-\ufefc]")
+_PDF_FALLBACK_MIN_BAD_GLYPHS = 5
+_PDF_FALLBACK_BAD_GLYPH_RATIO = 0.0005
+_PDF_INCOMPLETE_RATIO = 0.75
+_PDF_INCOMPLETE_MIN_LETTERS = 200
+
+
+def _markdown_corrupted(text: str) -> bool:
+    """True when pymupdf4llm's glyph reconstruction mangled the text: shaped RTL
+    Presentation Forms or U+FFFD replacements above a small floor/ratio (so a lone
+    legitimate shaped glyph does not force the fallback)."""
+    if not text:
+        return False
+    threshold = max(_PDF_FALLBACK_MIN_BAD_GLYPHS, _PDF_FALLBACK_BAD_GLYPH_RATIO * len(text))
+    shaped = len(_SHAPED_PRESENTATION_FORMS.findall(text))
+    return shaped > threshold or text.count("\ufffd") > threshold
+
+
+def _markdown_incomplete(markdown: str, plain: str) -> bool:
+    """True when ``markdown`` holds far fewer letters than the raw ``get_text`` layer -- a
+    coarse guard for heavy-RTL pages pymupdf4llm silently drops without shaped glyphs."""
+    plain_letters = sum(1 for c in plain if c.isalnum())
+    if plain_letters < _PDF_INCOMPLETE_MIN_LETTERS:
+        return False
+    markdown_letters = sum(1 for c in markdown if c.isalnum())
+    return markdown_letters < _PDF_INCOMPLETE_RATIO * plain_letters
+
+
 def _pdf_markdown(doc) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
@@ -100,9 +134,19 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     try:
         md = _pdf_markdown(doc) if config.PDF_MARKDOWN else None
         for i, page in enumerate(doc):
-            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval);
-            # fall back to plain text when Markdown is off, unavailable, or empty here.
-            text = (md[i] if md else "") or page.get_text("text") or ""
+            plain = page.get_text("text") or ""
+            candidate = md[i] if md else ""
+            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval),
+            # but drop to PyMuPDF's logical-order text when Markdown is off/empty or when
+            # pymupdf4llm mangled it (RTL/Indic) or dropped most of the page.
+            if (
+                candidate
+                and not _markdown_corrupted(candidate)
+                and not _markdown_incomplete(candidate, plain)
+            ):
+                text = candidate
+            else:
+                text = plain
             pages.append(_page(text, i + 1))
             if want_images:
                 for img in page.get_images(full = True):
@@ -308,12 +352,61 @@ def render_pdf_pages(
         doc.close()
 
 
+def _docx_table_rows(table) -> list[str]:
+    """Each row as pipe-joined cell text (the locator splits anchors on pipes).
+    Columns stay aligned to the layout grid (merged cells fill their spanned slots,
+    skipped leading/trailing grid columns become empty fields). Cells are walked in
+    document order so a nested table, and any text after it, flattens in place."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    rows: list[str] = []
+    seen: set = set()  # <w:tc> already emitted; dedups merges spanning columns or rows
+    for row in table.rows:
+        cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
+        trailing: list[str] = []  # nested rows + any post-nested text, kept in order
+        for cell in row.cells:
+            # A merged cell shares one <w:tc> across the columns and rows it spans:
+            # emit its text once, then placeholders, so columns and rows stay aligned.
+            if cell._tc in seen:
+                cells.append("")
+                continue
+            seen.add(cell._tc)
+            # Paragraph text before the first nested table is the aligned field; the
+            # nested table and anything after it flatten below the row, in order.
+            field: list[str] = []
+            after_table = False
+            for item in cell.iter_inner_content():
+                if isinstance(item, Table):
+                    after_table = True
+                    trailing.extend(_docx_table_rows(item))
+                elif isinstance(item, Paragraph):
+                    text = " ".join(item.text.split())  # collapse in-cell newlines
+                    if text:
+                        (trailing if after_table else field).append(text)
+            cells.append(" ".join(field))  # empty cells kept so columns line up
+        cells.extend([""] * getattr(row, "grid_cols_after", 0))
+        if any(c.strip() for c in cells):
+            rows.append(" | ".join(cells))
+        rows.extend(trailing)
+    return rows
+
+
 def _docx(path: str) -> list[Page]:
     import docx
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     document = docx.Document(path)
-    text = "\n".join(p.text for p in document.paragraphs)
-    return [_page(text, None)]
+    lines: list[str] = []
+    # Walk body content in document order: paragraphs alone drop tables entirely.
+    for block in document.iter_inner_content():
+        if isinstance(block, Paragraph):
+            if block.text.strip():
+                lines.append(block.text)
+        elif isinstance(block, Table):
+            lines.extend(_docx_table_rows(block))
+    return [_page("\n".join(lines), None)]
 
 
 def parse(path: str, *, want_images: bool = False):

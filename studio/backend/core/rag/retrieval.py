@@ -39,8 +39,12 @@ def retrieve_dense(
     model_name: str | None = None,
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
-    vec = embeddings.encode([query], model_name = model_name, normalize = True)[0]
-    return [Hit(cid, s, dense_score = s) for cid, s in store.search_dense(conn, scope, vec, k)]
+    effective = model_name or config.effective_embedding_model()
+    vec = embeddings.encode([query], model_name = effective, normalize = True)[0]
+    return [
+        Hit(cid, s, dense_score = s)
+        for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = effective)
+    ]
 
 
 def _rrf(rankings: list[list[Hit]], rrf_k: int, top_k: int) -> list[Hit]:
