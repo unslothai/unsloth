@@ -10714,25 +10714,6 @@ async def _openai_passthrough_stream(
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
 
-            if send_task is not None and not send_task.done():
-                try:
-                    resp = await send_task
-                except httpx.RequestError as e:
-                    logger.error("openai passthrough stream: upstream unreachable: %s", e)
-                    api_monitor.fail(monitor_id, _friendly_error(e))
-                    yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
-                    return
-                send_task = None
-            elif send_task is not None:
-                try:
-                    resp = send_task.result()
-                except httpx.RequestError as e:
-                    logger.error("openai passthrough stream: upstream unreachable: %s", e)
-                    api_monitor.fail(monitor_id, _friendly_error(e))
-                    yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
-                    return
-                send_task = None
-
             def _synthetic_finish_line() -> str:
                 finish_reason = "tool_calls" if saw_tool_call_delta else "stop"
                 chunk = ChatCompletionChunk(
@@ -10749,6 +10730,25 @@ async def _openai_passthrough_stream(
                 return f"data: {chunk.model_dump_json(exclude_none = True)}"
 
             try:
+                if send_task is not None and not send_task.done():
+                    try:
+                        resp = await send_task
+                    except httpx.RequestError as e:
+                        logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                        api_monitor.fail(monitor_id, _friendly_error(e))
+                        yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
+                        return
+                    send_task = None
+                elif send_task is not None:
+                    try:
+                        resp = send_task.result()
+                    except httpx.RequestError as e:
+                        logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                        api_monitor.fail(monitor_id, _friendly_error(e))
+                        yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
+                        return
+                    send_task = None
+
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
