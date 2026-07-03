@@ -2330,14 +2330,7 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
     def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
-        self,
-        mock_pip,
-        mock_run,
-        mock_has_nvidia,
-        mock_cuda,
-        mock_rocm,
-        mock_anyio,
-        tmp_path,
+        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -2363,11 +2356,7 @@ class TestWindowsRocmTorchaoGuard:
         ):
             assert stack_mod.install_python_stack() == 0
 
-        installed_specs = [
-            str(arg)
-            for call in mock_pip.call_args_list
-            for arg in call.args
-        ]
+        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
         assert not any("torchao" in arg for arg in installed_specs)
 
 
