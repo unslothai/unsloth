@@ -16,7 +16,6 @@ const TEMPLATE_CACHE_MAX_ENTRIES = 50;
 const templateCache = new Map<string, string | null>();
 
 function cacheTemplate(key: string, template: string | null): void {
-  // Re-insert to move the key to the most-recent position for LRU eviction.
   templateCache.delete(key);
   templateCache.set(key, template);
   while (templateCache.size > TEMPLATE_CACHE_MAX_ENTRIES) {
@@ -58,8 +57,6 @@ export function useDefaultChatTemplate(
     setState({ template: null, loading: true, error: null });
     fetchDefaultChatTemplate(modelId, ggufVariant, token, controller.signal)
       .then((template) => {
-        // A local model's template file may appear on disk later, so don't
-        // cache a negative result for it — let the next open re-fetch.
         if (!(template === null && looksLikeLocalPath(modelId))) {
           cacheTemplate(cacheKey, template);
         }

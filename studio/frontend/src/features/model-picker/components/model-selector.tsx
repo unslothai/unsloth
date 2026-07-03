@@ -8,6 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
@@ -33,7 +34,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { Input } from "@/components/ui/input";
 import {
   type PerModelConfig,
   resolveInitialConfig,
@@ -297,23 +297,6 @@ function defaultHubSection(): HubSection {
   );
 }
 
-const CONFIGURE_ON_LOAD_KEY = "unsloth_model_selector_configure_on_load";
-function loadConfigureOnLoad(): boolean {
-  try {
-    return localStorage.getItem(CONFIGURE_ON_LOAD_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-function saveConfigureOnLoad(value: boolean): boolean {
-  try {
-    localStorage.setItem(CONFIGURE_ON_LOAD_KEY, value ? "1" : "0");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
@@ -484,28 +467,12 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
-  const [configureOnLoad, setConfigureOnLoad] = useState(loadConfigureOnLoad);
-  const handleConfigureOnLoadChange = (value: boolean) => {
-    setConfigureOnLoad(value);
-    saveConfigureOnLoad(value);
-  };
   useEffect(() => {
     if (!open) {
       setConfigTarget(null);
     }
   }, [open]);
-  const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
-    if (meta.source === "external") {
-      onSelect(id, meta);
-      return;
-    }
-    if (!configureOnLoad) {
-      onSelect(id, {
-        ...meta,
-        config: resolveInitialConfig(id, meta.ggufVariant).config,
-      });
-      return;
-    }
+  const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
     setConfigTarget({
       id,
@@ -513,6 +480,16 @@ function ModelSelectorContent({
       ggufVariant: meta.ggufVariant ?? null,
       isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
       meta,
+    });
+  };
+  const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
+    if (meta.source === "external") {
+      onSelect(id, meta);
+      return;
+    }
+    onSelect(id, {
+      ...meta,
+      config: resolveInitialConfig(id, meta.ggufVariant).config,
     });
   };
 
@@ -584,6 +561,7 @@ function ModelSelectorContent({
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
+            onConfigure={openConfigPage}
             deleteDisabled={deleteDisabled}
             onEject={hasSelection && onEject ? onEject : undefined}
             section={effectiveHubSection}
@@ -600,8 +578,6 @@ function ModelSelectorContent({
                 fit={true}
               />
             }
-            configureOnLoad={configureOnLoad}
-            onConfigureOnLoadChange={handleConfigureOnLoadChange}
           />
         ) : null}
 

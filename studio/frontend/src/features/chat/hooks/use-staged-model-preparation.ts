@@ -15,15 +15,6 @@ import {
 } from "../stores/chat-runtime-store";
 import type { PendingModelSelection } from "../stores/chat-runtime-store";
 
-/**
- * Drives the deferred ("Load on selection" off) staging flow for a GGUF:
- * download the file if needed (HF repo) or read it in place (native drag-drop /
- * picked file), then read its header context length so the settings sheet can
- * show the real context slider before the single GPU load. The staged context
- * lands on `pendingSelection.contextLength` (scoped to the staged model, never
- * the loaded model's `ggufContextLength`). Returns the live download job so the
- * sheet can render progress / cancel. Mount once on the chat page.
- */
 export function useStagedModelPreparation(opts?: {
   /** Load the cached file once an autoLoad pick's download completes. */
   onAutoLoad?: (pending: PendingModelSelection) => void;

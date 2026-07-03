@@ -24,6 +24,7 @@ import {
   DEFAULT_PER_MODEL_CONFIG,
   MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
+  deletePerModelConfig,
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
@@ -227,8 +228,6 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
-  // Seeds only. The page is keyed by target in the selector, so it remounts on
-  // model/variant change and these initializers re-read the stored config.
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     return loadedConfig
@@ -279,6 +278,8 @@ export function ModelConfigPage({
         toast.error("Couldn't save settings for this model.");
         return;
       }
+    } else {
+      deletePerModelConfig(target.id, target.ggufVariant);
     }
     onRun(config);
   };

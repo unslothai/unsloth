@@ -6,21 +6,16 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export function ModelLoadSettingsAction({
   ariaLabel,
-  repoId,
-  quant,
-  maxContext,
+  onConfigure,
 }: {
   ariaLabel: string;
-  repoId: string;
-  quant: string;
-  maxContext?: number | null;
+  onConfigure: () => void;
 }) {
   return (
     <Tooltip delayDuration={0}>
@@ -29,13 +24,7 @@ export function ModelLoadSettingsAction({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            useChatRuntimeStore.getState().stageModel({
-              id: repoId,
-              ggufVariant: quant,
-              isDownloaded: true,
-              isGguf: true,
-              contextLength: maxContext ?? null,
-            });
+            onConfigure();
           }}
           aria-label={ariaLabel}
           className={cn(

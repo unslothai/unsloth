@@ -74,8 +74,7 @@ export type SelectedModelInput = {
   isGguf?: boolean;
   throwOnError?: boolean;
   /** Keep the current speculative-decoding choice across the model switch
-   *  instead of resetting it to the standing preference. Set by the deferred
-   *  ("Load on selection") Load, where the user picked it for this model. */
+   *  instead of resetting it to the standing preference. */
   keepSpeculative?: boolean;
   config?: PerModelConfig;
 };

@@ -67,7 +67,6 @@ import {
   Folder02Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -642,6 +641,7 @@ function GgufVariantExpander({
   parentOptionKey,
   onNavigatePastStart,
   onNavigatePastEnd,
+  onConfigure,
   sourceOverride,
   variantActions,
   onDevice = false,
@@ -657,6 +657,7 @@ function GgufVariantExpander({
   parentOptionKey?: string;
   onNavigatePastStart?: () => void;
   onNavigatePastEnd?: () => void;
+  onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   sourceOverride?: ModelSelectorChangeMeta["source"];
   /** Update/delete actions for cached variant rows. Omitted by browse-only
    *  expanders (Recommended, etc.) that don't manage on-disk variants. */
@@ -736,8 +737,7 @@ function GgufVariantExpander({
       // Only seed the staged context for picks whose weights are already on
       // disk. The staging effect short-circuits on a known contextLength
       // (pendingHasContext) before starting the download, so attaching it to an
-      // undownloaded quant from a partially cached repo would skip the download
-      // entirely (and, with Load on selection, never load).
+      // undownloaded quant from a partially cached repo would skip the download.
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
@@ -983,12 +983,20 @@ function GgufVariantExpander({
                 onUpdated={() => setRefreshKey((key) => key + 1)}
               />
             )}
-            {v.downloaded && (
+            {v.downloaded && onConfigure && (
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
-                repoId={repoId}
-                quant={v.quant}
-                maxContext={nativeContext}
+                onConfigure={() =>
+                  onConfigure(repoId, {
+                    source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
+                    isLora: false,
+                    ggufVariant: v.quant,
+                    isDownloaded: true,
+                    expectedBytes,
+                    contextLength: nativeContext,
+                    isGguf: true,
+                  })
+                }
               />
             )}
             {v.downloaded && onDeleteVariant && (
@@ -1221,11 +1229,10 @@ export function HubModelPicker({
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
+  onConfigure,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
-  configureOnLoad = false,
-  onConfigureOnLoadChange,
   onEject,
 }: {
   models: ModelOption[];
@@ -1239,13 +1246,12 @@ export function HubModelPicker({
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "custom" | "connected";
   /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
-  configureOnLoad?: boolean;
-  onConfigureOnLoadChange?: (value: boolean) => void;
   onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
@@ -2452,6 +2458,7 @@ export function HubModelPicker({
             onDevice={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
             onSelect={onSelect}
+            onConfigure={onConfigure}
             hfToken={hfToken || undefined}
             parentOptionKey={optionKey}
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
@@ -2461,7 +2468,6 @@ export function HubModelPicker({
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
-              // Can't update the model that's live in memory under itself.
               updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
                 await deleteCachedModel(c.repo_id, quant);
@@ -2699,54 +2705,6 @@ export function HubModelPicker({
                     onToggle={() => setDownloadedCollapsed((v) => !v)}
                     action={
                       <>
-                        {onConfigureOnLoadChange ? (
-                          <Tooltip delayDuration={0}>
-                            <TooltipTrigger asChild={true}>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  onConfigureOnLoadChange(!configureOnLoad)
-                                }
-                                aria-label="Configure models before loading"
-                                aria-pressed={configureOnLoad}
-                                className={cn(
-                                  "shrink-0 rounded p-1 transition-colors",
-                                  configureOnLoad
-                                    ? "text-primary hover:text-primary"
-                                    : "text-muted-foreground/60 hover:text-foreground",
-                                )}
-                              >
-                                {configureOnLoad ? (
-                                  <svg
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                    aria-hidden="true"
-                                    className="size-3"
-                                  >
-                                    <path
-                                      fillRule="evenodd"
-                                      clipRule="evenodd"
-                                      d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 0 0-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 0 0-2.282.819l-.922 1.597a1.875 1.875 0 0 0 .432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 0 0 0 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 0 0-.432 2.385l.922 1.597a1.875 1.875 0 0 0 2.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 0 0 2.28-.819l.923-1.597a1.875 1.875 0 0 0-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 0 0 0-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 0 0-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 0 0-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 0 0-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z"
-                                    />
-                                  </svg>
-                                ) : (
-                                  <HugeiconsIcon
-                                    icon={Settings02Icon}
-                                    className="size-3"
-                                  />
-                                )}
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="bottom"
-                              className="tooltip-compact"
-                            >
-                              {configureOnLoad
-                                ? "On — picking a model opens its load settings first"
-                                : "Off — models load with defaults. Click to configure before loading"}
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : null}
                         {hasOtherModels ? (
                           <Tooltip delayDuration={0}>
                             <TooltipTrigger asChild={true}>
@@ -2885,6 +2843,7 @@ export function HubModelPicker({
                       adapters={fineTunedRows}
                       value={value}
                       onSelect={onSelect}
+                      onConfigure={onConfigure}
                       onModelsChange={onModelsChange}
                       deleteDisabled={deleteDisabled}
                       loraModelList={hubModelList}
@@ -3146,8 +3105,6 @@ export function HubModelPicker({
                                   source: "local",
                                   isLora: false,
                                   isDownloaded: true,
-                                  // Mark GGUF so "Load on selection = off" stages
-                                  // through Run settings (matches LM Studio path).
                                   isGguf: true,
                                 });
                               } else if (isGguf) {
@@ -3176,6 +3133,7 @@ export function HubModelPicker({
                               repoId={m.id}
                               onDevice={true}
                               onSelect={onSelect}
+                              onConfigure={onConfigure}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3267,6 +3225,7 @@ export function HubModelPicker({
                               repoId={m.id}
                               onDevice={true}
                               onSelect={onSelect}
+                              onConfigure={onConfigure}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3348,6 +3307,7 @@ export function HubModelPicker({
                               repoId={m.id}
                               onDevice={true}
                               onSelect={onSelect}
+                              onConfigure={onConfigure}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3427,6 +3387,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
@@ -3515,6 +3476,7 @@ export function HubModelPicker({
                           <GgufVariantExpander
                             repoId={id}
                             onSelect={onSelect}
+                            onConfigure={onConfigure}
                             hfToken={hfToken || undefined}
                             parentOptionKey={optionKey}
                             onNavigatePastStart={() =>
@@ -3605,6 +3567,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
@@ -3671,6 +3634,7 @@ function FineTunedRows({
   adapters,
   value,
   onSelect,
+  onConfigure,
   onModelsChange,
   deleteDisabled = false,
   loraModelList,
@@ -3681,6 +3645,7 @@ function FineTunedRows({
   adapters: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   loraModelList: ReturnType<typeof useRovingModelList>;
@@ -3805,6 +3770,7 @@ function FineTunedRows({
               <GgufVariantExpander
                 repoId={adapter.id}
                 onSelect={onSelect}
+                onConfigure={onConfigure}
                 parentOptionKey={optionKey}
                 onNavigatePastStart={() => loraModelList.focusOption(optionKey)}
                 onNavigatePastEnd={() =>
