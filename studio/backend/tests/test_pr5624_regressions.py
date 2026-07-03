@@ -627,3 +627,28 @@ def test_marker_inside_closed_outer_envelope_still_runs_outer_call():
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "q": "what does <｜tool▁calls▁begin｜> mean"
     }
+
+
+def test_truncated_outer_envelope_with_embedded_marker_heals_outer_call():
+    # A TRUNCATED outer <function> call (missing its </function> close) whose argument
+    # embeds a DeepSeek/Kimi marker must still be Auto-Healed as the outer call: the
+    # marker sits inside the (unclosed) envelope, so the pre-pass must not run and
+    # execute the embedded sample instead. Guards against over-narrowing the closed-
+    # example check to CLOSED envelopes only.
+    trunc = '<function=python><parameter=code>x = "<｜tool▁calls▁begin｜>sample"</parameter>'
+    calls = parse_tool_calls_from_text(trunc)
+    assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_gemma_wrapperless_quoted_value_with_comma_not_split():
+    # A wrapper-less Gemma call whose quoted value contains ``, key:`` (e.g. a search
+    # query) must not be split at the in-string comma: the top-level ``, key:`` scan
+    # has to skip quoted spans, else ``query`` is truncated and a fake ``location``
+    # argument is fabricated.
+    text = 'call:web_search{query:"weather, location: Boston", limit:3}'
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "query": "weather, location: Boston",
+        "limit": 3,
+    }

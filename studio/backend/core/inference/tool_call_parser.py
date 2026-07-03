@@ -630,29 +630,31 @@ _EMBEDDED_MARKER_RE = re.compile(
 # both -- otherwise an attribute-form call whose argument embeds a DeepSeek/Kimi
 # marker is hijacked by the marker pre-pass and the wrong tool runs.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")')
-# The CLOSED forms of the outer envelopes above (first two ``_TOOL_CLOSED_PATS``
-# entries): ``<tool_call>...</tool_call>`` and ``<function...>...</function>``.
-# Used to tell a real leading envelope whose arguments embed a marker from a
-# closed syntax EXAMPLE that ends before a genuine DeepSeek/Kimi block.
-_OUTER_ENVELOPE_CLOSED_PATS = tuple(_TOOL_CLOSED_PATS[:2])
+# Close tags for the outer envelopes above. A marker is INSIDE the leading envelope
+# only while that envelope has not closed before it.
+_OUTER_ENVELOPE_CLOSE_RE = re.compile(r"</tool_call>|</function>")
 
 
 def _marker_inside_leading_envelope(content: str) -> bool:
     marker = _EMBEDDED_MARKER_RE.search(content)
     if marker is None:
         return False
-    envelope = _OUTER_ENVELOPE_OPEN_RE.search(content)
-    if envelope is None or envelope.start() >= marker.start():
+    m_start = marker.start()
+    # The LAST outer-envelope opener that begins before the marker.
+    last_open = None
+    for _open in _OUTER_ENVELOPE_OPEN_RE.finditer(content):
+        if _open.start() >= m_start:
+            break
+        last_open = _open
+    if last_open is None:
         return False
-    # A leading opener alone is not enough: a CLOSED ``<tool_call>``/``<function>``
-    # example that ends before the marker leaves the marker standing as a real
-    # DeepSeek/Kimi call, so the pre-pass must still run. Only treat the marker as
-    # embedded when removing the closed outer envelopes also removes every marker
-    # (i.e. the marker actually sat inside one).
-    residue = content
-    for _pat in _OUTER_ENVELOPE_CLOSED_PATS:
-        residue = _pat.sub("", residue)
-    return _EMBEDDED_MARKER_RE.search(residue) is None
+    # If that envelope already CLOSED before the marker, the marker stands OUTSIDE it
+    # -- a closed ``<tool_call>``/``<function>`` syntax EXAMPLE that ends before a real
+    # DeepSeek/Kimi block -- so the pre-pass must run and parse the genuine call. If it
+    # has NOT closed before the marker, the marker sits inside the outer call's
+    # arguments (the call closes later, or is truncated mid-stream and Auto-Heal
+    # repairs the outer call), so skip the pre-pass and let the outer parser own it.
+    return _OUTER_ENVELOPE_CLOSE_RE.search(content, last_open.end(), m_start) is None
 
 
 def parse_tool_calls_from_text(
@@ -1684,9 +1686,21 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
         i = m.end()
         vstart = i
         depth = 0
+        quote = ""
         while i < n:
             ch = body[i]
-            if ch in "{[(":
+            if quote:
+                # Inside a quoted value: honor escapes and only a matching quote closes
+                # it, so a ``, key:`` shape inside the string (e.g. a search query like
+                # ``"weather, location: Boston"``) is not mistaken for a value boundary.
+                if ch == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch in "{[(":
                 depth += 1
             elif ch in "}])":
                 if depth > 0:
