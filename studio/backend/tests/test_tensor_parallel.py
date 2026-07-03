@@ -554,6 +554,8 @@ def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
     backend._api_key = "secret"
     backend._probe_mtp_decode(timeout = 1.0)
     assert captured["headers"] == {"Authorization": "Bearer secret"}
+
+    assert captured["trust_env"] is False
     backend._api_key = None
     backend._probe_mtp_decode(timeout = 1.0)
     assert captured["headers"] is None
