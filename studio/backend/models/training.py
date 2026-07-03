@@ -802,3 +802,72 @@ class DiffusionDatasetUploadResponse(BaseModel):
     image_count: int
     caption_count: int
     uploaded: int
+
+
+class DiffusionDatasetImageRecord(BaseModel):
+    """One image in a training dataset folder, with its resolved caption. ``caption`` is
+    null when no caption exists from any source; ``caption_source`` records where the
+    shown caption came from (``metadata`` beats a per-image ``sidecar``; ``none`` when
+    uncaptioned) so the labeling UI can highlight images that still need a caption."""
+
+    filename: str
+    caption: Optional[str] = None
+    caption_source: Literal["sidecar", "metadata", "none"] = "none"
+    width: int
+    height: int
+    size_bytes: int
+
+
+class DiffusionDatasetImagesResponse(BaseModel):
+    """Every image in a dataset folder (including uncaptioned ones), for the labeling grid."""
+
+    name: str
+    path: str
+    images: List[DiffusionDatasetImageRecord]
+
+
+class DiffusionCaptionUpdateRequest(BaseModel):
+    """Write (or, when blank, clear) the per-image ``.txt`` caption sidecar."""
+
+    caption: str = ""
+
+
+class DiffusionDatasetExample(BaseModel):
+    """A curated, one-click-importable example image dataset. ``image_cap`` bounds how many
+    images are materialized; ``license`` is shown verbatim so users see the terms before
+    importing; ``suggested_trigger`` seeds the trigger prompt for uncaptioned subject sets."""
+
+    id: str
+    label: str
+    repo: str
+    description: str
+    license: str
+    image_cap: int
+    suggested_trigger: Optional[str] = None
+
+
+class DiffusionDatasetExamplesResponse(BaseModel):
+    """The curated example-dataset registry the Train tab offers for one-click import."""
+
+    examples: List[DiffusionDatasetExample]
+
+
+class DiffusionDatasetImportRequest(BaseModel):
+    """Import a curated example (``id``) into a dataset folder (``name``; defaults to the
+    example id)."""
+
+    id: str
+    name: Optional[str] = None
+
+
+class DiffusionDatasetImportResponse(BaseModel):
+    """Result of a one-click example import: folder counts plus provenance so the UI can
+    show what was fetched and under what license."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+    imported: int
+    license: str
+    source_repo: str

@@ -320,6 +320,7 @@ def trainable_family_names() -> tuple[str, ...]:
     """Names of families Studio can train a LoRA on, in registry order."""
     return tuple(fam.name for fam in _FAMILIES if fam.trainable)
 
+
 # Editing / inpaint checkpoints share an arch keyword but need a different
 # pipeline and an input image, which this text-to-image backend doesn't drive.
 # "layered" rejects Qwen-Image-Layered: its transformer sets additional_t_cond=True
