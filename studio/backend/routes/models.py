@@ -1398,6 +1398,11 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 )
             current = resolved_child
 
+        if contains_sensitive_path_component(str(current)):
+            raise HTTPException(
+                status_code = 403,
+                detail = "Credential or configuration directories are not browseable.",
+            )
         if not current.is_dir():
             raise HTTPException(
                 status_code = 400,

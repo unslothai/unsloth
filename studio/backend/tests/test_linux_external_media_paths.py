@@ -280,3 +280,8 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     with pytest.raises(_HTTPException) as exc:
         ns["_resolve_browse_target"](str(media_root / ".ssh"), allowlist)
     assert exc.value.status_code == 403
+
+    ssh_root = media_root / ".ssh"
+    with pytest.raises(_HTTPException) as exc_root:
+        ns["_resolve_browse_target"](str(ssh_root), [ssh_root])
+    assert exc_root.value.status_code == 403
