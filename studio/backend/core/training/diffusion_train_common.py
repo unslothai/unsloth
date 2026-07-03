@@ -434,11 +434,7 @@ def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
 
 
 def _plan_cache_variants(
-    num_images: int,
-    cache_variants: int,
-    center_crop: bool,
-    random_flip: bool,
-    seed: int,
+    num_images: int, cache_variants: int, center_crop: bool, random_flip: bool, seed: int
 ) -> list[list[tuple[float, float, bool]]]:
     """Seed-deterministic crop/flip plan for the latent cache: per image, up to
     ``cache_variants`` draws of (u_left, u_top, flip) with the crop as unit fractions the
@@ -463,10 +459,13 @@ def _plan_cache_variants(
 
 
 def _apply_perf_flags(
-    cfg: "DiffusionLoraConfig", device: str, cudnn_benchmark: bool = False
+    cfg: "DiffusionLoraConfig",
+    device: str,
+    cudnn_benchmark: bool = False,
 ) -> dict:
     """Set the run-scoped torch backend knobs: TF32 matmuls + high fp32 matmul precision
-    (under ``cfg.enable_tf32``), plus cudnn autotuning when the caller opts in. Autotune is
+    when ``cfg.enable_tf32`` is on, strict fp32 (all TF32 flags cleared) when it is off,
+    plus cudnn autotuning when the caller opts in. Autotune is
     for the conv-heavy SDXL U-Net only: measured on B200, it DOUBLES peak VRAM (fp32 VAE
     conv workspaces) while the DiT loop -- pure matmuls once the latent cache is built --
     gains nothing from it. Returns a snapshot for ``_restore_perf_flags``. Best-effort:
@@ -484,6 +483,12 @@ def _apply_perf_flags(
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.set_float32_matmul_precision("high")
+        else:
+            # The opt-out is a strict-fp32 A/B mode, so actively clear the flags rather
+            # than inherit ambient state (cudnn TF32 defaults to ON in torch).
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.set_float32_matmul_precision("highest")
         if cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
         # The cuDNN SDPA backend's TRAINING graph is broken for the FLUX attention shapes
@@ -516,8 +521,15 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
 
         if snap.get("matmul_precision"):
             torch.set_float32_matmul_precision(snap["matmul_precision"])
-        if snap.get("cudnn_sdp"):
-            torch.backends.cuda.enable_cudnn_sdp(True)
+        # Restore the exact pre-run cudnn SDPA state; None means the flag was unreadable
+        # (or absent) at apply time and was never touched.
+        cuda_backends = getattr(torch.backends, "cuda", None)
+        if (
+            snap.get("cudnn_sdp") is not None
+            and cuda_backends is not None
+            and hasattr(cuda_backends, "enable_cudnn_sdp")
+        ):
+            cuda_backends.enable_cudnn_sdp(bool(snap["cudnn_sdp"]))
     except Exception:  # noqa: BLE001 -- best-effort restore
         pass
 

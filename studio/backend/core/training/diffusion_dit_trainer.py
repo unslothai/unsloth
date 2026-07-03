@@ -367,7 +367,12 @@ def _flux_encode_latent_stats(vae, pixel_values):
     return (dist.mean - vae.config.shift_factor) * scale, dist.std * scale
 
 
-def _flux_collate(entries, device, weight_dtype, pad_to = None):
+def _flux_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
     import torch
 
     # FLUX embeds are fixed-length (encode_prompt pads to max_sequence_length), so a plain
@@ -490,7 +495,12 @@ def _qwen_encode_latent_stats(vae, pixel_values):
     return (dist.mean - mean) / std, dist.std / std
 
 
-def _qwen_collate(entries, device, weight_dtype, pad_to = None):
+def _qwen_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
     import torch
     import torch.nn.functional as F
 
@@ -591,7 +601,12 @@ def _zimage_encode_latent_stats(vae, pixel_values):
     return _zimage_encode_latents(vae, pixel_values), None
 
 
-def _zimage_collate(entries, device, weight_dtype, pad_to = None):
+def _zimage_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
     caps = [e[0].to(device = device, dtype = weight_dtype) for e in entries]
     return (caps,)
 
@@ -759,7 +774,7 @@ def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_ev
     total = len(image_paths)
     for i, path in enumerate(image_paths):
         variants = []
-        for (u_left, u_top, flip) in plan[i]:
+        for u_left, u_top, flip in plan[i]:
             px = (
                 _load_pixel_tensor_planned(
                     path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
@@ -831,7 +846,9 @@ def _maybe_compile_transformer(
 
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):
-        _emit(on_event, "warning", message = "torch.compile unavailable for this model; running eager.")
+        _emit(
+            on_event, "warning", message = "torch.compile unavailable for this model; running eager."
+        )
         return False
     try:
         dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
@@ -919,7 +936,14 @@ def run_dit_lora_training(
     perf_snap = _apply_perf_flags(cfg, device)
     try:
         return _train_dit(
-            cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_stop,
+            cfg,
+            spec,
+            pairs,
+            rng,
+            device,
+            weight_dtype,
+            on_event,
+            _check_stop,
             lambda: save_on_stop,
         )
     finally:
@@ -968,8 +992,12 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         )
         if latent_cache is None:  # stopped during the cache build; nothing trained yet
             _emit(
-                on_event, "complete", output_dir = str(out_dir), lora_path = None,
-                stopped = True, steps_run = 0,
+                on_event,
+                "complete",
+                output_dir = str(out_dir),
+                lora_path = None,
+                stopped = True,
+                steps_run = 0,
             )
             return str(out_dir)
         try:
@@ -1090,7 +1118,9 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             noisy = (1.0 - sigmas) * latents + sigmas * noise
 
             embeds = spec.collate(
-                [caption_embeds[captions[i]] for i in idxs], device, weight_dtype,
+                [caption_embeds[captions[i]] for i in idxs],
+                device,
+                weight_dtype,
                 pad_to = qwen_pad_to,
             )
             with autocast:
@@ -1165,6 +1195,7 @@ def _make_optimizer(params, lr):
     regression for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this
     build/device lacks the fused kernel)."""
     import torch
+
     try:
         import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(params, lr = lr)
