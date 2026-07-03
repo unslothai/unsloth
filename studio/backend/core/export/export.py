@@ -537,6 +537,33 @@ class ExportBackend:
                     )
                 import unsloth.save as _us
 
+                # Prefer the llm-compressor-main shadow (transformers 5.x): it quantizes newer models
+                # (Qwen3.5, Gemma-4, ...) the shipped 0.10.x cannot. Route all compressed exports
+                # through it when available; else fall back to the workspace 0.10.x path below.
+                _shadow_pp = None
+                try:
+                    from utils.transformers_version import llmcompressor_shadow_pythonpath
+                    _shadow_pp = llmcompressor_shadow_pythonpath()
+                except Exception as e:
+                    logger.warning(f"llm-compressor-main shadow unavailable: {e}")
+                if _shadow_pp:
+                    os.environ[_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV] = _shadow_pp
+                else:
+                    # No shadow (disabled/offline/failed): the workspace 0.10.x cannot exceed its
+                    # transformers ceiling, so fail fast for sidecar models; default-tier still works.
+                    os.environ.pop(_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV, None)
+                    _exceeds, _tf_ver = _us._transformers_exceeds_llm_compressor_ceiling()
+                    if _exceeds:
+                        return (
+                            False,
+                            "FP8/FP4 compressed-tensors export is not available for this model: it "
+                            f"runs under transformers {_tf_ver}, but the installed llm-compressor "
+                            f"supports transformers <= {_us._LLM_COMPRESSOR_MAX_TRANSFORMERS} and the "
+                            "llm-compressor-main runtime could not be provisioned (offline or "
+                            "UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN). Export to GGUF or 16-bit instead.",
+                            None,
+                        )
+
                 try:
                     info = _us._normalize_compressed_method(compressed_alias)
                 except Exception as e:

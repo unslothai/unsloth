@@ -1384,11 +1384,64 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
+# Bound the first-use auto-install so no unvetted release is pulled: not an inflated "0.999.0", nor
+# a crafted higher in-range patch like "0.12.999" from a mirror. Cap to the exact vetted patch and
+# bump deliberately. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7; torch pinned below).
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
+
+# Highest transformers release llm-compressor 0.10.x/0.12.x can run against (its metadata pins
+# transformers<=4.57.6). Models that require a newer-transformers sidecar (e.g. Qwen3.5 needs
+# transformers 5.3.0) cannot be quantized by llm-compressor at all: it imports
+# transformers.modeling_utils.TORCH_INIT_FUNCTIONS, which was removed in transformers 5.x, so the
+# compressed-export subprocess dies with a cryptic ImportError AFTER the expensive 16bit merge.
+# Detect that up front and fail fast with an actionable message. Bump this in lockstep with a
+# llm-compressor release that supports newer transformers.
+_LLM_COMPRESSOR_MAX_TRANSFORMERS = "4.57.6"
+
+
+def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
+    """Return (exceeds, active_version) comparing the active transformers to the llm-compressor ceiling.
+
+    `exceeds` is True only when we can parse both versions and the active transformers is strictly
+    newer than `_LLM_COMPRESSOR_MAX_TRANSFORMERS`. Any parse failure returns False (fail open) so a
+    real quantization attempt still surfaces the underlying error rather than a false positive.
+    """
+    if transformers_version is None:
+        try:
+            import transformers as _tf
+            transformers_version = _tf.__version__
+        except Exception:
+            return False, "unknown"
+    try:
+        from packaging.version import parse as _parse
+        # Drop any local build suffix ("4.57.6+abc") so it does not skew the comparison.
+        active = _parse(str(transformers_version).split("+", 1)[0])
+        ceiling = _parse(_LLM_COMPRESSOR_MAX_TRANSFORMERS)
+        return active > ceiling, str(transformers_version)
+    except Exception:
+        return False, str(transformers_version)
+
+
+# A caller (e.g. Unsloth Studio) can enable FP8/FP4 export of newer-transformers models (Qwen3.5,
+# Gemma-4, ...) by provisioning a dedicated llm-compressor-main "shadow" (transformers>=5.9 layered
+# over the existing torch) and pointing us at its sys.path entry via this env var. When set, the
+# quantization subprocess uses it instead of the workspace llm-compressor and the ceiling fail-fast
+# is bypassed.
+_COMPRESSED_QUANTIZE_PYTHONPATH_ENV = "UNSLOTH_COMPRESSED_QUANTIZE_PYTHONPATH"
+
+
+def _compressed_quantize_pythonpath():
+    """Return the llm-compressor-main shadow PYTHONPATH, or None if not set."""
+    pp = os.environ.get(_COMPRESSED_QUANTIZE_PYTHONPATH_ENV, "").strip()
+    return pp or None
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing it on first use for FP8/FP4 export.
 
-    Pins the current torch + transformers so pip does not upgrade them (a plain install pulls
-    transformers>=5 and breaks Unsloth). Returns (oneshot, QuantizationModifier).
+    Installs a version-pinned llm-compressor, pinning the current torch + transformers so pip does
+    not upgrade them. Set UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 to forbid the auto-install.
+    Returns (oneshot, QuantizationModifier).
     """
     try:
         from llmcompressor import oneshot
@@ -1397,9 +1450,24 @@ def install_llm_compressor():
     except Exception:
         pass
 
+    # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
+    if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
+        "0",
+        "",
+        "false",
+        "no",
+    ):
+        raise RuntimeError(
+            "Unsloth: llm-compressor is required for FP8/FP4 compressed export but is not "
+            "installed, and automatic installation is disabled via "
+            "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL. Install it manually with:\n"
+            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
+            "(pin torch and transformers to your current versions to avoid upgrading them)."
+        )
+
     print(
         "Unsloth: Installing llm-compressor for FP8/FP4 export "
-        "(pinning your torch + transformers so they are not upgraded). "
+        f"({_LLM_COMPRESSOR_SPEC}; pinning your torch + transformers so they are not upgraded). "
         "This can take a few minutes..."
     )
     import importlib
@@ -1422,9 +1490,9 @@ def install_llm_compressor():
     import importlib.util
 
     if importlib.util.find_spec("pip") is not None:
-        cmd = [sys.executable, "-m", "pip", "install", "llmcompressor"]
+        cmd = [sys.executable, "-m", "pip", "install", _LLM_COMPRESSOR_SPEC]
     elif shutil.which("uv") is not None:
-        cmd = ["uv", "pip", "install", "--python", sys.executable, "llmcompressor"]
+        cmd = ["uv", "pip", "install", "--python", sys.executable, _LLM_COMPRESSOR_SPEC]
     else:
         raise RuntimeError(
             "Unsloth: cannot install llm-compressor because this environment has neither pip nor "
@@ -4237,22 +4305,36 @@ def _unsloth_save_compressed_tensors(
     if not is_main_process:
         return None
 
-    # 1) Install llm-compressor and gate on scheme availability BEFORE merging, so an unsupported
-    #    scheme (e.g. mxfp8) fails fast instead of writing a full 16bit checkpoint first.
-    install_llm_compressor()
-    if not _scheme_is_available(scheme):
-        try:
-            import transformers as _tf
-            tf_ver = _tf.__version__
-        except Exception:
-            tf_ver = "unknown"
-        raise RuntimeError(
-            f"Unsloth: scheme '{scheme}' is not available in your installed "
-            f"compressed-tensors / llm-compressor.\n"
-            f"It requires a newer llm-compressor that needs transformers>=5.9 "
-            f"(you have transformers {tf_ver}).\n"
-            "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
-        )
+    # 1) Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of
+    #    writing a full 16bit checkpoint first. With the llm-compressor-main shadow the subprocess
+    #    validates everything itself, so skip the workspace install / ceiling / scheme checks; without
+    #    it, install the workspace llm-compressor and fail fast past its transformers ceiling.
+    _shadow_pythonpath = _compressed_quantize_pythonpath()
+    if _shadow_pythonpath is None:
+        install_llm_compressor()
+        # llm-compressor cannot run under a newer transformers than its ceiling: the quantization
+        # subprocess would die with a cryptic ImportError (TORCH_INIT_FUNCTIONS) only AFTER the costly
+        # 16bit merge. Detect and fail fast with an actionable message instead.
+        _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
+        if _exceeds:
+            raise RuntimeError(
+                f"Unsloth: FP8/FP4 compressed-tensors export is not available for this model. It runs "
+                f"under transformers {_tf_ver}, but llm-compressor supports transformers "
+                f"<= {_LLM_COMPRESSOR_MAX_TRANSFORMERS}. Export to GGUF or 16-bit instead."
+            )
+        if not _scheme_is_available(scheme):
+            try:
+                import transformers as _tf
+                tf_ver = _tf.__version__
+            except Exception:
+                tf_ver = "unknown"
+            raise RuntimeError(
+                f"Unsloth: scheme '{scheme}' is not available in your installed "
+                f"compressed-tensors / llm-compressor.\n"
+                f"It requires a newer llm-compressor that needs transformers>=5.9 "
+                f"(you have transformers {tf_ver}).\n"
+                "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
+            )
 
     # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
     #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
@@ -4430,8 +4512,15 @@ def _unsloth_save_compressed_tensors(
             env["HF_TOKEN"] = token
             env["HUGGING_FACE_HUB_TOKEN"] = token
 
+        # Clean PYTHONPATH = shadow only. torch still comes from the interpreter's site-packages;
+        # transformers 5.x + llm-compressor main come from the shadow. Dropping the inherited
+        # PYTHONPATH removes any parent transformers sidecar so the shadow's is authoritative.
+        if _shadow_pythonpath is not None:
+            env["PYTHONPATH"] = _shadow_pythonpath
+
         print(
             f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
+            f"{'(llm-compressor-main shadow) ' if _shadow_pythonpath is not None else ''}"
             "(in a separate process)..."
         )
         try:
