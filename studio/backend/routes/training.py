@@ -73,6 +73,7 @@ from models.training import (
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
+    DiffusionTrainingStopRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
@@ -1244,11 +1245,17 @@ async def start_diffusion_training(
 
 
 @router.post("/diffusion/stop")
-async def stop_diffusion_training(current_subject: str = Depends(get_current_subject)):
-    """Request a clean stop of the running diffusion training job (partial adapter saved)."""
+async def stop_diffusion_training(
+    body: Optional[DiffusionTrainingStopRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Request a clean stop of the running diffusion training job. The optional body's
+    ``save`` mirrors the LLM /stop: true (default, also for an empty POST) exports the
+    partial adapter, false cancels without saving one."""
     from core.training.diffusion_training_service import get_diffusion_training_service
 
-    stopped = get_diffusion_training_service().stop()
+    save = body.save if body is not None else True
+    stopped = get_diffusion_training_service().stop(save = save)
     return {"status": "stopping" if stopped else "idle"}
 
 

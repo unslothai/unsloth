@@ -210,6 +210,7 @@ class _FakeService:
     def __init__(self):
         self._running = False
         self.started_with = None
+        self.stopped_with_save = None
         # Extra keys merged into status() so a test can inject metric history / perf fields.
         self.status_extra: dict = {}
 
@@ -218,7 +219,8 @@ class _FakeService:
         self._running = True
         return "job-123"
 
-    def stop(self):
+    def stop(self, save = True):
+        self.stopped_with_save = save
         was = self._running
         self._running = False
         return was

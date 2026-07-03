@@ -715,6 +715,26 @@ class DiffusionTrainingStartRequest(BaseModel):
     random_flip: bool = Field(True)
     caption_column: str = Field("text")
     hf_token: Optional[str] = Field(None)
+    cache_latents: bool = Field(
+        True, description = "Precompute VAE latents once and free the VAE for the run"
+    )
+    cache_variants: int = Field(
+        4, ge = 1, le = 16, description = "Frozen crop/flip variants per image in the latent cache"
+    )
+    compile_transformer: Literal["off", "on", "auto"] = Field(
+        "auto", description = "Regional torch.compile of the transformer blocks"
+    )
+    enable_tf32: bool = Field(
+        True, description = "TF32 matmuls + cudnn autotuning (near-lossless speedup)"
+    )
+
+
+class DiffusionTrainingStopRequest(BaseModel):
+    """Optional body for stopping a diffusion training job. ``save`` mirrors the LLM
+    trainer's stop: True (default) exports the partial adapter, False cancels without
+    leaving one behind."""
+
+    save: bool = Field(True)
 
 
 class DiffusionTrainingStartResponse(BaseModel):

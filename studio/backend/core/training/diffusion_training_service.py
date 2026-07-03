@@ -206,17 +206,25 @@ class DiffusionTrainingService:
             self._pump.start()
             return job_id
 
-    def stop(self) -> bool:
-        """Request a clean stop (the trainer finishes the current step and saves a partial
-        adapter). Returns True if a stop was signalled, False if nothing was running."""
+    def stop(self, save: bool = True) -> bool:
+        """Request a clean stop: the trainer finishes the current step, then either saves
+        a partial adapter (``save=True``, the default) or discards the run (``save=False``,
+        matching the LLM trainer's cancel). Returns True if a stop was signalled, False if
+        nothing was running."""
         with self._lock:
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
             try:
-                self._stop_queue.put(True)
+                # Bare True keeps the wire format older trainers expect; the dict form
+                # carries the no-save cancel flag the trainer's _check_stop understands.
+                self._stop_queue.put(True if save else {"save": False})
             except Exception:  # noqa: BLE001
                 return False
-            self._state["message"] = "Stop requested; finishing the current step..."
+            self._state["message"] = (
+                "Stop requested; finishing the current step and saving a partial adapter..."
+                if save
+                else "Cancel requested; finishing the current step (no adapter will be saved)..."
+            )
             self._state["updated_at"] = time.time()
             return True
 
@@ -280,6 +288,25 @@ class DiffusionTrainingService:
                     s["num_images"] = ev.get("num_images")
             elif etype == "model_load_completed":
                 s.update(in_model_load = False, message = "Training...")
+            elif etype == "preparing":
+                # A long precompute phase (e.g. the VAE latent cache) between model load and
+                # the first step; surfaced so the UI shows visible progress instead of a
+                # silent "Loading base model..." stall.
+                done, total = ev.get("done"), ev.get("total")
+                stage = str(ev.get("stage", "prepare")).replace("_", " ")
+                s.update(
+                    status = "running",
+                    in_model_load = True,
+                    message = (
+                        f"Preparing ({stage} {done}/{total})..."
+                        if done is not None and total is not None
+                        else f"Preparing ({stage})..."
+                    ),
+                )
+            elif etype == "warning":
+                # Non-fatal trainer notes (e.g. torch.compile falling back to eager); keep
+                # training state, surface the text.
+                s["message"] = str(ev.get("message", "warning"))
             elif etype == "progress":
                 s.update(
                     status = "running",
@@ -308,7 +335,11 @@ class DiffusionTrainingService:
                     status = "stopped" if ev.get("stopped") else "completed",
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
-                    message = "Stopped (partial adapter saved)."
+                    message = (
+                        "Stopped (partial adapter saved)."
+                        if ev.get("lora_path")
+                        else "Stopped (no adapter saved)."
+                    )
                     if ev.get("stopped")
                     else "Training complete.",
                 )

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -228,6 +229,17 @@ class DiffusionLoraConfig:
     caption_column: str = "text"  # column in metadata.jsonl
     adapter_name: str = "default"
     hf_token: Optional[str] = None
+    # Precompute the VAE latents once (freeing the VAE for the whole run) instead of
+    # re-encoding every step. ``cache_variants`` crop/flip draws are frozen per image;
+    # the per-step VAE sampling noise itself is preserved (see the DiT trainer docstring).
+    cache_latents: bool = True
+    cache_variants: int = 4
+    # Regional torch.compile of the transformer blocks: "off" | "on" | "auto" (auto turns
+    # it on only for a dense, non-bitsandbytes base where it is a clean win).
+    compile_transformer: str = "auto"
+    # TF32 matmuls + high fp32 matmul precision + cudnn autotuning for the run. Near-lossless;
+    # disable for strict bit-reproducibility A/Bs.
+    enable_tf32: bool = True
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
     # Optional explicit family override ("sdxl" / "flux.1" / ...); None = detect from
@@ -259,6 +271,11 @@ class DiffusionLoraConfig:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
+        if not 1 <= int(self.cache_variants) <= 16:
+            raise ValueError("cache_variants must be between 1 and 16")
+        compile_transformer = str(self.compile_transformer or "auto").strip().lower()
+        if compile_transformer not in ("off", "on", "auto"):
+            raise ValueError("compile_transformer must be one of off / on / auto")
         # learning_rate can arrive as a string ("1e-4") from the Studio config path, which
         # preserves it as a string after validation; coerce so AdamW receives a float.
         try:
@@ -279,6 +296,8 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            cache_variants = int(self.cache_variants),
+            compile_transformer = compile_transformer,
             resolved_family = resolved_family,
         )
 
@@ -354,6 +373,81 @@ def discover_image_caption_pairs(
 def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
     if on_event is not None:
         on_event({"type": type_, "ts": time.time(), **kw})
+
+
+def _plan_cache_variants(
+    num_images: int,
+    cache_variants: int,
+    center_crop: bool,
+    random_flip: bool,
+    seed: int,
+) -> list[list[tuple[float, float, bool]]]:
+    """Seed-deterministic crop/flip plan for the latent cache: per image, up to
+    ``cache_variants`` draws of (u_left, u_top, flip) with the crop as unit fractions the
+    loader maps onto its integer crop range. Uses its own rng stream so the training
+    loop's draws are untouched. Center-crop / no-flip collapse duplicate variants (a
+    center crop without flip is one variant no matter how many draws), so callers encode
+    each distinct variant exactly once. Pure (no torch) for CPU unit tests."""
+    crop_rng = random.Random(seed)
+    plan: list[list[tuple[float, float, bool]]] = []
+    for _ in range(max(0, num_images)):
+        variants: list[tuple[float, float, bool]] = []
+        for _ in range(max(1, cache_variants)):
+            u_left, u_top = crop_rng.random(), crop_rng.random()
+            flip = bool(random_flip and crop_rng.random() < 0.5)
+            if center_crop:
+                u_left = u_top = 0.5  # loader ignores the fractions for a center crop
+            key = (u_left, u_top, flip)
+            if key not in variants:
+                variants.append(key)
+        plan.append(variants)
+    return plan
+
+
+def _apply_perf_flags(
+    cfg: "DiffusionLoraConfig", device: str, cudnn_benchmark: bool = False
+) -> dict:
+    """Set the run-scoped torch backend knobs: TF32 matmuls + high fp32 matmul precision
+    (under ``cfg.enable_tf32``), plus cudnn autotuning when the caller opts in. Autotune is
+    for the conv-heavy SDXL U-Net only: measured on B200, it DOUBLES peak VRAM (fp32 VAE
+    conv workspaces) while the DiT loop -- pure matmuls once the latent cache is built --
+    gains nothing from it. Returns a snapshot for ``_restore_perf_flags``. Best-effort:
+    missing attributes on a CPU/other-vendor build are skipped."""
+    from core.inference.diffusion_speed import snapshot_backend_flags
+
+    snap: dict[str, Any] = {"flags": snapshot_backend_flags(), "matmul_precision": None}
+    if device != "cuda":
+        return snap
+    try:
+        import torch
+
+        snap["matmul_precision"] = torch.get_float32_matmul_precision()
+        if cfg.enable_tf32:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+        if cudnn_benchmark:
+            torch.backends.cudnn.benchmark = True
+    except Exception:  # noqa: BLE001 -- perf flags are never fatal
+        pass
+    return snap
+
+
+def _restore_perf_flags(snap: Optional[dict]) -> None:
+    """Undo ``_apply_perf_flags`` (the trainer subprocess is disposable, but in-process
+    callers -- tests, notebooks -- must not inherit mutated globals)."""
+    if not snap:
+        return
+    from core.inference.diffusion_speed import restore_backend_flags
+
+    restore_backend_flags(snap.get("flags"))
+    if snap.get("matmul_precision"):
+        try:
+            import torch
+
+            torch.set_float32_matmul_precision(snap["matmul_precision"])
+        except Exception:  # noqa: BLE001 -- best-effort restore
+            pass
 
 
 def _assert_trusted_base_model(base_model: str) -> None:
