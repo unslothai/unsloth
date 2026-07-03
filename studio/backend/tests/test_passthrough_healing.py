@@ -338,7 +338,9 @@ class TestNudgeHelpers:
             {"id": "y", "type": "function", "function": {"name": "Bash", "arguments": "{}"}},
         ]
         assert response_has_promotable_calls(self._resp("", mixed), {"Bash"}) is False
-        assert response_has_promotable_calls(self._resp("", list(reversed(mixed))), {"Bash"}) is False
+        assert (
+            response_has_promotable_calls(self._resp("", list(reversed(mixed))), {"Bash"}) is False
+        )
 
     @pytest.mark.parametrize(
         "data",
@@ -1093,9 +1095,7 @@ class TestAnthropicNonStreamingRoute:
             # stays in the text block (the legacy strip must not run after a
             # span-exact heal), matching the OpenAI passthrough.
             rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
-            _, data = await self._drive(
-                monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")]
-            )
+            _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")])
             (tool_block,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert tool_block["name"] == "lookup"
             (text_block,) = [b for b in data["content"] if b["type"] == "text"]
