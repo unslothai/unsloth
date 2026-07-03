@@ -1924,6 +1924,11 @@ class DiffusionStatusResponse(BaseModel):
     )
     transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
     engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    native_mode: Optional[str] = Field(
+        None,
+        description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
+        "(per-image sd-cli) | null (diffusers engine)",
+    )
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
