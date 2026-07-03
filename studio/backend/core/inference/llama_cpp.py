@@ -4534,8 +4534,7 @@ class LlamaCppBackend:
             # per-device analog of the layer path's per-GPU overhead in _select_gpus).
             cc_per_dev_mib = (cc_bytes // len(gpu_indices)) // (1024 * 1024) if cc_bytes else 0
             adj = [
-                max(0, int(usable_by_idx[i] - reserve_mib - cc_per_dev_mib))
-                for i in gpu_indices
+                max(0, int(usable_by_idx[i] - reserve_mib - cc_per_dev_mib)) for i in gpu_indices
             ]
             if sum(adj) > 0:
                 tensor_split = adj
@@ -5479,9 +5478,9 @@ class LlamaCppBackend:
                                 _tp_flat_mtp,
                                 _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048),
                             )
-                        _tp_required_mib = (
-                            model_size + _tp_mtp_floor + _soft_overhead
-                        ) / (1024 * 1024)
+                        _tp_required_mib = (model_size + _tp_mtp_floor + _soft_overhead) / (
+                            1024 * 1024
+                        )
                         if _tp_weight_budget_mib <= _tp_required_mib:
                             logger.info(
                                 "Tensor parallelism requested but the pooled VRAM "
