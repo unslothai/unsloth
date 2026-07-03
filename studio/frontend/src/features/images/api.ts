@@ -270,6 +270,9 @@ export interface DiffusionTrainingStartRequest {
   instance_prompt?: string | null;
   resolution?: number;
   train_steps?: number;
+  // 0 or omitted uses train_steps. > 0 overrides train_steps with that many epochs
+  // (full passes over the dataset, in optimizer steps).
+  num_epochs?: number;
   learning_rate?: number;
   train_batch_size?: number;
   gradient_accumulation_steps?: number;

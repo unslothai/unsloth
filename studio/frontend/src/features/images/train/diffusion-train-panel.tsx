@@ -210,6 +210,10 @@ export function DiffusionTrainPanel({
   const [instancePrompt, setInstancePrompt] = useState("");
 
   const [steps, setSteps] = useState(500);
+  // Run length is set in either steps or epochs; the trainer resolves epochs -> steps once
+  // the dataset size is known (num_epochs overrides train_steps on the backend).
+  const [durationUnit, setDurationUnit] = useState<"steps" | "epochs">("steps");
+  const [epochs, setEpochs] = useState(10);
   const [learningRate, setLearningRate] = useState(family?.defaults.lr ?? 0.0001);
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
   const [resolution, setResolution] = useState(family?.defaults.resolution ?? 768);
@@ -553,7 +557,11 @@ export function DiffusionTrainPanel({
       );
       return;
     }
-    if (steps < 1) return toast.error("Steps must be at least 1.");
+    if (durationUnit === "epochs") {
+      if (epochs < 1) return toast.error("Epochs must be at least 1.");
+    } else if (steps < 1) {
+      return toast.error("Steps must be at least 1.");
+    }
     if (rank < 1) return toast.error("LoRA rank must be at least 1.");
     if (resolution < 64 || resolution % 8 !== 0) {
       return toast.error("Resolution must be a multiple of 8 and at least 64.");
@@ -577,7 +585,10 @@ export function DiffusionTrainPanel({
         output_dir: outputDir.trim(),
         instance_prompt: instancePrompt.trim() || undefined,
         resolution,
-        train_steps: steps,
+        // Epochs mode overrides train_steps on the backend, so send num_epochs and omit
+        // train_steps (the backend default is unused when num_epochs > 0).
+        train_steps: durationUnit === "epochs" ? undefined : steps,
+        num_epochs: durationUnit === "epochs" ? epochs : undefined,
         learning_rate: learningRate,
         train_batch_size: batchSize,
         gradient_accumulation_steps: gradAccum,
@@ -610,6 +621,8 @@ export function DiffusionTrainPanel({
     instancePrompt,
     resolution,
     steps,
+    durationUnit,
+    epochs,
     learningRate,
     batchSize,
     gradAccum,
@@ -690,6 +703,40 @@ export function DiffusionTrainPanel({
     </div>
   );
 
+  // Run length: a number paired with a compact unit select (Steps / Epochs). Epochs mode
+  // trains for that many full passes over the dataset; the backend resolves it to steps.
+  const durationField = (
+    <div className="grid gap-1.5">
+      <Label className="text-xs">{durationUnit === "epochs" ? "Epochs" : "Steps"}</Label>
+      <div className="flex gap-1.5">
+        <Input
+          type="number"
+          min={1}
+          value={durationUnit === "epochs" ? epochs : steps}
+          onChange={(e) => {
+            settingsDirty.current = true;
+            const n = Number(e.target.value) || 1;
+            if (durationUnit === "epochs") setEpochs(n);
+            else setSteps(n);
+          }}
+          className="h-8 min-w-0 flex-1 text-xs"
+        />
+        <select
+          value={durationUnit}
+          onChange={(e) => {
+            settingsDirty.current = true;
+            setDurationUnit(e.target.value as "steps" | "epochs");
+          }}
+          className="h-8 w-24 rounded-md border border-input bg-background px-2 text-xs"
+          aria-label="Run length unit"
+        >
+          <option value="steps">Steps</option>
+          <option value="epochs">Epochs</option>
+        </select>
+      </div>
+    </div>
+  );
+
   const precisionLabel = (m: "nf4" | "bf16" | "int8" | "fp8" | "auto"): string => {
     if (m === "auto") return "Auto (recommended)";
     if (m === "nf4") return "nf4 (4-bit QLoRA, lowest VRAM)";
@@ -704,7 +751,7 @@ export function DiffusionTrainPanel({
   const trainingSettings = (
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-3">
-        {numberField("Steps", steps, setSteps, 1)}
+        {durationField}
         {numberField("LoRA rank", rank, setRank, 1)}
         {numberField("Resolution", resolution, setResolution, 512, { min: 64, step: 64 })}
         {numberField("Batch", batchSize, setBatchSize, 1)}
@@ -1292,9 +1339,12 @@ export function DiffusionTrainPanel({
               finishes first.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {/* items-center + a real label on the destructive action: a bare "Stop" rendered
-              as a stubby pill between two wide ones and read as misaligned. */}
-          <AlertDialogFooter className="items-center">
+          {/* flex-wrap keeps all three buttons visible when the sm:flex-row row is wider than
+              the dialog at narrow widths (down to ~480px); it wraps instead of clipping the
+              last button past the right edge. items-center + a real label on the destructive
+              action: a bare "Stop" rendered as a stubby pill between two wide ones and read
+              as misaligned. */}
+          <AlertDialogFooter className="flex-wrap items-center">
             <AlertDialogCancel>Continue training</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void onStop(false)}>
               Stop without saving

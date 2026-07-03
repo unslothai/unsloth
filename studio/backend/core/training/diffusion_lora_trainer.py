@@ -36,6 +36,7 @@ import gc
 import os
 import random
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -58,6 +59,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _restore_perf_flags,
     discover_image_caption_pairs,
     get_trainer,
+    resolve_train_steps,
 )
 
 
@@ -301,6 +303,10 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
+        # Resolve num_epochs -> a concrete train_steps now that the dataset size is known, and
+        # rebind cfg so every downstream read (scheduler length, the loop range, progress
+        # total_steps, steps_run) sees the same resolved value.
+        cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
         _emit(on_event, "model_load_started", num_images = len(pairs))
 
         # Honour a stop requested before the (potentially large / slow) base model loads, the

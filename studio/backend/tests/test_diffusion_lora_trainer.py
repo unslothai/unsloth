@@ -20,6 +20,7 @@ from core.training.diffusion_lora_trainer import (
     _config_from_dict,
     compute_sdxl_add_time_ids,
     discover_image_caption_pairs,
+    resolve_train_steps,
 )
 
 
@@ -100,6 +101,60 @@ def test_config_normalized_defaults():
 def test_config_normalized_validation(kw):
     with pytest.raises(ValueError):
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw).normalized()
+
+
+def _cfg(**kw):
+    return DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw)
+
+
+def test_resolve_train_steps_uses_train_steps_when_epochs_disabled():
+    # num_epochs == 0 leaves the explicit train_steps untouched, whatever the image count.
+    cfg = _cfg(train_steps = 300, num_epochs = 0)
+    assert resolve_train_steps(cfg, 20) == 300
+    assert resolve_train_steps(cfg, 1) == 300
+
+
+def test_resolve_train_steps_epochs_ceil_over_batch_and_grad_accum():
+    # One epoch = ceil(N / (batch x grad_accum)) optimizer steps; num_epochs multiplies it.
+    # 10 images, batch 4, grad_accum 1 -> ceil(10/4)=3 steps/epoch.
+    assert resolve_train_steps(_cfg(num_epochs = 1, train_batch_size = 4), 10) == 3
+    assert resolve_train_steps(_cfg(num_epochs = 5, train_batch_size = 4), 10) == 15
+    # grad_accum widens the effective batch: 100 images, batch 2, grad_accum 3 -> per_step=6,
+    # ceil(100/6)=17 steps/epoch, 2 epochs -> 34.
+    cfg = _cfg(num_epochs = 2, train_batch_size = 2, gradient_accumulation_steps = 3)
+    assert resolve_train_steps(cfg, 100) == 34
+    # An exact multiple does not round up: 8 images / batch 4 -> 2 steps/epoch.
+    assert resolve_train_steps(_cfg(num_epochs = 3, train_batch_size = 4), 8) == 6
+
+
+def test_resolve_train_steps_single_image_dataset():
+    # A one-image dataset is one optimizer step per epoch, so num_epochs == steps.
+    assert resolve_train_steps(_cfg(num_epochs = 7, train_batch_size = 4), 1) == 7
+
+
+def test_resolve_train_steps_caps_at_100000():
+    # The run length is capped at 100000 even for absurd epoch counts (matches the request
+    # model's train_steps ceiling), so a huge epochs x dataset never overflows the loop.
+    cfg = _cfg(num_epochs = 1000, train_batch_size = 1)
+    assert resolve_train_steps(cfg, 10_000) == 100000
+
+
+def test_config_normalized_num_epochs_bounds():
+    # 0 (disabled) and the 1..1000 range normalise; out-of-range is rejected.
+    assert _cfg(num_epochs = 0).normalized().num_epochs == 0
+    assert _cfg(num_epochs = 1000).normalized().num_epochs == 1000
+    with pytest.raises(ValueError, match = "num_epochs"):
+        _cfg(num_epochs = -1).normalized()
+    with pytest.raises(ValueError, match = "num_epochs"):
+        _cfg(num_epochs = 1001).normalized()
+
+
+def test_config_from_dict_threads_num_epochs():
+    # num_epochs flows through the shared-payload adapter onto the diffusion field.
+    cfg = _config_from_dict(
+        {"base_model": "b", "data_dir": "d", "output_dir": "o", "num_epochs": 12}
+    )
+    assert cfg.num_epochs == 12
 
 
 def test_compute_sdxl_add_time_ids():

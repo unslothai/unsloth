@@ -31,7 +31,7 @@ import os
 import random
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -48,6 +48,7 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     repo_is_prequantized,
+    resolve_train_steps,
 )
 
 # Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks
@@ -1081,6 +1082,10 @@ def run_dit_lora_training(
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
+    # Resolve num_epochs -> a concrete train_steps now that the dataset size is known, and
+    # rebind cfg so every downstream read (scheduler length, the loop range, progress
+    # total_steps, steps_run) sees the same resolved value.
+    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
     _emit(on_event, "model_load_started", num_images = len(pairs))
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
