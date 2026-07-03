@@ -5,27 +5,39 @@ import {
   normalizeSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
-import type { PerModelConfig } from "./per-model-config";
+import {
+  normalizeMaxSeqLength,
+  type PerModelConfig,
+} from "./per-model-config";
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
 }
 
 export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
-  useChatRuntimeStore.setState({
+  const maxSeqLength = normalizeMaxSeqLength(config.maxSeqLength);
+  useChatRuntimeStore.setState((state) => ({
+    ...(maxSeqLength == null
+      ? {}
+      : { params: { ...state.params, maxSeqLength } }),
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType: normalizeSpeculativeType(config.speculativeType),
     specDraftNMax: config.specDraftNMax ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
-  });
+  }));
 }
 
-export function currentRuntimePerModelConfig(): PerModelConfig {
+export function currentRuntimePerModelConfig(
+  options: { includeMaxSeqLength?: boolean } = {},
+): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
     customContextLength: s.customContextLength ?? null,
+    maxSeqLength: options.includeMaxSeqLength
+      ? normalizeMaxSeqLength(s.params.maxSeqLength)
+      : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
@@ -40,6 +52,8 @@ export function perModelConfigsEqual(
 ): boolean {
   return (
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
+    normalizeMaxSeqLength(a.maxSeqLength) ===
+      normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&

@@ -1331,8 +1331,13 @@ export function ChatPage({
   );
   const activeModelConfig = useMemo<PerModelConfig | null>(() => {
     if (!inferenceParams.checkpoint || isExternalModel) return null;
+    const activeModelIsGguf =
+      activeGgufVariant != null ||
+      ggufContextLength != null ||
+      inferenceParams.checkpoint.toLowerCase().endsWith(".gguf");
     return {
       customContextLength: runtimeCustomContextLength ?? null,
+      maxSeqLength: activeModelIsGguf ? null : inferenceParams.maxSeqLength,
       kvCacheDtype: runtimeKvCacheDtype ?? null,
       speculativeType: runtimeSpeculativeType ?? "auto",
       specDraftNMax: runtimeSpecDraftNMax ?? null,
@@ -1341,7 +1346,10 @@ export function ChatPage({
     };
   }, [
     inferenceParams.checkpoint,
+    inferenceParams.maxSeqLength,
     isExternalModel,
+    activeGgufVariant,
+    ggufContextLength,
     runtimeCustomContextLength,
     runtimeKvCacheDtype,
     runtimeSpeculativeType,
@@ -1876,10 +1884,19 @@ export function ChatPage({
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
+      const metaIsGguf =
+        meta?.isGguf === true ||
+        meta?.ggufVariant != null ||
+        value.toLowerCase().endsWith(".gguf");
       if (
         isSameLoadedModel &&
         (!meta?.config ||
-          perModelConfigsEqual(meta.config, currentRuntimePerModelConfig()))
+          perModelConfigsEqual(
+            meta.config,
+            currentRuntimePerModelConfig({
+              includeMaxSeqLength: !metaIsGguf,
+            }),
+          ))
       ) {
         return;
       }

@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -22,9 +23,13 @@ import { useDefaultChatTemplate } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
   DEFAULT_PER_MODEL_CONFIG,
+  MAX_SEQ_LENGTH_MAX,
+  MAX_SEQ_LENGTH_MIN,
+  MAX_SEQ_LENGTH_STEP,
   MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
   deletePerModelConfig,
+  normalizeMaxSeqLength,
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
@@ -87,6 +92,46 @@ function ChatTemplateSetting({
           Edit
         </Button>
       </div>
+    </div>
+  );
+}
+
+function MaxSeqLengthSetting({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Max Seq Length</span>
+          <InfoHint>
+            Maximum context window size in tokens. Applies when the model loads.
+          </InfoHint>
+        </div>
+        <NumericValueInput
+          value={value}
+          min={MAX_SEQ_LENGTH_MIN}
+          max={MAX_SEQ_LENGTH_MAX}
+          step={MAX_SEQ_LENGTH_STEP}
+          onChange={onChange}
+          ariaLabel="Max Seq Length"
+          className={NUMBER_INPUT_CLASS}
+          size={8}
+        />
+      </div>
+      <Slider
+        min={MAX_SEQ_LENGTH_MIN}
+        max={MAX_SEQ_LENGTH_MAX}
+        step={MAX_SEQ_LENGTH_STEP}
+        value={[value]}
+        onValueChange={([next]) => onChange(next)}
+        className="panel-slider"
+        aria-label="Max Seq Length"
+      />
     </div>
   );
 }
@@ -240,6 +285,12 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
+  const runtimeMaxSeqLength = useChatRuntimeStore(
+    (s) => s.params.maxSeqLength,
+  );
+  const [initialMaxSeqLength] = useState(
+    () => normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096,
+  );
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     return loadedConfig
@@ -282,6 +333,8 @@ export function ModelConfigPage({
     });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
+  const maxSeqLengthValue =
+    normalizeMaxSeqLength(config.maxSeqLength) ?? initialMaxSeqLength;
 
   const handleRun = () => {
     if (remember) {
@@ -388,10 +441,18 @@ export function ModelConfigPage({
           </>
         )}
         {!target.isGguf && (
-          <ChatTemplateSetting
-            config={config}
-            onEditTemplate={() => setTemplateOpen(true)}
-          />
+          <>
+            <MaxSeqLengthSetting
+              value={maxSeqLengthValue}
+              onChange={(value) =>
+                update({ maxSeqLength: normalizeMaxSeqLength(value) })
+              }
+            />
+            <ChatTemplateSetting
+              config={config}
+              onEditTemplate={() => setTemplateOpen(true)}
+            />
+          </>
         )}
       </div>
 

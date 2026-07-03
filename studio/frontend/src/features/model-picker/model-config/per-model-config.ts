@@ -13,6 +13,7 @@ export { modelStorageKey as configEntryKey };
 
 export interface PerModelConfig {
   customContextLength: number | null;
+  maxSeqLength: number | null;
   kvCacheDtype: string | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
@@ -22,12 +23,17 @@ export interface PerModelConfig {
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
+  maxSeqLength: null,
   kvCacheDtype: null,
   speculativeType: "auto",
   specDraftNMax: null,
   tensorParallel: false,
   chatTemplateOverride: null,
 };
+
+export const MAX_SEQ_LENGTH_MIN = 128;
+export const MAX_SEQ_LENGTH_MAX = 32768;
+export const MAX_SEQ_LENGTH_STEP = 128;
 
 export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
@@ -61,6 +67,7 @@ type RawConfig = Partial<PerModelConfig> & { version?: unknown };
 const STORED_CONFIG_FIELDS = new Set([
   "version",
   "customContextLength",
+  "maxSeqLength",
   "kvCacheDtype",
   "speculativeType",
   "specDraftNMax",
@@ -89,6 +96,14 @@ function canonicalizeSpeculativeType(value: string): string | null {
     return "mtp+ngram";
   }
   return null;
+}
+
+export function normalizeMaxSeqLength(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const snapped = Math.round(value / MAX_SEQ_LENGTH_STEP) * MAX_SEQ_LENGTH_STEP;
+  return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(MAX_SEQ_LENGTH_MAX, snapped));
 }
 
 function canUseStorage(): boolean {
@@ -191,6 +206,7 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
   return normalizeV1({
     customContextLength:
       typeof raw.contextLength === "number" ? raw.contextLength : null,
+    maxSeqLength: null,
     kvCacheDtype:
       typeof raw.kvCacheDtype === "string" ? raw.kvCacheDtype : null,
     speculativeType:
@@ -327,6 +343,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       partial.customContextLength > 0
         ? Math.floor(partial.customContextLength)
         : null,
+    maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -483,6 +500,7 @@ export function hasPerModelConfig(
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
     config.customContextLength == null &&
+    config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
