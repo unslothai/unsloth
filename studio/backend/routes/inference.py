@@ -165,26 +165,6 @@ def _friendly_error(exc: Exception) -> str:
     return "An internal error occurred"
 
 
-def _friendly_upstream_error(text: str) -> str:
-    """Rewrite a raw llama-server error body into an actionable message where we can.
-
-    The main case is a tool-calling grammar that llama-server can't compile ("failed to
-    parse grammar" / "failed to initialize samplers"). This surfaces to coding agents as
-    a hard 400 on every tool-bearing turn. It is a llama-server limitation with some
-    model/quant + tool-schema combinations, and recent llama.cpp builds handle the common
-    coding-agent tools, so point the user at updating Studio rather than the raw body.
-    """
-    lowered = text.lower()
-    if "failed to parse grammar" in lowered or "failed to initialize samplers" in lowered:
-        return (
-            "The model couldn't compile a tool-calling grammar for this request. This is a "
-            "llama-server limitation with some model/quant and tool-schema combinations. "
-            "Update Studio (it installs the latest llama.cpp, which handles the common "
-            "coding-agent tools) or try a different GGUF model."
-        )
-    return f"llama-server error: {text}"
-
-
 def _clamp_finish_reason(value) -> str:
     """Coerce an upstream finish_reason into OpenAI's known chat values.
 
@@ -298,8 +278,8 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
     """HTTPException for a non-200 upstream response on the OpenAI passthrough
     (tools / response_format). An over-context upstream error is mapped to a 400
     with code="context_length_exceeded" so these paths deliver the same signal as
-    the non-passthrough path; a tool-grammar compile failure gets the same actionable
-    guidance as the Anthropic passthrough; any other upstream error stays verbatim."""
+    the non-passthrough path; any other upstream error keeps llama-server's
+    message verbatim."""
     if _classify_llama_generation_error(Exception(text)):
         return HTTPException(
             status_code = 400,
@@ -312,7 +292,7 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
         )
     return HTTPException(
         status_code = status_code,
-        detail = _friendly_upstream_error(text[:500]),
+        detail = f"llama-server error: {text[:500]}",
     )
 
 
@@ -784,7 +764,6 @@ def _set_stream_response_read_timeout(
 
 
 _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
-_OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 
 
 class _CompatSameTaskTimeout:
@@ -1136,16 +1115,6 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
-from core.inference.passthrough_healing import (
-    StreamToolCallHealer,
-    heal_gate,
-    heal_openai_message,
-    heal_openai_message_events,
-    nudge_enabled,
-    nudge_messages,
-    nudge_should_retry,
-    response_has_promotable_calls,
-)
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -8076,13 +8045,6 @@ def _build_chat_request(
         if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
             chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
             explicit_enable_thinking = True
-        # auto_heal_tool_calls / nudge_tool_calls are not typed on
-        # ResponsesRequest; lift them from the extra-body so passthrough
-        # healing (and the opt-in nudge) honor them on both paths.
-        if isinstance(_extra.get("auto_heal_tool_calls"), bool):
-            chat_kwargs["auto_heal_tool_calls"] = _extra["auto_heal_tool_calls"]
-        if isinstance(_extra.get("nudge_tool_calls"), bool):
-            chat_kwargs["nudge_tool_calls"] = _extra["nudge_tool_calls"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
@@ -8317,111 +8279,15 @@ async def _responses_stream(
             parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
         )
         reasoning_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
-        message_state: dict[str, Any] = {
-            "output_index": None,
-            "item_id": None,
-            "opened": False,
-            "text": "",
-        }
-        # Message items already closed mid-stream (a healed tool call splits
-        # the assistant text into separate message items, as native Responses
-        # streams do). Kept for the final response.completed snapshot.
-        closed_message_states: list[dict] = []
+        message_state: dict[str, Any] = {"output_index": None, "item_id": None, "opened": False}
         # Per-tool-call state keyed by Chat Completions `tool_calls[].index`,
         # stable across chunks for the same call. Values:
         #   {output_index, item_id, call_id, name, arguments, opened}
         tool_call_state: dict[int, dict] = {}
         next_output_index = 0
-        # Text-form tool calls promoted back to structured calls (declared
-        # client tools only); dormant once grammar-mode structured deltas appear.
-        _allowed_tools = heal_gate(
-            getattr(chat_req, "auto_heal_tool_calls", None),
-            body.get("tools"),
-            body.get("tool_choice"),
-        )
-        healer = StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
-        healed_tc_index = 0
-
-        def _healed_tc(call: dict):
-            # Chat-delta shape for a healed call. Indexes live in a disjoint
-            # range so a healed call can never merge into a structured call's
-            # state slot; parallel_tool_calls=false caps healed calls too (the
-            # upstream cap ran before injection).
-            nonlocal healed_tc_index
-            if payload.parallel_tool_calls is False and healed_tc_index >= 1:
-                return None
-            tc = {
-                "index": 1_000_000 + healed_tc_index,
-                "id": call["id"],
-                "type": "function",
-                "function": call["function"],
-            }
-            healed_tc_index += 1
-            return tc
 
         def _sse(event_name: str, payload: dict) -> str:
             return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
-
-        def _tool_call_delta_events(tc: dict) -> list:
-            # One Chat Completions tool_calls delta -> Responses SSE events,
-            # allocating/merging per-call state (shared by the structured loop
-            # and the healer's promoted calls).
-            events = []
-            idx = tc.get("index", 0)
-            st = tool_call_state.get(idx)
-            fn = tc.get("function") or {}
-            if st is None:
-                # First chunk for this tool call -- allocate an
-                # output_index and emit output_item.added.
-                st = {
-                    "output_index": _claim_output_index(),
-                    "item_id": f"fc_{uuid.uuid4().hex[:12]}",
-                    "call_id": tc.get("id") or "",
-                    "name": fn.get("name") or "",
-                    "arguments": "",
-                    "opened": False,
-                }
-                tool_call_state[idx] = st
-            else:
-                # Later chunks sometimes carry id/name only once; merge
-                # when present.
-                if tc.get("id") and not st["call_id"]:
-                    st["call_id"] = tc["id"]
-                if fn.get("name") and not st["name"]:
-                    st["name"] = fn["name"]
-
-            if not st["opened"] and st["call_id"] and st["name"]:
-                item_added = {
-                    "type": "response.output_item.added",
-                    "output_index": st["output_index"],
-                    "item": {
-                        "type": "function_call",
-                        "id": st["item_id"],
-                        "status": "in_progress",
-                        "call_id": st["call_id"],
-                        "name": st["name"],
-                        "arguments": "",
-                    },
-                }
-                events.append(_sse("response.output_item.added", item_added))
-                st["opened"] = True
-
-            arg_delta = fn.get("arguments") or ""
-            if arg_delta and st["opened"]:
-                st["arguments"] += arg_delta
-                args_delta_event = {
-                    "type": "response.function_call_arguments.delta",
-                    "item_id": st["item_id"],
-                    "output_index": st["output_index"],
-                    "delta": arg_delta,
-                }
-                events.append(_sse("response.function_call_arguments.delta", args_delta_event))
-            elif arg_delta:
-                # Buffer args until we can open the item (some models
-                # send id/name in the same chunk as the first arg delta;
-                # if not, stash).
-                st["arguments"] += arg_delta
-            return events
 
         def _claim_output_index() -> int:
             nonlocal next_output_index
@@ -8507,98 +8373,6 @@ async def _responses_stream(
                 ),
             ]
 
-        def _close_message_item() -> list[str]:
-            """Close the open message item so later text opens a fresh one.
-
-            Emits the same done-event triplet the end-of-stream close loop
-            would, records the item for the final snapshot, and resets the
-            state in place. No-op when no message item is open.
-            """
-            if not message_state["opened"]:
-                return []
-            text = message_state["text"]
-            events = [
-                _sse(
-                    "response.output_text.done",
-                    {
-                        "type": "response.output_text.done",
-                        "item_id": message_state["item_id"],
-                        "output_index": message_state["output_index"],
-                        "content_index": 0,
-                        "text": text,
-                    },
-                ),
-                _sse(
-                    "response.content_part.done",
-                    {
-                        "type": "response.content_part.done",
-                        "item_id": message_state["item_id"],
-                        "output_index": message_state["output_index"],
-                        "content_index": 0,
-                        "part": {"type": "output_text", "text": text, "annotations": []},
-                    },
-                ),
-                _sse(
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "output_index": message_state["output_index"],
-                        "item": {
-                            "type": "message",
-                            "id": message_state["item_id"],
-                            "status": "completed",
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": text, "annotations": []}],
-                        },
-                    },
-                ),
-            ]
-            closed_message_states.append(dict(message_state))
-            message_state.update(
-                {"output_index": None, "item_id": None, "opened": False, "text": ""}
-            )
-            return events
-
-        def _healed_event_sse(events) -> list[str]:
-            """Serialize healer events preserving their order.
-
-            Text around a healed call must keep its position relative to the
-            function_call item (output indexes are claimed in emission order),
-            so never split an event list into all-text-then-all-calls. A healed
-            call also CLOSES any open message item, so trailing text opens a
-            fresh message with a later output index, exactly like a native
-            Responses stream that interleaves messages and calls.
-            """
-            nonlocal full_text
-            out: list[str] = []
-            for kind, value in events:
-                if kind == "text":
-                    if not value:
-                        continue
-                    out.extend(_ensure_message_open())
-                    full_text += value
-                    message_state["text"] += value
-                    api_monitor.append_reply(monitor_id, value)
-                    out.append(
-                        _sse(
-                            "response.output_text.delta",
-                            {
-                                "type": "response.output_text.delta",
-                                "item_id": message_state["item_id"],
-                                "output_index": message_state["output_index"],
-                                "content_index": 0,
-                                "delta": value,
-                            },
-                        )
-                    )
-                else:
-                    tc = _healed_tc(value)
-                    if tc is None:
-                        continue
-                    out.extend(_close_message_item())
-                    out.extend(_tool_call_delta_events(tc))
-            return out
-
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
             indexed_items: list[tuple[int, dict]] = []
@@ -8615,23 +8389,19 @@ async def _responses_stream(
                         },
                     )
                 )
-            # Closed copies keep opened=True (snapshotted before reset); the
-            # live state contributes only when a message is currently open.
-            for msg_st in [*closed_message_states, message_state]:
-                if not msg_st["opened"]:
-                    continue
+            if message_state["opened"]:
                 indexed_items.append(
                     (
-                        msg_st["output_index"],
+                        message_state["output_index"],
                         {
                             "type": "message",
-                            "id": msg_st["item_id"],
+                            "id": message_state["item_id"],
                             "status": "completed",
                             "role": "assistant",
                             "content": [
                                 {
                                     "type": "output_text",
-                                    "text": msg_st["text"],
+                                    "text": full_text,
                                     "annotations": [],
                                 }
                             ],
@@ -8759,7 +8529,7 @@ async def _responses_stream(
                             "output": [],
                             "error": {
                                 "code": resp.status_code,
-                                "message": _friendly_upstream_error(err_text[:500]),
+                                "message": f"llama-server error: {err_text[:500]}",
                             },
                         },
                     },
@@ -8815,30 +8585,10 @@ async def _responses_stream(
                             "delta": reasoning_delta,
                         },
                     )
-                # Heal text-form tool calls in the visible stream (never in
-                # reasoning text): promoted calls join the structured tc loop
-                # below through the same state machinery, and healer events are
-                # emitted IN ORDER so text after a healed call never jumps ahead
-                # of the function_call item. Once a structured delta arrives,
-                # grammar mode worked and the healer goes dormant.
-                if healer is not None and not healer.dormant:
-                    healed_events = []
-                    if delta.get("tool_calls"):
-                        # Held text preceded the structured call; the call's own
-                        # deltas follow in the structured loop below.
-                        healed_events = healer.structured_tool_call_seen()
-                        if visible_delta:
-                            healed_events.append(("text", visible_delta))
-                    elif visible_delta:
-                        healed_events = healer.feed(visible_delta)
-                    visible_delta = ""
-                    for event in _healed_event_sse(healed_events):
-                        yield event
                 if visible_delta:
                     for event in _ensure_message_open():
                         yield event
                     full_text += visible_delta
-                    message_state["text"] += visible_delta
                     api_monitor.append_reply(monitor_id, visible_delta)
                     yield _sse(
                         "response.output_text.delta",
@@ -8852,19 +8602,60 @@ async def _responses_stream(
                     )
 
                 for tc in delta.get("tool_calls") or []:
-                    if (
-                        payload.parallel_tool_calls is False
-                        and healed_tc_index >= 1
-                        and tc.get("index", 0) not in tool_call_state
-                    ):
-                        # A healed call already consumed the single allowed slot;
-                        # _drop_parallel_tool_call_deltas only sees native indexes,
-                        # so a native index-0 call would still open a second
-                        # function_call item. Skip it (and its later argument
-                        # deltas, which never allocate a state either).
-                        continue
-                    for event in _tool_call_delta_events(tc):
-                        yield event
+                    idx = tc.get("index", 0)
+                    st = tool_call_state.get(idx)
+                    fn = tc.get("function") or {}
+                    if st is None:
+                        # First chunk for this tool call -- allocate an
+                        # output_index and emit output_item.added.
+                        st = {
+                            "output_index": _claim_output_index(),
+                            "item_id": f"fc_{uuid.uuid4().hex[:12]}",
+                            "call_id": tc.get("id") or "",
+                            "name": fn.get("name") or "",
+                            "arguments": "",
+                            "opened": False,
+                        }
+                        tool_call_state[idx] = st
+                    else:
+                        # Later chunks sometimes carry id/name only once; merge
+                        # when present.
+                        if tc.get("id") and not st["call_id"]:
+                            st["call_id"] = tc["id"]
+                        if fn.get("name") and not st["name"]:
+                            st["name"] = fn["name"]
+
+                    if not st["opened"] and st["call_id"] and st["name"]:
+                        item_added = {
+                            "type": "response.output_item.added",
+                            "output_index": st["output_index"],
+                            "item": {
+                                "type": "function_call",
+                                "id": st["item_id"],
+                                "status": "in_progress",
+                                "call_id": st["call_id"],
+                                "name": st["name"],
+                                "arguments": "",
+                            },
+                        }
+                        yield _sse("response.output_item.added", item_added)
+                        st["opened"] = True
+
+                    arg_delta = fn.get("arguments") or ""
+                    if arg_delta and st["opened"]:
+                        st["arguments"] += arg_delta
+                        args_delta_event = {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": st["item_id"],
+                            "output_index": st["output_index"],
+                            "delta": arg_delta,
+                        }
+                        yield _sse("response.function_call_arguments.delta", args_delta_event)
+                    elif arg_delta:
+                        # Buffer args until we can open the item (some models
+                        # send id/name in the same chunk as the first arg delta;
+                        # if not, stash).
+                        st["arguments"] += arg_delta
 
                 _apply_usage(chunk_data.get("usage"))
         except asyncio.CancelledError:
@@ -8920,19 +8711,10 @@ async def _responses_stream(
                     "delta": final_reasoning,
                 },
             )
-        # Last-chance heal of any held residue (e.g. a tool block the model
-        # never closed) before the trailing visible text is flushed; events
-        # keep healer order so trailing text stays behind a healed call.
-        if healer is not None:
-            events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
-            final_visible = ""
-            for event in _healed_event_sse(events):
-                yield event
         if final_visible:
             for event in _ensure_message_open():
                 yield event
             full_text += final_visible
-            message_state["text"] += final_visible
             api_monitor.append_reply(monitor_id, final_visible)
             yield _sse(
                 "response.output_text.delta",
@@ -8991,10 +8773,6 @@ async def _responses_stream(
                 continue
 
             if kind == "message":
-                # Per-item text: message items closed mid-stream (healed-call
-                # rotation) already emitted their done events, so this state
-                # carries only its own text, not the whole stream's.
-                _msg_text = st["text"]
                 yield _sse(
                     "response.output_text.done",
                     {
@@ -9002,7 +8780,7 @@ async def _responses_stream(
                         "item_id": st["item_id"],
                         "output_index": st["output_index"],
                         "content_index": 0,
-                        "text": _msg_text,
+                        "text": full_text,
                     },
                 )
                 yield _sse(
@@ -9012,7 +8790,7 @@ async def _responses_stream(
                         "item_id": st["item_id"],
                         "output_index": st["output_index"],
                         "content_index": 0,
-                        "part": {"type": "output_text", "text": _msg_text, "annotations": []},
+                        "part": {"type": "output_text", "text": full_text, "annotations": []},
                     },
                 )
                 yield _sse(
@@ -9026,7 +8804,7 @@ async def _responses_stream(
                             "status": "completed",
                             "role": "assistant",
                             "content": [
-                                {"type": "output_text", "text": _msg_text, "annotations": []}
+                                {"type": "output_text", "text": full_text, "annotations": []}
                             ],
                         },
                     },
@@ -9632,7 +9410,6 @@ async def anthropic_messages(
                     session_id = payload.session_id,
                     cancel_id = payload.cancel_id,
                     disable_parallel_tool_use = _disable_parallel,
-                    auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 )
             )
         return await _monitored_anthropic(
@@ -9652,8 +9429,6 @@ async def anthropic_messages(
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
                 disable_parallel_tool_use = _disable_parallel,
-                auto_heal_tool_calls = payload.auto_heal_tool_calls,
-                nudge_tool_calls = payload.nudge_tool_calls,
             )
         )
 
@@ -10224,7 +9999,6 @@ async def _anthropic_passthrough_stream(
     session_id = None,
     cancel_id = None,
     disable_parallel_tool_use = False,
-    auto_heal_tool_calls = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
@@ -10261,16 +10035,6 @@ async def _anthropic_passthrough_stream(
 
     async def _stream():
         emitter = AnthropicPassthroughEmitter()
-        # Promote text-form tool calls (declared client tools only) into
-        # tool_use blocks; verbatim behavior when healing is off or no tools.
-        # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
-        if _allowed_tools:
-            emitter.enable_healing(
-                _allowed_tools,
-                openai_tools,
-                disable_parallel_tool_use = disable_parallel_tool_use,
-            )
         for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
             yield line
 
@@ -10332,7 +10096,7 @@ async def _anthropic_passthrough_stream(
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
-                        _friendly_upstream_error(_err_text),
+                        f"llama-server error: {_err_text}",
                         status = resp.status_code,
                     ),
                 )
@@ -10407,8 +10171,6 @@ async def _anthropic_passthrough_non_streaming(
     presence_penalty = None,
     tool_choice = "auto",
     disable_parallel_tool_use = False,
-    auto_heal_tool_calls = None,
-    nudge_tool_calls = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -10437,102 +10199,38 @@ async def _anthropic_passthrough_non_streaming(
     if resp.status_code != 200:
         raise HTTPException(
             status_code = resp.status_code,
-            detail = _friendly_upstream_error(resp.text[:500]),
+            detail = f"llama-server error: {resp.text[:500]}",
         )
 
     data = resp.json()
-    # tool_choice arrives here already converted to the OpenAI shape.
-    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
-
-    # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the model
-    # tried to call a tool but nothing usable came out; re-ask once with the
-    # prompt prefix intact so llama-server's KV cache is reused.
-    if (
-        _allowed_tools
-        and nudge_enabled(nudge_tool_calls)
-        and nudge_should_retry(data, _allowed_tools, openai_tools)
-    ):
-        retry_body = {
-            **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
-        }
-        try:
-            retry_resp = await nonstreaming_client().post(
-                target_url,
-                json = retry_body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
-            if retry_resp.status_code == 200:
-                retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
-                    data = retry_data
-        except (httpx.RequestError, ValueError) as exc:
-            logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
-
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     finish_reason = choice.get("finish_reason")
 
-    healing_active = bool(_allowed_tools)
-    healed_events = (
-        heal_openai_message_events(message, _allowed_tools, openai_tools)
-        if healing_active
-        else None
-    )
-
     content_blocks = []
-    tool_calls = []
-    if healed_events:
-        emitted_tool_uses = 0
-        for kind, value in healed_events:
-            if kind == "text":
-                text = str(value).strip()
-                if text:
-                    content_blocks.append(AnthropicResponseTextBlock(text = text))
-                continue
-            if disable_parallel_tool_use and emitted_tool_uses >= 1:
-                continue
-            fn = value.get("function") or {}
-            try:
-                args = json.loads(fn.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                args = {}
-            tool_calls.append(value)
-            emitted_tool_uses += 1
-            content_blocks.append(
-                AnthropicResponseToolUseBlock(
-                    id = anthropic_tool_use_id(value.get("id")),
-                    name = fn.get("name", ""),
-                    input = args,
-                )
-            )
-    else:
-        text = message.get("content") or ""
+    text = message.get("content") or ""
+    if text:
+        text = _TOOL_XML_RE.sub("", text).strip()
         if text:
-            # Keep unpromoted bytes when healing is active; legacy stripping is
-            # only for opted-out or no-client-tool requests.
-            if not healing_active:
-                text = _TOOL_XML_RE.sub("", text)
-            text = text.strip()
-            if text:
-                content_blocks.append(AnthropicResponseTextBlock(text = text))
+            content_blocks.append(AnthropicResponseTextBlock(text = text))
 
-        tool_calls = message.get("tool_calls") or []
-        if disable_parallel_tool_use and len(tool_calls) > 1:
-            tool_calls = tool_calls[:1]
-        for tc in tool_calls:
-            fn = tc.get("function") or {}
-            try:
-                args = json.loads(fn.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                args = {}
-            content_blocks.append(
-                AnthropicResponseToolUseBlock(
-                    id = anthropic_tool_use_id(tc.get("id")),
-                    name = fn.get("name", ""),
-                    input = args,
-                )
+    tool_calls = message.get("tool_calls") or []
+    # disable_parallel_tool_use: keep only the first tool_use block.
+    if disable_parallel_tool_use and len(tool_calls) > 1:
+        tool_calls = tool_calls[:1]
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments", "{}"))
+        except json.JSONDecodeError:
+            args = {}
+        content_blocks.append(
+            AnthropicResponseToolUseBlock(
+                id = anthropic_tool_use_id(tc.get("id")),
+                name = fn.get("name", ""),
+                input = args,
             )
+        )
 
     stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
 
@@ -10880,84 +10578,45 @@ async def _openai_passthrough_stream(
     body = _build_openai_passthrough_body(
         payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
-    # Text-form tool calls from small models get promoted to structured calls on
-    # the way back (declared client tools only); requests without tools or with
-    # auto_heal_tool_calls=false keep the verbatim relay. tool_choice constrains
-    # the allowlist ("none" disables, a forced function narrows to it).
-    _allowed_tools = heal_gate(
-        payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
-    )
 
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
-    client = None
-    resp = None
-    send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
-
-    async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
-        if task is None:
-            return
-        if not task.done():
-            task.cancel()
-        try:
-            task_resp = await task
-            if task_resp is not None:
-                try:
-                    await task_resp.aclose()
-                except Exception:
-                    pass
-        except (asyncio.CancelledError, Exception):
-            pass
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
-        # Keep the pre-header window short so accepted SSE clients receive
-        # immediate headers in the common timeout-reduced stall.
+        # Dispatch BEFORE returning StreamingResponse so transport errors and
+        # non-200 upstream statuses surface as real HTTP errors -- OpenAI SDKs
+        # rely on status codes to raise APIError/BadRequestError.
         client = httpx.AsyncClient(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
         )
+        resp = None
         _truncate_budget = (
             _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
         )
-
         while True:
             try:
                 req = client.build_request(
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                send_task = asyncio.create_task(
-                    _send_stream_with_preheader_cancel(client, req, cancel_event, request = request)
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
                 )
-                done, _ = await asyncio.wait(
-                    {send_task},
-                    timeout = _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S,
-                    return_when = asyncio.FIRST_COMPLETED,
-                )
-                if send_task not in done:
-                    break
-
-                # Dispatch returned quickly enough to preserve pre-header status.
-                resp = await send_task
-                send_task = None
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                await _aclose_send_task(send_task)
                 await _aclose_stream_resources(resp = resp, client = client)
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
                 )
-            if resp is None and send_task is not None and not send_task.done():
-                break
             if resp is None:
                 api_monitor.finish(monitor_id, "cancelled")
-                await _aclose_send_task(send_task)
                 try:
                     await client.aclose()
                 except Exception:
@@ -11002,8 +10661,6 @@ async def _openai_passthrough_stream(
             api_monitor.fail(monitor_id, err_text[:500])
             raise _openai_passthrough_error(upstream_status, err_text)
 
-        # Keep tracker cleanup paired if pre-header dispatch is cancelled after we
-        # have already committed headers.
         async def _stream():
             # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
             # save resp.aiter_lines() so the finally block can aclose() it on
@@ -11011,10 +10668,10 @@ async def _openai_passthrough_stream(
             lines_iter = None
             # Watchers unblock aiter_lines() during prefill, before in-loop
             # cancel/disconnect checks can run.
-            cancel_watcher = None
-            disconnect_watcher = None
-
-            nonlocal resp, send_task, first_token_deadline, _truncate_budget
+            cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, cancel_event)
+            )
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -11023,14 +10680,9 @@ async def _openai_passthrough_stream(
             last_chunk_id = completion_id
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
-            healer = (
-                StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
-            )
-            healed_call_index = 0
 
             def _synthetic_finish_line() -> str:
-                healed = healer is not None and healer.healed
-                finish_reason = "tool_calls" if (saw_tool_call_delta or healed) else "stop"
+                finish_reason = "tool_calls" if saw_tool_call_delta else "stop"
                 chunk = ChatCompletionChunk(
                     id = last_chunk_id,
                     created = last_chunk_created,
@@ -11044,182 +10696,7 @@ async def _openai_passthrough_stream(
                 )
                 return f"data: {chunk.model_dump_json(exclude_none = True)}"
 
-            def _healer_sse_lines(events) -> list:
-                # Serialize healer events as chunks matching the upstream stream's
-                # id/model/created so clients see one coherent completion.
-                nonlocal healed_call_index
-                lines = []
-                for kind, value in events:
-                    if kind == "text":
-                        if not value:
-                            continue
-                        delta = {"content": value}
-                    else:
-                        # parallel_tool_calls=false caps healed calls too (the SSE
-                        # line cap only sees structured upstream deltas).
-                        if payload.parallel_tool_calls is False and healed_call_index >= 1:
-                            continue
-                        delta = {
-                            "tool_calls": [
-                                {
-                                    "index": healed_call_index,
-                                    "id": value["id"],
-                                    "type": "function",
-                                    "function": value["function"],
-                                }
-                            ]
-                        }
-                        healed_call_index += 1
-                    chunk = {
-                        "id": last_chunk_id,
-                        "object": "chat.completion.chunk",
-                        "created": last_chunk_created,
-                        "model": last_chunk_model,
-                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
-                    }
-                    lines.append("data: " + json.dumps(chunk, ensure_ascii = False))
-                return lines
-
-            def _heal_transform(chunk_data: dict, raw_line: str) -> list:
-                """SSE lines to emit in place of one upstream line (healing on)."""
-                choices = chunk_data.get("choices")
-                if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
-                    return [raw_line]
-                choice = choices[0]
-                delta = choice.get("delta")
-                delta = delta if isinstance(delta, dict) else {}
-                if delta.get("tool_calls"):
-                    # Structured call streamed: grammar mode worked. Flush any held
-                    # text (it preceded the call) and relay verbatim from here on.
-                    lines = _healer_sse_lines(healer.structured_tool_call_seen())
-                    if healed_call_index:
-                        if payload.parallel_tool_calls is False:
-                            # A healed call already consumed the single allowed
-                            # slot; the upstream SSE cap keeps native index 0, so
-                            # drop the native call here or the client gets two.
-                            del delta["tool_calls"]
-                            if delta or choice.get("finish_reason") or chunk_data.get("usage"):
-                                lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
-                            return lines
-                        # A healed call already went out on index 0..n-1; OpenAI
-                        # clients merge tool-call deltas by index, so shift the
-                        # native calls into the next indexes or they would merge
-                        # into the healed call.
-                        for tc in delta["tool_calls"]:
-                            if isinstance(tc, dict) and isinstance(tc.get("index"), int):
-                                tc["index"] += healed_call_index
-                        return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
-                    return lines + [raw_line]
-                content = delta.get("content")
-                finish = choice.get("finish_reason")
-                if not isinstance(content, str) or not content:
-                    if not finish:
-                        return [raw_line]
-                    # Finish chunk: last-chance heal of the residue, and rewrite a
-                    # "stop" into "tool_calls" when text-form calls were promoted.
-                    lines = _healer_sse_lines(healer.finalize())
-                    if healer.healed and finish == "stop":
-                        choice["finish_reason"] = "tool_calls"
-                        return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
-                    return lines + [raw_line]
-                events = healer.feed(content)
-                if finish:
-                    events += healer.finalize()
-                if not finish and events == [("text", content)]:
-                    # Nothing held or promoted: the healer passed the chunk
-                    # through whole, so keep the verbatim upstream bytes.
-                    return [raw_line]
-                del delta["content"]
-                prefix_lines = []
-                if delta:
-                    prefix_chunk = {k: v for k, v in chunk_data.items() if k != "usage"}
-                    prefix_choice = dict(choice)
-                    prefix_choice["delta"] = dict(delta)
-                    prefix_choice["finish_reason"] = None
-                    prefix_chunk["choices"] = [prefix_choice]
-                    prefix_lines.append("data: " + json.dumps(prefix_chunk, ensure_ascii = False))
-                    delta.clear()
-                lines = prefix_lines + _healer_sse_lines(events)
-                if delta or finish or chunk_data.get("usage"):
-                    if healer.healed and finish == "stop":
-                        choice["finish_reason"] = "tool_calls"
-                    lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
-                return lines
-
             try:
-                while True:
-                    if send_task is not None and not send_task.done():
-                        try:
-                            resp = await send_task
-                        except httpx.RequestError as e:
-                            logger.error("openai passthrough stream: upstream unreachable: %s", e)
-                            api_monitor.fail(monitor_id, _friendly_error(e))
-                            yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
-                            return
-                        send_task = None
-                    elif send_task is not None:
-                        try:
-                            resp = send_task.result()
-                        except httpx.RequestError as e:
-                            logger.error("openai passthrough stream: upstream unreachable: %s", e)
-                            api_monitor.fail(monitor_id, _friendly_error(e))
-                            yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
-                            return
-                        send_task = None
-
-                    if resp is None:
-                        api_monitor.finish(monitor_id, "cancelled")
-                        return
-                    if resp.status_code == 200:
-                        break
-
-                    err_bytes = await resp.aread()
-                    err_text = err_bytes.decode("utf-8", errors = "replace")
-                    logger.error(
-                        "openai passthrough upstream error: status=%s body=%s",
-                        resp.status_code,
-                        err_text[:500],
-                    )
-                    upstream_status = resp.status_code
-                    try:
-                        await resp.aclose()
-                    except Exception:
-                        pass
-                    resp = None
-                    if (
-                        _truncate_budget > 0
-                        and _classify_llama_generation_error(Exception(err_text))
-                        and _apply_overflow_truncation(body, err_text)
-                    ):
-                        _truncate_budget -= 1
-                        req = client.build_request(
-                            "POST", target_url, json = body, headers = {"Connection": "close"}
-                        )
-                        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                        send_task = asyncio.create_task(
-                            _send_stream_with_preheader_cancel(
-                                client, req, cancel_event, request = request
-                            )
-                        )
-                        continue
-
-                    upstream_error = _openai_passthrough_error(upstream_status, err_text)
-                    error_payload = (
-                        upstream_error.detail
-                        if isinstance(upstream_error.detail, dict)
-                        else openai_error_body(
-                            str(upstream_error.detail),
-                            status = upstream_status,
-                        )
-                    )
-                    api_monitor.fail(monitor_id, err_text[:500])
-                    yield f"data: {json.dumps(error_payload)}\n\n"
-                    return
-
-                cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
-                disconnect_watcher = asyncio.create_task(
-                    _await_disconnect_then_close(request, resp, cancel_event)
-                )
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
                     lines_iter,
@@ -11235,14 +10712,6 @@ async def _openai_passthrough_stream(
                     data_text = raw_line[6:].strip()
                     if data_text == "[DONE]":
                         saw_done = True
-                        # Upstream ended without a finish chunk: heal the residue
-                        # first so the synthetic finish sees healer.healed.
-                        if healer is not None and not saw_stream_error:
-                            for held_line in _healer_sse_lines(healer.finalize()):
-                                _monitor_openai_sse_line(
-                                    monitor_id, held_line, llama_backend.context_length
-                                )
-                                yield held_line + "\n\n"
                         if (
                             not saw_finish_reason
                             and not saw_stream_error
@@ -11298,18 +10767,13 @@ async def _openai_passthrough_stream(
                         # emit a successful finish_reason after a failed stream.
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
-                    # With healing active, a content-bearing line may be replaced by
-                    # held/promoted chunks; otherwise the single upstream line
-                    # relays verbatim (monitored exactly as emitted either way).
-                    if (
-                        healer is not None
-                        and not healer.dormant
-                        and isinstance(chunk_data, dict)
-                        and not saw_stream_error
-                    ):
-                        out_lines = _heal_transform(chunk_data, raw_line)
-                    else:
-                        out_lines = [raw_line]
+                    monitor_event = _monitor_openai_sse_line(
+                        monitor_id,
+                        raw_line,
+                        llama_backend.context_length,
+                    )
+                    if monitor_event == "error":
+                        saw_stream_error = True
                     # If a trailing usage-only chunk (include_usage) arrives before
                     # any finish chunk, emit the synthetic finish first so the order
                     # stays finish -> usage -> [DONE], matching the other streams.
@@ -11323,46 +10787,23 @@ async def _openai_passthrough_stream(
                         and not saw_stream_error
                         and not cancel_event.is_set()
                     ):
-                        if healer is not None:
-                            # Residue must precede the finish it may upgrade.
-                            held = _healer_sse_lines(healer.finalize())
-                            for held_line in held:
-                                _monitor_openai_sse_line(
-                                    monitor_id, held_line, llama_backend.context_length
-                                )
-                                yield held_line + "\n\n"
                         finish_line = _synthetic_finish_line()
                         _monitor_openai_sse_line(
                             monitor_id, finish_line, llama_backend.context_length
                         )
                         yield finish_line + "\n\n"
                         saw_finish_reason = True
-                    for out_line in out_lines:
-                        monitor_event = _monitor_openai_sse_line(
-                            monitor_id,
-                            out_line,
-                            llama_backend.context_length,
-                        )
-                        if monitor_event == "error":
-                            saw_stream_error = True
-                        # Relay to preserve llama-server's native id,
-                        # finish_reason, delta.tool_calls, and usage chunks.
-                        yield out_line + "\n\n"
-                        if monitor_event == "done":
-                            monitor_done = True
-                    if monitor_done:
+                    # Relay verbatim to preserve llama-server's native id,
+                    # finish_reason, delta.tool_calls, and usage chunks.
+                    yield raw_line + "\n\n"
+                    if monitor_event == "done":
+                        monitor_done = True
                         break
                 if not saw_done and not saw_stream_error and not cancel_event.is_set():
                     # Synthesize a finish chunk only if one was not already
                     # emitted (e.g. before a trailing usage-only chunk), but
                     # always close with [DONE] whenever the upstream omitted it,
                     # so the stream ends on the [DONE] sentinel either way.
-                    if healer is not None:
-                        for held_line in _healer_sse_lines(healer.finalize()):
-                            _monitor_openai_sse_line(
-                                monitor_id, held_line, llama_backend.context_length
-                            )
-                            yield held_line + "\n\n"
                     if not saw_finish_reason:
                         finish_line = _synthetic_finish_line()
                         _monitor_openai_sse_line(
@@ -11406,7 +10847,6 @@ async def _openai_passthrough_stream(
                 err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
-                await _aclose_send_task(send_task)
                 await _aclose_stream_resources(
                     watchers = (cancel_watcher, disconnect_watcher),
                     iterator = lines_iter,
@@ -11420,7 +10860,6 @@ async def _openai_passthrough_stream(
             # finally never ran. Release the eagerly-opened upstream resp/client
             # and the cancel-registry entry here; the watchers and line iterator
             # are created inside _stream(), so there is nothing else to close.
-            await _aclose_send_task(send_task)
             await _aclose_stream_resources(resp = resp, client = client)
             _tracker.__exit__(None, None, None)
 
@@ -11435,8 +10874,6 @@ async def _openai_passthrough_stream(
             unstarted_cleanup = _unstarted_cleanup,
         )
     except BaseException:
-        await _aclose_send_task(send_task)
-        await _aclose_stream_resources(resp = resp, client = client)
         _tracker.__exit__(None, None, None)
         raise
 
@@ -11505,9 +10942,6 @@ async def _openai_passthrough_non_streaming(
     _guided_fence = bool((payload.model_extra or {}).get("_unsloth_guided_fence"))
     _do_fence = _guided_fence and _extract_response_format(payload) is not None
     _cap_parallel = payload.parallel_tool_calls is False
-    _allowed_tools = heal_gate(
-        payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
-    )
 
     try:
         data = resp.json()
@@ -11520,33 +10954,6 @@ async def _openai_passthrough_non_streaming(
         api_monitor.finish(monitor_id)
         return Response(content = resp.content, media_type = "application/json")
 
-    # Opt-in single-retry nudge: the model clearly tried to call a tool (signal
-    # present) but nothing parseable/declared came out, so re-ask once with the
-    # original prompt prefix intact (llama-server reuses the slot's KV cache)
-    # plus a two-message nudge suffix. The retry replaces the original response
-    # only when it actually yields a usable call.
-    if (
-        _allowed_tools
-        and nudge_enabled(payload.nudge_tool_calls)
-        and nudge_should_retry(data, _allowed_tools, body.get("tools"))
-    ):
-        retry_body = {
-            **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
-        }
-        try:
-            retry_resp = await nonstreaming_client().post(
-                target_url,
-                json = retry_body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
-            if retry_resp.status_code == 200:
-                retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
-                    resp, data = retry_resp, retry_data
-        except (httpx.RequestError, ValueError) as exc:
-            logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
-
     changed = False
     for choice in data.get("choices", []):
         if not isinstance(choice, dict):
@@ -11554,17 +10961,6 @@ async def _openai_passthrough_non_streaming(
         msg = choice.get("message")
         if not isinstance(msg, dict):
             continue
-
-        # Small models emit tool calls as text instead of structured tool_calls;
-        # promote them (declared client tools only) so the agent sees a real call.
-        # Truncation wins over the upgrade (same rule as the streaming and
-        # Anthropic paths): a call cut off at max_tokens keeps
-        # finish_reason="length" so the client knows the arguments may be
-        # incomplete, while the healed call itself stays attached.
-        if _allowed_tools and heal_openai_message(msg, _allowed_tools, body.get("tools")):
-            if choice.get("finish_reason") == "stop":
-                choice["finish_reason"] = "tool_calls"
-            changed = True
 
         # OpenAI requires content=null on a pure tool-call turn; llama-server
         # emits content="".

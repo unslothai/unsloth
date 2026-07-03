@@ -290,12 +290,13 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
-  // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
-  const trainDisabledHint: string | undefined = !chatOnly
+  // When Train/Export are greyed out (chat-only host), explain why on hover
+  // instead of disabling them silently. mlx_unavailable is the common macOS case
+  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
+  const trainExportDisabledHint: string | undefined = !chatOnly
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
-      ? "Training needs MLX. Run `unsloth studio update` to enable Train."
+      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "no_gpu"
@@ -1205,7 +1206,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
-                tooltip={trainDisabledHint}
+                tooltip={trainExportDisabledHint}
                 spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
@@ -1234,7 +1235,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
-                    tooltip={trainDisabledHint}
+                    tooltip={trainExportDisabledHint}
                     spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1255,8 +1256,11 @@ export function AppSidebar() {
                     icon={DownloadSquare01Icon}
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
+                    disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={exportInProgress}
                     onClick={() => {
+                      if (chatOnly) return;
                       navigate({ to: "/export" });
                       closeMobileIfOpen();
                     }}

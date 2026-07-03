@@ -25,13 +25,6 @@ export interface HardwareInfo {
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
-    // Whether export can run here (true only on a supported accelerator), with a torch-aware
-    // reason. `null` until the authoritative response lands, so callers don't briefly enable
-    // export; `loaded` flips true once a real (non-error) response arrives.
-    exportSupported: boolean | null;
-    exportUnsupportedReason: string | null;
-    exportUnsupportedMessage: string | null;
-    loaded: boolean;
 }
 
 const DEFAULT: HardwareInfo = {
@@ -45,10 +38,6 @@ const DEFAULT: HardwareInfo = {
     transformers: null,
     unsloth: null,
     llamaCpp: null,
-    exportSupported: null,
-    exportUnsupportedReason: null,
-    exportUnsupportedMessage: null,
-    loaded: false,
 };
 
 // Module-level cache so multiple components share one fetch.
@@ -98,10 +87,6 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
-                exportSupported: data?.export_supported ?? null,
-                exportUnsupportedReason: data?.export_unsupported_reason ?? null,
-                exportUnsupportedMessage: data?.export_unsupported_message ?? null,
-                loaded: true,
             };
             if (generation === cacheGeneration) {
                 cached = info;

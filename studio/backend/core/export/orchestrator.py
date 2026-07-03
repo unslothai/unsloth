@@ -456,7 +456,6 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-        compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
@@ -468,7 +467,6 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
-                "compressed_method": compressed_method,
             },
         )
 
@@ -497,13 +495,13 @@ class ExportOrchestrator:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method = "Q4_K_M",
+        quantization_method: str = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export model in GGUF format. `quantization_method` may be a single method or a list."""
+        """Export model in GGUF format."""
         return self._run_export(
             "gguf",
             {
@@ -523,10 +521,8 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-        gguf: bool = False,
-        gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
+        """Export LoRA adapter only."""
         return self._run_export(
             "lora",
             {
@@ -535,8 +531,6 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
-                "gguf": gguf,
-                "gguf_outtype": gguf_outtype,
             },
         )
 
@@ -563,13 +557,9 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # GGUF for 30B+ models can take 30+ min per quant; a multi-quant list runs them
-                    # all in one op off a single merge, so scale the timeout by the quant count.
-                    _qm = params.get("quantization_method")
-                    _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600 * max(1, _n),
+                        timeout = 3600,  # GGUF for 30B+ models can take 30+ min
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")

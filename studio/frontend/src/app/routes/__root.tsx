@@ -70,9 +70,6 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/login",
   "/signup",
   "/change-password",
-  // Export stays reachable on chat-only hosts so the page can show its own grayed-out reason
-  // instead of a silent redirect; it self-gates via export capability, so nothing runs.
-  "/export",
 ]);
 
 function isChatOnlyAllowed(pathname: string): boolean {

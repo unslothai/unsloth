@@ -3602,27 +3602,8 @@ def make_fast_generate_wrapper(original_generate):
 
     @functools.wraps(original_generate)
     def _fast_generate_wrapper(*args, **kwargs):
-        def _has_sampling_params(a):
-            # SamplingParams passed directly or inside a positional list/tuple
-            return type(a).__name__ == "SamplingParams" or (
-                isinstance(a, (list, tuple))
-                and any(type(i).__name__ == "SamplingParams" for i in a)
-            )
-
-        def _is_vllm_prompt(a):
-            # str prompt, a vLLM prompt dict (prompt / prompt_token_ids / prompt_embeds /
-            # multi_modal_data), or a list/tuple of those
-            head = a[0] if isinstance(a, (list, tuple)) and len(a) > 0 else a
-            return isinstance(head, str) or (
-                isinstance(head, dict)
-                and any(
-                    k in head
-                    for k in ("prompt", "prompt_token_ids", "prompt_embeds", "multi_modal_data")
-                )
-            )
-
-        # vLLM-only; also catch SamplingParams passed positionally (fast_generate(prompt, params))
-        if "sampling_params" in kwargs or any(_has_sampling_params(a) for a in args):
+        # Check for vLLM-specific arguments
+        if "sampling_params" in kwargs:
             raise ValueError(
                 "Unsloth: `sampling_params` is only supported when `fast_inference=True` (vLLM). "
                 "Since `fast_inference=False`, use HuggingFace generate arguments instead:\n"
@@ -3635,26 +3616,33 @@ def make_fast_generate_wrapper(original_generate):
                 "Since `fast_inference=False`, LoRA weights are already merged into the model."
             )
 
-        # A vLLM-style prompt (string, {"prompt":..., "multi_modal_data":...} dict, or a list/tuple
-        # of either) only works under vLLM; tokenize first when fast_inference=False. A positional
-        # arg may be HF token ids, so check it conservatively with _is_vllm_prompt. The `prompts` /
-        # `prompt_token_ids` / `prompt_embeds` keywords are vLLM-only names that HuggingFace generate
-        # does not accept, so any of them being present is a vLLM-style call (even a bare token list,
-        # or an explicit None from a defaulted kwargs dict), hence membership rather than a value check.
-        vllm_prompt_kwarg = any(
-            k in kwargs for k in ("prompts", "prompt_token_ids", "prompt_embeds")
-        )
-        if (len(args) > 0 and _is_vllm_prompt(args[0])) or vllm_prompt_kwarg:
-            raise ValueError(
-                "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
-                "`fast_inference=True` (vLLM). Since `fast_inference=False`, tokenize first:\n\n"
-                "  inputs = tokenizer.apply_chat_template(\n"
-                '      [{"role": "user", "content": "Your prompt here"}],\n'
-                "      tokenize=True, add_generation_prompt=True,\n"
-                '      return_tensors="pt", return_dict=True,\n'
-                "  )\n"
-                "  output = model.fast_generate(**inputs.to('cuda'), max_new_tokens=64, temperature=1.0)"
-            )
+        # Check if first positional argument is a string or list of strings
+        if len(args) > 0:
+            first_arg = args[0]
+            is_string_input = False
+
+            if isinstance(first_arg, str):
+                is_string_input = True
+            elif isinstance(first_arg, (list, tuple)) and len(first_arg) > 0:
+                if isinstance(first_arg[0], str):
+                    is_string_input = True
+
+            if is_string_input:
+                raise ValueError(
+                    "Unsloth: Passing text strings to `fast_generate` is only supported "
+                    "when `fast_inference=True` (vLLM). Since `fast_inference=False`, you must "
+                    "tokenize the input first:\n\n"
+                    "  messages = tokenizer.apply_chat_template(\n"
+                    '      [{"role": "user", "content": "Your prompt here"}],\n'
+                    "      tokenize=True, add_generation_prompt=True,\n"
+                    '      return_tensors="pt", return_dict=True\n'
+                    "  )\n"
+                    "  output = model.fast_generate(\n"
+                    "      **messages.to('cuda'),\n"
+                    "      max_new_tokens=64,\n"
+                    "      temperature=1.0,\n"
+                    "  )"
+                )
 
         # Call original generate
         return original_generate(*args, **kwargs)

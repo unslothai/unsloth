@@ -3,7 +3,6 @@
 import importlib.util
 import sys
 import types
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -15,7 +14,6 @@ def _load_worker_module():
         "loggers",
         "utils",
         "utils.hardware",
-        "utils.training_runs",
         "utils.wheel_utils",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
@@ -34,10 +32,6 @@ def _load_worker_module():
         hardware = types.ModuleType("utils.hardware")
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
         sys.modules["utils.hardware"] = hardware
-
-        training_runs = types.ModuleType("utils.training_runs")
-        training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "stub-output"
-        sys.modules["utils.training_runs"] = training_runs
 
         wheel_utils = types.ModuleType("utils.wheel_utils")
         for name in (
@@ -73,7 +67,6 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
-_apply_mlx_trainer_compat = _worker._apply_mlx_trainer_compat
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -90,43 +83,6 @@ def test_mlx_studio_rejects_unknown_optimizer():
 def test_mlx_studio_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
-
-
-def test_apply_mlx_trainer_compat_moves_load_best_after_dataset_text_field():
-    @dataclass
-    class _StubConfig:
-        learning_rate: float = 2e-4
-        load_best_model_at_end: bool = False
-        dataset_text_field: str = "text"
-        packing: bool = False
-
-    class _StubTrainer:
-        pass
-
-    _, patched_config = _apply_mlx_trainer_compat(_StubTrainer, _StubConfig)
-
-    assert list(patched_config.__dataclass_fields__.keys()) == [
-        "learning_rate",
-        "dataset_text_field",
-        "load_best_model_at_end",
-        "packing",
-    ]
-
-
-def test_apply_mlx_trainer_compat_adds_train_dataset_for_batches_shim():
-    @dataclass
-    class _StubConfig:
-        dataset_text_field: str = "text"
-
-    class _StubTrainer:
-        def __init__(self):
-            self.train_dataset = ["row"]
-
-    patched_trainer, _ = _apply_mlx_trainer_compat(_StubTrainer, _StubConfig)
-
-    instance = patched_trainer()
-    assert hasattr(instance, "_train_dataset_for_batches")
-    assert instance._train_dataset_for_batches() == ["row"]
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():

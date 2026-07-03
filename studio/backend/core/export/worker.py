@@ -397,7 +397,6 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
-                compressed_method = cmd.get("compressed_method"),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
@@ -424,8 +423,6 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
-                gguf = cmd.get("gguf", False),
-                gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"

@@ -7,7 +7,7 @@
 # is the single biggest source of false reds, so installs retry with
 # backoff and the only ::error:: this script can emit is class (b). The
 # install recipes mirror the install_hint strings in
-# unsloth_cli/commands/start.py at HEAD.
+# unsloth_cli/commands/connect.py at HEAD.
 #
 # Usage: agent-guides-install.sh <agent>
 #   agent in: claude codex hermes openclaw opencode pi
@@ -25,14 +25,13 @@ install_fail() {
 }
 
 # npm registry flakiness is common in CI; retry 3x with linear backoff.
-# Extra npm flags may precede the package (e.g. npm_retry --ignore-scripts pkg).
 npm_retry() {
-  local i
+  local pkg="$1" i
   for i in 1 2 3; do
-    if npm install -g "$@" >> "$LOG" 2>&1; then
+    if npm install -g "$pkg" >> "$LOG" 2>&1; then
       return 0
     fi
-    echo "[install] npm install -g $* attempt $i failed; backing off $((i * 10))s" | tee -a "$LOG"
+    echo "[install] npm install -g $pkg attempt $i failed; backing off $((i * 10))s" | tee -a "$LOG"
     sleep "$((i * 10))"
   done
   return 1
@@ -61,30 +60,30 @@ curl_bash() {
 echo "[install] agent=$AGENT (log=$LOG)"
 case "$AGENT" in
   claude)
-    # start.py install_hint: curl -fsSL https://claude.ai/install.sh | bash
+    # connect.py install_hint: curl -fsSL https://claude.ai/install.sh | bash
     curl_bash "https://claude.ai/install.sh" || install_fail "claude installer failed"
     # The installer drops the binary under ~/.local/bin.
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
   codex)
-    # start.py install_hint: npm install -g @openai/codex
+    # connect.py install_hint: npm install -g @openai/codex
     npm_retry "@openai/codex" || install_fail "npm install -g @openai/codex failed"
     ;;
   opencode)
-    # start.py install_hint: npm install -g opencode-ai
+    # connect.py install_hint: npm install -g opencode-ai
     npm_retry "opencode-ai" || install_fail "npm install -g opencode-ai failed"
     ;;
   openclaw)
-    # start.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
+    # connect.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
     # npm is the more deterministic path in CI and matches the agent's docs;
-    # fall back to the start.py curl installer if the npm tag is missing.
+    # fall back to the connect.py curl installer if the npm tag is missing.
     if ! npm_retry "openclaw@latest"; then
       curl_bash "https://openclaw.ai/install.sh" || install_fail "openclaw install failed (npm + curl)"
       echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     fi
     ;;
   hermes)
-    # start.py install_hint:
+    # connect.py install_hint:
     #   curl -fsSL .../NousResearch/hermes-agent/main/scripts/install.sh | bash
     curl_bash "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh" \
       --non-interactive --skip-setup --skip-browser --no-skills \
@@ -92,13 +91,11 @@ case "$AGENT" in
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
   pi)
-    # start.py install_hint: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-    # (--ignore-scripts matches Pi's documented recipe; exercising the exact hint
-    # catches guide drift). The CLI moved from the now-deprecated @mariozechner
-    # scope to @earendil-works (the old scope is frozen, so installing it would
-    # test a stale Pi against the API).
-    npm_retry --ignore-scripts "@earendil-works/pi-coding-agent" \
-      || install_fail "npm install -g --ignore-scripts @earendil-works/pi-coding-agent failed"
+    # No connect.py recipe; the agent's documented package name. The CLI moved
+    # from the now-deprecated @mariozechner scope to @earendil-works (the old
+    # scope is frozen, so installing it would test a stale Pi against the API).
+    npm_retry "@earendil-works/pi-coding-agent" \
+      || install_fail "npm install -g @earendil-works/pi-coding-agent failed"
     ;;
   *)
     install_fail "unknown agent '$AGENT'"

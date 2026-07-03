@@ -72,36 +72,6 @@ def _is_mlx_available():
     return is_mlx_available()
 
 
-def _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig):
-    # Keep the externally-observed dataclass field order stable when newer
-    # unsloth-zoo builds insert load_best_model_at_end ahead of dataset fields.
-    fields = getattr(MLXTrainingConfig, "__dataclass_fields__", None)
-    if (
-        isinstance(fields, dict)
-        and "dataset_text_field" in fields
-        and "load_best_model_at_end" in fields
-    ):
-        ordered_names = list(fields.keys())
-        dataset_idx = ordered_names.index("dataset_text_field")
-        load_best_idx = ordered_names.index("load_best_model_at_end")
-        if load_best_idx < dataset_idx:
-            ordered_names.pop(load_best_idx)
-            dataset_idx = ordered_names.index("dataset_text_field")
-            ordered_names.insert(dataset_idx + 1, "load_best_model_at_end")
-            MLXTrainingConfig.__dataclass_fields__ = {name: fields[name] for name in ordered_names}
-
-    # Newer MLX trainer paths use a dedicated dataset accessor for batch planning.
-    # Older trainers and local test doubles only expose train_dataset.
-    if not hasattr(MLXTrainer, "_train_dataset_for_batches"):
-
-        def _train_dataset_for_batches(self):
-            return getattr(self, "train_dataset", None)
-
-        MLXTrainer._train_dataset_for_batches = _train_dataset_for_batches
-
-    return MLXTrainer, MLXTrainingConfig
-
-
 # Detect Apple Silicon + MLX before any torch/numpy imports
 _IS_MLX = _is_mlx_available()
 
@@ -130,7 +100,6 @@ if _IS_MLX:
             "`unsloth_zoo.mlx.trainer` and `unsloth_zoo.mlx.loader`. Upgrade with "
             "`pip install -U unsloth-zoo` or rerun install.sh."
         ) from _e
-    MLXTrainer, MLXTrainingConfig = _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig)
 
     import dataclasses as _dataclasses
     import importlib.machinery as _machinery

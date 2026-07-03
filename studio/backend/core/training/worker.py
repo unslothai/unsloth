@@ -1355,34 +1355,6 @@ def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
     raise ValueError(f"Unsupported dataset format: {files[0]}")
 
 
-def _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig):
-    # Studio imports unsloth_zoo directly in the worker process, so keep the
-    # same MLX compatibility shims here as the top-level unsloth import path.
-    fields = getattr(MLXTrainingConfig, "__dataclass_fields__", None)
-    if (
-        isinstance(fields, dict)
-        and "dataset_text_field" in fields
-        and "load_best_model_at_end" in fields
-    ):
-        ordered_names = list(fields.keys())
-        dataset_idx = ordered_names.index("dataset_text_field")
-        load_best_idx = ordered_names.index("load_best_model_at_end")
-        if load_best_idx < dataset_idx:
-            ordered_names.pop(load_best_idx)
-            dataset_idx = ordered_names.index("dataset_text_field")
-            ordered_names.insert(dataset_idx + 1, "load_best_model_at_end")
-            MLXTrainingConfig.__dataclass_fields__ = {name: fields[name] for name in ordered_names}
-
-    if not hasattr(MLXTrainer, "_train_dataset_for_batches"):
-
-        def _train_dataset_for_batches(self):
-            return getattr(self, "train_dataset", None)
-
-        MLXTrainer._train_dataset_for_batches = _train_dataset_for_batches
-
-    return MLXTrainer, MLXTrainingConfig
-
-
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -1445,7 +1417,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "(unsloth_zoo.mlx.loader / unsloth_zoo.mlx.trainer). Reinstall via "
             "install.sh on Apple Silicon."
         ) from e
-    MLXTrainer, MLXTrainingConfig = _apply_mlx_trainer_compat(MLXTrainer, MLXTrainingConfig)
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     if mx.metal.is_available():

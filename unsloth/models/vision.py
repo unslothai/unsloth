@@ -1873,11 +1873,6 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
-        # Persist the configured GC mode so the trainer restores it verbatim.
-        # for_inference() clears the module flags (GRPO does this every generation
-        # step), and a plain TrainingArguments defaults gradient_checkpointing=False,
-        # which would otherwise silently disable this setting at train time (#4735).
-        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # Gemma3N audio conformer processes variable-length audio tensors
         # that cause stride mismatches in AOT autograd compiled backward

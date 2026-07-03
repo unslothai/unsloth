@@ -3047,9 +3047,6 @@ class FastLlamaModel:
                 # Pre-wrapped PEFT model passes through here; still arm the detector so an RL
                 # trainer can reset a compile cache poisoned by a pre-train forward.
                 _unsloth_install_pretrain_detector(model)
-                # This branch returns before patch_peft_model, so record here too;
-                # apply_unsloth_gradient_checkpointing above already re-patched global state to match (#4735).
-                model._unsloth_gradient_checkpointing = use_gradient_checkpointing
                 model = _exclude_rope_inv_freq_from_ddp(model)
                 return model
             else:
@@ -3409,11 +3406,6 @@ class FastLlamaModel:
 
     @staticmethod
     def patch_peft_model(model, use_gradient_checkpointing = "unsloth"):
-        # Persist the effective GC mode so the trainer restores it verbatim: for_inference()
-        # clears the module flags every GRPO step, and a plain TrainingArguments defaults it to
-        # False, which would otherwise silently disable it at train time (#4735). Recorded here,
-        # not in get_peft_model, so adapters loaded via loader.py's from_pretrained path are covered.
-        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
             return FastBaseModel.patch_peft_model(
                 model = model,
