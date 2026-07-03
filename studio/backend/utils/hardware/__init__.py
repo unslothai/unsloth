@@ -10,7 +10,6 @@ from .hardware import (
     CHAT_ONLY,
     detect_hardware,
     get_device,
-    export_capability,
     is_apple_silicon,
     clear_gpu_cache,
     get_gpu_memory_info,
@@ -44,6 +43,12 @@ from .vram_estimation import (
     extract_arch_config,
     estimate_training_vram,
 )
+
+
+
+def export_capability() -> dict:
+    """Return live export capability from the hardware module."""
+    return _hardware.export_capability()
 
 __all__ = [
     "DeviceType",
