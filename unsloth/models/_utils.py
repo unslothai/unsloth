@@ -3640,7 +3640,9 @@ def make_fast_generate_wrapper(original_generate):
         # first argument `prompts`, so catch the keyword form as well, plus its tokenized kwargs
         # (`prompt_token_ids` / `prompt_embeds`) which are not HuggingFace generate arguments.
         prompt_arg = args[0] if len(args) > 0 else kwargs.get("prompts")
-        vllm_prompt_kwarg = kwargs.get("prompt_token_ids") is not None or kwargs.get("prompt_embeds") is not None
+        vllm_prompt_kwarg = (
+            kwargs.get("prompt_token_ids") is not None or kwargs.get("prompt_embeds") is not None
+        )
         if _is_vllm_prompt(prompt_arg) or vllm_prompt_kwarg:
             raise ValueError(
                 "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
