@@ -148,9 +148,7 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
     return ggufs[0]
 
 
-def _chat_template_from_dir(
-    dir_path: Path, gguf_variant: Optional[str] = None
-) -> Optional[str]:
+def _chat_template_from_dir(dir_path: Path, gguf_variant: Optional[str] = None) -> Optional[str]:
     def from_gguf() -> Optional[str]:
         gguf = _find_gguf_in_dir(dir_path, gguf_variant)
         return read_gguf_chat_template(str(gguf)) if gguf is not None else None
@@ -196,18 +194,14 @@ def read_default_chat_template(
         from huggingface_hub import hf_hub_download
 
         try:
-            jinja_path = hf_hub_download(
-                resolved, "chat_template.jinja", token = hf_token
-            )
+            jinja_path = hf_hub_download(resolved, "chat_template.jinja", token = hf_token)
             template = Path(jinja_path).read_text(encoding = "utf-8")
             if template.strip():
                 return template
         except Exception:
             pass
 
-        downloaded = hf_hub_download(
-            resolved, "tokenizer_config.json", token = hf_token
-        )
+        downloaded = hf_hub_download(resolved, "tokenizer_config.json", token = hf_token)
         config = json.loads(Path(downloaded).read_text(encoding = "utf-8"))
         return _chat_template_from_tokenizer_config(config)
     except Exception as exc:
