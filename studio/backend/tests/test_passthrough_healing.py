@@ -704,6 +704,24 @@ class TestOpenaiNonStreamingRoute:
         asyncio.run(_run())
 
 
+    def test_same_chunk_role_content_finish_delays_finish_until_after_healed_tool(self, monkeypatch):
+        async def _run():
+            lines = [
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":'
+                + json.dumps(LOOKUP_XML)
+                + '},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(stream = True), lines)
+            payloads = _stream_payloads(chunks)
+            assert payloads[0]["choices"][0]["finish_reason"] is None
+            assert payloads[0]["choices"][0]["delta"] == {"role": "assistant"}
+            assert "tool_calls" in payloads[1]["choices"][0]["delta"]
+            assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+        asyncio.run(_run())
+
+
 GARBAGE_SIGNAL = "<tool_call>call lookup somehow???"
 
 

@@ -11077,7 +11077,12 @@ async def _openai_passthrough_stream(
                 del delta["content"]
                 prefix_lines = []
                 if delta:
-                    prefix_lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
+                    prefix_chunk = {k: v for k, v in chunk_data.items() if k != "usage"}
+                    prefix_choice = dict(choice)
+                    prefix_choice["delta"] = dict(delta)
+                    prefix_choice["finish_reason"] = None
+                    prefix_chunk["choices"] = [prefix_choice]
+                    prefix_lines.append("data: " + json.dumps(prefix_chunk, ensure_ascii = False))
                     delta.clear()
                 lines = prefix_lines + _healer_sse_lines(events)
                 if delta or finish or chunk_data.get("usage"):
