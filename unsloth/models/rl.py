@@ -424,9 +424,12 @@ def prepare_for_training_mode(f):
         # Enable training mode
         _was_training = None
         # Restore the GC mode the model was configured with at setup; fall back to
-        # the training args only when it wasn't recorded (issue #4735).
-        use_gc = getattr(self.model, '_unsloth_gradient_checkpointing', None)
-        if use_gc is None:
+        # the training args only when it wasn't recorded (issue #4735). Use hasattr,
+        # not a None sentinel, so a deliberately-recorded None is restored verbatim.
+        _model = getattr(self, 'model', None)
+        if hasattr(_model, '_unsloth_gradient_checkpointing'):
+            use_gc = _model._unsloth_gradient_checkpointing
+        else:
             use_gc = getattr(self.args, 'gradient_checkpointing', True)
         if hasattr(self, 'model') and hasattr(self.model, "training"):
             _was_training = self.model.training
@@ -535,9 +538,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
         if "model" in locals() and hasattr(model, "for_training"):
-            _use_gc = getattr(model, '_unsloth_gradient_checkpointing', None)
-            if _use_gc is None:
-                _use_gc = getattr(args, 'gradient_checkpointing', True)
+            _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
@@ -1171,8 +1172,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
-            "    _use_gc = getattr(model, '_unsloth_gradient_checkpointing', None)\n"
-            "    if _use_gc is None: _use_gc = getattr(args, 'gradient_checkpointing', True)\n"
+            "    _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)\n"
             "    model.for_training(use_gradient_checkpointing=_use_gc)\n"
             "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"
             "if 'processing_class' in locals():\n"
