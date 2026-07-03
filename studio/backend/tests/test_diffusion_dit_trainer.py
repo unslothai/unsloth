@@ -114,7 +114,6 @@ def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkey
 # ── mxfp8 base precision (DiT dense speed mode) ───────────────────────────────
 def _linear(in_features, out_features):
     import torch.nn as nn
-
     return nn.Linear(in_features, out_features)
 
 
@@ -172,7 +171,6 @@ def _patch_capability(monkeypatch, capability):
     # Drive train_precision_modes' GPU probe: pretend CUDA is present at the given tensor
     # core capability (fp8 needs sm89+, mxfp8 needs sm100+).
     import torch
-
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
 

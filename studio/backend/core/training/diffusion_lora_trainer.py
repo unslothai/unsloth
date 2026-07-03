@@ -360,6 +360,7 @@ def run_diffusion_lora_training(
         # with a warning event). The U-Net is a dense bf16 base here, the combination that
         # wrapper compiles under "auto".
         from core.training.diffusion_dit_trainer import _maybe_compile_transformer
+
         compiled = _maybe_compile_transformer(
             unet, cfg, False, device, on_event, base_precision = "bf16"
         )
@@ -550,9 +551,7 @@ def run_diffusion_lora_training(
                     peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
                 per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps
                 if t_steady is not None and done > 1:
-                    samples_per_second = round(
-                        (done - 1) * per_step / max(now - t_steady, 1e-6), 3
-                    )
+                    samples_per_second = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)
                 else:
                     samples_per_second = round(done * per_step / max(now - t_start, 1e-6), 3)
                 _emit(

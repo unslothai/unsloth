@@ -325,6 +325,7 @@ def _apply_mxfp8_training(transformer, on_event) -> bool:
     try:
         from torchao.prototype.mx_formats import MXLinearConfig
         from torchao.quantization import quantize_
+
         quantize_(
             transformer,
             MXLinearConfig.from_recipe_name("mxfp8_cublas"),
@@ -332,9 +333,7 @@ def _apply_mxfp8_training(transformer, on_event) -> bool:
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
-        _emit(
-            on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}"
-        )
+        _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
         return False
 
 
