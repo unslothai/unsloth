@@ -3,19 +3,26 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
+import type { SystemInfoResponse } from "./use-system";
 
 export interface GpuInfo {
   available: boolean;
   name: string;
   memoryTotalGb: number;
+  cpuCore: number;
+  cpuThread: number;
   systemRamAvailableGb: number;
+  systemRamTotalGb: number
 }
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
   memoryTotalGb: 0,
+  cpuCore: 0,
+  cpuThread: 0,
   systemRamAvailableGb: 0,
+  systemRamTotalGb: 0
 };
 
 // Module-level cache so multiple components share one fetch.
@@ -30,24 +37,30 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const ramAvailableGb = data?.memory?.available_gb ?? 0;
+
+      const data = await res.json() as SystemInfoResponse;
       const gpuData = data?.gpu;
-      if (!gpuData?.available || !gpuData.devices?.length) {
-        // No discrete GPU (e.g. Mac): still surface system RAM so memory math
-        // (unified memory) has a budget to work with.
-        const info: GpuInfo = { ...DEFAULT_GPU, systemRamAvailableGb: ramAvailableGb };
-        cachedGpu = info;
-        return info;
-      }
-      const devices = gpuData.devices as Array<{ name?: string; memory_total_gb?: number }>;
-      const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
-      const info: GpuInfo = {
-        available: true,
-        name: devices[0]?.name ?? "Unknown",
-        memoryTotalGb: totalGb,
-        systemRamAvailableGb: ramAvailableGb,
+
+      // CPU/RAM exist even on hosts without a GPU, so populate them on every path.
+      // No discrete GPU (e.g. Mac): still surface system RAM so memory math
+      // (unified memory) has a budget to work with.
+      const base = {
+        cpuCore: data?.cpu?.physical_count ?? 0,
+        cpuThread: data?.cpu?.logical_count ?? 0,
+        systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+        systemRamTotalGb: data?.memory?.total_gb ?? 0,
       };
+
+      const devices = gpuData?.devices ?? [];
+      const info: GpuInfo =
+        gpuData?.available && devices.length
+          ? {
+              ...base,
+              available: true,
+              name: devices[0]?.name ?? "Unknown",
+              memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
+            }
+          : { ...DEFAULT_GPU, ...base };
       cachedGpu = info;
       return info;
     } catch {
