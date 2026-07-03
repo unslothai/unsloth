@@ -1685,6 +1685,38 @@ _DATASET_EXAMPLES: list[dict] = [
         "caption_column": "text",
         "no_checks": True,
     },
+    {
+        "id": "smithsonian-butterflies",
+        "label": "Smithsonian Butterflies",
+        "repo": "huggan/smithsonian_butterflies_subset",
+        "description": (
+            "100 butterfly specimen photos. The classic diffusers-docs training set. No "
+            "captions, so pair it with the trigger prompt to teach a butterfly subject."
+        ),
+        "license": "CC0 (Smithsonian Open Access)",
+        "image_cap": 100,
+        # The metadata columns are species names / boilerplate alt-text, not text-to-image
+        # captions, so train it as a subject set with the trigger prompt instead.
+        "suggested_trigger": "a photo of a sks butterfly",
+        "loader": "hf_dataset",
+        "caption_column": None,
+        "no_checks": False,
+    },
+    {
+        "id": "pixel-nouns",
+        "label": "Nouns (pixel avatars)",
+        "repo": "m1guelpf/nouns",
+        "description": (
+            "100 captioned Nouns pixel-art avatars. A captioned style set: each image ships "
+            "a caption, so the adapter learns the pixel look without a trigger word."
+        ),
+        "license": "cc0-1.0",
+        "image_cap": 100,
+        "suggested_trigger": None,
+        "loader": "hf_dataset",
+        "caption_column": "text",
+        "no_checks": False,
+    },
 ]
 
 
