@@ -118,12 +118,14 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     executor = StubExecutor(TOOL_RESULT)
     turns = iter([TOOL_CALL_TEXT, FINAL_ANSWER])
     active_tools_seen: list = []
+    conversations_seen: list = []
 
     def single_turn(conversation, *, active_tools = None):
         # Mirror the real backend ``_single_turn`` (inference.py / mlx_inference.py): render the prompt
         # through the REAL shared helper so tools flow to the tokenizer exactly as production does,
         # then yield cumulative snapshots (each yield is all text so far, per the loop contract).
         active_tools_seen.append(active_tools)
+        conversations_seen.append([dict(m) for m in conversation])
         apply_chat_template_for_generation(tok, conversation, tools = active_tools)
         text = next(turns)
         mid = len(text) // 2
@@ -167,6 +169,16 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     last_tool_end_idx = max(i for i, e in enumerate(events) if e["type"] == "tool_end")
     last_content_idx = max(i for i, e in enumerate(events) if e["type"] == "content")
     assert last_content_idx > last_tool_end_idx, "final answer must stream after the tool result"
+
+    # 6b. The tool result was actually fed back into the model conversation before the final turn.
+    #     The final generation turn must have seen a message carrying the tool result -- this fails
+    #     if the loop ever stops appending the tool output before re-entering generation, which
+    #     ordering alone (6) would not catch since the fake generation ignores the conversation.
+    assert len(conversations_seen) >= 2, "loop did not re-enter generation after the tool call"
+    final_turn_convo = conversations_seen[1]
+    assert any(
+        TOOL_RESULT in str(m.get("content", "")) for m in final_turn_convo
+    ), "tool result was not fed back into the conversation before the final generation turn"
 
     # 7. Guard: the raw tool-call markup never leaked to the client as content.
     for e in contents:
