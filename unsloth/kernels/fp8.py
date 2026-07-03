@@ -327,10 +327,30 @@ fp8_block_matmul = (
 )
 
 
+def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
+    """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
+    evenly into block_size, else a torch-native per-block scale expansion."""
+    m, n = weight.shape
+    if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton
+    if weight_scale.numel() == 1:
+        # Per-tensor scale: the normal forward stashes the un-expanded scalar,
+        # which repeat_interleave cannot grow to (m, n). Scale directly.
+        return (weight.to(torch.float32) * weight_scale.float()).to(out_dtype)
+    if m % block_size[0] != 0 or n % block_size[1] != 0:
+        s_full = weight_scale.repeat_interleave(block_size[0], 0)[:m]
+        s_full = s_full.repeat_interleave(block_size[1], 1)[:, :n]
+        return (weight.to(torch.float32) * s_full).to(out_dtype)
+    return weight_dequant(weight, weight_scale).to(out_dtype)
+
+
 class FP8BlockQuantLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, weight_scale):
         m, n = weight.shape
+
+        if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            weight_scale = weight_scale.to(torch.float32)  # e8m0 scales break triton dtype mapping
 
         # Original scale, saved for backward before any transformation
         original_weight_scale = weight_scale
@@ -360,6 +380,14 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         if not weight.is_contiguous():
             weight = weight.contiguous()
 
+        if X.shape[-1] % block_size[1] != 0:
+            # Hidden dim not divisible by the activation block: dequant + plain matmul.
+            W_deq = _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, X.dtype)
+            ctx.weight = weight
+            ctx.weight_scale = weight_scale
+            ctx.block_size = block_size
+            return torch_matmul(X, W_deq.T).to(X.dtype)
+
         qinput, scale = act_quant(X, block_size[1])
         output = fp8_block_matmul(
             qinput,
@@ -371,11 +399,14 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         )
         ctx.weight = weight
         ctx.weight_scale = original_weight_scale  # Save original for backward
+        ctx.block_size = block_size
         return output.to(X.dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
-        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
+        W_deq = _blockwise_weight_dequant_any_shape(
+            ctx.weight, ctx.weight_scale, ctx.block_size, grad_output.dtype
+        )
         grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None
