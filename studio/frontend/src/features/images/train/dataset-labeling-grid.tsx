@@ -3,11 +3,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
+
+// One batch of images shown at a time in the labeling grid; larger sets page with < >.
+const PAGE_SIZE = 24;
 
 import {
   type DiffusionDatasetImageRecord,
@@ -158,11 +164,13 @@ export function DatasetLabelingGrid({
 }) {
   const [records, setRecords] = useState<DiffusionDatasetImageRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setRecords(null);
     setError(null);
+    setPage(0); // a new dataset (or refresh) always starts at the first batch
     listDiffusionDatasetImages(dataset)
       .then((r) => {
         if (!cancelled) setRecords(r.images);
@@ -208,17 +216,51 @@ export function DatasetLabelingGrid({
   }
 
   const uncaptioned = records.filter((r) => !r.caption || r.caption.trim() === "").length;
+  const total = records.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const clampedPage = Math.min(page, pageCount - 1);
+  const start = clampedPage * PAGE_SIZE;
+  const pageRecords = records.slice(start, start + PAGE_SIZE);
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>
-          {records.length} image{records.length === 1 ? "" : "s"}
+      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="min-w-0 truncate">
+          {total} image{total === 1 ? "" : "s"}
           {uncaptioned > 0 ? ` · ${uncaptioned} without a caption` : " · all captioned"}
         </span>
+        {pageCount > 1 && (
+          <div className="flex shrink-0 items-center gap-1">
+            <span className="tabular-nums">
+              {start + 1}-{Math.min(start + PAGE_SIZE, total)} of {total}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              disabled={clampedPage === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              aria-label="Previous images"
+            >
+              <HugeiconsIcon icon={ArrowLeft01Icon} className="size-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              disabled={clampedPage >= pageCount - 1}
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              aria-label="Next images"
+            >
+              <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
+            </Button>
+          </div>
+        )}
       </div>
       <div className="group grid max-h-[420px] grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
-        {records.map((r) => (
+        {pageRecords.map((r) => (
           <LabelTile
             key={r.filename}
             dataset={dataset}
