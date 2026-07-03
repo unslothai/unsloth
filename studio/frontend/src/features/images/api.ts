@@ -257,10 +257,14 @@ export async function fetchGalleryObjectUrl(url: string): Promise<string> {
   return URL.createObjectURL(await res.blob());
 }
 
-// ── Diffusion (SDXL) LoRA training ────────────────────────────────────────────
+// ── Diffusion LoRA training ───────────────────────────────────────────────────
 // Mirrors DiffusionTrainingStartRequest on the backend; only the paths are required.
 export interface DiffusionTrainingStartRequest {
   base_model: string;
+  // Explicit family (sdxl / flux.1 / qwen-image / z-image). Optional: the backend
+  // resolves it from base_model when omitted, but the Train tab always sends it so a
+  // custom base still trains under the intended family.
+  model_family?: string | null;
   data_dir: string;
   output_dir: string;
   instance_prompt?: string | null;
@@ -277,8 +281,16 @@ export interface DiffusionTrainingStartRequest {
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
   lr_scheduler?: string;
-  // Forwarded to StableDiffusionXLPipeline.from_pretrained for a gated/private base repo.
+  // Forwarded to the pipeline's from_pretrained for a gated/private base repo (e.g. FLUX).
   hf_token?: string | null;
+}
+
+// Paired step-indexed history arrays for the live loss + LR charts. `lr` entries may be
+// null so a sparse learning-rate series still aligns with `steps` by index.
+export interface DiffusionMetricHistory {
+  steps: number[];
+  loss: number[];
+  lr: Array<number | null>;
 }
 
 // A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
@@ -298,6 +310,16 @@ export interface DiffusionTrainingStatus {
   lora_path: string | null;
   started_at: number | null;
   updated_at: number | null;
+  // Where the trained adapter was mirrored into the Studio LoRA catalog, and the family /
+  // base it was trained from -- lets the Train tab deploy the adapter onto the right base.
+  catalog_path?: string | null;
+  family?: string | null;
+  base_model?: string | null;
+  // Live throughput + peak VRAM (from the trainer's progress events).
+  samples_per_second?: number | null;
+  peak_memory_gb?: number | null;
+  // Bounded step/loss/lr history for the live charts.
+  metric_history?: DiffusionMetricHistory | null;
 }
 
 export async function startDiffusionTraining(
@@ -328,11 +350,33 @@ export interface DiffusionDatasetSummary {
   caption_count: number;
 }
 
+// Per-family training defaults (from GET /api/train/diffusion/info families[], added by
+// the DiT-trainer backend). Absent on older backends; the Train tab falls back to a
+// hardcoded family list when it is.
+export interface DiffusionTrainableFamily {
+  name: string;
+  label: string;
+  default_base: string;
+  base_repos: string[];
+  defaults?: {
+    lora_rank?: number;
+    learning_rate?: number;
+    resolution?: number;
+    train_steps?: number;
+    train_batch_size?: number;
+    mixed_precision?: "bf16" | "fp16" | "no";
+  } | null;
+  vram_note?: string | null;
+  gated?: boolean | null;
+}
+
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.
 export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
   datasets: DiffusionDatasetSummary[];
+  // Added by the multi-family trainer backend; tolerate its absence.
+  families?: DiffusionTrainableFamily[];
 }
 
 export async function getDiffusionTrainingInfo(): Promise<DiffusionTrainingInfo> {
@@ -355,5 +399,117 @@ export async function uploadDiffusionDataset(
   for (const f of files) form.append("files", f);
   return parseJson(
     await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),
+  );
+}
+
+// ── Dataset labeling + example imports (GET/PUT/DELETE .../dataset/{name}/...) ──
+// One image in a training dataset folder, with its resolved caption. `caption_source`
+// records where the caption came from ("metadata" beats a per-image "sidecar"; "none"
+// when uncaptioned) so the labeling grid can highlight images that still need one.
+export interface DiffusionDatasetImageRecord {
+  filename: string;
+  caption: string | null;
+  caption_source: "sidecar" | "metadata" | "none";
+  width: number;
+  height: number;
+  size_bytes: number;
+}
+
+export interface DiffusionDatasetImages {
+  name: string;
+  path: string;
+  images: DiffusionDatasetImageRecord[];
+}
+
+/** List every image in a dataset folder (including uncaptioned ones) for the grid. */
+export async function listDiffusionDatasetImages(
+  name: string,
+): Promise<DiffusionDatasetImages> {
+  return parseJson(
+    await authFetch(`/api/train/diffusion/dataset/${encodeURIComponent(name)}/images`),
+  );
+}
+
+/** Build the auth-protected thumbnail URL for a dataset image. Fetch it via
+ * fetchGalleryObjectUrl (Bearer auth) into an object URL; it can't be a plain <img src>. */
+export function diffusionDatasetImageUrl(
+  name: string,
+  filename: string,
+  thumb = 256,
+): string {
+  const q = thumb > 0 ? `?thumb=${thumb}` : "";
+  return `/api/train/diffusion/dataset/${encodeURIComponent(name)}/image/${encodeURIComponent(filename)}${q}`;
+}
+
+/** Write (or, when blank, clear) a per-image caption sidecar. Returns the updated record. */
+export async function setDiffusionDatasetCaption(
+  name: string,
+  filename: string,
+  caption: string,
+): Promise<DiffusionDatasetImageRecord> {
+  return parseJson(
+    await authFetch(
+      `/api/train/diffusion/dataset/${encodeURIComponent(name)}/caption/${encodeURIComponent(filename)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caption }),
+      },
+    ),
+  );
+}
+
+/** Delete an image (and its caption + thumbnail) from a dataset folder. */
+export async function deleteDiffusionDatasetImage(
+  name: string,
+  filename: string,
+): Promise<void> {
+  const res = await authFetch(
+    `/api/train/diffusion/dataset/${encodeURIComponent(name)}/image/${encodeURIComponent(filename)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(await readFastApiError(res));
+}
+
+// A curated, one-click-importable example image dataset. `license` is shown verbatim so
+// users see the terms before importing; `suggested_trigger` seeds the trigger prompt.
+export interface DiffusionDatasetExample {
+  id: string;
+  label: string;
+  repo: string;
+  description: string;
+  license: string;
+  image_cap: number;
+  suggested_trigger?: string | null;
+}
+
+export async function listDiffusionDatasetExamples(): Promise<DiffusionDatasetExample[]> {
+  const data = await parseJson<{ examples: DiffusionDatasetExample[] }>(
+    await authFetch("/api/train/diffusion/dataset-examples"),
+  );
+  return data.examples;
+}
+
+export interface DiffusionDatasetImportResult {
+  name: string;
+  path: string;
+  image_count: number;
+  caption_count: number;
+  imported: number;
+  license: string;
+  source_repo: string;
+}
+
+/** Materialize a curated example dataset (by id) into a Studio dataset folder. */
+export async function importDiffusionDatasetExample(
+  id: string,
+  name?: string,
+): Promise<DiffusionDatasetImportResult> {
+  return parseJson(
+    await authFetch("/api/train/diffusion/dataset/import-example", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name }),
+    }),
   );
 }
