@@ -62,14 +62,16 @@ def remap_rope_parameters(text_config) -> None:
     the config carries no ``rope_parameters`` dict."""
     rope_parameters = getattr(text_config, "rope_parameters", None)
     if getattr(text_config, "rope_scaling", None) is None and isinstance(rope_parameters, dict):
-        text_config.rope_scaling = {
-            k: v for k, v in rope_parameters.items() if k != "rope_theta"
-        }
+        text_config.rope_scaling = {k: v for k, v in rope_parameters.items() if k != "rope_theta"}
         if "rope_theta" in rope_parameters:
             text_config.rope_theta = rope_parameters["rope_theta"]
 
 
-def load_krea2_text_encoder(repo_id: str, dtype, hf_token: Optional[str] = None):
+def load_krea2_text_encoder(
+    repo_id: str,
+    dtype,
+    hf_token: Optional[str] = None,
+):
     """The Qwen3-VL text encoder, remapping 5.x ``rope_parameters`` for a 4.x runtime."""
     from transformers import AutoConfig, Qwen3VLModel
 

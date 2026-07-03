@@ -55,9 +55,7 @@ def test_remap_rope_parameters_noop_on_5x_runtime_or_plain_4x_config():
 
 
 def test_load_model_index_from_local_path(tmp_path):
-    (tmp_path / "model_index.json").write_text(
-        json.dumps({"is_distilled": True, "patch_size": 2})
-    )
+    (tmp_path / "model_index.json").write_text(json.dumps({"is_distilled": True, "patch_size": 2}))
     assert _load_model_index(str(tmp_path)) == {"is_distilled": True, "patch_size": 2}
 
 
