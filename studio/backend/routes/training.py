@@ -1285,7 +1285,6 @@ async def list_diffusion_training_runs(
     """Previous diffusion training runs (terminal), newest first, from the persisted
     per-run records. Summaries only; fetch one run for its config + metric logs."""
     from core.training.diffusion_training_service import list_diffusion_runs
-
     return DiffusionTrainingRunsResponse(
         runs = [DiffusionTrainingRunSummary(**r) for r in list_diffusion_runs(limit = limit)]
     )

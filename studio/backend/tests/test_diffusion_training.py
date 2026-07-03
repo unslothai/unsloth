@@ -670,7 +670,9 @@ def test_run_record_no_save_stop_marks_unsaved(_isolated_runs_dir):
     def _cancel_target(*, event_queue, stop_queue, config):
         event_queue.put({"type": "model_load_completed"})
         stop_queue.get(timeout = 5.0)
-        event_queue.put({"type": "complete", "output_dir": None, "lora_path": None, "stopped": True})
+        event_queue.put(
+            {"type": "complete", "output_dir": None, "lora_path": None, "stopped": True}
+        )
 
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _cancel_target)
     job_id = svc.start(dict(_CFG))
@@ -692,14 +694,26 @@ def test_runs_endpoints_list_and_detail(client, _isolated_runs_dir):
     import os
 
     a = {
-        "job_id": "a" * 32, "status": "completed", "adapter": "first", "saved": True,
-        "step": 10, "total_steps": 10, "avg_loss": 0.4,
-        "config": {"train_steps": 10}, "metric_history": {"steps": [1], "loss": [0.4], "lr": [1e-4], "grad_norm": [0.2]},
+        "job_id": "a" * 32,
+        "status": "completed",
+        "adapter": "first",
+        "saved": True,
+        "step": 10,
+        "total_steps": 10,
+        "avg_loss": 0.4,
+        "config": {"train_steps": 10},
+        "metric_history": {"steps": [1], "loss": [0.4], "lr": [1e-4], "grad_norm": [0.2]},
     }
     b = {
-        "job_id": "b" * 32, "status": "stopped", "adapter": "second", "saved": False,
-        "step": 3, "total_steps": 10, "avg_loss": 0.6,
-        "config": {"train_steps": 10}, "metric_history": {"steps": [1], "loss": [0.6], "lr": [1e-4], "grad_norm": [0.3]},
+        "job_id": "b" * 32,
+        "status": "stopped",
+        "adapter": "second",
+        "saved": False,
+        "step": 3,
+        "total_steps": 10,
+        "avg_loss": 0.6,
+        "config": {"train_steps": 10},
+        "metric_history": {"steps": [1], "loss": [0.6], "lr": [1e-4], "grad_norm": [0.3]},
     }
     pa = _isolated_runs_dir / f"{a['job_id']}.json"
     pb = _isolated_runs_dir / f"{b['job_id']}.json"

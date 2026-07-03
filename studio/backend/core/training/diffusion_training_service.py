@@ -77,9 +77,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
     """Summaries of persisted diffusion runs, newest first. The heavy per-run payload
     (metric logs, config) stays in the file; fetch it via ``get_diffusion_run``."""
     try:
-        files = sorted(
-            _runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True
-        )
+        files = sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
     except Exception:  # noqa: BLE001 -- unreadable dir -> no history
         return []
     out: list[dict] = []
