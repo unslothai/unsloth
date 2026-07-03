@@ -372,7 +372,12 @@ class MLXInferenceBackend:
 
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
-        think_prefix = detect_think_prefill(prompt)
+        think_prefix = detect_think_prefill(
+            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+        )
+        # Emit it before the first token so the block renders during prefill.
+        if think_prefix:
+            yield think_prefix
 
         sampler = make_sampler(
             temp = temperature,
@@ -488,7 +493,12 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        cumulative = detect_think_prefill(prompt)
+        cumulative = detect_think_prefill(
+            prompt, getattr(chat_target, "all_special_tokens", None)
+        )
+        # Emit it before the first token so the block renders during prefill.
+        if cumulative:
+            yield cumulative
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),

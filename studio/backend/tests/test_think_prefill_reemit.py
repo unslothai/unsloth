@@ -70,3 +70,20 @@ def test_content_after_open_tag_not_reemitted():
 def test_empty_and_none_prompts():
     assert detect_think_prefill("") == ""
     assert detect_think_prefill(None) == ""
+
+
+def test_guard_suppresses_when_close_tag_is_special():
+    """If </think> is a special token, skip_special_tokens strips the model's
+    close tag, so re-emitting the open would leave an unclosed block. Guard off."""
+    specials = ["<|im_end|>", "<think>", "</think>"]
+    assert detect_think_prefill(QWEN_PROMPT + "<think>\n", specials) == ""
+
+
+def test_guard_emits_when_think_not_special():
+    specials = ["<|im_end|>", "<|endoftext|>"]
+    assert detect_think_prefill(QWEN_PROMPT + "<think>\n", specials) == "<think>\n"
+
+
+def test_guard_default_and_empty_keep_emitting():
+    assert detect_think_prefill(QWEN_PROMPT + "<think>\n", None) == "<think>\n"
+    assert detect_think_prefill(QWEN_PROMPT + "<think>\n", []) == "<think>\n"

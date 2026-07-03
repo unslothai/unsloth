@@ -1080,7 +1080,9 @@ class InferenceBackend:
 
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
-            think_prefix = detect_think_prefill(prompt_text)
+            think_prefix = detect_think_prefill(
+                prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
+            )
             from transformers import TextIteratorStreamer
             import threading
 
@@ -1122,6 +1124,10 @@ class InferenceBackend:
             thread.start()
 
             output = think_prefix
+            # Emit the prefilled <think> before the first token so the block
+            # renders during prompt prefill (which can take seconds).
+            if think_prefix:
+                yield think_prefix
             from queue import Empty
 
             generation_complete = False
@@ -1358,7 +1364,9 @@ class InferenceBackend:
             # skip_prompt swallows an open <think> prefilled by the template;
             # re-emit it so the frontend can render the thinking block.
             # gpt-oss emits its own tags via HarmonyTextStreamer.
-            think_prefix = "" if self._is_gpt_oss_model() else detect_think_prefill(prompt)
+            think_prefix = "" if self._is_gpt_oss_model() else detect_think_prefill(
+                prompt, getattr(tokenizer, "all_special_tokens", None)
+            )
 
             # gpt-oss models: HarmonyTextStreamer parses the multi-channel
             # harmony protocol into <think> tags
@@ -1436,6 +1444,10 @@ class InferenceBackend:
             thread.start()
 
             output = think_prefix
+            # Emit the prefilled <think> before the first token so the block
+            # renders during prompt prefill (which can take seconds).
+            if think_prefix:
+                yield think_prefix
             from queue import Empty
 
             generation_complete = False
@@ -1975,10 +1987,6 @@ class InferenceBackend:
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
         if tokenizer:
             for token in getattr(tokenizer, "all_special_tokens", []):
-                # Keep think tags even when marked special; the frontend
-                # parses them into the reasoning block.
-                if token in ("<think>", "</think>"):
-                    continue
                 if token in text:
                     text = text.replace(token, "")
         return text.strip()
