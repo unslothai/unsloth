@@ -57,6 +57,40 @@ function resolveCustomContextLength(
   return native != null && value === native ? null : value;
 }
 
+function ChatTemplateSetting({
+  config,
+  onEditTemplate,
+}: {
+  config: PerModelConfig;
+  onEditTemplate: () => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Chat Template</span>
+        <InfoHint>
+          Override the model's chat template with custom Jinja. Applies when the
+          model loads.
+        </InfoHint>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="text-[12px] text-muted-foreground">
+          {config.chatTemplateOverride ? "Custom" : "Default"}
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
+          onClick={onEditTemplate}
+        >
+          Edit
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -186,29 +220,7 @@ function GgufAdvancedSettings({
         />
       </div>
 
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Chat Template</span>
-          <InfoHint>
-            Override the model's chat template with custom Jinja. Applies when
-            the model loads.
-          </InfoHint>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="text-[12px] text-muted-foreground">
-            {config.chatTemplateOverride ? "Custom" : "Default"}
-          </span>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
-            onClick={onEditTemplate}
-          >
-            Edit
-          </Button>
-        </div>
-      </div>
+      <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
     </>
   );
 }
@@ -374,6 +386,12 @@ export function ModelConfigPage({
               />
             </div>
           </>
+        )}
+        {!target.isGguf && (
+          <ChatTemplateSetting
+            config={config}
+            onEditTemplate={() => setTemplateOpen(true)}
+          />
         )}
       </div>
 

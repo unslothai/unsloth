@@ -2511,6 +2511,19 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
+        {onConfigure && (
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${c.repo_id}`}
+            onConfigure={() =>
+              onConfigure(c.repo_id, {
+                source: "hub",
+                isLora: false,
+                isDownloaded: true,
+                isGguf: false,
+              })
+            }
+          />
+        )}
         <ModelDeleteAction
           ariaLabel={`Delete ${c.repo_id}`}
           title="Delete cached model?"
