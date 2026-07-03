@@ -219,6 +219,34 @@ class DiffusionBackend:
 
         return hf_hub_download(repo_id, gguf_filename, token = hf_token)
 
+    def _dense_quant_prefetch_needed(self, fam: DiffusionFamily, kwargs: dict) -> bool:
+        """True when ``load_pipeline`` may take the dense transformer-quant path, so
+        the prefetch should also pull the base repo's ``transformer/`` shards.
+
+        Those shards are excluded from the prefetch by default (the GGUF supplies
+        the transformer), but ``_load_dense_quant_pipeline`` fetches them with
+        ``from_pretrained(subfolder = "transformer")`` under the load lock during
+        "finalizing", after the previous pipeline was already evicted, where
+        unload/cancellation cannot preempt the download. Mirrors the dense-path
+        gates in ``load_pipeline``: quant requested and supported for this device,
+        and no pre-quantized checkpoint that would shortcut the dense build."""
+        mode = normalize_transformer_quant(kwargs.get("transformer_quant"))
+        if mode is None:
+            return False
+        try:
+            target = self._resolve_device_target(fam)
+            if not dense_transformer_supported(target):
+                return False
+            scheme = select_transformer_quant_scheme(target, mode)
+            if scheme is None:
+                return False
+            source = resolve_prequant_source(
+                fam, scheme, path_override = kwargs.get("transformer_prequant_path")
+            )
+            return source is None
+        except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
+            return False
+
     def _prefetch_files(
         self,
         repo_id: str,
@@ -261,6 +289,14 @@ class DiffusionBackend:
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
+            )
+        # Reject a non-GGUF single-file name (e.g. README.md, config.json) here, before
+        # the route hands the GPU over: without this a family-looking repo_id paired with
+        # a non-GGUF filename passes preflight, evicts the chat model, and only fails in
+        # the background from_single_file -- exactly the eviction this validation prevents.
+        if not gguf_filename.lower().endswith(".gguf"):
+            raise ValueError(
+                f"gguf_filename must name a .gguf single-file checkpoint; got '{gguf_filename}'."
             )
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
@@ -306,6 +342,9 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        # A blank token (the Studio default when none is configured) must mean
+        # "anonymous", not an explicit empty credential the Hub rejects with 401.
+        hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
             repo_id, gguf_filename = gguf_filename, family_override = family_override
         )
@@ -361,7 +400,16 @@ class DiffusionBackend:
             )
             kwargs["base_repo"] = base
             expected, base_files = self._estimate_download_bytes(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                base,
+                kwargs.get("hf_token"),
+                # The dense transformer-quant path downloads the base repo's
+                # transformer/ shards via from_pretrained(subfolder="transformer")
+                # INSIDE the locked finalize phase, where unload/cancellation cannot
+                # preempt the multi-GB pull. When that path can actually run, pull the
+                # shards here in the preemptible prefetch instead.
+                include_transformer = self._dense_quant_prefetch_needed(fam, kwargs),
             )
             with self._lock:
                 # Stamp progress only if this load is still current; a superseding
@@ -416,9 +464,26 @@ class DiffusionBackend:
         fraction = min(downloaded / expected, 1.0) if expected > 0 else 0.0
         return _progress("downloading", downloaded, expected, fraction)
 
+    def loading_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids an in-flight background load is downloading (empty when idle).
+
+        The delete-cached guard needs this: during a load ``status()["loaded"]`` is
+        still False, but deleting the target repo (or its companion base) would yank
+        blobs and snapshot files from under the download/assembly."""
+        with self._lock:
+            loading = self._loading
+            if loading is None or loading.error is not None:
+                return ()
+            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+
     @staticmethod
     def _estimate_download_bytes(
-        repo_id: str, gguf_filename: Optional[str], base_repo: str, hf_token: Optional[str]
+        repo_id: str,
+        gguf_filename: Optional[str],
+        base_repo: str,
+        hf_token: Optional[str],
+        *,
+        include_transformer: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once)."""
@@ -437,7 +502,7 @@ class DiffusionBackend:
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             for s in base_info.siblings:
-                if _base_file_downloaded(s.rfilename):
+                if _base_file_downloaded(s.rfilename, include_transformer = include_transformer):
                     base_files.append(s.rfilename)
                     total += s.size or 0
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
@@ -459,6 +524,34 @@ class DiffusionBackend:
         except OSError:
             return 0  # repo not in cache yet
         return total
+
+    @staticmethod
+    def _companion_cache_bytes(base: str) -> int:
+        """Resident companion (VAE + text-encoder) size for the memory plan.
+
+        For a hub base repo this is the cached blob total (``_cache_bytes``). For a
+        LOCAL diffusers base directory the blob cache is empty, so sum the on-disk
+        component weights instead, excluding ``transformer/`` (the GGUF supplies the
+        transformer). Without this a local base folds its multi-GB VAE / text-encoder
+        weights to zero and auto planning can pick a resident placement that OOMs."""
+        local = Path(base).expanduser()
+        if local.is_dir():
+            total = 0
+            for f in local.rglob("*"):
+                if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
+                    continue
+                try:
+                    rel = f.relative_to(local)
+                except ValueError:
+                    continue
+                if rel.parts and rel.parts[0] == "transformer":
+                    continue  # supplied by the GGUF single-file; not resident here
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    continue
+            return total
+        return DiffusionBackend._cache_bytes(base)
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
@@ -483,7 +576,10 @@ class DiffusionBackend:
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
-        # family fails with ValueError even in a no-diffusers runtime.
+        # family fails with ValueError even in a no-diffusers runtime. Sanitize the
+        # token here too (direct callers bypass begin_load): a blank string must
+        # load anonymously, not 401 as an explicit empty credential.
+        hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
             repo_id, gguf_filename = gguf_filename, family_override = family_override
         )
@@ -499,12 +595,18 @@ class DiffusionBackend:
         # The cancel makes that wait ~one step (or the rest of the denoise for a
         # pipeline that ignores the step callback).
         with self._lock:
+            # Bail BEFORE signalling any cancel if this load was already superseded (an
+            # unload/eviction or a newer load bumped the token while we were resolving /
+            # downloading). Otherwise a stale worker would abort an unrelated, still-live
+            # generation from the CURRENT model and only then discover it has nothing to do.
+            if _load_token is not None and _load_token != self._load_token:
+                raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
         with self._generate_lock:
             with self._lock:
-                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
-                # newer load superseded this one while we were resolving/downloading.
+                # Re-check under the generate lock: a newer load/unload may have superseded
+                # this one while we waited for the in-flight denoise to exit.
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Diffusion load was cancelled.")
 
@@ -554,6 +656,12 @@ class DiffusionBackend:
                         )
                         pipe = None
                         transformer_quant_engaged = None
+                        # Drop the exception (and its traceback) BEFORE clearing the cache:
+                        # exc.__traceback__ keeps _load_dense_quant_pipeline's frame -- and
+                        # thus its partially-built dense bf16 transformer/pipe -- alive, so
+                        # clear_gpu_cache() could not otherwise reclaim that VRAM before the
+                        # GGUF build (the OOM-fallback path this cleanup exists for).
+                        del exc
                         clear_gpu_cache()
 
                 if pipe is None:
@@ -743,7 +851,14 @@ class DiffusionBackend:
         compile -> placement."""
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = select_transformer_quant_scheme(target, mode)
-        if scheme is not None and fam is not None:
+        if scheme is None:
+            # Bail BEFORE the (multi-GB) dense download: an explicit unsupported scheme
+            # (e.g. fp8 on Ampere, nvfp4 off Blackwell) would otherwise materialise the
+            # dense transformer and move the pipe to CUDA only to fail at quantize below --
+            # a long finalization under the load lock after the old model was already
+            # evicted. load_pipeline catches this and builds the GGUF pipeline instead.
+            raise RuntimeError("transformer quant unsupported for this device/scheme")
+        if fam is not None:
             source = resolve_prequant_source(fam, scheme, path_override = prequant_path)
             if source is not None:
                 transformer = load_prequantized_transformer(
@@ -757,6 +872,10 @@ class DiffusionBackend:
                     # Reject a checkpoint built with a different Linear filter than the
                     # dense path uses, so the prequant and runtime-quant models match.
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    # Only enforced when the caller forces fp8 fast-accum: a checkpoint that
+                    # baked the other choice would ignore the request, so fall to the dense
+                    # path (which applies it) instead of silently using the baked kernels.
+                    fast_accum = fast_accum,
                     logger = logger,
                 )
                 if transformer is not None:
@@ -809,13 +928,23 @@ class DiffusionBackend:
         device_memory = snapshot_device_memory(target)
         transformer_resident = estimate_gguf_resident_mib(file_size_mib(gguf_path))
         # The companion components (VAE + text encoders) load near their on-disk
-        # size; sum whatever the prefetch already placed in the base-repo cache.
-        companion = self._cache_bytes(base)
+        # size; sum whatever the prefetch placed in the base-repo cache, or -- for a
+        # LOCAL diffusers base -- the on-disk component weights (the blob cache is
+        # empty for a local path, which would otherwise fold multi-GB companions to 0
+        # and let auto planning pick a resident placement that OOMs).
+        companion = self._companion_cache_bytes(base)
         companion_mib = int(companion // (1024 * 1024)) if companion else None
         model_dense_mib = None
         if transformer_resident is not None:
             model_dense_mib = transformer_resident + (companion_mib or 0)
-        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
+        # Feed the variant hint (gguf filename + base repo) next to the family name so
+        # estimate_image_runtime_mib sees distilled markers ("turbo"/"schnell") that
+        # detect_family normalizes out of fam.name -- distilled models need ~15% less
+        # activation headroom, and over-reserving can force needless offload / tiling.
+        variant_hint = " ".join(
+            p for p in (fam.name, Path(gguf_path).name if gguf_path else "", base or "") if p
+        )
+        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
         return plan_diffusion_memory(
             target = target,
             device_memory = device_memory,
@@ -825,6 +954,26 @@ class DiffusionBackend:
             requested_mode = memory_mode,
             explicit_offload = cpu_offload,
         )
+
+    @staticmethod
+    def _reset_step_cache(pipe: Any) -> None:
+        """Clear the transformer's stateful step cache (FBCache) before a generation.
+
+        diffusers keys FBCache residuals by cache context ("cond"/"uncond") on the
+        long-lived transformer, and neither the pipeline nor the context exit resets
+        them (``StateManager`` only clears via ``reset_stateful_hooks``, which no
+        pipeline calls). This backend reuses one resident pipe across generations, so
+        without a reset the next generation's first step compares its first-block
+        residual against the PREVIOUS request's -- a tensor-shape mismatch when the
+        resolution/batch changed, or a stale-cache reuse otherwise. Best-effort: a
+        transformer without the hook (uncached load) is a silent no-op."""
+        transformer = getattr(pipe, "transformer", None)
+        reset = getattr(transformer, "reset_stateful_hooks", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception:  # noqa: BLE001 — reset is best-effort, never fail a generation
+                pass
 
     def generate(
         self,
@@ -909,6 +1058,13 @@ class DiffusionBackend:
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+
+                # Start each generation from a clean step cache: FBCache residuals from
+                # a prior request on this resident pipe would otherwise be compared
+                # against this generation's first step (shape mismatch on a resolution/
+                # batch change, or stale reuse). No-op when no cache is engaged.
+                if state.transformer_cache:
+                    self._reset_step_cache(state.pipe)
 
                 self._gen = gen
                 try:
@@ -1050,16 +1206,18 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     return base if isinstance(base, str) and base.strip() else None
 
 
-def _base_file_downloaded(rfilename: str) -> bool:
+def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) -> bool:
     """True for base-repo files ``from_pretrained`` actually fetches.
 
     The transformer is supplied by the GGUF, and repo docs (``assets/``, the
     top-level README/PDF/images) are never downloaded — counting them would peg
     the progress estimate above what lands on disk, so the bar would sit short of
     100% for the whole pipeline-load phase instead of advancing to "finalizing".
-    """
+    ``include_transformer`` admits the ``transformer/`` shards for loads where the
+    dense transformer-quant path will fetch them anyway (see
+    ``_dense_quant_prefetch_needed``)."""
     if rfilename.startswith("transformer/"):
-        return False
+        return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
     return not rfilename.startswith("assets/")

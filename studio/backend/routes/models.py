@@ -27,6 +27,10 @@ class CachedModelRepo(BaseModel):
     repo_id: str
     size_bytes: int
     last_modified: Optional[float] = None
+    # "text-to-image" for cached diffusers image repos; response_model would silently
+    # drop the value the handler sets, letting image-only repos pass the chat picker's
+    # task gate.
+    task: Optional[str] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -3320,14 +3324,30 @@ async def delete_cached_model(
     # delete guard is otherwise chat-only, so its GGUF could be removed from
     # under a live pipeline. Repo-level match, like the chat guards above.
     try:
-        from core.inference.diffusion import get_diffusion_backend
-        diffusion_status = get_diffusion_backend().status()
+        # The ACTIVE engine (diffusers or native sd_cpp): on a native selection the
+        # diffusers singleton reports unloaded while sd-cli still generates from the
+        # cached GGUF, so checking it alone would let the files be deleted mid-use.
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+        engine = get_active_diffusion_engine()
+        diffusion_status = engine.status()
         if diffusion_status.get("loaded") and diffusion_status.get("repo_id"):
             loaded_id = str(diffusion_status["repo_id"]).lower()
             if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
+                )
+        # Also refuse while a background image load is DOWNLOADING this repo (or its
+        # companion base): status().loaded is still False in that window, but deleting
+        # would remove blobs from under the in-flight download/assembly.
+        loading_ids = getattr(engine, "loading_repo_ids", tuple)()
+        for lid in loading_ids:
+            lid = str(lid).lower()
+            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "An Images model load is using this repo; wait for it to finish",
                 )
     except HTTPException:
         raise

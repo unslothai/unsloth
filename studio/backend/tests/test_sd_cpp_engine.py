@@ -116,10 +116,42 @@ def test_runtime_env_prepends_binary_dir_to_lib_path():
     assert "/existing" in env[var]
 
 
+def test_runtime_env_scrubs_native_path_lease_secret(monkeypatch):
+    # The sd-cli child is an external process and must never receive the native-path
+    # lease secret; every launch (version + generate/upscale) funnels through runtime_env.
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET", "top-secret")
+    from_os = runtime_env("/opt/sdcpp/bin/sd-cli")
+    assert "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET" not in from_os
+    from_base = runtime_env(
+        "/opt/sdcpp/bin/sd-cli",
+        {"UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET": "top-secret"},
+    )
+    assert "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET" not in from_base
+
+
 def test_runtime_env_handles_missing_lib_path():
     var = eng._lib_path_var()
     env = runtime_env("/opt/sdcpp/bin/sd-cli", {})
     assert env[var] == "/opt/sdcpp/bin"
+
+
+def test_terminate_reaps_killed_child():
+    # Cancellation/timeout paths call _terminate then immediately raise, so it must
+    # reap the killed child itself -- otherwise a burst of image cancellations leaves
+    # zombies until a later Popen cleanup. After _terminate the returncode is set
+    # (the child has been waited on), so nothing lingers.
+    import subprocess
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session = (os.name == "posix"),
+    )
+    try:
+        eng._terminate(proc)
+        assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 # ── generate (fake subprocess) ──────────────────────────────────────────────

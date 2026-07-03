@@ -270,6 +270,21 @@ def test_explicit_cpu_offload_overrides_resident_auto_choice():
     assert any("explicit cpu_offload" in r for r in plan.reasons)
 
 
+def test_explicit_memory_mode_wins_over_legacy_cpu_offload():
+    # The API documents memory_mode as overriding cpu_offload when set: fast +
+    # the legacy flag must stay resident, not silently downgrade to offload.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(80000),
+        model_dense_mib = 4000,
+        runtime_headroom_mib = 2000,
+        requested_mode = MEMORY_MODE_FAST,
+        explicit_offload = True,
+    )
+    assert plan.offload_policy == OFFLOAD_NONE
+    assert not any("explicit cpu_offload" in r for r in plan.reasons)
+
+
 def test_explicit_cpu_offload_ignored_on_cpu_target():
     plan = plan_diffusion_memory(
         target = _target(device = "cpu", backend = "cpu", supports_offload = False),
@@ -327,16 +342,19 @@ def test_snapshot_never_raises_on_probe_failure(monkeypatch):
 class _RecordingPipe:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.offload_device = None
 
     def to(self, device):
         self.calls.append(f"to:{device}")
         return self
 
-    def enable_model_cpu_offload(self):
+    def enable_model_cpu_offload(self, device = None):
         self.calls.append("model_offload")
+        self.offload_device = device
 
-    def enable_sequential_cpu_offload(self):
+    def enable_sequential_cpu_offload(self, device = None):
         self.calls.append("sequential_offload")
+        self.offload_device = device
 
     def enable_vae_tiling(self):
         self.calls.append("vae_tiling")
@@ -385,6 +403,16 @@ def test_apply_model_offload_engages_offload_and_tiling():
     assert "to:cuda" not in pipe.calls  # offload owns placement; never both
     assert "vae_tiling" in pipe.calls and "vae_slicing" in pipe.calls
     assert effective == OFFLOAD_MODEL and tiled is True
+    assert pipe.offload_device == "cuda"  # device threaded to enable_model_cpu_offload
+
+
+def test_apply_model_offload_passes_target_device():
+    # enable_model_cpu_offload defaults to CUDA in diffusers; on a non-CUDA accelerator
+    # (e.g. Intel XPU, which this backend supports) the target device must be forwarded
+    # or diffusers offloads to the wrong backend and the load fails.
+    pipe = _RecordingPipe()
+    apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = False), device = "xpu")
+    assert pipe.offload_device == "xpu"
 
 
 def test_apply_vae_tiling_falls_back_to_vae_submodule():
@@ -404,7 +432,7 @@ def test_apply_vae_tiling_falls_back_to_vae_submodule():
         def _slice(self):
             self.vae.sliced = True
 
-        def enable_model_cpu_offload(self):
+        def enable_model_cpu_offload(self, device = None):
             self.offloaded = True
 
     pipe = _VaeOnly()
@@ -439,13 +467,14 @@ def test_apply_sequential_offload():
     )
     assert "sequential_offload" in pipe.calls and "to:cuda" not in pipe.calls
     assert effective == OFFLOAD_SEQUENTIAL
+    assert pipe.offload_device == "cuda"  # device threaded to sequential offload too
 
 
 def test_apply_sequential_falls_back_to_model_offload_when_unsupported():
     # Sequential offload is unreliable for GGUF on some diffusers versions; the
     # applier must fall back to whole-module offload and report what actually ran.
     class _NoSeqPipe(_RecordingPipe):
-        def enable_sequential_cpu_offload(self):
+        def enable_sequential_cpu_offload(self, device = None):
             raise RuntimeError("sequential offload not supported for this transformer")
 
     pipe = _NoSeqPipe()

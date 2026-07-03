@@ -170,9 +170,13 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
     # Match edit keywords as whole id segments, not raw substrings, so a normal
     # text-to-image repo like ".../some-image-edition" isn't misread as an editing
     # checkpoint. Qwen-Image-Edit / FLUX.1-Kontext still match (edit/kontext are
-    # whole tokens there). Split on both path separators so a Windows local path
-    # is segmented too.
-    segments = set(re.split(r"[-_./\\]+", needle))
+    # whole tokens there). Scope the check to the LAST path component (the model id
+    # or filename), not arbitrary parent directories: a valid file selected as
+    # repo_id `/models/edit` + filename `Z-Image-Turbo-Q4.gguf` must not be rejected
+    # just because a parent folder happens to be named `edit`. The combined
+    # `repo_id/gguf_filename` fallback passes the filename as that last segment.
+    basename = re.split(r"[/\\]+", needle)[-1]
+    segments = set(re.split(r"[-_.]+", basename))
     if any(kw in segments for kw in _EDIT_KEYWORDS):
         return None
     for fam in _FAMILIES:

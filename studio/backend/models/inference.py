@@ -1792,6 +1792,14 @@ class DiffusionLoadRequest(BaseModel):
         "shifts the residual distribution).",
     )
 
+    @field_validator("attention_backend", mode = "before")
+    @classmethod
+    def _normalize_attention_backend(cls, value):
+        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the
+        # Literal above is validated before any normaliser runs, so fold a string to its
+        # canonical lower/stripped form here -- otherwise valid casing gets a 422.
+        return value.strip().lower() if isinstance(value, str) else value
+
 
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
@@ -1806,8 +1814,11 @@ class DiffusionGenerateRequest(BaseModel):
     )
     steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
     guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript
+    # rounds integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then
+    # generate a different image. Random seeds are already masked to this range.
     seed: Optional[int] = Field(
-        None, ge = 0, le = 2**64 - 1, description = "Seed for reproducibility (random if omitted)"
+        None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
     batch_size: int = Field(
         1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"

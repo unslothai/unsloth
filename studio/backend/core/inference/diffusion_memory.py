@@ -367,7 +367,17 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
 
-    if explicit_offload and policy == OFFLOAD_NONE and can_offload and not device_memory.is_unified:
+    # The legacy cpu_offload flag only applies when NO memory_mode was supplied:
+    # the API documents memory_mode as overriding cpu_offload when set, so an
+    # explicit `fast` request must stay resident even if the caller also left the
+    # old flag enabled.
+    if (
+        explicit_offload
+        and normalize_memory_mode(requested_mode) is None
+        and policy == OFFLOAD_NONE
+        and can_offload
+        and not device_memory.is_unified
+    ):
         policy = OFFLOAD_MODEL
         reasons.append("explicit cpu_offload overrides resident placement")
 
@@ -423,20 +433,20 @@ def apply_memory_plan(
         # is in the low-VRAM situation where the decode-time spike can OOM, so turn VAE
         # tiling on now (if not already engaged) to cap it.
         nonlocal tiling_engaged
-        pipe.enable_model_cpu_offload()
+        pipe.enable_model_cpu_offload(device = device)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
-        pipe.enable_model_cpu_offload()
+        pipe.enable_model_cpu_offload(device = device)
     elif policy == OFFLOAD_GROUP:
         if not _apply_group_offload(pipe, device, logger):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
-            pipe.enable_sequential_cpu_offload()
+            pipe.enable_sequential_cpu_offload(device = device)
         except Exception as exc:  # noqa: BLE001 — keep the model loadable
             if logger is not None:
                 logger.warning(
@@ -502,14 +512,19 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
-        apply_group_offloading(transformer, **gkwargs)
-        # Place the remaining (smaller) components resident; the streamed
-        # transformer manages its own placement via the offloading hooks.
+        # Place the remaining (smaller) components resident BEFORE attaching the
+        # transformer's group-offload hooks. If a companion .to() OOMs we return False
+        # with NO hooks installed, so the caller's whole-module offload fallback works:
+        # diffusers REJECTS enable_model_cpu_offload on a pipeline that already carries
+        # group-offload hooks, which would otherwise turn the intended fallback into a
+        # load-time crash. The streamed transformer manages its own placement via the
+        # offloading hooks applied next.
         for name, comp in getattr(pipe, "components", {}).items():
             if name == "transformer":
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
+        apply_group_offloading(transformer, **gkwargs)
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if logger is not None:

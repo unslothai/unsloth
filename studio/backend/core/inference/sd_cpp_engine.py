@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from utils.process_lifetime import child_popen_kwargs
+from utils.native_path_leases import child_env_without_native_path_secret
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
@@ -74,6 +75,14 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
+    # Reap the killed child so it does not linger as a zombie until the next Popen
+    # cleanup / interpreter exit. Callers raise immediately after _terminate (the
+    # cancellation and timeout paths), so without this a burst of image cancellations
+    # leaks process-table entries. SIGKILL is prompt, so a short bounded wait suffices.
+    try:
+        proc.wait(timeout = 5)
+    except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
+        pass
 
 
 def _binary_name(stem: str) -> str:
@@ -96,8 +105,13 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
     next to ``sd-cli``, so prepend the binary's own directory to the platform
     library path. A locally-built binary that is already linked finds its libs
     regardless, so this is harmless there.
+
+    Every ``sd-cli`` launch (version probe + generate/upscale) funnels through here,
+    so this is also the chokepoint that strips the native-path lease secret from the
+    child env -- the sd-cli binary is an external process that must not be able to
+    mint/verify native-path grants, matching the other subprocess launchers.
     """
-    env = dict(os.environ if base_env is None else base_env)
+    env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
     bindir = str(Path(binary).resolve().parent)
     existing = env.get(var, "")

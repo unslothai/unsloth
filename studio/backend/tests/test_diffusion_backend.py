@@ -56,6 +56,20 @@ def test_detect_family_from_repo_id():
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
+def test_detect_family_edit_keyword_scoped_to_basename():
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    # A parent directory named `edit`/`kontext`/`inpaint` must NOT reject a valid
+    # text-to-image file: only the model id / filename basename is scanned for the
+    # edit keyword. A direct local pick arrives as (parent_dir, filename).
+    assert detect_family("/models/edit") is None  # dir alone is ambiguous
+    assert detect_family_for_pick("/models/edit", "Z-Image-Turbo-Q4.gguf").name == "z-image"
+    assert detect_family_for_pick("/models/kontext", "qwen-image-2512-Q4.gguf").name == "qwen-image"
+    # But a genuine editing checkpoint (keyword in the id/filename) is still rejected.
+    assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF") is None
+    assert detect_family_for_pick("/models/misc", "Qwen-Image-Edit-2511-Q4.gguf") is None
+
+
 def test_detect_family_override():
     assert detect_family("local/path", override = "z-image").name == "z-image"
     assert detect_family("local/path", override = "zimage").name == "z-image"
@@ -139,11 +153,13 @@ class _FakePipe:
         self.moved_to = device
         return self
 
-    def enable_model_cpu_offload(self) -> None:
+    def enable_model_cpu_offload(self, device = None) -> None:
         self.offloaded = True
+        self.offload_device = device
 
-    def enable_sequential_cpu_offload(self) -> None:
+    def enable_sequential_cpu_offload(self, device = None) -> None:
         self.sequential_offloaded = True
+        self.offload_device = device
 
     def enable_vae_tiling(self) -> None:
         self.vae_tiled = True
@@ -499,6 +515,29 @@ def test_unload_cancels_in_flight_load(fake_runtime):
         )
 
 
+def test_superseded_load_does_not_cancel_live_generation(fake_runtime):
+    # A superseded background load (its token was bumped by a newer load/unload) that
+    # finally reaches load_pipeline must bail WITHOUT signalling the current model's
+    # in-flight generation: the token check has to run before the cancel is set, or a
+    # stale worker aborts an unrelated, still-live denoise.
+    import threading as _threading
+
+    backend = DiffusionBackend()
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    live_cancel = _threading.Event()
+    backend._active_generate_cancel = live_cancel  # a generation from the CURRENT model
+    token = 11
+    backend._load_token = token + 1  # this load has already been superseded
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.load_pipeline(
+            "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+            base_repo = fam.base_repo,
+            _load_token = token,
+        )
+    assert not live_cancel.is_set()  # the live generation was left untouched
+
+
 def test_pick_dtype_bf16_only_on_ampere(fake_runtime, monkeypatch):
     # BF16 only on Ampere+ (cc >= 8); pre-Ampere cards must fall back to FP16.
     torch = sys.modules["torch"]
@@ -735,6 +774,11 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF")
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
+    # A family-looking repo paired with a non-GGUF single-file name is rejected here,
+    # BEFORE the route evicts chat and hands over the GPU (the background load would
+    # otherwise be the first to notice README.md is not a checkpoint).
+    with pytest.raises(ValueError, match = r"\.gguf"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "README.md")
     assert (
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
         == "z-image"
@@ -1134,3 +1178,134 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
     assert status["transformer_quant"] is None
     assert status["offload_policy"] == "model"
     assert _FakeTransformer.last["path"]  # GGUF path used
+
+
+def test_transformer_quant_unsupported_scheme_skips_dense_download(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # An explicit unsupported scheme (select_transformer_quant_scheme -> None) must fail
+    # the dense path BEFORE materialising the multi-GB dense transformer, then fall back
+    # to GGUF -- otherwise the download runs under the load lock during finalization
+    # after the old model was already evicted, only to fail at quantize.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: None)
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+
+    @classmethod
+    def _fp_fail(cls, *a, **k):
+        pytest.fail("dense transformer must not download when the scheme is unsupported")
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None  # fell back to GGUF
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file used
+
+
+def test_base_file_downloaded_include_transformer_flag():
+    # Default: transformer/ shards are the GGUF's job, so they are excluded from
+    # the prefetch list; the dense transformer-quant path opts them back in.
+    from core.inference.diffusion import _base_file_downloaded
+
+    assert _base_file_downloaded("transformer/diffusion_pytorch_model-00001.safetensors") is False
+    assert (
+        _base_file_downloaded(
+            "transformer/diffusion_pytorch_model-00001.safetensors", include_transformer = True
+        )
+        is True
+    )
+    # The flag must not admit anything else that is normally excluded.
+    assert _base_file_downloaded("assets/teaser.png", include_transformer = True) is False
+    assert _base_file_downloaded("README.md", include_transformer = True) is False
+
+
+def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
+    # The transformer/ prefetch only widens when the dense quant path can really
+    # run: quant requested + device supported + scheme resolvable + no prequant
+    # checkpoint shortcutting the dense build.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is True
+    # No quant requested -> never widen.
+    assert backend._dense_quant_prefetch_needed(fam, {}) is False
+    # A resolvable pre-quantized checkpoint shortcuts the dense download.
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+    # Unsupported scheme bails before the dense path (and so must the prefetch).
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: None)
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+    # Device without dense support (e.g. non-CUDA) never widens.
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+
+
+def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
+    # A LOCAL diffusers base: sum the on-disk VAE / text-encoder weights so auto memory
+    # planning sees the resident companions, but exclude transformer/ (the GGUF supplies
+    # it) and non-weight files. A folded-to-zero companion could OOM a resident plan.
+    (tmp_path / "vae").mkdir()
+    (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x" * 100)
+    (tmp_path / "text_encoder").mkdir()
+    (tmp_path / "text_encoder" / "model.safetensors").write_bytes(b"y" * 50)
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"z" * 9999)
+    (tmp_path / "model_index.json").write_bytes(b"{}")  # non-weight file, ignored
+    total = DiffusionBackend._companion_cache_bytes(str(tmp_path))
+    assert total == 150  # vae + text_encoder only; transformer/ and json excluded
+
+
+def test_reset_step_cache_helper_is_best_effort():
+    # Calls the transformer's reset hook when present.
+    calls = []
+    pipe = types.SimpleNamespace(
+        transformer = types.SimpleNamespace(reset_stateful_hooks = lambda: calls.append(True))
+    )
+    DiffusionBackend._reset_step_cache(pipe)
+    assert calls == [True]
+    # No transformer, or a transformer without the hook -> silent no-op (never raises).
+    DiffusionBackend._reset_step_cache(types.SimpleNamespace())
+    DiffusionBackend._reset_step_cache(types.SimpleNamespace(transformer = object()))
+
+
+def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
+    # FBCache residuals live on the resident transformer across generations, so each
+    # generate() must reset the stateful cache first -- but only when a cache is engaged.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    resets = []
+    backend._state.pipe.transformer = types.SimpleNamespace(
+        reset_stateful_hooks = lambda: resets.append(True)
+    )
+    # No cache engaged (transformer_cache is None) -> reset must NOT run.
+    backend.generate(prompt = "a sloth")
+    assert resets == []
+    # Engage a cache; every subsequent generation resets the stateful cache first.
+    object.__setattr__(backend._state, "transformer_cache", "fbcache")
+    backend.generate(prompt = "a sloth")
+    backend.generate(prompt = "another sloth")
+    assert resets == [True, True]
