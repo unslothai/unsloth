@@ -746,10 +746,14 @@ def test_tp_plan_weighted_split_on_asymmetric_big_model():
     b, (ec, mac, gi, ts) = _plan(50)
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     assert gi == [0, 1]
-    # split weighted by (usable - buffer); with no totals usable is free*frac
+    # split weighted by (usable - flat buffer - per-device context compute); with
+    # no totals usable is free*frac. The per-device cc is subtracted so the smaller
+    # card isn't weighted above its real usable budget (see below).
+    cc_per_dev = b._compute_buffer_ctx_bytes(ec, None, None) // (1024 * 1024)
+    assert cc_per_dev > 0
     assert ts == [
-        int(48000 * _CTX_FIT_VRAM_FRACTION - reserve),
-        int(24000 * _CTX_FIT_VRAM_FRACTION - reserve),
+        int(48000 * _CTX_FIT_VRAM_FRACTION - reserve - cc_per_dev),
+        int(24000 * _CTX_FIT_VRAM_FRACTION - reserve - cc_per_dev),
     ]
     assert ec < 131072  # capped below native
 
@@ -838,6 +842,54 @@ def test_tp_plan_context_shrinks_vs_compute_unaware():
     b2._embedding_length = 0  # kills the context-linear compute term (returns 0)
     ec_naive, *_r2 = b2._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec < ec_naive
+
+
+def test_tp_plan_soft_overhead_shrinks_context():
+    # The CUDA-ctx / mmproj / MTP-draft reserve the layer path folds into the fit
+    # budget (model_size_fit) must also shrink the tensor context. Tensor mode has
+    # no --fit valve, so an unreserved overshoot OOMs at startup instead of
+    # offloading. A non-zero soft_overhead must pin a strictly smaller context.
+    b = _kv_seeded_backend()
+    ec_no, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
+    ec_soft, *_r2 = b._plan_tensor_parallel(
+        _ASYM, int(50 * _GB), 131072, soft_overhead_bytes = 2 * _GB
+    )
+    assert 2048 < ec_soft < ec_no
+
+
+def test_tp_plan_soft_overhead_reserved_against_budget():
+    # The pinned context must leave the whole soft reserve free on top of KV and
+    # the replicated context compute, so the real footprint stays within the pool.
+    b = _kv_seeded_backend()
+    soft = 2 * _GB
+    ec, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft)
+    cc = len(_ASYM) * b._compute_buffer_ctx_bytes(ec, None, None)
+    assert b._estimate_kv_cache_bytes(ec) + cc + soft <= _kv_budget_b(50)
+
+
+def test_tp_plan_weighted_split_keeps_small_gpu_within_budget():
+    # Regression: the weighted split must subtract each device's replicated context
+    # compute (cc_bytes/n_dev), not just the flat reserve. Otherwise the smaller
+    # card is weighted above its usable budget and OOMs at launch. Model the split:
+    # llama.cpp distributes weights+KV by the tensor-split weights; every device
+    # also holds the flat reserve plus its per-device context compute.
+    b, (ec, mac, gi, ts) = _plan(50)
+    assert ts is not None and len(ts) == len(gi) == 2
+    reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+    cc_per_dev = b._compute_buffer_ctx_bytes(ec, None, None) // (1024 * 1024)
+    free_by_idx = {0: 48000, 1: 24000}
+    split_content_mib = (int(50 * _GB) + b._estimate_kv_cache_bytes(ec)) / (1024 * 1024)
+    total_weight = sum(ts)
+    for w, idx in zip(ts, gi):
+        placed = split_content_mib * w / total_weight
+        usable = free_by_idx[idx] * _CTX_FIT_VRAM_FRACTION
+        assert placed + reserve + cc_per_dev <= usable + 1  # +1 MiB for int rounding
+
+    # Lock the regression: under the old formula (flat reserve only) the smaller
+    # card was placed over its budget; the cc term is what pulls it back.
+    old_adj = [int(free_by_idx[i] * _CTX_FIT_VRAM_FRACTION - reserve) for i in gi]
+    old_small_placed = split_content_mib * old_adj[1] / sum(old_adj)
+    assert old_small_placed + reserve + cc_per_dev > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
 
 
 def test_tp_plan_no_kv_metadata_floors_context():

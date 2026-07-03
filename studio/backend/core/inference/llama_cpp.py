@@ -4362,6 +4362,7 @@ class LlamaCppBackend:
         max_target_ctx: Optional[int] = None,
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
+        soft_overhead_bytes: int = 0,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
@@ -4386,7 +4387,9 @@ class LlamaCppBackend:
           share fits the smallest GPU; otherwise it is weighted by usable budget
           so the roomier GPU absorbs more weight and the smallest keeps room for KV.
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
-        the compute buffer.
+        the compute buffer. ``soft_overhead_bytes`` is the CUDA-context / mmproj /
+        MTP-draft-graph reserve the layer path folds into ``model_size_fit``;
+        charged against the pooled budget so tensor mode reserves the same overhead.
         """
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
@@ -4432,8 +4435,16 @@ class LlamaCppBackend:
         flat_mtp_bytes = max(0, mtp_flat_reserve_bytes)
         if mtp_engaged and mtp_overhead_fn is None:
             flat_mtp_bytes = max(flat_mtp_bytes, 2 * 1024**3)
+        # soft_overhead_bytes is the CUDA-context / mmproj / MTP-draft-graph reserve
+        # the layer path folds into model_size_fit. Tensor mode has no --fit valve, so
+        # an unreserved overshoot OOMs at startup rather than offloading; charge it here
+        # too. Once (pooled), mirroring the layer path -- the per-device CUDA context is
+        # a known slight under-charge, left for real multi-GPU data.
         kv_budget_b = (
-            (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size - flat_mtp_bytes
+            (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024
+            - model_size
+            - flat_mtp_bytes
+            - max(0, soft_overhead_bytes)
         )
 
         def _mtp_at(ctx: int) -> int:
@@ -4516,7 +4527,16 @@ class LlamaCppBackend:
         )
         tensor_split: Optional[list[int]] = None
         if even_share_mib > (min_usable_mib - reserve_mib):
-            adj = [max(0, int(usable_by_idx[i] - reserve_mib)) for i in gpu_indices]
+            # Each device also holds its replicated share of the context-linear
+            # compute (cc_bytes/n_dev) on top of the flat reserve. The even-share
+            # gate above charges cc_bytes; the split weights must subtract it too, or
+            # the smaller card is weighted above its real usable budget and OOMs (the
+            # per-device analog of the layer path's per-GPU overhead in _select_gpus).
+            cc_per_dev_mib = (cc_bytes // len(gpu_indices)) // (1024 * 1024) if cc_bytes else 0
+            adj = [
+                max(0, int(usable_by_idx[i] - reserve_mib - cc_per_dev_mib))
+                for i in gpu_indices
+            ]
             if sum(adj) > 0:
                 tensor_split = adj
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
@@ -5459,7 +5479,9 @@ class LlamaCppBackend:
                                 _tp_flat_mtp,
                                 _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048),
                             )
-                        _tp_required_mib = (model_size + _tp_mtp_floor) / (1024 * 1024)
+                        _tp_required_mib = (
+                            model_size + _tp_mtp_floor + _soft_overhead
+                        ) / (1024 * 1024)
                         if _tp_weight_budget_mib <= _tp_required_mib:
                             logger.info(
                                 "Tensor parallelism requested but the pooled VRAM "
@@ -5508,6 +5530,7 @@ class LlamaCppBackend:
                             max_target_ctx = self._context_length or target_ctx,
                             total_by_idx = total_by_idx,
                             n_ubatch = _effective_ubatch,
+                            soft_overhead_bytes = _soft_overhead,
                         )
                         use_fit = False
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
