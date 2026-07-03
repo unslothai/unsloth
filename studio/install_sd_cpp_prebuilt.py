@@ -38,14 +38,18 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Default upstream source. Overridable with UNSLOTH_SD_CPP_REPO so a pinned unslothai
-# mirror (built the same way as unslothai/llama.cpp's prebuilts) can be used without a
-# code change once it exists; otherwise this falls back to leejet upstream.
-DEFAULT_REPO = "leejet/stable-diffusion.cpp"
+# Default source: the Unsloth-built mirror, whose CPU/Apple prebuilts are compiled and
+# published by unslothai/stable-diffusion.cpp (the same way unslothai/llama.cpp ships its
+# prebuilts). Override with UNSLOTH_SD_CPP_REPO to point elsewhere (e.g. back to leejet).
+# GPU hosts never reach here -- they run diffusers -- so only CPU/Apple assets are needed.
+DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
+# Upstream we fall back to if the mirror can't serve this host (mirror release missing, or
+# a host we don't yet build): resolve against leejet so native install still works.
+UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary
-# under users on every upstream push. Override with UNSLOTH_SD_CPP_TAG; set it empty to
-# track latest. If the pinned tag is gone upstream, install falls back to latest.
-DEFAULT_TAG = "master-737-3b6c9ca"
+# under users on every push. Override with UNSLOTH_SD_CPP_TAG; set it empty to track
+# latest. If the pinned tag is gone, install falls back to that repo's latest.
+DEFAULT_TAG = "master-741-484baa4"
 
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
@@ -118,14 +122,24 @@ def resolve_release_asset(
         pool = [a for a in zips if "bin-win" in a.lower()]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
-        if not sel:  # fall back to a plain avx2 CPU build
-            sel = [a for a in pool if "avx2" in a.lower()]
-        return sel[0] if sel else (pool[0] if pool else None)
+        if sel:
+            return sel[0]
+        # An EXPLICIT GPU accelerator with no matching asset is a real miss, not a CPU
+        # request: return None so the caller can fall back to a repo that builds it,
+        # rather than silently installing a CPU build for a --accelerator cuda request.
+        if accel in ("cuda", "vulkan", "rocm"):
+            return None
+        # auto / cpu -> a plain avx2 CPU build, else any windows build.
+        cpu = [a for a in pool if "avx2" in a.lower()]
+        return cpu[0] if cpu else (pool[0] if pool else None)
 
     # linux (and anything else unix-like)
     pool = [a for a in zips if "linux" in a.lower() and any(t in a.lower() for t in arch)]
-    if accel in _LINUX_ACCEL_TOKEN:
-        sel = [a for a in pool if _LINUX_ACCEL_TOKEN[accel] in a.lower()]
+    if accel in ("cuda", "vulkan", "rocm"):
+        # Explicit GPU accelerator: require its marker, else no match (let the caller
+        # fall back) -- never hand back a plain CPU build for a GPU request.
+        marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
+        sel = [a for a in pool if marker in a.lower()]
     else:  # auto / cpu -> the plain build with no accelerator marker
         sel = [a for a in pool if not any(m in a.lower() for m in _LINUX_ACCEL_MARKERS)]
     return sel[0] if sel else None
@@ -137,10 +151,14 @@ def _fetch_release(
     repo: Optional[str] = None,
     token: Optional[str] = None,
     timeout: float = 30.0,
-) -> dict:
-    """GET a release JSON from GitHub. With ``tag`` set, fetch that exact release (and fall
-    back to latest if the tag is gone upstream); otherwise fetch latest. ``token`` is
-    optional and lifts the API rate limit."""
+    allow_latest: bool = True,
+) -> Optional[dict]:
+    """GET a release JSON from GitHub. With ``tag`` set, fetch that exact release; otherwise
+    fetch latest. ``token`` is optional and lifts the API rate limit.
+
+    When the pinned ``tag`` is missing (404): if ``allow_latest`` fall back to that repo's
+    latest, else return ``None`` so the caller can try the SAME pin on another repo before
+    settling for any repo's unpinned latest."""
     repo = repo or _repo()
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
@@ -155,9 +173,11 @@ def _fetch_release(
     if tag:
         try:
             return _get(f"{base}/tags/{tag}")
-        except urllib.error.HTTPError as exc:  # pinned tag removed upstream -> latest
+        except urllib.error.HTTPError as exc:  # pinned tag removed -> maybe latest
             if exc.code != 404:
                 raise
+            if not allow_latest:
+                return None
             print(
                 f"sd-cli: pinned tag {tag} not found on {repo}; falling back to latest", flush = True
             )
@@ -283,6 +303,90 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
         dest.unlink(missing_ok = True)
 
 
+def _resolve_repo_asset(
+    repo: str,
+    tag: Optional[str],
+    accelerator: str,
+    token: Optional[str],
+    *,
+    allow_latest: bool = True,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Fetch ``repo``'s release and pick the asset for this host. Returns
+    ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release
+    (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no
+    asset for this host, so the caller can fall back."""
+    try:
+        release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
+    except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
+        print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
+        return None, None
+    if release is None:  # pinned tag missing and the latest fallback was withheld
+        return None, None
+    names = [a["name"] for a in (release.get("assets") or [])]
+    chosen = resolve_release_asset(
+        names,
+        system = platform.system(),
+        machine = platform.machine(),
+        accelerator = accelerator,
+    )
+    return release, chosen
+
+
+def _resolve_with_fallback(
+    accelerator: str, token: Optional[str]
+) -> tuple[str, Optional[dict], Optional[str]]:
+    """Resolve ``(used_repo, release, asset_name)`` for this host across the primary repo
+    and -- only when the built-in default is in use and the user did not pin a repo -- the
+    upstream fallback.
+
+    Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate
+    repo before any repo's unpinned latest, so a mirror that is missing the pinned release
+    prefers the pinned upstream build over an unpinned mirror-latest. Returns
+    ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and
+    ``--print-asset`` so both honour the same fallback."""
+    tag = _pinned_tag()
+    primary = _repo()
+    # Fall back to upstream ONLY when the user did not pin a repo (env unset) and the
+    # built-in default is in use: an explicit UNSLOTH_SD_CPP_REPO (even one equal to the
+    # default) gets exactly that repo, with no surprise upstream substitution.
+    repo_pinned = bool((os.environ.get("UNSLOTH_SD_CPP_REPO") or "").strip())
+    allow_upstream = (
+        not repo_pinned and primary == DEFAULT_REPO and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
+    )
+
+    # (repo, tag_to_fetch, allow_latest). With a pin set, try the exact pin on every repo
+    # first (allow_latest = False), then each repo's latest (tag = None).
+    attempts: list[tuple[str, Optional[str], bool]] = []
+    if tag:
+        attempts.append((primary, tag, False))
+        if allow_upstream:
+            attempts.append((UPSTREAM_FALLBACK_REPO, tag, False))
+        attempts.append((primary, None, True))
+        if allow_upstream:
+            attempts.append((UPSTREAM_FALLBACK_REPO, None, True))
+    else:
+        attempts.append((primary, None, True))
+        if allow_upstream:
+            attempts.append((UPSTREAM_FALLBACK_REPO, None, True))
+
+    for repo, want_tag, allow_latest in attempts:
+        release, chosen = _resolve_repo_asset(
+            repo, want_tag, accelerator, token, allow_latest = allow_latest
+        )
+        if release is not None and chosen:
+            if repo != primary:
+                # Diagnostic goes to stderr, not stdout: --print-asset documents its
+                # stdout as the asset name only, so a caller parsing it as a single line
+                # must not see this fallback log mixed in.
+                print(
+                    f"falling back to {repo} for {platform.system()}/{platform.machine()}",
+                    file = sys.stderr,
+                    flush = True,
+                )
+            return repo, release, chosen
+    return primary, None, None
+
+
 def install(
     *,
     install_dir: Optional[Path] = None,
@@ -291,25 +395,22 @@ def install(
 ) -> Path:
     """Download + extract the prebuilt for this host. Returns the sd-cli path.
 
-    Raises ``RuntimeError`` if no asset matches the host (the caller should then
-    build from source) or the archive has no ``sd-cli``.
+    Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror can't
+    serve this host (release missing, or a host we don't build) AND the default repo is
+    in use, falls back to leejet upstream so native install still works. Raises
+    ``RuntimeError`` only when neither source has an asset for the host, or the archive
+    has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
-    release = _fetch_release(_pinned_tag(), token = token)
-    print(f"sd-cli: source {_repo()} release {release.get('tag_name', '?')}", flush = True)
-    names = [a["name"] for a in release.get("assets", [])]
-    chosen = resolve_release_asset(
-        names,
-        system = platform.system(),
-        machine = platform.machine(),
-        accelerator = accelerator,
-    )
-    if not chosen:
+    used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
+
+    if release is None or not chosen:
         raise RuntimeError(
             f"No prebuilt sd-cli for {platform.system()}/{platform.machine()} "
-            f"(accelerator={accelerator}). Build from source: "
-            f"https://github.com/{_repo()}"
+            f"(accelerator={accelerator}) from {used_repo}. Build from source: "
+            f"https://github.com/{used_repo}"
         )
+    print(f"sd-cli: source {used_repo} release {release.get('tag_name', '?')}", flush = True)
     asset = next(a for a in release["assets"] if a["name"] == chosen)
     url = asset["browser_download_url"]
     target.mkdir(parents = True, exist_ok = True)
@@ -356,14 +457,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
 
     if args.print_asset:
-        release = _fetch_release(_pinned_tag())
-        names = [a["name"] for a in release.get("assets", [])]
-        chosen = resolve_release_asset(
-            names,
-            system = platform.system(),
-            machine = platform.machine(),
-            accelerator = args.accelerator,
-        )
+        # Route through the same primary/fallback resolution as install(), so a host the
+        # mirror does not build (e.g. a Linux Vulkan request) reports the upstream asset
+        # it would actually download instead of a false "no matching prebuilt".
+        _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2
 
