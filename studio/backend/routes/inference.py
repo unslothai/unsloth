@@ -10701,7 +10701,7 @@ async def _openai_passthrough_stream(
             cancel_watcher = None
             disconnect_watcher = None
 
-            nonlocal resp, send_task
+            nonlocal resp, send_task, first_token_deadline, _truncate_budget
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -10727,29 +10727,32 @@ async def _openai_passthrough_stream(
                 return f"data: {chunk.model_dump_json(exclude_none = True)}"
 
             try:
-                if send_task is not None and not send_task.done():
-                    try:
-                        resp = await send_task
-                    except httpx.RequestError as e:
-                        logger.error("openai passthrough stream: upstream unreachable: %s", e)
-                        api_monitor.fail(monitor_id, _friendly_error(e))
-                        yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
-                        return
-                    send_task = None
-                elif send_task is not None:
-                    try:
-                        resp = send_task.result()
-                    except httpx.RequestError as e:
-                        logger.error("openai passthrough stream: upstream unreachable: %s", e)
-                        api_monitor.fail(monitor_id, _friendly_error(e))
-                        yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
-                        return
-                    send_task = None
+                while True:
+                    if send_task is not None and not send_task.done():
+                        try:
+                            resp = await send_task
+                        except httpx.RequestError as e:
+                            logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                            api_monitor.fail(monitor_id, _friendly_error(e))
+                            yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
+                            return
+                        send_task = None
+                    elif send_task is not None:
+                        try:
+                            resp = send_task.result()
+                        except httpx.RequestError as e:
+                            logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                            api_monitor.fail(monitor_id, _friendly_error(e))
+                            yield f"data: {json.dumps(_openai_stream_error_chunk(e))}\n\n"
+                            return
+                        send_task = None
 
-                if resp is None:
-                    api_monitor.finish(monitor_id, "cancelled")
-                    return
-                if resp.status_code != 200:
+                    if resp is None:
+                        api_monitor.finish(monitor_id, "cancelled")
+                        return
+                    if resp.status_code == 200:
+                        break
+
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
                     logger.error(
@@ -10757,13 +10760,36 @@ async def _openai_passthrough_stream(
                         resp.status_code,
                         err_text[:500],
                     )
-                    upstream_error = _openai_passthrough_error(resp.status_code, err_text)
+                    upstream_status = resp.status_code
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = None
+                    if (
+                        _truncate_budget > 0
+                        and _classify_llama_generation_error(Exception(err_text))
+                        and _apply_overflow_truncation(body, err_text)
+                    ):
+                        _truncate_budget -= 1
+                        req = client.build_request(
+                            "POST", target_url, json = body, headers = {"Connection": "close"}
+                        )
+                        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                        send_task = asyncio.create_task(
+                            _send_stream_with_preheader_cancel(
+                                client, req, cancel_event, request = request
+                            )
+                        )
+                        continue
+
+                    upstream_error = _openai_passthrough_error(upstream_status, err_text)
                     error_payload = (
                         upstream_error.detail
                         if isinstance(upstream_error.detail, dict)
                         else openai_error_body(
                             str(upstream_error.detail),
-                            status = resp.status_code,
+                            status = upstream_status,
                         )
                     )
                     api_monitor.fail(monitor_id, err_text[:500])
