@@ -102,7 +102,6 @@ def _lm_eval_available() -> bool:
 
 def _lm_eval_version() -> tuple:
     from importlib.metadata import PackageNotFoundError, version
-
     for dist in ("lm_eval", "lm-eval"):
         try:
             parts = re.findall(r"\d+", version(dist))[:3]
