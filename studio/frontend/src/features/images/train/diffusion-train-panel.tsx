@@ -288,6 +288,16 @@ export function DiffusionTrainPanel({
     }
   }, [family, loadedBaseRepo]);
 
+  // The base actually used everywhere (request, deploy, select value). baseChoice can
+  // briefly hold another family's repo between a family switch and the reseed effect
+  // (or if that effect is skipped); a raw <select value> would then DISPLAY the first
+  // option while the request still carried the stale repo -- the user saw FLUX's gated
+  // error while another family looked selected. Clamp to the current family's repos.
+  const effectiveBase =
+    baseChoice === CUSTOM_BASE || (family?.base_repos ?? []).includes(baseChoice)
+      ? baseChoice
+      : family?.base_repos[0] ?? CUSTOM_BASE;
+
   const poll = useCallback(async () => {
     try {
       setStatus(await getDiffusionTrainingStatus());
@@ -380,7 +390,7 @@ export function DiffusionTrainPanel({
   }, [uploadName, refreshInfo]);
 
   const onStart = useCallback(async () => {
-    const baseModel = (baseChoice === CUSTOM_BASE ? customBase : baseChoice).trim();
+    const baseModel = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
     if (!baseModel) {
       toast.error("Pick a base model (or fill in the custom repo/path).");
       return;
@@ -431,7 +441,7 @@ export function DiffusionTrainPanel({
       setStarting(false);
     }
   }, [
-    baseChoice,
+    effectiveBase,
     customBase,
     family,
     dataset,
@@ -462,7 +472,7 @@ export function DiffusionTrainPanel({
       toast.error("The trained adapter is not available yet.");
       return;
     }
-    const baseRepo = status.base_model || (baseChoice === CUSTOM_BASE ? customBase : baseChoice);
+    const baseRepo = status.base_model || (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase);
     if (!baseRepo) {
       toast.error("Could not determine the base model to load for this adapter.");
       return;
@@ -533,7 +543,7 @@ export function DiffusionTrainPanel({
         <div className="grid gap-1.5">
           <Label className="text-xs">Base model</Label>
           <select
-            value={baseChoice}
+            value={effectiveBase}
             onChange={(e) => setBaseChoice(e.target.value)}
             className={selectClass}
             aria-label="Base model"
@@ -545,7 +555,7 @@ export function DiffusionTrainPanel({
             ))}
             <option value={CUSTOM_BASE}>Custom repo or local path...</option>
           </select>
-          {baseChoice === CUSTOM_BASE && (
+          {effectiveBase === CUSTOM_BASE && (
             <Input
               value={customBase}
               placeholder="my-org/my-base or /path/to/pipeline"
@@ -673,17 +683,8 @@ export function DiffusionTrainPanel({
           />
         </div>
 
-        {/* Adapter name + trigger */}
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Adapter name</Label>
-          <Input
-            value={outputDir}
-            placeholder="my-style-lora"
-            spellCheck={false}
-            onChange={(e) => setOutputDir(e.target.value)}
-            className="h-8 text-xs"
-          />
-        </div>
+        {/* Trigger + adapter name (trigger first: it describes the dataset, the name
+            just labels the output) */}
         {fullyCaptioned ? (
           <p className="text-[11px] leading-snug text-muted-foreground">
             All {selectedDataset?.image_count} images have captions - no trigger prompt needed.
@@ -702,6 +703,16 @@ export function DiffusionTrainPanel({
             />
           </div>
         )}
+        <div className="grid gap-1.5">
+          <Label className="text-xs">Adapter name</Label>
+          <Input
+            value={outputDir}
+            placeholder="my-style-lora"
+            spellCheck={false}
+            onChange={(e) => setOutputDir(e.target.value)}
+            className="h-8 text-xs"
+          />
+        </div>
 
         {/* Collapsed training settings */}
         <Button
