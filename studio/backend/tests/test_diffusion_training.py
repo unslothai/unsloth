@@ -65,6 +65,18 @@ class _FakeCtx:
         return _FakeProc(target, kwargs, daemon)
 
 
+@pytest.fixture(autouse = True)
+def _isolated_runs_dir(monkeypatch, tmp_path):
+    """Terminal service events persist a run record; point the runs dir at tmp so tests
+    never write into a real studio home. Yields the dir for the history tests."""
+    import core.training.diffusion_training_service as dts
+
+    d = tmp_path / "runs" / "diffusion"
+    d.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(dts, "_runs_dir", lambda: d)
+    yield d
+
+
 def _happy_target(*, event_queue, stop_queue, config):
     event_queue.put({"type": "model_load_started", "num_images": 3})
     event_queue.put({"type": "model_load_completed"})
@@ -625,3 +637,91 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert client._fake.started_with["base_model"] == "black-forest-labs/FLUX.1-dev"
+
+
+# ── persisted run history ──────────────────────────────────────────────────────
+def test_run_record_persisted_on_complete(_isolated_runs_dir):
+    # A completed run writes one JSON record: summary + scrubbed config + metric logs.
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    job_id = svc.start({**_CFG, "model_family": "z-image", "hf_token": "SECRET"})
+    _wait_status(svc, "completed")
+    # The pump persists right after the terminal event; give the thread a beat.
+    time.sleep(0.1)
+
+    import json
+
+    rec = json.loads((_isolated_runs_dir / f"{job_id}.json").read_text())
+    assert rec["job_id"] == job_id
+    assert rec["status"] == "completed"
+    assert rec["saved"] is True
+    assert rec["adapter"] == "out"  # basename of /tmp/out
+    assert rec["family"] == "z-image"  # falls back to the config's model_family
+    assert rec["step"] == 2 and rec["total_steps"] == 2
+    assert rec["avg_loss"] == 0.45
+    assert rec["metric_history"]["steps"] == [1, 2]
+    assert rec["metric_history"]["loss"] == [0.5, 0.4]
+    # Secrets never land on disk.
+    assert "hf_token" not in rec["config"]
+    assert rec["config"]["model_family"] == "z-image"
+
+
+def test_run_record_no_save_stop_marks_unsaved(_isolated_runs_dir):
+    # A cancel (stop without save) persists too, flagged as not saved.
+    def _cancel_target(*, event_queue, stop_queue, config):
+        event_queue.put({"type": "model_load_completed"})
+        stop_queue.get(timeout = 5.0)
+        event_queue.put({"type": "complete", "output_dir": None, "lora_path": None, "stopped": True})
+
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _cancel_target)
+    job_id = svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    svc.stop(save = False)
+    _wait_status(svc, "stopped")
+    time.sleep(0.1)
+
+    import json
+
+    rec = json.loads((_isolated_runs_dir / f"{job_id}.json").read_text())
+    assert rec["status"] == "stopped"
+    assert rec["saved"] is False and rec["lora_path"] is None
+
+
+def test_runs_endpoints_list_and_detail(client, _isolated_runs_dir):
+    # Seed two records directly (the endpoints read the persisted files, not the service).
+    import json
+    import os
+
+    a = {
+        "job_id": "a" * 32, "status": "completed", "adapter": "first", "saved": True,
+        "step": 10, "total_steps": 10, "avg_loss": 0.4,
+        "config": {"train_steps": 10}, "metric_history": {"steps": [1], "loss": [0.4], "lr": [1e-4], "grad_norm": [0.2]},
+    }
+    b = {
+        "job_id": "b" * 32, "status": "stopped", "adapter": "second", "saved": False,
+        "step": 3, "total_steps": 10, "avg_loss": 0.6,
+        "config": {"train_steps": 10}, "metric_history": {"steps": [1], "loss": [0.6], "lr": [1e-4], "grad_norm": [0.3]},
+    }
+    pa = _isolated_runs_dir / f"{a['job_id']}.json"
+    pb = _isolated_runs_dir / f"{b['job_id']}.json"
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    os.utime(pa, (1000, 1000))
+    os.utime(pb, (2000, 2000))  # b is newer -> listed first
+
+    r = client.get("/api/train/diffusion/runs")
+    assert r.status_code == 200, r.text
+    runs = r.json()["runs"]
+    assert [x["adapter"] for x in runs] == ["second", "first"]
+    # Summaries stay light: no config / metric logs.
+    assert "config" not in runs[0] and "metric_history" not in runs[0]
+
+    r = client.get(f"/api/train/diffusion/runs/{a['job_id']}")
+    assert r.status_code == 200, r.text
+    detail = r.json()
+    assert detail["adapter"] == "first"
+    assert detail["metric_history"]["grad_norm"] == [0.2]
+    assert detail["config"] == {"train_steps": 10}
+
+    # Unknown and malformed ids 404 (malformed also covers path traversal).
+    assert client.get(f"/api/train/diffusion/runs/{'c' * 32}").status_code == 404
+    assert client.get("/api/train/diffusion/runs/not-a-job-id").status_code == 404

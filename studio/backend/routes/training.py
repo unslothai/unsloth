@@ -70,6 +70,9 @@ from models.training import (
     DiffusionMetricHistory,
     DiffusionTrainableFamily,
     DiffusionTrainingInfoResponse,
+    DiffusionTrainingRunDetail,
+    DiffusionTrainingRunsResponse,
+    DiffusionTrainingRunSummary,
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
@@ -1273,6 +1276,33 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
         grad_norm = snap.pop("metric_grad_norm", []),
     )
     return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
+
+
+@router.get("/diffusion/runs", response_model = DiffusionTrainingRunsResponse)
+async def list_diffusion_training_runs(
+    limit: int = 20, current_subject: str = Depends(get_current_subject)
+):
+    """Previous diffusion training runs (terminal), newest first, from the persisted
+    per-run records. Summaries only; fetch one run for its config + metric logs."""
+    from core.training.diffusion_training_service import list_diffusion_runs
+
+    return DiffusionTrainingRunsResponse(
+        runs = [DiffusionTrainingRunSummary(**r) for r in list_diffusion_runs(limit = limit)]
+    )
+
+
+@router.get("/diffusion/runs/{job_id}", response_model = DiffusionTrainingRunDetail)
+async def get_diffusion_training_run(
+    job_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """One persisted diffusion run's full record: summary + scrubbed start config + the
+    step/loss/grad-norm logs (for re-plotting a past run's charts)."""
+    from core.training.diffusion_training_service import get_diffusion_run
+
+    rec = get_diffusion_run(job_id)
+    if rec is None:
+        raise HTTPException(status_code = 404, detail = "No such training run.")
+    return DiffusionTrainingRunDetail(**rec)
 
 
 # Extensions accepted into an image-training dataset folder: images the trainer reads,

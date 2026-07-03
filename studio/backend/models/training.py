@@ -796,6 +796,43 @@ class DiffusionTrainingStatusResponse(BaseModel):
     metric_history: Optional[DiffusionMetricHistory] = None
 
 
+class DiffusionTrainingRunSummary(BaseModel):
+    """One persisted diffusion training run (terminal), as listed in the Train tab's
+    previous-runs history. The heavy payload (config + metric logs) lives in the detail."""
+
+    job_id: str
+    status: str
+    message: str = ""
+    adapter: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    step: int = 0
+    total_steps: int = 0
+    avg_loss: Optional[float] = None
+    # Whether this run left an adapter on disk (full completion or stop-and-save).
+    saved: bool = False
+    catalog_path: Optional[str] = None
+    instance_prompt: Optional[str] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+
+class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
+    """The full persisted record: summary + scrubbed start config + metric logs."""
+
+    loss: Optional[float] = None
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
+    num_images: Optional[int] = None
+    lora_path: Optional[str] = None
+    config: Optional[dict] = None
+    metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunsResponse(BaseModel):
+    runs: List[DiffusionTrainingRunSummary] = Field(default_factory = list)
+
+
 class DiffusionDatasetSummary(BaseModel):
     """One image-dataset folder under the Studio datasets root."""
 

@@ -362,6 +362,47 @@ export async function stopDiffusionTraining(save = true): Promise<{ status: stri
   );
 }
 
+// One persisted (terminal) diffusion training run, as listed in the previous-runs
+// history. The detail adds the scrubbed start config + the full metric logs.
+export interface DiffusionTrainingRunSummary {
+  job_id: string;
+  status: string;
+  message?: string;
+  adapter?: string | null;
+  family?: string | null;
+  base_model?: string | null;
+  step: number;
+  total_steps: number;
+  avg_loss?: number | null;
+  saved: boolean;
+  catalog_path?: string | null;
+  instance_prompt?: string | null;
+  started_at?: number | null;
+  ended_at?: number | null;
+}
+
+export interface DiffusionTrainingRunDetail extends DiffusionTrainingRunSummary {
+  loss?: number | null;
+  samples_per_second?: number | null;
+  peak_memory_gb?: number | null;
+  num_images?: number | null;
+  lora_path?: string | null;
+  config?: Record<string, unknown> | null;
+  metric_history?: DiffusionMetricHistory | null;
+}
+
+export async function listDiffusionTrainingRuns(
+  limit = 20,
+): Promise<{ runs: DiffusionTrainingRunSummary[] }> {
+  return parseJson(await authFetch(`/api/train/diffusion/runs?limit=${limit}`));
+}
+
+export async function getDiffusionTrainingRun(
+  jobId: string,
+): Promise<DiffusionTrainingRunDetail> {
+  return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
+}
+
 export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }

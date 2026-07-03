@@ -29,10 +29,14 @@ import {
   type DiffusionDatasetExample,
   type DiffusionTrainableFamily,
   type DiffusionTrainingInfo,
+  type DiffusionTrainingRunDetail,
+  type DiffusionTrainingRunSummary,
   type DiffusionTrainingStatus,
   getDiffusionTrainingInfo,
+  getDiffusionTrainingRun,
   getDiffusionTrainingStatus,
   listDiffusionDatasetExamples,
+  listDiffusionTrainingRuns,
   startDiffusionTraining,
   stopDiffusionTraining,
   uploadDiffusionDataset,
@@ -242,6 +246,10 @@ export function DiffusionTrainPanel({
 
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
+  // Persisted previous runs (terminal), listed on the idle view; selecting one loads its
+  // full record (config + metric logs) and re-plots its charts read-only.
+  const [prevRuns, setPrevRuns] = useState<DiffusionTrainingRunSummary[]>([]);
+  const [viewRun, setViewRun] = useState<DiffusionTrainingRunDetail | null>(null);
   // The confirm-stop dialog (mirrors the LLM Train tab): Continue / Stop / Stop and save.
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   // Set when the user confirms a stop; the button reads "Stopping..." until the run ends.
@@ -454,6 +462,44 @@ export function DiffusionTrainPanel({
       .filter((p): p is TrainingSeriesPoint => p.value != null);
   }, [status?.metric_history]);
 
+  // Refresh the previous-runs list whenever the service is not mid-run (on mount and
+  // right after a run terminates, when its record has just been persisted).
+  useEffect(() => {
+    if (!active) return;
+    if (status?.status === "running") return;
+    let cancelled = false;
+    listDiffusionTrainingRuns()
+      .then((r) => {
+        if (!cancelled) setPrevRuns(r.runs);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [active, status?.status]);
+
+  const openPrevRun = useCallback(async (jobId: string) => {
+    try {
+      setViewRun(await getDiffusionTrainingRun(jobId));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not load that run");
+    }
+  }, []);
+
+  // Chart series for a selected previous run (from its persisted metric logs).
+  const viewLossHistory: TrainingSeriesPoint[] = useMemo(() => {
+    const h = viewRun?.metric_history;
+    if (!h) return [];
+    return h.steps.map((step, i) => ({ step, value: h.loss[i] })).filter((p) => p.value != null);
+  }, [viewRun?.metric_history]);
+  const viewGradNormHistory: TrainingSeriesPoint[] = useMemo(() => {
+    const h = viewRun?.metric_history;
+    if (!h?.grad_norm) return [];
+    return h.steps
+      .map((step, i) => ({ step, value: h.grad_norm?.[i] ?? null }))
+      .filter((p): p is TrainingSeriesPoint => p.value != null);
+  }, [viewRun?.metric_history]);
+
   const onUpload = useCallback(async () => {
     const files = Array.from(fileInputRef.current?.files ?? []);
     if (files.length === 0) {
@@ -518,6 +564,8 @@ export function DiffusionTrainPanel({
     // read-time clamp (running && stopRequestedLocal) re-arms the moment the new run goes
     // active, rendering a permanently disabled "Stopping..." button.
     setStopRequestedLocal(false);
+    // A history view must not shadow the new live run.
+    setViewRun(null);
     try {
       await startDiffusionTraining({
         base_model: baseModel,
@@ -980,51 +1028,145 @@ export function DiffusionTrainPanel({
           />
         </div>
 
+        {/* Start lives here; Stop lives in the run card next to the live stats. */}
         <div className="mt-auto pt-2">
-          {running ? (
-            <Button
-              type="button"
-              variant="destructive"
-              className="w-full"
-              onClick={() => setStopDialogOpen(true)}
-              disabled={stopRequested}
-            >
-              {stopRequested ? "Stopping..." : "Stop training"}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              className="w-full"
-              onClick={onStart}
-              disabled={starting || uploading}
-            >
-              {starting ? "Starting..." : "Start training"}
-            </Button>
-          )}
+          <Button
+            type="button"
+            className="w-full"
+            onClick={onStart}
+            disabled={starting || uploading || running}
+          >
+            {starting ? "Starting..." : running ? "Training in progress" : "Start training"}
+          </Button>
         </div>
       </div>
 
-      {/* Right: the run area. Before a run it shows the training settings (they are set
-          once, up front); the moment a run exists the settings give way to the run view
-          (progress + live charts), and come back after "Train another". */}
+      {/* Right: the run area. Before a run it shows the training settings (set once, up
+          front) plus the previous-runs history; during/after a run the live view takes
+          over (progress with Stop, then the saved-adapter card ABOVE the charts).
+          Selecting a previous run re-plots its persisted logs read-only. */}
       <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
-        {!hasRun ? (
-          <div className="bg-card corner-squircle flex flex-col gap-4 rounded-3xl p-5 ring-1 ring-foreground/10">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-sm font-semibold">
-                <HugeiconsIcon icon={Settings02Icon} className="size-4" />
-                Training settings
-              </span>
-              <span className="text-xs text-muted-foreground">
-                Applied when you press Start training
-              </span>
+        {viewRun && !hasRun ? (
+          <>
+            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold">
+                  Previous run: {viewRun.adapter || viewRun.job_id.slice(0, 8)}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setViewRun(null)}
+                >
+                  Back
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Stat label="Status" value={viewRun.status} />
+                <Stat label="Steps" value={`${viewRun.step}/${viewRun.total_steps}`} />
+                <Stat
+                  label="Avg loss"
+                  value={viewRun.avg_loss != null ? viewRun.avg_loss.toFixed(4) : "-"}
+                />
+                <Stat
+                  label="Peak VRAM"
+                  value={
+                    viewRun.peak_memory_gb != null
+                      ? `${viewRun.peak_memory_gb.toFixed(1)} GB`
+                      : "-"
+                  }
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {viewRun.family ? `${viewRun.family} - ` : ""}
+                {viewRun.base_model || ""}
+                {viewRun.ended_at
+                  ? ` - ${new Date(viewRun.ended_at * 1000).toLocaleString()}`
+                  : ""}
+              </p>
+              {viewRun.saved && viewRun.catalog_path && (
+                <div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() =>
+                      onDeploy?.({
+                        baseRepo: viewRun.base_model || "",
+                        family: viewRun.family || "",
+                        catalogPath: viewRun.catalog_path || "",
+                        trigger: viewRun.instance_prompt || "",
+                      })
+                    }
+                  >
+                    Deploy to Create
+                  </Button>
+                </div>
+              )}
             </div>
-            {trainingSettings}
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              Once training starts, live progress and the Training Loss / Learning Rate
-              charts take over this area.
-            </p>
-          </div>
+            <DiffusionCharts
+              lossHistory={viewLossHistory}
+              gradNormHistory={viewGradNormHistory}
+            />
+          </>
+        ) : !hasRun ? (
+          <>
+            <div className="bg-card corner-squircle flex flex-col gap-4 rounded-3xl p-5 ring-1 ring-foreground/10">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-sm font-semibold">
+                  <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+                  Training settings
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Applied when you press Start training
+                </span>
+              </div>
+              {trainingSettings}
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Once training starts, live progress and the Training Loss / Gradient Norm
+                charts take over this area.
+              </p>
+            </div>
+
+            {prevRuns.length > 0 && (
+              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
+                <span className="text-sm font-semibold">Previous runs</span>
+                <div className="flex flex-col divide-y divide-border/60">
+                  {prevRuns.map((r) => (
+                    <button
+                      key={r.job_id}
+                      type="button"
+                      onClick={() => void openPrevRun(r.job_id)}
+                      className="flex items-center justify-between gap-3 rounded-md px-1 py-2 text-left text-xs transition-colors hover:bg-muted/40"
+                    >
+                      <span className="min-w-0 truncate">
+                        <span className="font-medium">
+                          {r.adapter || r.job_id.slice(0, 8)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {r.family ? ` ${r.family}` : ""} - {r.step}/{r.total_steps} steps
+                          {r.avg_loss != null ? `, avg loss ${r.avg_loss.toFixed(3)}` : ""}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        {r.saved && (
+                          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+                            adapter saved
+                          </span>
+                        )}
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {r.status}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {r.ended_at ? new Date(r.ended_at * 1000).toLocaleString() : ""}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <>
             <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
@@ -1073,40 +1215,51 @@ export function DiffusionTrainPanel({
               {status?.message && (
                 <p className="text-[11px] text-muted-foreground">{status.message}</p>
               )}
+              {running && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="w-full"
+                  onClick={() => setStopDialogOpen(true)}
+                  disabled={stopRequested}
+                >
+                  {stopRequested ? "Stopping..." : "Stop training"}
+                </Button>
+              )}
             </div>
+
+            {(completed || stoppedWithAdapter) && (
+              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
+                <span className="text-sm font-semibold">
+                  {completed ? "Adapter ready" : "Partial adapter saved"}
+                </span>
+                <p className="text-[11px] text-muted-foreground">
+                  {completed
+                    ? "Trained"
+                    : "Stopped early; the adapter as of the last finished step was saved"}
+                  {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
+                  {status?.lora_path && (
+                    <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
+                  )}
+                </p>
+                <div className="mt-1 flex gap-2">
+                  <Button type="button" size="sm" onClick={onDeployClick}>
+                    Deploy to Create
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => status && setDismissedJobId(status.job_id)}
+                  >
+                    Train another
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
           </>
-        )}
-
-        {(completed || stoppedWithAdapter) && (
-          <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
-            <span className="text-sm font-semibold">
-              {completed ? "Adapter ready" : "Partial adapter saved"}
-            </span>
-            <p className="text-[11px] text-muted-foreground">
-              {completed
-                ? "Trained"
-                : "Stopped early; the adapter as of the last finished step was saved"}
-              {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
-              {status?.lora_path && (
-                <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
-              )}
-            </p>
-            <div className="mt-1 flex gap-2">
-              <Button type="button" size="sm" onClick={onDeployClick}>
-                Deploy to Create
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() => status && setDismissedJobId(status.job_id)}
-              >
-                Train another
-              </Button>
-            </div>
-          </div>
         )}
       </div>
 
@@ -1120,10 +1273,12 @@ export function DiffusionTrainPanel({
               finishes first.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          {/* items-center + a real label on the destructive action: a bare "Stop" rendered
+              as a stubby pill between two wide ones and read as misaligned. */}
+          <AlertDialogFooter className="items-center">
             <AlertDialogCancel>Continue training</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void onStop(false)}>
-              Stop
+              Stop without saving
             </AlertDialogAction>
             <AlertDialogAction onClick={() => void onStop(true)}>
               Stop and save
