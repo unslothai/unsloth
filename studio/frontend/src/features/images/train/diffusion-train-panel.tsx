@@ -518,6 +518,10 @@ export function DiffusionTrainPanel({
     if (learningRate <= 0) return toast.error("Learning rate must be greater than 0.");
     if (lrWarmupSteps < 0) return toast.error("Warmup steps cannot be negative.");
     setStarting(true);
+    // A previous run's confirmed stop must not leak into this run: without the reset the
+    // read-time clamp (running && stopRequestedLocal) re-arms the moment the new run goes
+    // active, rendering a permanently disabled "Stopping..." button.
+    setStopRequestedLocal(false);
     try {
       await startDiffusionTraining({
         base_model: baseModel,
