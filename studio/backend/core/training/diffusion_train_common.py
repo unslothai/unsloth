@@ -335,9 +335,7 @@ class DiffusionLoraConfig:
             raise ValueError("compile_transformer must be one of off / on / auto")
         base_precision = str(self.base_precision or "nf4").strip().lower()
         if base_precision not in ("nf4", "bf16", "int8", "fp8", "mxfp8", "auto"):
-            raise ValueError(
-                "base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto"
-            )
+            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto")
         if base_precision in ("bf16", "int8", "fp8", "mxfp8"):
             if repo_is_prequantized(self.base_model):
                 raise ValueError(
