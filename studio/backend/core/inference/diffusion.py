@@ -181,26 +181,47 @@ def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
     return img
 
 
+# A small allowlist of well-known official base repos that may load as a full
+# (non-GGUF) pipeline even though they are not under ``unsloth/``. These are
+# safetensors-only checkpoints from their original publisher (no pickle, no remote
+# code) that some architectures require: SDXL ships only as a full pipeline and has
+# no unsloth-hosted GGUF, so without this its curated catalog entry could not load.
+# Exact-match, lowercased, so it cannot be widened by a typo-squat. Extend
+# deliberately, and never add a repo that carries pickled weights or remote code.
+# The SDXL refiner is intentionally NOT here: it is an img2img-only refiner pipeline
+# (StableDiffusionXLImg2ImgPipeline), but this backend loads every ``sdxl`` repo as the
+# base txt2img StableDiffusionXLPipeline and advertises txt2img, so allowlisting the
+# refiner would surface the wrong workflow and call it without its required input image.
+_TRUSTED_NON_GGUF_REPOS = frozenset(
+    {
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        "stabilityai/sdxl-turbo",
+    }
+)
+
+
 def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     """Whether a NON-GGUF load is allowed for ``repo_id``.
 
     Making ``gguf_filename`` optional opens a ``from_pretrained`` / ``from_single_file``
     on an arbitrary repo, which fetches and deserialises third-party weights. So the
-    non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models) and
-    to local paths the user explicitly pointed at (already on their disk). The GGUF path
-    is unchanged and stays open to any repo, as before.
+    non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models),
+    a short allowlist of official safetensors-only base repos (``_TRUSTED_NON_GGUF_REPOS``,
+    e.g. the SDXL base), and local paths the user explicitly pointed at (already on their
+    disk). The GGUF path is unchanged and stays open to any repo, as before.
 
     A bare ``owner/name`` HF id is never a real filesystem path, and an id with invalid
     characters makes ``Path.exists()`` raise OSError; treat any such failure as "not a
-    local path" so the trust decision falls through to the unsloth/ check (the loader's
-    validate_load_request raises the clear FileNotFoundError for a genuinely missing
-    local pick)."""
+    local path" so the trust decision falls through to the org/allowlist checks (the
+    loader's validate_load_request raises the clear FileNotFoundError for a genuinely
+    missing local pick)."""
     try:
         if Path(repo_id).expanduser().exists():
             return True
     except OSError:
         pass
-    return repo_id.strip().lower().startswith("unsloth/")
+    rid = repo_id.strip().lower()
+    return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
 @dataclass(frozen = True)
@@ -450,6 +471,16 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
+        # A GGUF load builds a transformer-only file via the generic GGUF branch
+        # (UNet2DConditionModel.from_single_file(subfolder="transformer", GGUFQuantizationConfig)).
+        # Families whose single file IS the whole pipeline (SDXL) have no transformer-only
+        # GGUF path, so reject GGUF here -- before the route evicts the current model and
+        # the background load fails deep in from_single_file.
+        if kind == "gguf" and fam.single_file_is_pipeline:
+            raise ValueError(
+                f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
+                f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+            )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
         # weights, so an arbitrary remote repo is rejected here, before any work.
@@ -614,6 +645,7 @@ class DiffusionBackend:
                 base,
                 kwargs.get("hf_token"),
                 kind = kind,
+                single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
                 # The dense transformer-quant path downloads the base repo's
                 # transformer/ shards via from_pretrained(subfolder="transformer")
                 # INSIDE the locked finalize phase, where unload/cancellation cannot
@@ -700,6 +732,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         *,
         kind: str = "gguf",
+        single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
@@ -708,7 +741,9 @@ class DiffusionBackend:
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
         single-file paths, where the transformer is the single file and the base repo
-        supplies only the companions."""
+        supplies only the companions. For a ``single_file_is_pipeline`` family (SDXL) the
+        single file is the WHOLE pipeline, so the base repo supplies only config/tokenizer
+        (no weights) and its weight files are skipped."""
         from huggingface_hub import HfApi
 
         api = HfApi()
@@ -717,10 +752,19 @@ class DiffusionBackend:
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                for s in info.siblings:
-                    if _pipeline_file_downloaded(s.rfilename):
-                        base_files.append(s.rfilename)
-                        total += s.size or 0
+                picked = [s for s in info.siblings if _pipeline_file_downloaded(s.rfilename)]
+                # diffusers prefers safetensors per component: drop a .bin whose
+                # directory also carries a picked .safetensors weight.
+                st_dirs = {
+                    s.rfilename.rsplit("/", 1)[0]
+                    for s in picked
+                    if s.rfilename.endswith(".safetensors")
+                }
+                for s in picked:
+                    if s.rfilename.endswith(".bin") and s.rfilename.rsplit("/", 1)[0] in st_dirs:
+                        continue
+                    base_files.append(s.rfilename)
+                    total += s.size or 0
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info(repo_id) would
             # raise on a filesystem path and (caught below) skip the base-repo lookup too,
@@ -729,9 +773,18 @@ class DiffusionBackend:
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
+            # A whole-pipeline single file (SDXL) needs only the base repo's config/tokenizer,
+            # not its (unused, multi-GB) weight files.
+            if kind == "single_file" and single_file_is_pipeline:
+                base_filter = _base_config_file_downloaded
+            else:
+
+                def base_filter(rfilename: str) -> bool:
+                    return _base_file_downloaded(rfilename, include_transformer = include_transformer)
+
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             for s in base_info.siblings:
-                if _base_file_downloaded(s.rfilename, include_transformer = include_transformer):
+                if base_filter(s.rfilename):
                     base_files.append(s.rfilename)
                     total += s.size or 0
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
@@ -815,6 +868,13 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
+        # A blank / whitespace-only token must degrade to anonymous access, not be passed
+        # as an explicit credential (from_single_file / from_pretrained / the Hub client
+        # can error on a malformed token instead of falling back). Normalize once here so
+        # every load branch and the size estimate below use a real token or None.
+        hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
+        hf_token = hf_token or None
+
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
         # family fails with ValueError even in a no-diffusers runtime. Sanitize the
         # token here too (direct callers bypass begin_load): a blank string must
@@ -941,6 +1001,16 @@ class DiffusionBackend:
                         if hf_token:
                             pipe_kwargs["token"] = hf_token
                         pipe = pipeline_cls.from_pretrained(repo_id, **pipe_kwargs)
+                    elif kind == "single_file" and fam.single_file_is_pipeline:
+                        # A single-file SDXL-style checkpoint is the WHOLE pipeline
+                        # (U-Net + VAE + both text encoders), not a transformer-only file,
+                        # so load it through the pipeline class. ``config`` points at the
+                        # base repo so diffusers builds the correct structure/scheduler
+                        # around the single-file weights instead of guessing from the file.
+                        sf_pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "config": base}
+                        if hf_token:
+                            sf_pipe_kwargs["token"] = hf_token
+                        pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
                     else:
                         # Single-file transformer; the VAE / text-encoder / scheduler come
                         # from the base diffusers repo (the single file is transformer-only).
@@ -1453,23 +1523,33 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
-    def _align_vae_dtype(pipe: Any) -> None:
-        """Cast the VAE to the transformer's compute dtype before an image-conditioned
+    def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
+        """Cast the VAE to the denoiser's compute dtype before an image-conditioned
         call. The img2img/inpaint pipelines VAE-encode the input image at the text-
         encoder dtype (bf16), but a prior txt2img DECODE may have left the shared VAE
         upcast to fp32 (its ``force_upcast`` path), so the encode would mismatch
         (bf16 image vs fp32 VAE). Re-aligning here is safe: our families run bf16 or
         fp32 only (the fp16 guard promotes fp16), and a later txt2img decode re-upcasts
-        as needed. Best-effort; a no-op when already aligned."""
-        transformer = getattr(pipe, "transformer", None)
+        as needed. ``denoiser_attr`` is ``pipe.transformer`` for DiT families and
+        ``pipe.unet`` for SDXL. Best-effort; a no-op when already aligned."""
+        denoiser = getattr(pipe, denoiser_attr, None)
         vae = getattr(pipe, "vae", None)
-        if transformer is None or vae is None:
+        if denoiser is None or vae is None:
             return
         try:
-            target_dtype = transformer.dtype
+            # Read the dtype from the parameters (not denoiser.dtype): a plain nn.Module
+            # has no .dtype, and a torch.compile'd / wrapped denoiser can obscure it. Take
+            # the first FLOATING dtype: a GGUF-quantized transformer's leading params are
+            # packed uint8 storage, and nn.Module.to() rejects integer dtypes outright.
+            target_dtype = next(
+                (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
+                None,
+            )
+            if target_dtype is None:
+                return
             if next(vae.parameters()).dtype != target_dtype:
                 vae.to(dtype = target_dtype)
-        except (StopIteration, AttributeError, RuntimeError):
+        except (StopIteration, AttributeError, RuntimeError, TypeError):
             pass
 
     def _apply_loras(
@@ -1804,7 +1884,8 @@ class DiffusionBackend:
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
-                    self._align_vae_dtype(pipe)
+                    # state.family is always a DiffusionFamily, which defines denoiser_attr.
+                    self._align_vae_dtype(pipe, state.family.denoiser_attr)
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the
                 # input image and may reject width/height; a distilled pipe may take no
@@ -2168,17 +2249,57 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     return not rfilename.startswith("assets/")
 
 
+# Weight file extensions the base repo need NOT supply when the single file is the whole
+# pipeline (SDXL): from_single_file(config=base) reads only the base repo's structure
+# (config/tokenizer/scheduler) and takes the weights from the single file.
+_BASE_WEIGHT_EXTS = (
+    ".safetensors",
+    ".bin",
+    ".ckpt",
+    ".pt",
+    ".pth",
+    ".gguf",
+    ".onnx",
+    ".onnx_data",
+    ".msgpack",
+    ".h5",
+    ".pb",
+)
+
+
+def _base_config_file_downloaded(rfilename: str) -> bool:
+    """True for base-repo files needed to BUILD a pipeline structure around a whole-pipeline
+    single file WITHOUT its weights: config / tokenizer / scheduler JSON, but no weight
+    tensors (the single file supplies those). Used for ``single_file_is_pipeline`` families."""
+    if not _base_file_downloaded(rfilename):
+        return False
+    return not rfilename.lower().endswith(_BASE_WEIGHT_EXTS)
+
+
 def _pipeline_file_downloaded(rfilename: str) -> bool:
     """True for files a full-pipeline ``from_pretrained`` fetches.
 
     Like ``_base_file_downloaded`` but for the ``pipeline`` kind, where the repo
     supplies its OWN transformer weights, so the ``transformer/`` subfolder is kept.
-    Top-level docs (README/PDF/images) and ``assets/`` are still skipped so the
-    progress estimate matches what actually lands on disk.
+    Top-level docs (README/PDF/images) and ``assets/`` are skipped, and so are
+    artifacts the torch loader never touches -- ONNX / OpenVINO / Flax exports and
+    dtype-variant twins (``*.fp16.safetensors``: the loader requests the default
+    variant) -- so an official repo that ships many formats (e.g. SDXL Base) does
+    not prefetch tens of GB it will not load.
     """
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
         return rfilename == "model_index.json"
-    return not rfilename.startswith("assets/")
+    lower = rfilename.lower()
+    if lower.startswith(("assets/", "onnx/", "openvino/")):
+        return False
+    name = lower.rsplit("/", 1)[1]
+    if name.startswith(("openvino_", "flax_")):
+        return False
+    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5", ".ckpt")):
+        return False
+    if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
+        return False
+    return True
 
 
 def _progress(

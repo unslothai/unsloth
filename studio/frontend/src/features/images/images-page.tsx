@@ -90,8 +90,9 @@ const editGguf = (id: string, name: string): ModelOption => ({
 // How to load a curated non-GGUF (safetensors) model. "pipeline" = a full diffusers
 // repo (from_pretrained, embedded bnb-4bit quant auto-applied); "single_file" = a
 // single safetensors transformer (e.g. fp8) assembled onto its base repo. The backend
-// gates these to unsloth/* repos. Keyed by repo id so the load handler knows the kind
-// (and, for single_file, the exact filename).
+// gates these to unsloth/* repos plus a short allowlist of official base repos (SDXL).
+// Keyed by repo id so the load handler knows the kind (and, for single_file, the exact
+// filename).
 type SafetensorsSpec = { kind: "pipeline" | "single_file"; filename?: string };
 const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
   "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
@@ -100,6 +101,10 @@ const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
     kind: "single_file",
     filename: "qwen-image-2512-fp8.safetensors",
   },
+  // SDXL is a U-Net family loaded as a whole pipeline (from_pretrained). These
+  // official base repos are on the backend's non-GGUF allowlist.
+  "stabilityai/sdxl-turbo": { kind: "pipeline" },
+  "stabilityai/stable-diffusion-xl-base-1.0": { kind: "pipeline" },
 };
 // Curated non-GGUF picker entries (isGguf:false -> no quant expander, direct load).
 const safetensors = (id: string, name: string, label: string): ModelOption => ({
@@ -134,6 +139,12 @@ const MODELS: ModelOption[] = [
     "unsloth/Qwen-Image-2512-FP8",
     "Qwen-Image 2512 (FP8)",
     "Safetensors · fp8",
+  ),
+  safetensors("stabilityai/sdxl-turbo", "SDXL Turbo", "Safetensors · SDXL"),
+  safetensors(
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    "SDXL Base 1.0",
+    "Safetensors · SDXL",
   ),
 ];
 
@@ -204,6 +215,11 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "flux.2-dev", steps: 28, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
+  // SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
+  // real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
+  { match: "sdxl-turbo", steps: 3, guidance: 0 },
+  { match: "stable-diffusion-xl", steps: 30, guidance: 7 },
+  { match: "sdxl", steps: 30, guidance: 7 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {

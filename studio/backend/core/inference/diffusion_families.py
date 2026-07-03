@@ -37,6 +37,18 @@ class DiffusionFamily:
     # Pipeline kwarg carrying the guidance value. Most use "guidance_scale";
     # Qwen-Image's distilled guidance is off, so its real CFG is "true_cfg_scale".
     cfg_kwarg: str = "guidance_scale"
+    # The pipe attribute holding the denoiser module. DiT families expose it as
+    # ``pipe.transformer`` (the default); U-Net families (SDXL) as ``pipe.unet``.
+    # Read wherever the backend touches the denoiser generically (VAE dtype
+    # alignment, optimisation guards), so a U-Net family works without assuming a
+    # ``transformer`` attribute exists.
+    denoiser_attr: str = "transformer"
+    # True when a single-file ``.safetensors`` checkpoint is the WHOLE pipeline
+    # (U-Net + VAE + text encoders), not a transformer-only file. SDXL ships this
+    # way, so the loader calls ``pipeline_class.from_single_file`` on it directly
+    # rather than ``transformer_class.from_single_file`` + a companion base repo.
+    # DiT families leave this False (their single file is transformer-only).
+    single_file_is_pipeline: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows. The backend
     # builds these around the ALREADY-loaded transformer/VAE/text-encoder via
     # ``Pipeline.from_pipe`` (no extra weights, no reload), so a family only needs the
@@ -250,6 +262,30 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_text_encoders = (
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
         ),
+    ),
+    # SDXL is the one U-Net family here: the denoiser is ``pipe.unet``
+    # (UNet2DConditionModel), not a DiT ``pipe.transformer``, and a single-file
+    # ``.safetensors`` is the WHOLE pipeline rather than a transformer-only file.
+    # So it declares ``denoiser_attr = "unet"`` + ``single_file_is_pipeline = True``
+    # and loads via the pipeline class (from_pretrained for a repo, from_single_file
+    # for a single .safetensors). The base repo supplies both CLIP text encoders,
+    # the VAE and the scheduler on the pipeline path. img2img / inpaint / ControlNet
+    # are the standard SDXL pipelines, built around the resident modules via
+    # from_pipe like every other family. There is no GGUF/single-file transformer
+    # path for SDXL (the whole checkpoint is one file), and no native sd.cpp mapping
+    # yet, so the no-GPU route falls back to diffusers.
+    DiffusionFamily(
+        name = "sdxl",
+        pipeline_class = "StableDiffusionXLPipeline",
+        transformer_class = "UNet2DConditionModel",
+        base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
+        aliases = ("stable-diffusion-xl", "sd-xl", "sd_xl", "sdxl-turbo", "sdxl-base"),
+        denoiser_attr = "unet",
+        single_file_is_pipeline = True,
+        img2img_pipeline_class = "StableDiffusionXLImg2ImgPipeline",
+        inpaint_pipeline_class = "StableDiffusionXLInpaintPipeline",
+        controlnet_pipeline_class = "StableDiffusionXLControlNetPipeline",
+        controlnet_model_class = "ControlNetModel",
     ),
 )
 
