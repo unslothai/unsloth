@@ -71,7 +71,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
         if not adapter_cfg_path.exists():
             return True
 
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
 
         training_method = adapter_cfg.get("unsloth_training_method")

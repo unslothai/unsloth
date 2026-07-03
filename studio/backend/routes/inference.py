@@ -19,6 +19,7 @@ import httpx
 from loggers import get_logger
 import asyncio
 import threading
+import weakref
 
 
 import re as _re
@@ -2266,6 +2267,411 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
 
 
+# Serializes opt-in auto-switch loads so two requests can't race a swap. One
+# lock per running loop, since a module-level asyncio.Lock binds to a single
+# loop and breaks multi-loop runners (e.g. pytest's per-test loops on pre-3.10).
+_auto_switch_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_auto_switch_locks_guard = threading.Lock()
+
+
+def _auto_switch_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    # WeakKeyDictionary mutation isn't thread-safe; guard get-or-create so two
+    # loops on different threads can't race it.
+    with _auto_switch_locks_guard:
+        lock = _auto_switch_locks.get(loop)
+        if lock is None:
+            lock = _auto_switch_locks[loop] = asyncio.Lock()
+        return lock
+
+
+# Process-wide gate so a swap on another event loop in this process can't race
+# this one for the single model slot: the asyncio lock above is per loop, but the
+# backend slot and _load_model_impl are process-wide. threading.Lock so it serializes
+# across loops/threads; released from the loop thread (Lock allows cross-thread release).
+_auto_switch_process_lock = threading.Lock()
+
+
+async def _acquire_swap_gate() -> None:
+    # Non-blocking first for the common single-loop case; otherwise poll off a
+    # short sleep rather than awaiting to_thread(acquire). A cancelled to_thread
+    # (client disconnect mid-wait) leaves its worker thread still acquiring, so the
+    # gate gets taken but the finally that releases it never runs -- deadlocking
+    # later swaps. Polling keeps the wait off this loop AND cancellation-safe: a
+    # cancel lands during the sleep, when the gate is not held.
+    while not _auto_switch_process_lock.acquire(blocking = False):
+        await asyncio.sleep(0.02)
+
+
+# Counts in-flight auto-switch requests per (target, variant). The busy guard
+# subtracts same-target waiters so concurrent requests for one model load once
+# instead of each 409-ing the other.
+_auto_switch_waiters: dict[tuple[str, str], int] = {}
+_auto_switch_waiters_guard = threading.Lock()
+
+
+def _switch_key(override_id: str, variant: Optional[str]) -> tuple[str, str]:
+    return (override_id.lower(), (variant or "").lower())
+
+
+def _note_switch_waiter(key: tuple[str, str], delta: int) -> None:
+    with _auto_switch_waiters_guard:
+        n = _auto_switch_waiters.get(key, 0) + delta
+        if n > 0:
+            _auto_switch_waiters[key] = n
+        else:
+            _auto_switch_waiters.pop(key, None)
+
+
+def _same_target_waiters(key: tuple[str, str]) -> int:
+    with _auto_switch_waiters_guard:
+        return _auto_switch_waiters.get(key, 0)
+
+
+# A second waiter map keyed by the raw requested model, registered before the
+# (slow) resolve. The middleware counts a concurrent same-model request as
+# in-flight before it resolves and joins _auto_switch_waiters, so without this
+# the first request would see it as an unrelated request and 409.
+_auto_switch_request_waiters: dict[str, int] = {}
+_auto_switch_request_waiters_guard = threading.Lock()
+
+
+def _request_waiter_key(requested_model: str) -> str:
+    return requested_model.strip().lower()
+
+
+def _note_request_waiter(key: str, delta: int) -> None:
+    with _auto_switch_request_waiters_guard:
+        n = _auto_switch_request_waiters.get(key, 0) + delta
+        if n > 0:
+            _auto_switch_request_waiters[key] = n
+        else:
+            _auto_switch_request_waiters.pop(key, None)
+
+
+def _same_request_waiters(key: str) -> int:
+    with _auto_switch_request_waiters_guard:
+        return _auto_switch_request_waiters.get(key, 0)
+
+
+def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
+    """The id to report for the loaded GGUF in API responses: the advertised repo
+    id from an auto-switch load, else the cleaned public id, never the on-disk
+    .gguf path (see core.inference.model_ids.public_model_id)."""
+    return (
+        getattr(llama_backend, "_openai_advertised_id", None)
+        or public_model_id(getattr(llama_backend, "model_identifier", None))
+        or public_model_id(fallback)
+        or fallback
+    )
+
+
+_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
+# Sentinel a raw-body endpoint passes when the request omits ``model``: it must
+# only restore an idle-freed model, never run the resolver (so a downloaded GGUF
+# literally named "default" can't be swapped to). The NUL keeps it off any index.
+_RELOAD_ONLY_MODEL = "\x00reload-only"
+
+
+def _switch_model_for_payload(payload) -> str:
+    # A pydantic request fills an omitted ``model`` with "default"; only an
+    # explicitly set model may switch, else reload-only so a GGUF named "default"
+    # is never matched (mirrors the raw-body sentinel path).
+    return payload.model if "model" in payload.model_fields_set else _RELOAD_ONLY_MODEL
+
+
+def _target_is_vision(load_path: str) -> bool:
+    # A local GGUF's vision capability is its companion mmproj, a filesystem check
+    # (no model load). Matches the loaded backend's is_vision, so rejecting a swap
+    # here can't differ from the post-load guard. Thread the ambient HF token so the
+    # probe keeps the capability-probe invariant (the resolver only yields local
+    # paths, where the token is unused, but the rule requires it regardless).
+    from utils.models.model_config import is_vision_model
+    try:
+        return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
+    except Exception as exc:
+        # Detection failure: don't block the swap, let the load decide.
+        logger.debug("auto-switch: vision probe failed for %s: %s", load_path, exc)
+        return True
+
+
+def _messages_have_image(messages) -> bool:
+    return any(
+        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    )
+
+
+def _request_has_image(payload) -> bool:
+    if getattr(payload, "image_base64", None):
+        return True
+    return _messages_have_image(payload.messages)
+
+
+def _anthropic_request_has_image(payload) -> bool:
+    # Mirror anthropic_messages_to_openai: an Anthropic image block carries
+    # ``type == "image"`` (typed AnthropicImageBlock or a raw dict).
+    for msg in getattr(payload, "messages", None) or []:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            bt = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if bt == "image":
+                return True
+    return False
+
+
+def disable_openai_auto_switch_for_request(scope) -> None:
+    """Opt a request out of OpenAI auto-switch. The public preview route uses this:
+    it always serves its pinned checkpoint, so a caller-supplied model must never
+    swap the loaded model."""
+    if isinstance(scope, dict):
+        scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
+
+
+def _automatic_model_load_may_run() -> bool:
+    """True when a request can trigger an automatic load: either resolver-based
+    auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
+    validate-before-switch guards key off this so an invalid request never loads."""
+    from utils.openai_auto_switch_settings import (
+        get_openai_auto_switch_enabled,
+        get_auto_unload_idle_seconds,
+    )
+    return get_openai_auto_switch_enabled() or get_auto_unload_idle_seconds() > 0
+
+
+async def _maybe_auto_switch_model(
+    requested_model: Optional[str],
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    require_vision: bool = False,
+) -> None:
+    """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
+
+    No-op unless enabled and ``requested_model`` resolves to a downloaded local
+    model different from the loaded one. Unknown names fall through (drop-in
+    compat) and no remote download is triggered. ``require_vision`` rejects a swap
+    to a text-only target before it runs, so an image request can't evict the
+    resident vision model only to 400 afterwards.
+    """
+    from utils.openai_auto_switch_settings import (
+        get_openai_auto_switch_enabled,
+        get_auto_unload_idle_seconds,
+        get_model_override,
+    )
+    from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.llama_keepwarm import (
+        get_last_unloaded_model,
+        other_inference_request_count,
+        inference_lifecycle_gate,
+    )
+
+    # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
+    # absent so it falls through instead of raising in the membership checks below.
+    if not isinstance(requested_model, str) or not requested_model:
+        return
+    # The public preview route opts out so a caller cannot switch away from the
+    # pinned preview checkpoint it just loaded.
+    scope = getattr(fastapi_request, "scope", None)
+    if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
+        return
+    auto_switch_on = get_openai_auto_switch_enabled()
+    # The reload-stash path also runs when idle-unload is active on its own (a
+    # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
+    # loop freed is restored on the next request. The resolver-based switch still
+    # requires the auto-switch toggle.
+    if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+        return
+
+    # Register by the raw requested model before resolving (which can be slow):
+    # the middleware already counts a concurrent same-model request as in-flight,
+    # so the busy guard must know it shares this target even while it resolves.
+    request_key = _request_waiter_key(requested_model)
+    _note_request_waiter(request_key, 1)
+    try:
+        # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
+        # With auto-switch off (or an omitted-model reload-only request), skip the
+        # resolve so only the reload-stash path runs and no name is ever matched.
+        reload_only = requested_model == _RELOAD_ONLY_MODEL
+        resolved = (
+            await asyncio.to_thread(resolve_local_gguf, requested_model)
+            if auto_switch_on and not reload_only
+            else None
+        )
+        if resolved is None:
+            # Idle-unload may have freed the model; reload exactly what it freed
+            # (path + quant + advertised id) so an alias/unknown name stays servable
+            # and keeps the override keyed by the advertised id, not the load path.
+            last = get_last_unloaded_model()
+            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
+            # leaves the GGUF slot empty but is the live model, so don't resurrect
+            # the stale GGUF over it (that load would tear the active model down).
+            if (
+                not last
+                or get_llama_cpp_backend().is_loaded
+                or getattr(get_inference_backend(), "active_model_name", None)
+            ):
+                return
+            if len(last) == 3:
+                target_id, variant, override_id = last
+            else:  # pre-3-tuple stash: fall back to the path as the override key
+                target_id, variant = last
+                override_id = target_id
+        else:
+            # load_path is a concrete local path (never the bare repo id), so /load
+            # takes the local branch and cannot trigger a download. override_id is the
+            # advertised repo id, the launch-override key and the public model id.
+            target_id, variant, override_id = resolved
+        backend = get_llama_cpp_backend()
+        # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
+        # repo, so it never reloads a different local quant that already serves it.
+        bare = ":" not in requested_model
+
+        def _already_serving() -> bool:
+            # Match against both the concrete load path and the advertised repo id,
+            # so a model loaded manually by repo id (identifier = repo id) and one
+            # loaded by auto-switch (identifier = path, advertised = repo id) both
+            # count as already serving rather than triggering a needless reswap.
+            if not backend.is_loaded or not backend.model_identifier:
+                return False
+            loaded_keys = {backend.model_identifier.lower()}
+            advertised = getattr(backend, "_openai_advertised_id", None)
+            if advertised:
+                loaded_keys.add(advertised.lower())
+            if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+                return False
+            if bare:
+                return True
+            if variant:
+                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+                return loaded_variant == variant.lower()
+            return True
+
+        def _record_serving_alias() -> None:
+            # When an advertised alias already resolves to the loaded model (e.g. a
+            # model loaded by local path, requested by its repo/LM Studio id), record
+            # the alias as the public id so /v1/models and responses report it (and
+            # mark it loaded) instead of the path-derived basename. Resolver branch
+            # only: the reload-stash override_id can be the bare path, not a repo id.
+            # Lock-free is safe here: an in-flight request blocks any concurrent swap
+            # (single-slot busy guard), so the loaded model can't change under this.
+            if resolved is None or not override_id:
+                return
+            b = get_llama_cpp_backend()
+            if getattr(b, "_openai_advertised_id", None) != override_id:
+                b._openai_advertised_id = override_id
+
+        if _already_serving():
+            _record_serving_alias()
+            return
+        # An image/audio request naming a different text-only GGUF would load it
+        # here and only 400 below, evicting the working model. Reject before the
+        # swap. Only the resolver branch (an explicit new target); the reload-stash
+        # path just restores the model the request was already using. Both vision and
+        # audio input come from a companion mmproj (a filesystem probe) -- run it off
+        # the loop, like the resolver above.
+        if (
+            require_vision
+            and resolved is not None
+            and not await asyncio.to_thread(_target_is_vision, target_id)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "The requested model does not support the image or audio input in this request.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "model",
+                ),
+            )
+        key = _switch_key(override_id, variant)
+        _note_switch_waiter(key, 1)
+        try:
+            async with _auto_switch_lock():
+                # The asyncio lock is per loop; add a process-wide gate so a swap on
+                # another loop in this process can't race the single slot.
+                await _acquire_swap_gate()
+                try:
+                    # Hold the keep-warm gate across the swap so no new inference can
+                    # start on the model while it is being torn down and replaced.
+                    async with inference_lifecycle_gate():
+                        if _already_serving():
+                            _record_serving_alias()
+                            return
+                        # Single slot: refuse a cross-model swap while another inference
+                        # request is active rather than killing its response. Requests
+                        # heading to this same target (by resolved id or raw name) are
+                        # excluded, so concurrent requests for one model load once. A
+                        # pending request is still in the middleware, not generating, so
+                        # it is not counted here.
+                        same_others = max(
+                            _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
+                        )
+                        others = other_inference_request_count(
+                            current_request_counted = True, include_pending = False
+                        )
+                        # Not gated on the GGUF being loaded: _load_model_impl also
+                        # tears down an active Unsloth backend before loading a GGUF,
+                        # so refuse whenever any other inference request is in flight.
+                        if others > same_others:
+                            raise HTTPException(
+                                status_code = 409,
+                                detail = openai_error_body(
+                                    "Cannot switch models while another inference request is in progress.",
+                                    status = 409,
+                                    code = "model_switch_busy",
+                                    param = "model",
+                                ),
+                            )
+                        # Apply this model's saved launch flags so the swap honors the config.
+                        override = get_model_override(override_id)
+                        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                        if override.get("llama_extra_args") is not None:
+                            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+                        if override.get("max_seq_length") is not None:
+                            load_kwargs["max_seq_length"] = override["max_seq_length"]
+                        # Reuse the load impl so its dedup, tensor fallback, and threading
+                        # apply. Call the impl directly: we already hold the lifecycle gate
+                        # the /load route would otherwise take, so the route would deadlock.
+                        await _load_model_impl(
+                            LoadRequest(**load_kwargs),
+                            fastapi_request,
+                            current_subject,
+                        )
+                        # Advertise the repo id (not the concrete load path) as the loaded
+                        # model's public id and override key for /v1/models and idle stash.
+                        get_llama_cpp_backend()._openai_advertised_id = override_id
+                finally:
+                    _auto_switch_process_lock.release()
+        finally:
+            _note_switch_waiter(key, -1)
+    finally:
+        _note_request_waiter(request_key, -1)
+
+
+async def _auto_switch_from_request_body(request: Request, current_subject: str):
+    """Run auto-switch from a raw-body endpoint's ``model`` without changing its
+    pre-feature status codes: a malformed/non-dict body yields no model (so an
+    unloaded backend still 503s, not 500), and the caller re-reads to surface the
+    original parse error after the loaded-state check. Returns the parsed body, or
+    None if it could not be parsed."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(body, dict):
+        # A raw-body client may omit ``model`` and rely on the loaded backend. Pass
+        # a reload-only sentinel so the idle-stash reload still runs (an idle-freed
+        # model is restored) without the resolver ever matching a real name.
+        model = body.get("model") or _RELOAD_ONLY_MODEL
+    else:
+        model = None
+    await _maybe_auto_switch_model(model, request, current_subject)
+    return body
+
+
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
     16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
@@ -2508,6 +2914,15 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    # Hold the lifecycle gate across the load so idle auto-unload can't unload the
+    # model mid-load. Auto-switch calls _load_model_impl directly since it already
+    # holds this gate.
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    async with inference_lifecycle_gate():
+        return await _load_model_impl(request, fastapi_request, current_subject)
+
+
+async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     native_grant_backed = False
@@ -2932,6 +3347,13 @@ async def load_model(
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
+            # Clear any idle-unload reload stash now, not only on the next poll.
+            from core.inference.llama_keepwarm import note_model_loaded
+
+            note_model_loaded()
+            # A plain load advertises its own identifier; auto-switch overwrites
+            # this with the repo id right after _load_model_impl returns.
+            llama_backend._openai_advertised_id = None
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type
@@ -3033,6 +3455,13 @@ async def load_model(
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
         )
+        # Clear any idle-unload reload stash: a manual load supersedes an idle-freed
+        # GGUF, so the next /v1 request must not resurrect it. Mirror the GGUF branch
+        # above; without this a non-GGUF load leaves a stale stash until the idle
+        # poll clears it (and never, while idle-unload is off).
+        from core.inference.llama_keepwarm import note_model_loaded
+
+        note_model_loaded()
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)
@@ -3366,6 +3795,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
+    # A deliberate unload means "stay unloaded": drop any idle reload stash so the
+    # next /v1 request can't resurrect this model. The idle loop unloads via the
+    # backend directly (not this route), so clearing here never fights keep-warm.
+    from core.inference.llama_keepwarm import note_model_unloaded
     try:
         # Check if the GGUF backend has this model loaded or is loading it.
         llama_backend = get_llama_cpp_backend()
@@ -3374,13 +3807,17 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
             or not llama_backend.is_loaded
         ):
+            # A manual unload is a deliberate user action: tear down now even if a
+            # request is mid-stream (only the automatic idle loop defers to it).
             llama_backend.unload_model()
+            note_model_unloaded()
             logger.info(f"Unloaded GGUF model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
         # Otherwise, unload from Unsloth backend
         backend = get_inference_backend()
         backend.unload_model(request.model_path)
+        note_model_unloaded()
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -3789,10 +4226,25 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
 
+    # Restore an idle-evicted GGUF before selecting a backend: this path is
+    # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
+    # unload an audio GGUF the next request then failed to restore. Validation
+    # above ran first, so an invalid request never triggers a reload.
+    #
+    # Reload-only on purpose: a local GGUF's audio-input capability is not a cheap
+    # pre-load probe (the companion mmproj signal can't tell an audio projector
+    # from a vision one, and codec-based TTS ships no projector at all), so passing
+    # the client model through the resolver could load a text- or vision-only target
+    # and evict the working audio model before the audio backend check fails. Only
+    # the idle-stash restore runs here; switching TTS models is an explicit /load.
+    await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
+
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
-        model_name = public_model_id(llama_backend.model_identifier)
+        # Advertised repo id after an auto-switch load, else a clean public id,
+        # never the absolute .gguf path.
+        model_name = _llama_public_model_id(llama_backend)
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -4818,6 +5270,12 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        # External provider: this request won't touch the local GGUF, so drop it
+        # from the keep-warm count or its in-flight stream would falsely block a
+        # concurrent local auto-switch with model_switch_busy.
+        from core.inference.llama_keepwarm import untrack_current_request
+
+        untrack_current_request(request.scope)
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).
         if (
@@ -4870,6 +5328,95 @@ async def openai_chat_completions(
                         param = "tools",
                     ),
                 )
+
+    # Reject a system-only chat before any automatic load so an invalid request
+    # never swaps or reloads the resident model (as /responses and /messages
+    # already validate before switching). Gate on every automatic-load trigger,
+    # not just auto-switch, since a standalone idle TTL can also reload here.
+    # Parse once and reuse below.
+    _pre_parsed = None
+    _needs_vision = False
+    if _automatic_model_load_may_run():
+        _pre_parsed = _extract_content_parts(payload.messages)
+        if not _pre_parsed[1]:
+            raise HTTPException(
+                status_code = 400, detail = "At least one non-system message is required."
+            )
+        # Reject confirm-without-stream local tool requests before the switch: the
+        # local tool path requires stream=true for the confirm gate, so this shape
+        # is invalid and must not evict the resident model first. Mirror that path's
+        # enablement exactly (_effective_enable_tools honors a CLI --enable-tools
+        # policy hard-override; mcp_enabled opens the tool loop on its own but still
+        # defers to a CLI --disable-tools policy), or an mcp_enabled/policy-forced
+        # request would slip past this guard and only 400 after the swap.
+        from state.tool_policy import get_tool_policy as _get_confirm_tool_policy
+
+        _confirm_cli_policy = _get_confirm_tool_policy()
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and not payload.stream
+            and (
+                _effective_enable_tools(payload)
+                or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
+        # Reject a malformed tool_choice forcing object before the switch: a
+        # {"type": "function", "function": {}} with no name would otherwise be
+        # forwarded to llama-server and rejected only after the model swapped.
+        _tc = payload.tool_choice
+        if isinstance(_tc, dict) and _tc.get("type") == "function":
+            _tc_fn = _tc.get("function")
+            _tc_name = _tc_fn.get("name") if isinstance(_tc_fn, dict) else None
+            if not isinstance(_tc_name, str) or not _tc_name.strip():
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "Invalid 'tool_choice': the forced function must have a 'name'.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "tool_choice",
+                    ),
+                )
+        # Reject an oversized audio upload before the switch: the size cap is a
+        # cheap, target-independent length check, so a too-large payload must not
+        # load a GGUF only to 413 afterward (the decode itself stays post-switch to
+        # avoid decoding a valid upload twice).
+        if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
+            raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
+        # Reject streaming n>1 before the switch: only the non-streaming GGUF path
+        # returns multiple choices, so stream=true + n>1 is invalid on every local
+        # serving path (the external path already rejected it before its early
+        # return). Both fields are known here, so a bad shape must not load model B
+        # only to 400. The non-streaming n>1 cases stay post-switch, where the
+        # serving path decides whether the shape is supported.
+        if payload.stream and _wants_multiple_choices(payload):
+            _raise_unsupported_n("streaming chat completions")
+        # Audio input rides the same companion-mmproj projector as vision, so a
+        # text-only target can't serve it either; guard both before the switch.
+        _needs_vision = (
+            bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
+        )
+
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _needs_vision,
+    )
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -4926,8 +5473,9 @@ async def openai_chat_completions(
         return response
 
     if using_gguf:
-        # Echo a clean public id in the response, never the absolute .gguf path.
-        model_name = public_model_id(llama_backend.model_identifier) or payload.model
+        # Advertised repo id after an auto-switch load, else a clean public id,
+        # never the absolute .gguf path.
+        model_name = _llama_public_model_id(llama_backend, payload.model)
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
@@ -5188,7 +5736,11 @@ async def openai_chat_completions(
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
-    system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+    # Reuse the pre-hook parse when auto-switch did it, else parse now.
+    if _pre_parsed is not None:
+        system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
+    else:
+        system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -6495,10 +7047,13 @@ def _openai_model_objects() -> list[dict]:
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
+        # Advertise the repo id an auto-switch load recorded, not the concrete
+        # on-disk load path, so /v1/models never leaks a host path or lists a
+        # model twice (path plus repo id).
         entry = {
-            # Public id, never the absolute .gguf path (which leaks the host
-            # filesystem layout); see core.inference.model_ids.public_model_id.
-            "id": public_model_id(llama_backend.model_identifier),
+            # Advertised repo id after an auto-switch load, else a clean public id,
+            # never the absolute .gguf path (which leaks the host filesystem layout).
+            "id": _llama_public_model_id(llama_backend),
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
@@ -6544,7 +7099,21 @@ def _openai_model_objects() -> list[dict]:
 # don't rescan the HF cache and models dirs on every request.
 _CATALOG_CACHE: dict = {"at": 0.0, "models": []}
 _CATALOG_TTL_S = 30.0
-_CATALOG_LOCK = asyncio.Lock()
+# Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
+# waiters to the loop that first awaited it, so a second event loop awaiting it
+# in a multi-loop ASGI process can hang. The cache double-check keeps correctness
+# even when two loops each scan once.
+_catalog_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_catalog_locks_guard = threading.Lock()
+
+
+def _catalog_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _catalog_locks_guard:
+        lock = _catalog_locks.get(loop)
+        if lock is None:
+            lock = _catalog_locks[loop] = asyncio.Lock()
+        return lock
 
 
 async def _cached_local_catalog() -> list:
@@ -6561,7 +7130,7 @@ async def _cached_local_catalog() -> list:
     now = time.monotonic()
     if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
         return _CATALOG_CACHE["models"]
-    async with _CATALOG_LOCK:
+    async with _catalog_lock():
         now = time.monotonic()
         if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
             return _CATALOG_CACHE["models"]
@@ -6591,7 +7160,15 @@ async def _openai_catalog_objects() -> list[dict]:
         by_id[entry["id"]] = {**entry, "loaded": True}
 
     # Locally available (downloaded/cached) models that are not already loaded.
-    for info in await _cached_local_catalog():
+    # Advertise only GGUF models /v1 can actually serve (llama.cpp). GGUF-ness is
+    # read from the on-disk files, not model_format: the HF-cache scanner leaves
+    # model_format unset for GGUF snapshots, so a model_format filter would drop
+    # every cached GGUF. The file checks run off the loop.
+    from core.inference.local_model_resolver import info_has_local_gguf
+
+    catalog = await _cached_local_catalog()
+    servable = await asyncio.to_thread(lambda: [i for i in catalog if info_has_local_gguf(i)])
+    for info in servable:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -6635,29 +7212,43 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     from core.inference.model_ids import model_id_matches
 
     # Loaded models resolve without a catalog scan (the common case); only build
-    # the full catalog -- which may hit the filesystem -- for unloaded ids.
-    for entry in _openai_model_objects():
-        if entry["id"] == model_id:
+    # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
+    # case-insensitively, like the catalog loop below and the resolver's index.
+    _loaded = _openai_model_objects()
+    for entry in _loaded:
+        eid = entry["id"]
+        if isinstance(eid, str) and eid.lower() == model_id.lower():
             return {**entry, "loaded": True}
 
     objects = await _openai_catalog_objects()
     for model in objects:
-        if model["id"] == model_id:
+        # Case-insensitive to match the resolver, which lowercases its index.
+        mid = model.get("id")
+        if isinstance(mid, str) and mid.lower() == model_id.lower():
             return model
     # Backward compatibility: a client may still send the legacy raw identifier
-    # (e.g. an absolute .gguf path cached from an older /v1/models). Resolve it to
-    # the clean object so it keeps working, without ever echoing the path back.
+    # (e.g. an absolute .gguf path cached from an older /v1/models). Map it to the
+    # loaded model's object so it keeps working, without ever echoing the path back.
+    # Key each raw id to the SAME public id its /v1/models entry uses: an
+    # auto-switch load advertises a repo id while its identifier is the snapshot
+    # path, so public_model_id(path) would miss the advertised entry and 404 a
+    # model that is in fact loaded.
     llama_backend = get_llama_cpp_backend()
     backend = get_inference_backend()
-    for raw in (
-        llama_backend.model_identifier if llama_backend.is_loaded else None,
-        backend.active_model_name or None,
-    ):
-        if raw and model_id_matches(model_id, raw):
-            clean = public_model_id(raw)
-            for model in objects:
-                if model["id"] == clean:
-                    return model
+    raw_to_public: list[tuple[str, Optional[str]]] = []
+    if llama_backend.is_loaded and llama_backend.model_identifier:
+        raw_to_public.append(
+            (llama_backend.model_identifier, _llama_public_model_id(llama_backend))
+        )
+    if backend.active_model_name:
+        raw_to_public.append(
+            (backend.active_model_name, public_model_id(backend.active_model_name))
+        )
+    for raw, clean in raw_to_public:
+        if model_id_matches(model_id, raw):
+            for entry in _loaded:
+                if entry["id"] == clean:
+                    return {**entry, "loaded": True}
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
@@ -6682,6 +7273,16 @@ def _flatten_monitor_prompt(value) -> str:
     return str(value)
 
 
+def _completions_prompt_present(body: dict) -> bool:
+    """Whether a completions body carries a usable ``prompt`` (non-empty)."""
+    prompt = body.get("prompt")
+    if isinstance(prompt, str):
+        return prompt != ""
+    if isinstance(prompt, (list, tuple)):
+        return len(prompt) > 0
+    return prompt is not None
+
+
 @router.post("/completions")
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -6691,13 +7292,39 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     when a GGUF model is loaded.
     """
     llama_backend = get_llama_cpp_backend()
+
+    # Reject a request with no prompt before any automatic load so an invalid
+    # request never swaps or reloads the resident model (as chat/embeddings already
+    # validate before switching). Gate on every automatic-load trigger.
+    if _automatic_model_load_may_run():
+        try:
+            _pre = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            _pre = None
+        if isinstance(_pre, dict):
+            _pre_prompt = _pre.get("prompt")
+            if _pre_prompt is not None and not isinstance(_pre_prompt, (str, list, tuple)):
+                # An object/number prompt is a deterministic client error (only a
+                # string or array is valid); reject it before the switch so a bad
+                # shape can't load a GGUF only to be rejected by llama-server after.
+                raise HTTPException(status_code = 400, detail = "'prompt' must be a string or array.")
+            if not _completions_prompt_present(_pre):
+                raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
+
+    # Opt-in: load the requested local GGUF before the loaded-state check.
+    body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
+    if not isinstance(body, dict):
+        # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
+        # a valid non-dict body such as a list is a clean 400 rather than a 500.
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    body = await request.json()
     if body.get("max_tokens") is None:
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
@@ -6706,7 +7333,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         method = request.method,
-        model = str(body.get("model") or llama_backend.model_identifier or "default"),
+        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
         prompt = prompt_text,
         context_length = llama_backend.context_length,
         subject = current_subject,
@@ -6853,6 +7480,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 # =====================================================================
 
 
+def _embeddings_input_present(body: dict) -> bool:
+    """Whether an embeddings body carries a usable ``input`` (non-empty)."""
+    inp = body.get("input")
+    if isinstance(inp, str):
+        return inp != ""
+    if isinstance(inp, (list, tuple)):
+        return len(inp) > 0
+    return inp is not None
+
+
 @router.post("/embeddings")
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -6864,13 +7501,42 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     error (expected).
     """
     llama_backend = get_llama_cpp_backend()
+    # Reject a request with no input before any automatic load so an invalid
+    # request never swaps or reloads the resident model (as chat/responses/messages
+    # already validate before switching). Gate on every automatic-load trigger,
+    # not just auto-switch, since a standalone idle TTL can also reload here.
+    if _automatic_model_load_may_run():
+        try:
+            _pre = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            _pre = None
+        if isinstance(_pre, dict):
+            _pre_input = _pre.get("input")
+            if _pre_input is not None and not isinstance(_pre_input, (str, list, tuple)):
+                # An object/number input is a deterministic client error (only a
+                # string or array is valid); reject it before the switch so a bad
+                # shape can't load a GGUF only to be rejected by llama-server after.
+                raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
+            if not _embeddings_input_present(_pre):
+                raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+    # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
+    # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
+    # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
+    # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
+    # a non-embedding target switches, then llama-server returns a no-pooling error.
+    body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
+    if not isinstance(body, dict):
+        # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
+        # a valid non-dict body such as a list is a clean 400 rather than a 500.
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
@@ -6878,7 +7544,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
             method = request.method,
-            model = str(body.get("model") or llama_backend.model_identifier or "default"),
+            model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
             prompt = prompt_text,
             context_length = llama_backend.context_length,
             subject = current_subject,
@@ -7343,10 +8009,13 @@ def _build_chat_request(
     ``/v1/chat/completions`` client-side pass-through picks them up unchanged.
     """
     chat_kwargs: dict = dict(
-        model = payload.model,
         messages = messages,
         stream = stream,
     )
+    # Only forward an explicitly set model so an omitted Responses model stays
+    # reload-only when openai_chat_completions re-checks on the non-streaming path.
+    if "model" in payload.model_fields_set:
+        chat_kwargs["model"] = payload.model
     if payload.temperature is not None:
         chat_kwargs["temperature"] = payload.temperature
     if payload.top_p is not None:
@@ -7600,12 +8269,11 @@ async def _responses_stream(
         # Clean public id for every response envelope. Prefer the loaded model's
         # id so the stream agrees with /v1/models, chat/completions and the
         # non-streaming twin; fall back to a sanitized payload.model (a legacy
-        # raw .gguf path is stripped, never echoed back).
-        _clean_model = (
-            public_model_id(getattr(llama_backend, "model_identifier", None))
-            or public_model_id(payload.model)
-            or payload.model
-        )
+        # raw .gguf path is stripped, never echoed back). Use the advertised-id
+        # helper, not the raw identifier: after an auto-switch to a cached HF GGUF
+        # the identifier is the snapshot path while the repo id lives in
+        # _openai_advertised_id, so the raw form would stream a snapshot basename.
+        _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
@@ -8248,6 +8916,56 @@ async def openai_responses(
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
+    # System/developer-only input normalises to a non-empty list, so reject it
+    # before the switch (mirror chat) or an invalid request evicts the resident
+    # model only for the chat handler to 400 it as having no non-system message.
+    if not any(m.role not in ("system", "developer") for m in messages):
+        raise HTTPException(status_code = 400, detail = "At least one non-system message is required.")
+    # Reject a malformed function tool before any model load, mirroring the
+    # /v1/chat/completions check, so an invalid request never switches the model.
+    # Built-in tools (web_search, mcp, ...) carry no name and are dropped later.
+    for _tool in payload.tools or []:
+        if not isinstance(_tool, dict) or _tool.get("type") != "function":
+            continue
+        _name = _tool.get("name")
+        if not isinstance(_name, str) or not _name.strip():
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "Invalid 'tools': each function tool must have a 'name'.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "tools",
+                ),
+            )
+    # Reject a forcing-function tool_choice with no name before the switch (mirror
+    # chat), so a malformed request can't evict the model. Responses forces with
+    # {"type": "function", "name": "X"}; the streaming path would otherwise forward
+    # the bad choice and the non-streaming path only 400s after the swap.
+    _tc = payload.tool_choice
+    if isinstance(_tc, dict) and _tc.get("type") == "function":
+        _tc_name = _tc.get("name")
+        if not isinstance(_tc_name, str) or not _tc_name.strip():
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "Invalid 'tool_choice': the forced function must have a 'name'.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "tool_choice",
+                ),
+            )
+    # After input validation so a 400 never triggers a load. Switches the
+    # streaming path; non-streaming re-checks via the idempotent chat handler.
+    # require_vision rejects a swap to a text-only target before it runs, so an
+    # image request can't evict the resident vision model only to 400 afterwards
+    # (the non-streaming chat re-check short-circuits on _already_serving).
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _messages_have_image(messages),
+    )
 
     if payload.stream:
         monitor_id = None
@@ -8384,6 +9102,28 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
     return has_image
 
 
+def _validate_anthropic_client_tools(tools) -> None:
+    # Reject malformed client tools before any model load, so an invalid request
+    # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
+    # Optional for server tools, so the converter silently drops incomplete
+    # entries; surface them as 400 here. A `type` field marks a server-tool
+    # declaration (unrecognized server tools are no-ops); anything else without
+    # input_schema or name is malformed.
+    for tool in tools or []:
+        td = tool if isinstance(tool, dict) else tool.model_dump()
+        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
+        if schema is None and not isinstance(type_, str):
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Tool {name!r} is missing required field 'input_schema'.",
+            )
+        if schema is not None and (not isinstance(name, str) or not name):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Client tool is missing required field 'name'.",
+            )
+
+
 @router.post("/messages/count_tokens")
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
@@ -8397,6 +9137,19 @@ async def anthropic_count_tokens(
     tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
     max_tokens is NOT required here.
     """
+    # Reject malformed tools before the switch, like /messages, so an invalid
+    # count request can't evict the loaded model.
+    _validate_anthropic_client_tools(payload.tools)
+    # Count with the requested model's tokenizer, like the sibling /messages.
+    # Carry the vision guard too: an image count naming a text-only GGUF must not
+    # evict a loaded vision model for a swap that can't serve the request.
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _anthropic_request_has_image(payload),
+    )
+
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         raise HTTPException(
@@ -8463,14 +9216,20 @@ async def anthropic_messages(
     JSON).
     """
     llama_backend = get_llama_cpp_backend()
-    if not llama_backend.is_loaded:
+
+    # Default-off parity: with no automatic load possible and nothing loaded, 503
+    # before any request-shape check, exactly as the pre-feature endpoint did. When
+    # an automatic load can run (auto-switch or a standalone idle TTL), fall through
+    # so validation runs before the reload hook gets a chance to restore the model.
+    if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    # max_tokens is a required field on the Anthropic Messages API; real
-    # Anthropic returns a 400 invalid_request_error when it is omitted.
+    # max_tokens is a required field on the Anthropic Messages API; real Anthropic
+    # returns a 400 invalid_request_error when it is omitted. Validate before
+    # auto-switch so a rejected request never triggers a model load.
     if payload.max_tokens is None:
         raise HTTPException(
             status_code = 400,
@@ -8481,13 +9240,47 @@ async def anthropic_messages(
             ),
         )
 
-    # Clean public id so /v1/messages never echoes the local .gguf path (and a
-    # legacy raw path sent as payload.model is sanitized rather than returned).
-    model_name = (
-        public_model_id(getattr(llama_backend, "model_identifier", None))
-        or public_model_id(payload.model)
-        or payload.model
+    # Reject malformed client tools before any model load (see helper), so an
+    # invalid request never evicts the loaded model.
+    _validate_anthropic_client_tools(payload.tools)
+
+    # Mixing Anthropic server tools with custom client tools is unsupported (the
+    # server-tool loop can't relay client functions back to the caller). Reject
+    # before the switch too -- it depends only on the payload -- so an invalid
+    # request never evicts the loaded model. Reused below for tool routing.
+    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        for t in payload.tools or []
     )
+    if requested_studio_tools and _has_client_tool:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Mixing Anthropic server tools (e.g. web_search_20250305) "
+                "with custom client tools in a single request is not "
+                "supported. Send them in separate requests."
+            ),
+        )
+
+    # require_vision rejects a swap to a text-only target before it runs, so an
+    # image request can't evict the resident vision model only to hit the vision
+    # guard (_normalize_anthropic_openai_images) below after the load.
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _anthropic_request_has_image(payload),
+    )
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = "No GGUF model loaded. Load a GGUF model first.",
+        )
+
+    # Advertised repo id after an auto-switch load, else a clean public id, never
+    # the local .gguf path (and a legacy raw path in payload.model is sanitized).
+    model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     # ── Translate Anthropic → OpenAI ──────────────────────────
@@ -8534,51 +9327,8 @@ async def anthropic_messages(
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
     # The server-side agentic loop doesn't support multimodal input -- matches
-    # the `not image_b64` gate in /v1/chat/completions.
-    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
-
-    # Reject malformed client tools at the boundary. AnthropicTool was relaxed
-    # to Optional[name]/Optional[input_schema] for server tools, so the
-    # converter silently drops incomplete entries -- surface them as 400. A
-    # `type` field marks a server-tool declaration per spec (unrecognized server
-    # tools are accepted as no-ops); anything else without input_schema or name
-    # is malformed and must not be allowed to silently flip execution mode or
-    # disable tool calling.
-    for tool in payload.tools or []:
-        td = tool if isinstance(tool, dict) else tool.model_dump()
-        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
-        if schema is None and not isinstance(type_, str):
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Tool {name!r} is missing required field 'input_schema'.",
-            )
-        if schema is not None and (not isinstance(name, str) or not name):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Client tool is missing required field 'name'.",
-            )
-
-    # Detect client tools from the raw payload (presence of input_schema) so the
-    # mixed-mode check below isn't fooled by a name collision with a server-tool
-    # alias that the post-filter would silently drop.
-    _has_client_tool = any(
-        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
-        for t in payload.tools or []
-    )
-
-    # The server-tool agentic loop executes tools in-process and can't relay
-    # unknown client functions back to the caller, so mixed requests would
-    # silently drop the client tools. Reject explicitly instead.
-    if requested_studio_tools and _has_client_tool:
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "Mixing Anthropic server tools (e.g. web_search_20250305) "
-                "with custom client tools in a single request is not "
-                "supported. Send them in separate requests."
-            ),
-        )
-
+    # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
+    # the mixed-mode rejection were computed before the switch above.
     openai_client_tools = [
         tool
         for tool in anthropic_tools_to_openai(payload.tools or [])
