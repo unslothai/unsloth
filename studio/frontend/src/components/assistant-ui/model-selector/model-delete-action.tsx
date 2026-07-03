@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { DeleteConfirmDialog } from "@/features/hub/catalog/download-card";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -22,7 +13,6 @@ interface ModelDeleteActionProps {
   title: string;
   description: ReactNode;
   successMessage: string;
-  loadingLabel?: string;
   buttonClassName?: string;
   iconClassName?: string;
   disabled?: boolean;
@@ -35,7 +25,6 @@ export function ModelDeleteAction({
   title,
   description,
   successMessage,
-  loadingLabel = "Deleting...",
   buttonClassName,
   iconClassName,
   disabled = false,
@@ -85,33 +74,17 @@ export function ModelDeleteAction({
         />
       </button>
 
-      <AlertDialog
+      <DeleteConfirmDialog
         open={open}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && deleting) return;
           setOpen(nextOpen);
         }}
-      >
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{title}</AlertDialogTitle>
-            <AlertDialogDescription>{description}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>No</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={deleting}
-              onClick={(e) => {
-                e.preventDefault();
-                handleConfirm();
-              }}
-            >
-              {deleting ? loadingLabel : "Yes"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={title}
+        description={description}
+        deleting={deleting}
+        onConfirm={() => void handleConfirm()}
+      />
     </>
   );
 }

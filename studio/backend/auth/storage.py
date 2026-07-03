@@ -5,6 +5,7 @@
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import sqlite3
@@ -100,7 +101,26 @@ def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
     conn = sqlite3.connect(DB_PATH)
+    # Keep the auth dir + DB private (they hold the JWT/identity secrets and
+    # password hashes); sqlite3.connect would otherwise create the DB 0644 under
+    # a 022 umask, letting another OS user read the identity secret and forge proofs.
+    for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
+        try:
+            os.chmod(_path, _mode)
+        except OSError:
+            pass
     conn.row_factory = sqlite3.Row
+    # WAL lets token reads run concurrently with refresh-token writes;
+    # busy_timeout bounds lock waits. Matches the other Studio SQLite stores.
+    # Set busy_timeout first: switching journal_mode needs a lock, so if a
+    # refresh-token write already holds one, journal_mode=WAL raises SQLITE_BUSY;
+    # with busy_timeout already in effect it waits instead of failing and leaving
+    # this connection on SQLite's default zero lock wait.
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.Error:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS auth_user (
@@ -208,6 +228,114 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
 
     _api_key_pbkdf2_salt_cache = salt
     return salt
+
+
+# Secret answering the /api/auth/identity challenge (HMAC(secret, nonce)). Lives
+# in this same-user DB so a port squatter or remote/fake server can't forge a
+# proof. Separate from the per-user JWT secret.
+_IDENTITY_SECRET_DB_KEY = "studio_identity_secret"
+_identity_secret_cache: Optional[bytes] = None
+
+
+def get_or_create_identity_secret() -> bytes:
+    """Return the identity secret (hex 32-byte row in app_secrets), creating it once."""
+    global _identity_secret_cache
+    if _identity_secret_cache is not None:
+        return _identity_secret_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_IDENTITY_SECRET_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_IDENTITY_SECRET_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_IDENTITY_SECRET_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _identity_secret_cache = secret
+    return secret
+
+
+def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
+    """HMAC-SHA256 proof that the caller holds this install's identity secret,
+    bound to the loopback address and port the connection landed on. A proof
+    relayed from a Studio on a different address/port (a squatter proxying to the
+    real one, e.g. localhost resolving to ::1 while Studio is on 127.0.0.1) was
+    computed for that other endpoint and won't match the one the client dialed."""
+    try:
+        host = ipaddress.ip_address(host).compressed  # normalise 127.0.0.1 / ::1 forms
+    except ValueError:
+        host = (host or "").lower()
+    msg = b"|".join([nonce, host.encode(), str(int(port)).encode()])
+    return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
+
+
+# Capability secret for public ``/p`` preview share links. HMAC(secret, ref)
+# turns the deterministic preview ref into an unguessable bearer capability, so a
+# guessed run/checkpoint name can't reach inference. Dedicated (not the per-user
+# JWT secret) so rotating it revokes every shared link without touching logins.
+_PREVIEW_LINK_SECRET_DB_KEY = "preview_link_secret"
+_preview_link_secret_cache: Optional[bytes] = None
+
+
+def get_or_create_preview_link_secret() -> bytes:
+    """Return the preview-link signing secret (hex 32-byte row in app_secrets), creating it once."""
+    global _preview_link_secret_cache
+    if _preview_link_secret_cache is not None:
+        return _preview_link_secret_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_PREVIEW_LINK_SECRET_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_PREVIEW_LINK_SECRET_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_PREVIEW_LINK_SECRET_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _preview_link_secret_cache = secret
+    return secret
+
+
+def rotate_preview_link_secret() -> bytes:
+    """Rotate the preview-link secret, immediately revoking every outstanding ``/p`` share link."""
+    global _preview_link_secret_cache
+    new_secret_hex = secrets.token_hex(32)
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_PREVIEW_LINK_SECRET_DB_KEY, new_secret_hex),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    secret = bytes.fromhex(new_secret_hex)
+    _preview_link_secret_cache = secret
+    return secret
 
 
 _API_KEY_PBKDF2_ITERATIONS = 100_000

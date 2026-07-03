@@ -11,23 +11,32 @@ export function SettingsRow({
   children,
   destructive,
   className,
+  alignTop,
 }: {
   label: string;
-  description?: string;
+  description?: ReactNode;
   icon?: ReactNode;
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
+  /** Top-align the control instead of centering it, for tall descriptions. */
+  alignTop?: boolean;
 }) {
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-6 py-3",
+        "flex justify-between gap-6 py-3",
+        alignTop ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}
     >
-      <div className="flex min-w-0 items-center gap-2.5">
+      <div
+        className={cn(
+          "flex min-w-0 gap-2.5",
+          alignTop ? "items-start" : "items-center",
+        )}
+      >
         {icon ? (
           <span className="flex shrink-0 items-center text-foreground">
             {icon}
@@ -42,7 +51,18 @@ export function SettingsRow({
           ) : null}
         </div>
       </div>
-      {children ? <div className="flex shrink-0 items-center">{children}</div> : null}
+      {children ? (
+        <div
+          className={cn(
+            "flex shrink-0",
+            // Drop the control past the label row so it lines up with the first
+            // description line instead of the label.
+            alignTop ? "items-start pt-[21px]" : "items-center",
+          )}
+        >
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }

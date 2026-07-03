@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for install.sh's torch-flavor helpers (_torch_flavor_tag,
 # _expected_torch_flavor_tag, _torch_index_repairable) that drive the
 # stale-CPU-PyTorch repair. Helpers are extracted from install.sh and sourced.

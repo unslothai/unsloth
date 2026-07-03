@@ -318,11 +318,75 @@ def dump_diagnostics(
             info(f"diagnostics: json sidecar {name} failed: {exc}")
 
 
+# Markers for the transient Playwright error raised when a navigation, reload, or
+# auth refresh destroys the JS execution context while an evaluate is in flight.
+# Stored lowercase and matched against a lowercased message: Playwright varies the
+# casing across versions ("Frame was detached" vs "frame was detached"), so a
+# case-sensitive check would miss the very races this is meant to catch.
+_CONTEXT_LOST_MARKERS = (
+    "execution context was destroyed",
+    "context with specified id",
+    "frame was detached",
+    "target closed",
+    "target page, context or browser has been closed",
+    "execution context is not available",
+)
+
+# HTTP methods whose replay is side-effect-free, so an evaluate_fetch hit by a
+# mid-call context loss may safely re-run. Mutating methods are excluded by
+# default (see evaluate_fetch) to avoid double-applying an already-sent request.
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+# Robust page/locator.evaluate.
+# A navigation mid-evaluate destroys the execution context and raises at the Python
+# level (not a JS result), which would crash the script. Retry that transient class
+# within a small budget, settling the page first; non-transient or persistent errors
+# still propagate.
+def robust_evaluate(
+    target: Any,
+    expression: str,
+    arg: Any = None,
+    *,
+    retries: int = 2,
+    backoff_ms: int = 250,
+) -> Any:
+    """`target.evaluate(expression, arg)` for a Page or Locator, retried when a
+    concurrent navigation destroys the execution context. Re-raises on a
+    non-transient error or after the final attempt."""
+    page = target if hasattr(target, "wait_for_load_state") else getattr(target, "page", None)
+    attempts = max(1, int(retries) + 1)
+    for attempt in range(attempts):
+        try:
+            return target.evaluate(expression, arg)
+        except Exception as exc:
+            exc_msg = str(exc).lower()
+            transient = any(s in exc_msg for s in _CONTEXT_LOST_MARKERS)
+            if not transient or attempt == attempts - 1:
+                raise
+            try:
+                sys.stderr.write(
+                    f"[robust_evaluate] execution context lost "
+                    f"({attempt + 1}/{attempts}); settling + retrying\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            if page is not None:
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout = 10_000)
+                except Exception:
+                    pass
+            time.sleep((backoff_ms * (2**attempt)) / 1000.0)
+
+
 # Bounded in-page fetch.
 # `page.evaluate(...)` has no `timeout=`, so a stuck fetch hangs the script until
 # the runner timeout (run 25696797934 / PR #5387 burned 27+ min). evaluate_fetch
 # wraps the fetch in an AbortController.signal so the JS side always resolves --
 # real response, or synthetic `{status: 0, error: "AbortError..."}` after timeout_ms.
+# It also retries the evaluate itself when a navigation destroys the execution
+# context mid-call (a transient Playwright race, not a real fetch failure).
 def evaluate_fetch(
     page: Any,
     url: str,
@@ -333,11 +397,22 @@ def evaluate_fetch(
     timeout_ms: int = 20_000,
     transport_retries: int = 2,
     transport_backoff_ms: int = 250,
+    retry_on_context_loss: bool | None = None,
 ) -> dict[str, Any]:
     """Run `fetch(url, opts)` in the page with an AbortSignal deadline; returns
     `{"status", "body", "error"}` (status==0 + AbortError on timeout). Treat
     status==0 or non-None error as transport failure. `body` may be str (verbatim)
-    or dict/list (JSON-encoded); pass headers explicitly for Content-Type/Auth."""
+    or dict/list (JSON-encoded); pass headers explicitly for Content-Type/Auth.
+
+    `retry_on_context_loss` controls whether a navigation that destroys the JS
+    context mid-call replays the in-page fetch. The request may have already
+    reached the backend before the context died, so replaying a mutating call is
+    unsafe: a spent single-use POST /api/auth/refresh comes back 401, and a
+    duplicate POST /api/inference/load that lands while the first is still in
+    `loading_models` is rejected (the backend returns False -> 500) even though
+    the original load succeeds. Default (None) therefore retries only idempotent
+    reads (GET/HEAD/OPTIONS) and never replays a mutating method; pass an explicit
+    bool to override per call. Context loss on a non-retried call propagates."""
     body_arg: str | None
     if body is None:
         body_arg = None
@@ -383,8 +458,18 @@ def evaluate_fetch(
     # fetch" after auth rotation) retries after backoff to evict the dead socket.
     last: dict[str, Any] | None = None
     attempts = max(1, int(transport_retries) + 1)
+    # Replay the in-page evaluate on a context loss only for idempotent reads;
+    # mutating methods (POST/PUT/PATCH/DELETE) may have already hit the backend,
+    # so retrying would re-send them (see docstring). Honor an explicit override.
+    if retry_on_context_loss is None:
+        retry_on_context_loss = method.upper() in _IDEMPOTENT_METHODS
+    ctx_retries = 2 if retry_on_context_loss else 0
     for attempt in range(attempts):
-        result = page.evaluate(js, payload)
+        # robust_evaluate retries the evaluate when a navigation destroys the
+        # execution context mid-call; the loop here retries transport failures.
+        result = robust_evaluate(
+            page, js, payload, retries = ctx_retries, backoff_ms = transport_backoff_ms
+        )
         last = result
         try:
             status = int(result.get("status") or 0)

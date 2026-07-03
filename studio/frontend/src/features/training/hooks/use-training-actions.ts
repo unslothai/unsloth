@@ -60,6 +60,7 @@ export function useTrainingActions() {
       config.selectedModel ?? null,
       getHfDatasetName(config),
       false,
+      config.projectName || "",
     );
     runtimeStore.setStarting(true);
 
@@ -88,6 +89,10 @@ export function useTrainingActions() {
           useTrainingConfigStore.setState({
             isDatasetImage: isImage,
             isDatasetAudio: isAudio,
+            // Streaming is unsupported for image/audio datasets; clear the flag
+            // so buildTrainingStartPayload never ships dataset_streaming=true
+            // for a modality the backend would reject with a 422.
+            ...(isImage || isAudio ? { datasetStreaming: false } : {}),
           });
         }
 
@@ -148,7 +153,12 @@ export function useTrainingActions() {
 
       // Re-read config after potential store updates from dataset check
       const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
-      runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, false);
+      runtimeStore.setStartResources(
+        payload.model_name,
+        payload.hf_dataset,
+        false,
+        payload.project_name ?? "",
+      );
       const response = await startTraining(payload);
 
       if (response.status === "error") {
@@ -192,7 +202,7 @@ export function useTrainingActions() {
   const resumeTrainingRunFromHistory = useCallback(async (runId: string): Promise<boolean> => {
     const runtimeStore = useTrainingRuntimeStore.getState();
     runtimeStore.setStartError(null);
-    runtimeStore.setStartResources(null, null, true);
+    runtimeStore.setStartResources(null, null, true, null);
     runtimeStore.setStarting(true);
 
     try {
@@ -216,7 +226,12 @@ export function useTrainingActions() {
         resume_from_checkpoint: outputDir,
       } as TrainingStartRequest;
 
-      runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
+      runtimeStore.setStartResources(
+        payload.model_name,
+        payload.hf_dataset,
+        true,
+        payload.project_name ?? "",
+      );
 
       // Resume goes straight to startTraining, so it runs the same consent gate as a
       // fresh start; otherwise a resumed custom-code run hits the worker block with no dialog.

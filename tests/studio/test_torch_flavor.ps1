@@ -1,4 +1,6 @@
 #!/usr/bin/env pwsh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for install.ps1's torch-flavor helpers (ConvertTo-TorchFlavorTag,
 # Get-ExpectedTorchFlavorTag) that drive the stale-CPU-PyTorch repair. Pure
 # helpers, AST-extracted and run in-process -- no GPU/venv needed.

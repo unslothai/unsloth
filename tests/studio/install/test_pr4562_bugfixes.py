@@ -728,13 +728,16 @@ class TestSourceCodePatterns:
         assert all(
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must not be pushed into the $CmakeArgs array"
-        # Must be scoped to the CUDA branch, not set for CPU-only builds.
+        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The
+        # branch also has an early GGML_CUDA=OFF (undetectable-arch CPU fallback,
+        # #5854), so anchor on GGML_CUDA=ON and the final (no-GPU) GGML_CUDA=OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
         cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
-        cuda_disable_idx = content.index("'-DGGML_CUDA=OFF'")
-        assert cuda_guard_idx < flag_idx < cuda_disable_idx, (
-            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, "
-            "before the GGML_CUDA=OFF (CPU) branch"
+        cuda_on_idx = content.index("'-DGGML_CUDA=ON'")
+        cpu_else_idx = content.rindex("'-DGGML_CUDA=OFF'")
+        assert cuda_guard_idx < cuda_on_idx < flag_idx < cpu_else_idx, (
+            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, after "
+            "-DGGML_CUDA=ON and before the final CPU GGML_CUDA=OFF branch"
         )
 
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):

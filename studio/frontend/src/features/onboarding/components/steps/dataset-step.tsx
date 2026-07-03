@@ -35,12 +35,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
@@ -117,8 +114,9 @@ export function DatasetStep() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfDatasetSearch(debouncedQuery, {
+  } = useHubDatasetSearch(debouncedQuery, {
     modelType,
     accessToken: hfToken || undefined,
   });
@@ -129,10 +127,11 @@ export function DatasetStep() {
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   const handleFileUpload = () => {
     setUploadedFile("my_dataset.jsonl");

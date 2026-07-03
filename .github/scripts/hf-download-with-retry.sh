@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
 # Download a single file from a Hugging Face repo with a stall-retry
 # watchdog. Used by the Studio CI workflows so a hung hf-xet transfer

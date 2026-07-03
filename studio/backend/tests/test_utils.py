@@ -107,6 +107,7 @@ class TestGetDevice:
             patch("utils.hardware.hardware._has_torch", return_value = False),
             patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
             patch("utils.hardware.hardware._has_mlx", return_value = True),
+            patch("utils.hardware.hardware._has_usable_mlx_stack", return_value = True),
         ):
             assert _reset_and_detect() == DeviceType.MLX
 

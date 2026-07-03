@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--secure/--not-secure` Studio flag: option registration,
+"""Tests for the `--secure/--no-secure` Studio flag: option registration,
 re-exec/run_server forwarding, the forced 127.0.0.1 bind, and rejection
 alongside --no-cloudflare or before a subcommand. Modeled on
 test_studio_cloudflare_flag.py."""
@@ -35,7 +35,7 @@ def test_run_exposes_secure_option_default_off():
 
     opt = inspect.signature(_studio().run).parameters["secure"].default
     decls = set(getattr(opt, "param_decls", []) or [])
-    assert "--secure/--not-secure" in decls
+    assert "--secure/--no-secure" in decls
     assert getattr(opt, "default", None) is False
 
 
@@ -44,8 +44,19 @@ def test_studio_default_exposes_secure_option_default_off():
 
     opt = inspect.signature(_studio().studio_default).parameters["secure"].default
     decls = set(getattr(opt, "param_decls", []) or [])
-    assert "--secure/--not-secure" in decls
+    assert "--secure/--no-secure" in decls
     assert getattr(opt, "default", None) is False
+
+
+def test_secure_exposes_hidden_not_secure_alias():
+    # --not-secure is a hidden, deprecated alias for --no-secure on both commands.
+    import inspect
+    for fn in (_studio().run, _studio().studio_default):
+        opt = inspect.signature(fn).parameters["not_secure"].default
+        decls = set(getattr(opt, "param_decls", []) or [])
+        assert "--not-secure" in decls
+        assert getattr(opt, "hidden", False) is True
+        assert getattr(opt, "default", None) is False
 
 
 # ── re-exec capture plumbing (mirrors test_studio_cloudflare_flag.py) ─
@@ -129,9 +140,10 @@ def _invoke_studio_default(monkeypatch, args):
 @pytest.mark.parametrize(
     "user_flag,expected,unexpected",
     [
-        (None, "--not-secure", "--secure"),  # default off
-        ("--secure", "--secure", "--not-secure"),
-        ("--not-secure", "--not-secure", "--secure"),
+        (None, "--no-secure", "--secure"),  # default off
+        ("--secure", "--secure", "--no-secure"),
+        ("--no-secure", "--no-secure", "--secure"),
+        ("--not-secure", "--no-secure", "--secure"),  # deprecated alias -> canonical
     ],
 )
 def test_run_reexec_forwards_secure_polarity(monkeypatch, user_flag, expected, unexpected):
@@ -158,6 +170,31 @@ def test_studio_default_reexec_forwards_secure(monkeypatch):
     assert "--secure" in argv
     # studio_default also forces the loopback bind under --secure.
     assert argv[argv.index("--host") + 1] == "127.0.0.1", argv
+
+
+def test_studio_default_not_secure_alias_forwards_no_secure(monkeypatch):
+    # --not-secure on `unsloth studio` forwards the canonical --no-secure.
+    captured = _invoke_studio_default(monkeypatch, ["--not-secure"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--no-secure" in argv and "--secure" not in argv, argv
+
+
+@pytest.mark.parametrize(
+    "argv_order,expected,unexpected",
+    [
+        # --not-secure tracks --no-secure: the last secure flag on argv wins,
+        # matching the backend BooleanOptionalAction.
+        (["--secure", "--not-secure"], "--no-secure", "--secure"),
+        (["--not-secure", "--secure"], "--secure", "--no-secure"),
+    ],
+)
+def test_run_not_secure_alias_respects_last_wins(monkeypatch, argv_order, expected, unexpected):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "studio", "run", *argv_order])
+    captured = _invoke_run(monkeypatch, _BASE + argv_order)
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert expected in argv and unexpected not in argv, argv
 
 
 # ── in-venv path forwards secure + forced host into run_server ────────

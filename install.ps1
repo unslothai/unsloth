@@ -99,6 +99,7 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $ShortcutsOnly = $false
+    $WithLlamaCppDir = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
@@ -115,6 +116,14 @@ function Install-UnslothStudio {
                     return (Exit-InstallFailure "--package requires an argument.")
                 }
                 $PackageName = $argList[$i]
+            }
+            "--with-llama-cpp-dir" {
+                $i++
+                if ($i -ge $argList.Count) {
+                    Write-Host "[ERROR] --with-llama-cpp-dir requires a path argument." -ForegroundColor Red
+                    return (Exit-InstallFailure "--with-llama-cpp-dir requires a path argument.")
+                }
+                $WithLlamaCppDir = $argList[$i]
             }
         }
     }
@@ -1623,22 +1632,78 @@ exit 0
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
-        $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
-        if (-not $hipinfoExe) {
-            $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
-            $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
-            if ($hipRoot) {
-                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-                if (Test-Path $hipinfoCandidate) {
-                    Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
-                    Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
-                    Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
-                    $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
-                } else {
-                    Write-Host "  [WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" -ForegroundColor Yellow
-                    Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
-                    Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+        # Ignore the venv hipInfo.exe (AMD wheel, on PATH): not a HIP SDK, so
+        # amd-smi would still auto-elevate. Cf. _path_inside_venv().
+        function Test-HipinfoIsVenvInternal {
+            param([AllowNull()][string]$HipinfoPath)
+            if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+            # Also derive the venv from the setup python + default Studio home, so
+            # the venv hipInfo is caught when VenvDir/VIRTUAL_ENV are unset.
+            $venvRoots = @()
+            if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
+            $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
+            if ($vd) { $venvRoots += $vd }
+            if ($env:UNSLOTH_SETUP_PYTHON) {
+                try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
+            }
+            if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
+            # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
+            # venv off the default path; seed it too or its hipInfo escapes the filter.
+            $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
+            if ($studioHomeEnv) {
+                # Expand a leading ~ like the canonical resolver; else GetFullPath
+                # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
+                if (($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                    # A bare "~" leaves an empty child path; Join-Path rejects that on
+                    # PS 5.1, so use USERPROFILE directly and only join a real remainder.
+                    $studioHomeRest = $studioHomeEnv.Substring(1).TrimStart('/', '\')
+                    $studioHomeEnv = if ($studioHomeRest) { Join-Path $env:USERPROFILE $studioHomeRest } else { $env:USERPROFILE }
                 }
+                $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio")
+            }
+            try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
+            foreach ($root in $venvRoots) {
+                if ([string]::IsNullOrWhiteSpace($root)) { continue }
+                try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+                # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON like
+                # C:\Python311\python.exe yields C:) -- it would match every path on that drive.
+                if ($r -match '^[a-zA-Z]:$') { continue }
+                if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+            return $false
+        }
+        # Scan all hipinfo and keep the first non-venv one (the venv copy from the
+        # bnb fix could shadow a real HIP SDK's). -CommandType Application matches
+        # only real executables, not a user alias/function named hipinfo.
+        $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
+            Select-Object -First 1
+        if (-not $hipinfoExe) {
+            # Iterate the env roots (mirrors the Python list) and take the first non-venv
+            # bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+            $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
+            foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
+                $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
+                if ([string]::IsNullOrWhiteSpace($hipRoot)) { continue }
+                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+                if (-not (Test-Path $hipinfoCandidate)) {
+                    if (-not $hipMissingLabel) { $hipMissingLabel = $hipEnvLabel; $hipMissingRoot = $hipRoot; $hipMissingCandidate = $hipinfoCandidate }
+                    continue
+                }
+                if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
+                Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+                break
+            }
+            if ((-not $hipinfoExe) -and $hipMissingLabel) {
+                Write-Host "  [WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" -ForegroundColor Yellow
+                Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
             }
         }
         if ($hipinfoExe) {
@@ -1724,11 +1789,10 @@ exit 0
             } catch {}
         }
         # ── Arch resolution: env-var override → name inference ──────────────
-        # Runs even when the hipinfo/amd-smi probe could NOT confirm a runtime
-        # ($HasROCm false): the gfx arch inferred from the WMI GPU name lets the
-        # studio setup forward --rocm-gfx and pull a GPU-accelerated ROCm
-        # llama.cpp, which bundles its own ROCm runtime. PyTorch's ROCm wheels
-        # still require a confirmed HIP SDK -- they stay gated on $HasROCm below.
+        # Runs even when the probe can't confirm a runtime ($HasROCm false): the
+        # WMI-name gfx arch drives both ROCm llama.cpp and torch. repo.amd.com
+        # wheels bundle their own runtime (no HIP SDK), so a mapped arch installs
+        # ROCm torch directly below -- no wasted CPU base.
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
@@ -1972,7 +2036,7 @@ exit 0
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
-    if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+    if (($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
             "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -1994,6 +2058,17 @@ exit 0
         $torchFloorMap = @{
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+        }
+        # Companion ranges track the torch ceiling so pip resolves a consistent
+        # trio on AMD's per-arch index (each published independently). Mirrors
+        # setup.ps1 / install_python_stack.py; bump all three together for 2.12.x.
+        $torchvisionFloorMap = @{
+            "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
+        }
+        $torchaudioFloorMap = @{
+            "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
@@ -2023,10 +2098,10 @@ exit 0
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($ROCmGfxArch) {
-            # Known AMD arch: install.ps1 lays down CPU PyTorch as a base, then
-            # setup.ps1 swaps in AMD's bundled-runtime GPU ROCm wheels (no HIP SDK).
-            substep "Installing CPU PyTorch as a base -- Studio setup installs GPU ROCm" "Cyan"
-            substep "wheels for $ROCmGfxArch next (bundled runtime; HIP SDK not required)." "Cyan"
+            # Only an unmapped arch reaches here (a mapped one set $ROCmIndexUrl
+            # above). No ROCm torch wheels for this arch (e.g. RDNA2 gfx103X) -> CPU.
+            substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
+            substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
             if ($HipSdkInstalled -and -not $HasROCm) {
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
@@ -2080,7 +2155,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2094,7 +2169,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2121,10 +2196,29 @@ exit 0
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch from $ROCmIndexUrl..."
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
+            # Pin the companions to match $torchSpec; bare names can resolve an
+            # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
+            $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+            $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
-                return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                # Transient AMD-index failure: fall back to a CPU base so the install
+                # still completes; Studio setup retries ROCm afterwards.
+                substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Studio setup retries ROCm." "Yellow"
+                # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
+                # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
+                # torch>= range, so without it uv would keep the ROCm build and only swap
+                # the companions -- a mismatched venv the flavor-repair block won't fix.
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+                if ($torchInstallExit -ne 0) {
+                    Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                }
+                # CPU base is in; drop the ROCm expectation so the flavor-repair
+                # block below won't retry the just-failed index and abort. setup.ps1
+                # reinstalls ROCm afterwards (recomputes its own index URL).
+                $ROCmIndexUrl = $null
+                $ROCmTorchFloor = $null
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
@@ -2141,7 +2235,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2153,7 +2247,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2181,7 +2275,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.6.6" "unsloth>=2026.6.8" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2223,8 +2317,12 @@ exit 0
                     # AMD: a migrated venv can keep a stale CPU torch the fresh ROCm path
                     # would have force-reinstalled. Repair from the same repo.amd.com index.
                     $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+                    # Pin companions like the fresh ROCm path (bare names can pull an
+                    # ABI-incompatible torchvision/torchaudio from the per-arch index).
+                    $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+                    $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec torchvision torchaudio }
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
@@ -2298,7 +2396,9 @@ exit 0
 
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
-    # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
+    # CUDA Toolkit, and other dependencies automatically via winget. Node.js is
+    # NOT installed via winget -- setup.ps1 uses an isolated Node it manages and
+    # never touches the system Node/npm.
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
@@ -2339,6 +2439,13 @@ exit 0
     }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+    if ($WithLlamaCppDir) {
+        if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
+            Write-Host "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
+            return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
+        }
+        $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
+    }
     $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
     # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
     # resolved and built the venv with, instead of re-probing the system (which
@@ -2354,6 +2461,7 @@ exit 0
         } else {
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
+        Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
@@ -2504,6 +2612,7 @@ exit 0
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
             Write-Host ""
         }
     } else {
@@ -2524,6 +2633,7 @@ exit 0
             substep "unsloth studio -p 8888"
         }
         substep "(add -H 0.0.0.0 to allow network / cloud access)"
+        substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
         Write-Host ""
     }
 }

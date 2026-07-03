@@ -42,14 +42,20 @@ export async function confirmRemoteCodeIfNeeded({
       scanCreatedRepos: [],
       unsafeFiles: [],
       securityBlocked: false,
+      alreadyApproved: false,
+      provider: null,
     };
   }
 
-  // Open the dialog for custom-code consent OR flagged unsafe files. Otherwise a model
-  // can still need trust_remote_code via its YAML default (no auto_map, e.g. GLM-4.7-Flash):
-  // propagate the caller's requirement with an empty pin instead of sending false.
+  // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing
+  // it ship auto_map and hit the dialog below, so the flag is only enabled via approval.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
-    if (requiresTrustRemoteCode) onApprove(null);
+    return true;
+  }
+
+  // Already approved this exact code and nothing unsafe flagged: reuse without re-prompting.
+  if (scan.alreadyApproved && scan.unsafeFiles.length === 0 && !scan.securityBlocked) {
+    onApprove(scan.fingerprint);
     return true;
   }
 
