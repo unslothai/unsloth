@@ -53,6 +53,11 @@ _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
+_next_is_llama_cpp_dir=false
+# Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
+# (the documented piped-install style) is honored; the --with-llama-cpp-dir
+# flag below overrides it when given.
+_WITH_LLAMA_CPP_DIR="${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}"
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
         PACKAGE_NAME="$arg"
@@ -64,6 +69,11 @@ for arg in "$@"; do
         _next_is_python=false
         continue
     fi
+    if [ "$_next_is_llama_cpp_dir" = true ]; then
+        _WITH_LLAMA_CPP_DIR="$arg"
+        _next_is_llama_cpp_dir=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
@@ -72,6 +82,7 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
 
@@ -253,6 +264,10 @@ if [ "$_next_is_package" = true ]; then
 fi
 if [ "$_next_is_python" = true ]; then
     echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
+    exit 1
+fi
+if [ "$_next_is_llama_cpp_dir" = true ]; then
+    echo "❌ ERROR: --with-llama-cpp-dir requires a path argument." >&2
     exit 1
 fi
 
@@ -3037,6 +3052,13 @@ _run_setup_with_studio_home() {
         "$@"
     fi
 }
+if [ -n "$_WITH_LLAMA_CPP_DIR" ]; then
+    if [ ! -d "$_WITH_LLAMA_CPP_DIR" ]; then
+        echo "[ERROR] --with-llama-cpp-dir path does not exist: $_WITH_LLAMA_CPP_DIR" >&2
+        exit 1
+    fi
+    _WITH_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_WITH_LLAMA_CPP_DIR" && pwd -P)"
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
@@ -3045,6 +3067,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -3059,6 +3082,7 @@ else
     STUDIO_LOCAL_INSTALL=0 \
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 

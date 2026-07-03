@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import os
+import re
 
-EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "unsloth/bge-small-en-v1.5")
+DEFAULT_EMBEDDING_MODEL = "unsloth/bge-small-en-v1.5"
+EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 # Under bge's 512 limit, leaving headroom for the 2 special tokens (else overflow:
 # llama-server 500s, ST truncates). Keep <= embedder_max - ~12.
 CHUNK_TOKENS = int(os.environ.get("RAG_CHUNK_TOKENS", "500"))
@@ -66,6 +68,43 @@ OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 # wins bulk indexing), else torch-free GGUF llama-server. Switching backends changes
 # the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
+
+
+def effective_embedding_model() -> str:
+    """The embedding model actually in use: the persisted Settings override when
+    one is stored, else ``EMBEDDING_MODEL`` (env/default). Read at call time so a
+    Settings change applies without a restart."""
+    try:
+        from utils.embedding_model_settings import get_rag_embedding_model
+        return get_rag_embedding_model()
+    except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
+        return EMBEDDING_MODEL
+
+
+def _names_gguf(model: str) -> bool:
+    """True when "gguf" appears as a whole name segment, so plain substrings
+    like "bigguf" don't count."""
+    return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
+
+
+def effective_gguf_repo() -> str:
+    """GGUF repo for the llama-server backend, tracking the effective model.
+
+    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins. Otherwise any custom
+    model (saved in Settings or via ``RAG_EMBEDDING_MODEL``) maps to its
+    ``-GGUF`` companion repo (the unsloth convention the default pair follows),
+    or is used as-is when it already names a GGUF repo.
+    """
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return EMBED_GGUF_REPO
+    model = effective_embedding_model()
+    if model == DEFAULT_EMBEDDING_MODEL:
+        return EMBED_GGUF_REPO
+    if _names_gguf(model):
+        return model
+    return f"{model}-GGUF"
+
+
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
 # tiny model) and exact vs fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
