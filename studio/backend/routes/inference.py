@@ -10583,6 +10583,19 @@ async def _openai_passthrough_stream(
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
+    client = None
+    resp = None
+    send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
+
+    async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
@@ -10593,21 +10606,9 @@ async def _openai_passthrough_stream(
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
         )
-        resp = None
         _truncate_budget = (
             _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
         )
-        send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
-
-        async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
-            if task is None:
-                return
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
         while True:
             try:
@@ -10757,17 +10758,16 @@ async def _openai_passthrough_stream(
                         err_text[:500],
                     )
                     upstream_error = _openai_passthrough_error(resp.status_code, err_text)
-                    api_monitor.fail(monitor_id, err_text[:500])
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            openai_error_body(
-                                str(upstream_error.detail),
-                                status = resp.status_code,
-                            )
+                    error_payload = (
+                        upstream_error.detail
+                        if isinstance(upstream_error.detail, dict)
+                        else openai_error_body(
+                            str(upstream_error.detail),
+                            status = resp.status_code,
                         )
-                        + "\n\n"
                     )
+                    api_monitor.fail(monitor_id, err_text[:500])
+                    yield f"data: {json.dumps(error_payload)}\n\n"
                     return
 
                 cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
@@ -10953,6 +10953,8 @@ async def _openai_passthrough_stream(
             unstarted_cleanup = _unstarted_cleanup,
         )
     except BaseException:
+        await _aclose_send_task(send_task)
+        await _aclose_stream_resources(resp = resp, client = client)
         _tracker.__exit__(None, None, None)
         raise
 
