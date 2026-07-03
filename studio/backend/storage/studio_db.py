@@ -23,6 +23,7 @@ from typing import Any, Iterable, Optional
 
 
 from utils.paths import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
     ensure_dir,
     project_workspaces_root,
     studio_db_path,
@@ -66,38 +67,8 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
-_SENSITIVE_PATH_COMPONENTS = {
-    ".aws",
-    ".azure",
-    ".config",
-    ".docker",
-    ".gcloud",
-    ".gnupg",
-    ".huggingface",
-    ".kaggle",
-    ".kube",
-    ".modelscope",
-    ".ngc",
-    ".local",
-    ".mozilla",
-    ".pki",
-    ".thunderbird",
-    ".ssh",
-    ".1password",
-    ".bitwarden",
-    ".password-store",
-    "1password",
-    "bitwarden",
-    "keychains",
-    "keyrings",
-    "mozilla",
-    "thunderbird",
-}
-
-
 def _contains_sensitive_path_component(path: str) -> bool:
-    parts = os.path.normpath(path).split(os.sep)
-    return any(part.lower() in _SENSITIVE_PATH_COMPONENTS for part in parts)
+    return _shared_contains_sensitive_path_component(path)
 
 
 def contains_sensitive_path_component(path: str) -> bool:

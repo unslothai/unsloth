@@ -10,6 +10,11 @@ import os
 import platform
 from pathlib import Path
 
+from utils.paths.sensitive import (
+    contains_sensitive_path_component,
+    is_sensitive_path_component,
+)
+
 
 def _is_linux_media_mount_path(path: str, media_root: Path | str) -> bool:
     normalized = os.path.normpath(os.path.realpath(os.path.expanduser(path)))
@@ -39,6 +44,14 @@ def _current_username() -> str | None:
     return user or None
 
 
+def _contains_sensitive_media_component(path: Path, media_root: Path) -> bool:
+    try:
+        rel = path.relative_to(media_root)
+    except ValueError:
+        rel = path
+    return contains_sensitive_path_component(str(rel))
+
+
 def linux_run_media_mount_roots(
     base: Path | str = "/run/media", *, user: str | None = None
 ) -> list[Path]:
@@ -64,11 +77,15 @@ def linux_run_media_mount_roots(
     except (OSError, RuntimeError, ValueError):
         return []
     for volume_dir in volume_dirs:
+        if is_sensitive_path_component(volume_dir.name):
+            continue
         try:
             resolved = volume_dir.resolve()
         except (OSError, RuntimeError, ValueError):
             continue
         if not _is_linux_media_mount_path(str(resolved), resolved_base):
+            continue
+        if _contains_sensitive_media_component(resolved, resolved_base):
             continue
         key = os.path.normcase(os.path.realpath(str(resolved)))
         if key in seen:

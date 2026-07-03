@@ -94,9 +94,13 @@ def test_linux_run_media_policy_rejects_unrelated_run_paths(monkeypatch, path):
 def test_linux_run_media_mount_roots_lists_readable_volume_roots(monkeypatch, tmp_path):
     base = tmp_path / "run" / "media"
     mount = base / "dspofu" / "nvmeB"
+    sensitive_mount = base / "dspofu" / ".ssh"
+    sensitive_aws_mount = base / "dspofu" / ".aws"
     other_user_mount = base / "other" / "backup"
     incomplete = base / "dspofu-only"
     mount.mkdir(parents = True)
+    sensitive_mount.mkdir()
+    sensitive_aws_mount.mkdir()
     other_user_mount.mkdir(parents = True)
     incomplete.mkdir()
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
@@ -104,6 +108,35 @@ def test_linux_run_media_mount_roots_lists_readable_volume_roots(monkeypatch, tm
     roots = external_media.linux_run_media_mount_roots(base, user = "dspofu")
 
     assert roots == [mount.resolve()]
+
+
+def test_linux_run_media_mount_roots_skips_sensitive_resolved_volume_name(monkeypatch, tmp_path):
+    base = tmp_path / "run" / "media"
+    normal_mount = base / "dspofu" / "nvmeB"
+    sensitive_target = base / "dspofu" / ".config"
+    normal_mount.mkdir(parents = True)
+    sensitive_target.mkdir()
+    alias = base / "dspofu" / "config-alias"
+    alias.symlink_to(sensitive_target, target_is_directory = True)
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_run_media_mount_roots(base, user = "dspofu")
+
+    assert roots == [normal_mount.resolve()]
+
+
+def test_linux_run_media_mount_roots_skips_sensitive_resolved_descendant(monkeypatch, tmp_path):
+    base = tmp_path / "run" / "media"
+    normal_mount = base / "dspofu" / "nvmeB"
+    sensitive_descendant = normal_mount / ".ssh" / "models"
+    sensitive_descendant.mkdir(parents = True)
+    alias = base / "dspofu" / "models-alias"
+    alias.symlink_to(sensitive_descendant, target_is_directory = True)
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
+
+    roots = external_media.linux_run_media_mount_roots(base, user = "dspofu")
+
+    assert roots == [normal_mount.resolve()]
 
 
 def test_hub_scan_folder_accepts_linux_run_media_mount(monkeypatch):
