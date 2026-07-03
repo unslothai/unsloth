@@ -982,6 +982,18 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
 
         # Step 3: generate
+
+        # Newer hybrid-thinking templates (Qwen3.5 / Qwen3.6 style) *prefill* the reasoning
+        # opener in the generation prompt (`...<|im_start|>assistant\n<think>\n`), so the
+        # model's own output stream is `reasoning...</think>answer` with no opening tag.
+        # The shared stream protocol marks reasoning with literal <think>...</think> tags
+        # (the harmony parser above emits them for gpt-oss, and llama-server handles the
+        # prefilled-opener convention natively on the GGUF path). Without re-emitting the
+        # opener here, everything the model thinks renders as answer text on the
+        # safetensors path (#6815). enable_thinking=False prompts end with an *empty*
+        # `<think>\n\n</think>` block, not the bare opener, so they are unaffected.
+        if formatted_prompt.rstrip().endswith("<think>"):
+            yield "<think>"
         yield from self.generate_stream(
             formatted_prompt,
             temperature,
