@@ -245,6 +245,10 @@ def main():
     # expert even if the sample set does not route tokens to all of them.
     is_moe = _is_moe(getattr(model, "config", None))
     ignore = ["lm_head"]
+    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family (these also have
+    # shapes not divisible by the grouped-scheme group_size, which would otherwise error). No-ops
+    # elsewhere. Hybrid linear attention, VLM vision tower, and the MTP/speculative head.
+    ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
     if is_moe:
         # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
         ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
