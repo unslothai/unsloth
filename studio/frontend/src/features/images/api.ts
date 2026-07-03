@@ -281,6 +281,19 @@ export interface DiffusionTrainingStartRequest {
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
   lr_scheduler?: string;
+  lr_warmup_steps?: number;
+  // DiT-family quantised base precision (nf4 QLoRA by default). Ignored for sdxl, which
+  // uses mixed_precision instead. "auto" lets the backend pick per family.
+  base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "auto";
+  // Whether to torch.compile the transformer (DiT families that support it). "auto" lets
+  // the backend decide; "off"/"on" force it.
+  compile_transformer?: "off" | "on" | "auto";
+  // Precompute + cache the VAE latents before the loop (skips re-encoding each epoch).
+  cache_latents?: boolean;
+  // How many augmentation variants to cache per image when caching latents (1..16).
+  cache_variants?: number;
+  // Allow TF32 matmuls on Ampere+ for a throughput win at negligible quality cost.
+  enable_tf32?: boolean;
   // Forwarded to the pipeline's from_pretrained for a gated/private base repo (e.g. FLUX).
   hf_token?: string | null;
 }
@@ -334,8 +347,16 @@ export async function startDiffusionTraining(
   );
 }
 
-export async function stopDiffusionTraining(): Promise<{ status: string }> {
-  return parseJson(await authFetch("/api/train/diffusion/stop", { method: "POST" }));
+// Request a stop of the running job. `save` (default true) writes the current adapter
+// before halting ("Stop and save"); false discards it ("Stop").
+export async function stopDiffusionTraining(save = true): Promise<{ status: string }> {
+  return parseJson(
+    await authFetch("/api/train/diffusion/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ save }),
+    }),
+  );
 }
 
 export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
@@ -368,6 +389,13 @@ export interface DiffusionTrainableFamily {
   } | null;
   vram_note?: string | null;
   gated?: boolean | null;
+  // Quantised base precisions this family can train in (subset of
+  // ["nf4","bf16","int8","fp8","auto"]); empty for sdxl, which uses mixed_precision.
+  precision_modes?: string[];
+  // The precision the backend recommends for this family (marked "(recommended)").
+  recommended_precision?: string;
+  // Whether the family's transformer can be torch.compile'd (gates the Speed > Compile row).
+  supports_compile?: boolean;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.

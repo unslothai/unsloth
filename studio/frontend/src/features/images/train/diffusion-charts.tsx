@@ -44,14 +44,16 @@ function fullStepDomain(steps: number[]): [number, number] {
 }
 
 // A diffusion-only metrics view: just Training Loss and Learning Rate, side by side, with a
-// note under the loss card explaining why per-step loss looks noisy.
+// note under the loss card explaining why per-step loss looks noisy. Always renders both
+// cards (even with no data) so the Train tab can show them grayed before a run starts; the
+// parent applies the grayed treatment via a wrapper, so we never early-return null here.
 export function DiffusionCharts({
   lossHistory,
   lrHistory,
 }: {
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
-}): ReactElement | null {
+}): ReactElement {
   const lossItems = useMemo(() => toLossItems(lossHistory), [lossHistory]);
   const smoothed = useMemo(
     () => (lossItems.length > 0 ? ema(lossItems, SMOOTHING) : []),
@@ -108,8 +110,6 @@ export function DiffusionCharts({
     lossItems.length > 0
       ? +(lossItems.reduce((s, p) => s + p.loss, 0) / lossItems.length).toFixed(4)
       : 0;
-
-  if (lossItems.length === 0 && lrData.length === 0) return null;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

@@ -3,9 +3,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { LayoutAlignRightIcon, Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -156,6 +166,29 @@ export function DiffusionTrainPanel({
     () => families.find((f) => f.name === familyName) ?? families[0],
     [families, familyName],
   );
+  // The raw backend family record (precision_modes / recommended_precision / supports_compile
+  // live only here, not on the preset). Absent on an older backend -> the DiT speed controls
+  // fall back to a sensible default list.
+  const reportedFamily = useMemo(
+    () => info?.families?.find((f) => f.name === familyName),
+    [info?.families, familyName],
+  );
+  // sdxl trains the U-Net in mixed precision (no quantised base), so it uses the
+  // mixed_precision control instead of base_precision. Everything else is a DiT family.
+  const isDiT = familyName !== "sdxl";
+  // The quantised base precisions this family can train in, with a stable fallback when the
+  // backend does not report them (older backend, or a preset-only family).
+  const precisionModes = useMemo<Array<"nf4" | "bf16" | "int8" | "fp8" | "auto">>(() => {
+    const reported = reportedFamily?.precision_modes?.filter(
+      (m): m is "nf4" | "bf16" | "int8" | "fp8" =>
+        m === "nf4" || m === "bf16" || m === "int8" || m === "fp8",
+    );
+    if (reported && reported.length > 0) return ["auto", ...reported];
+    return ["auto", "nf4", "bf16", "int8", "fp8"];
+  }, [reportedFamily?.precision_modes]);
+  // Whether to show the torch.compile control. Default on for DiT families when the backend
+  // does not say otherwise; sdxl's U-Net path does not expose it here.
+  const supportsCompile = isDiT && (reportedFamily?.supports_compile ?? true);
 
   const [baseChoice, setBaseChoice] = useState<string>(family?.base_repos[0] ?? "");
   const [customBase, setCustomBase] = useState("");
@@ -172,19 +205,52 @@ export function DiffusionTrainPanel({
   const [outputDir, setOutputDir] = useState("");
   const [instancePrompt, setInstancePrompt] = useState("");
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  // The right-docked Advanced settings panel (mirrors the Create tab's / Chat's settings
+  // panel). Open by default -- on a training tab the hyperparameters are primary content,
+  // like the LLM Train page's right rail; the fixed top-right button hides it.
+  const [advancedOpen, setAdvancedOpen] = useState(true);
   const [steps, setSteps] = useState(500);
   const [learningRate, setLearningRate] = useState(family?.defaults.lr ?? 0.0001);
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
   const [resolution, setResolution] = useState(family?.defaults.resolution ?? 768);
   const [batchSize, setBatchSize] = useState(1);
+  const [gradAccum, setGradAccum] = useState(1);
+  const [seed, setSeed] = useState(42);
+  // LR schedule (PR E wired get_scheduler into the loop, so the LR chart reflects this).
+  // Warmup only applies to the non-constant schedules; plain "constant" ignores it.
+  const [lrScheduler, setLrScheduler] = useState<
+    "constant" | "constant_with_warmup" | "cosine" | "linear"
+  >("constant");
+  const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
+  // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
+  const [gradCheckpoint, setGradCheckpoint] = useState(true);
+  // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen
+  // base weights instead (base_precision) and ignore this. Both are surfaced in Advanced.
   const [precision, setPrecision] = useState<"bf16" | "fp16" | "no">("bf16");
+  // Quantised base precision for DiT families (nf4 QLoRA default, or a speed tier). "auto"
+  // lets the backend pick the family's recommended mode. Re-seeded to the family's
+  // recommendation on family change (unless the user picked one).
+  const [basePrecision, setBasePrecision] = useState<
+    "nf4" | "bf16" | "int8" | "fp8" | "auto"
+  >("auto");
+  // Whether to torch.compile the DiT transformer. "auto" defers to the backend.
+  const [compileTransformer, setCompileTransformer] = useState<"off" | "on" | "auto">(
+    "auto",
+  );
   // Track whether the user hand-edited the numeric settings; if not, a family change
   // re-seeds them from that family's defaults.
   const settingsDirty = useRef(false);
+  // Track whether the user hand-picked a base precision; if not, a family change re-seeds it
+  // from that family's recommended_precision.
+  const precisionDirty = useRef(false);
 
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
+  // The confirm-stop dialog (mirrors the LLM Train tab): Continue / Stop / Stop and save.
+  const [stopDialogOpen, setStopDialogOpen] = useState(false);
+  // Set when the user confirms a stop; the button reads "Stopping..." until the run ends.
+  // Clamped to the running state at read time (below) so a fresh run never inherits it.
+  const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
     try {
@@ -286,7 +352,17 @@ export function DiffusionTrainPanel({
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
     }
-  }, [family, loadedBaseRepo]);
+    // Re-seed the DiT base precision from the family's recommendation (unless the user picked
+    // one). "auto" is always a safe default when the backend has no recommendation.
+    if (!precisionDirty.current) {
+      const rec = reportedFamily?.recommended_precision;
+      setBasePrecision(
+        rec === "nf4" || rec === "bf16" || rec === "int8" || rec === "fp8"
+          ? rec
+          : "auto",
+      );
+    }
+  }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
 
   // The base actually used everywhere (request, deploy, select value). baseChoice can
   // briefly hold another family's repo between a family switch and the reseed effect
@@ -324,6 +400,18 @@ export function DiffusionTrainPanel({
     status && status.total_steps > 0
       ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
       : 0;
+
+  // The pending-stop flag only matters while a run is active; clamping at read time (rather
+  // than resetting in an effect) means a fresh run never inherits a stale "Stopping..." state.
+  const stopRequested = running && stopRequestedLocal;
+
+  // Whether there is a run to show live (running or a not-yet-dismissed completed run).
+  // When false, the progress card + charts still render but grayed, as a preview.
+  const hasRun = Boolean(
+    status &&
+      status.status !== "idle" &&
+      !(status.status === "completed" && status.job_id === dismissedJobId),
+  );
 
   // Notify the parent exactly once per completed run so it rescans the LoRA picker.
   const notifiedComplete = useRef(false);
@@ -416,7 +504,9 @@ export function DiffusionTrainPanel({
       return toast.error("Resolution must be a multiple of 8 and at least 64.");
     }
     if (batchSize < 1) return toast.error("Batch size must be at least 1.");
+    if (gradAccum < 1) return toast.error("Gradient accumulation must be at least 1.");
     if (learningRate <= 0) return toast.error("Learning rate must be greater than 0.");
+    if (lrWarmupSteps < 0) return toast.error("Warmup steps cannot be negative.");
     setStarting(true);
     try {
       await startDiffusionTraining({
@@ -429,8 +519,17 @@ export function DiffusionTrainPanel({
         train_steps: steps,
         learning_rate: learningRate,
         train_batch_size: batchSize,
+        gradient_accumulation_steps: gradAccum,
+        seed,
+        gradient_checkpointing: gradCheckpoint,
+        lr_scheduler: lrScheduler,
+        lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
         mixed_precision: precision,
+        // DiT families quantise the base weights (base_precision); sdxl uses mixed_precision
+        // above and ignores this. Only send compile for families that support it.
+        base_precision: isDiT ? basePrecision : undefined,
+        compile_transformer: supportsCompile ? compileTransformer : undefined,
         hf_token: hfApiToken(getHfToken()) || undefined,
       });
       toast.success("Training started");
@@ -452,20 +551,42 @@ export function DiffusionTrainPanel({
     steps,
     learningRate,
     batchSize,
+    gradAccum,
+    seed,
+    gradCheckpoint,
+    lrScheduler,
+    lrWarmupSteps,
     rank,
     precision,
+    isDiT,
+    basePrecision,
+    supportsCompile,
+    compileTransformer,
     poll,
   ]);
 
-  const onStop = useCallback(async () => {
-    try {
-      await stopDiffusionTraining();
-      toast.success("Stop requested; finishing the current step.");
-      void poll();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to stop training");
-    }
-  }, [poll]);
+  // Confirm-then-stop, mirroring the LLM Train tab. `save` writes the current adapter before
+  // halting ("Stop and save"); false discards it ("Stop"). Closes the dialog and marks the
+  // stop as requested so the button reads "Stopping..." until the backend reports it stopped.
+  const onStop = useCallback(
+    async (save: boolean) => {
+      setStopDialogOpen(false);
+      setStopRequestedLocal(true);
+      try {
+        await stopDiffusionTraining(save);
+        toast.success(
+          save
+            ? "Stop requested; saving the adapter after the current step."
+            : "Stop requested; discarding this run after the current step.",
+        );
+        void poll();
+      } catch (e) {
+        setStopRequestedLocal(false);
+        toast.error(e instanceof Error ? e.message : "Failed to stop training");
+      }
+    },
+    [poll],
+  );
 
   const onDeployClick = useCallback(() => {
     if (!status?.catalog_path) {
@@ -505,6 +626,135 @@ export function DiffusionTrainPanel({
         }}
         className="h-8 text-xs"
       />
+    </div>
+  );
+
+  const precisionLabel = (m: "nf4" | "bf16" | "int8" | "fp8" | "auto"): string => {
+    if (m === "auto") return "Auto (recommended)";
+    if (m === "nf4") return "nf4 (4-bit QLoRA, lowest VRAM)";
+    if (m === "bf16") return "bf16 (fastest, most VRAM)";
+    if (m === "int8") return "int8 (8-bit)";
+    return "fp8 (experimental)";
+  };
+
+  // The Advanced training settings, rendered inside the right-docked panel (mirrors the
+  // Create tab's advancedControls). Numeric hyperparameters, the sdxl/DiT precision control,
+  // and the DiT speed levers (base precision + torch.compile).
+  const advancedControls = (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3">
+        {numberField("Steps", steps, setSteps, 1)}
+        {numberField("LoRA rank", rank, setRank, 1)}
+        {numberField("Resolution", resolution, setResolution, 512, { min: 64, step: 64 })}
+        {numberField("Batch", batchSize, setBatchSize, 1)}
+        {numberField("Grad accumulation", gradAccum, setGradAccum, 1)}
+        {numberField("Seed", seed, setSeed, 42, { min: 0 })}
+      </div>
+      {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
+        min: 0,
+        step: 0.00001,
+      })}
+
+      <div className="grid gap-1.5">
+        <Label className="text-xs">LR schedule</Label>
+        <select
+          value={lrScheduler}
+          onChange={(e) => setLrScheduler(e.target.value as typeof lrScheduler)}
+          className={selectClass}
+          aria-label="LR schedule"
+        >
+          <option value="constant">Constant</option>
+          <option value="constant_with_warmup">Constant + warmup</option>
+          <option value="cosine">Cosine decay</option>
+          <option value="linear">Linear decay</option>
+        </select>
+        {lrScheduler !== "constant" &&
+          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, { min: 0 })}
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          How the learning rate evolves over the run (shown live in the LR chart).
+        </p>
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label className="text-xs">Gradient checkpointing</Label>
+        <select
+          value={gradCheckpoint ? "on" : "off"}
+          onChange={(e) => setGradCheckpoint(e.target.value === "on")}
+          className={selectClass}
+          aria-label="Gradient checkpointing"
+        >
+          <option value="on">On (less VRAM)</option>
+          <option value="off">Off (faster steps)</option>
+        </select>
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          Recomputes activations in the backward pass: a large VRAM saving for a modest
+          per-step slowdown.
+        </p>
+      </div>
+
+      {isDiT ? (
+        <>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Base precision</Label>
+            <select
+              value={basePrecision}
+              onChange={(e) => {
+                precisionDirty.current = true;
+                setBasePrecision(e.target.value as typeof basePrecision);
+              }}
+              className={selectClass}
+              aria-label="Base precision"
+            >
+              {precisionModes.map((m) => (
+                <option key={m} value={m}>
+                  {precisionLabel(m)}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
+              bf16 is fastest but needs the most. Auto picks this family&apos;s recommended mode.
+            </p>
+          </div>
+          {supportsCompile && (
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Compile transformer</Label>
+              <select
+                value={compileTransformer}
+                onChange={(e) =>
+                  setCompileTransformer(e.target.value as typeof compileTransformer)
+                }
+                className={selectClass}
+                aria-label="Compile transformer"
+              >
+                <option value="auto">Auto</option>
+                <option value="on">On (faster after warmup)</option>
+                <option value="off">Off</option>
+              </select>
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                torch.compile the transformer. Adds a one-time warmup, then speeds up each step.
+              </p>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="grid gap-1.5">
+          <Label className="text-xs">Precision</Label>
+          <select
+            value={precision}
+            onChange={(e) => setPrecision(e.target.value as "bf16" | "fp16" | "no")}
+            className={selectClass}
+            aria-label="Precision"
+          >
+            <option value="bf16">bf16 (default)</option>
+            <option value="fp16">fp16 (older GPUs)</option>
+            <option value="no">fp32 (no mixed)</option>
+          </select>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            Mixed-precision autocast for the U-Net. bf16 suits modern GPUs.
+          </p>
+        </div>
+      )}
     </div>
   );
 
@@ -714,54 +964,28 @@ export function DiffusionTrainPanel({
           />
         </div>
 
-        {/* Collapsed training settings */}
-        <Button
+        {/* Training settings now live in the right-docked Advanced panel (opened by the
+            top-right toggle), so the left rail stays focused on the dataset + trigger. */}
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 w-fit gap-1.5 px-1 text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => setShowAdvanced((s) => !s)}
-          aria-expanded={showAdvanced}
+          onClick={() => setAdvancedOpen(true)}
+          className="w-fit text-left text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         >
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            className={cn("size-3.5 transition-transform", showAdvanced && "rotate-180")}
-          />
-          {showAdvanced ? "Training settings" : "Training settings (defaults suit a first run)"}
-        </Button>
-        {showAdvanced && (
-          <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {numberField("Steps", steps, setSteps, 1)}
-              {numberField("LoRA rank", rank, setRank, 1)}
-              {numberField("Resolution", resolution, setResolution, 512, { min: 64, step: 64 })}
-              {numberField("Batch", batchSize, setBatchSize, 1)}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
-                min: 0,
-                step: 0.00001,
-              })}
-              <div className="grid gap-1.5">
-                <Label className="text-xs">Precision</Label>
-                <select
-                  value={precision}
-                  onChange={(e) => setPrecision(e.target.value as "bf16" | "fp16" | "no")}
-                  className={selectClass}
-                >
-                  <option value="bf16">bf16 (default)</option>
-                  <option value="fp16">fp16 (older GPUs)</option>
-                  <option value="no">fp32 (no mixed)</option>
-                </select>
-              </div>
-            </div>
-          </>
-        )}
+          {advancedOpen
+            ? "Training settings are in the Advanced panel."
+            : "Adjust steps, rank, precision and speed in Advanced settings."}
+        </button>
 
         <div className="mt-auto pt-2">
           {running ? (
-            <Button type="button" variant="destructive" className="w-full" onClick={onStop}>
-              Stop training
+            <Button
+              type="button"
+              variant="destructive"
+              className="w-full"
+              onClick={() => setStopDialogOpen(true)}
+              disabled={stopRequested}
+            >
+              {stopRequested ? "Stopping..." : "Stop training"}
             </Button>
           ) : (
             <Button
@@ -776,91 +1000,177 @@ export function DiffusionTrainPanel({
         </div>
       </div>
 
-      {/* Right: run view */}
-      <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
-        {status &&
-        status.status !== "idle" &&
-        !(status.status === "completed" && status.job_id === dismissedJobId) ? (
-          <>
-            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold capitalize">{status.status}</span>
-                <span className="text-xs text-muted-foreground">
-                  {status.total_steps > 0 ? `${status.step}/${status.total_steps} steps` : ""}
-                </span>
-              </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-border">
-                <div
-                  className="h-full bg-primary transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Stat label="Loss" value={status.loss != null ? status.loss.toFixed(4) : "-"} />
-                <Stat
-                  label="Avg loss"
-                  value={status.avg_loss != null ? status.avg_loss.toFixed(4) : "-"}
-                />
-                <Stat
-                  label="Speed"
-                  value={
-                    status.samples_per_second != null
-                      ? `${status.samples_per_second.toFixed(2)} img/s`
-                      : "-"
-                  }
-                />
-                <Stat
-                  label="Peak VRAM"
-                  value={
-                    status.peak_memory_gb != null ? `${status.peak_memory_gb.toFixed(1)} GB` : "-"
-                  }
-                />
-              </div>
-              {status.message && (
-                <p className="text-[11px] text-muted-foreground">{status.message}</p>
-              )}
-            </div>
-
-            <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
-
-            {completed && (
-              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
-                <span className="text-sm font-semibold">Adapter ready</span>
-                <p className="text-[11px] text-muted-foreground">
-                  Trained{status.family ? ` (${status.family})` : ""} and added to the LoRA
-                  picker.
-                  {status.lora_path && (
-                    <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
-                  )}
-                </p>
-                <div className="mt-1 flex gap-2">
-                  <Button type="button" size="sm" onClick={onDeployClick}>
-                    Deploy to Create
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => setDismissedJobId(status.job_id)}
-                  >
-                    Train another
-                  </Button>
-                </div>
-              </div>
+      {/* Right: run view. The progress card + charts are ALWAYS mounted; before a run they
+          render grayed as a preview (with an overlaid hint), so the layout never jumps when
+          training starts. A single fixed top-right button toggles the Advanced panel. */}
+      <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
+        {/* Fixed Advanced toggle (mirrors Chat's / the Create tab's settings toggle: same icon
+            in both states so it never moves, highlighted when open). */}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            aria-label={advancedOpen ? "Hide advanced settings" : "Show advanced settings"}
+            aria-pressed={advancedOpen}
+            title="Advanced settings"
+            className={cn(
+              "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              advancedOpen
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
             )}
-          </>
-        ) : (
-          <div className="flex flex-1 items-center justify-center">
-            <div className="max-w-sm text-center">
+          >
+            <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+          </button>
+        </div>
+
+        <div
+          className={cn(
+            "relative flex flex-col gap-4",
+            !hasRun && "pointer-events-none select-none opacity-45 grayscale",
+          )}
+          aria-hidden={!hasRun}
+        >
+          <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold capitalize">
+                {hasRun ? status?.status : "Idle"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {hasRun && (status?.total_steps ?? 0) > 0
+                  ? `${status?.step}/${status?.total_steps} steps`
+                  : ""}
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-border">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{ width: `${hasRun ? pct : 0}%` }}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Stat
+                label="Loss"
+                value={hasRun && status?.loss != null ? status.loss.toFixed(4) : "-"}
+              />
+              <Stat
+                label="Avg loss"
+                value={hasRun && status?.avg_loss != null ? status.avg_loss.toFixed(4) : "-"}
+              />
+              <Stat
+                label="Speed"
+                value={
+                  hasRun && status?.samples_per_second != null
+                    ? `${status.samples_per_second.toFixed(2)} img/s`
+                    : "-"
+                }
+              />
+              <Stat
+                label="Peak VRAM"
+                value={
+                  hasRun && status?.peak_memory_gb != null
+                    ? `${status.peak_memory_gb.toFixed(1)} GB`
+                    : "-"
+                }
+              />
+            </div>
+            {hasRun && status?.message && (
+              <p className="text-[11px] text-muted-foreground">{status.message}</p>
+            )}
+          </div>
+
+          <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
+        </div>
+
+        {/* Placeholder hint overlaid on the grayed preview until a run exists. */}
+        {!hasRun && (
+          <div className="pointer-events-none absolute inset-0 top-[34px] flex items-center justify-center">
+            <div className="max-w-sm rounded-2xl bg-background/70 px-5 py-4 text-center backdrop-blur-[1px]">
               <p className="text-sm font-medium">No training run yet</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Pick a family and dataset on the left, then Start training. The loss chart and
-                progress appear here live.
+                Pick a family and dataset on the left, then Start training. Progress and the loss
+                chart fill in here live.
               </p>
             </div>
           </div>
         )}
+
+        {completed && (
+          <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
+            <span className="text-sm font-semibold">Adapter ready</span>
+            <p className="text-[11px] text-muted-foreground">
+              Trained{status?.family ? ` (${status.family})` : ""} and added to the LoRA
+              picker.
+              {status?.lora_path && (
+                <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
+              )}
+            </p>
+            <div className="mt-1 flex gap-2">
+              <Button type="button" size="sm" onClick={onDeployClick}>
+                Deploy to Create
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => status && setDismissedJobId(status.job_id)}
+              >
+                Train another
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Right-docked Advanced settings panel (mirrors the Create tab / Chat settings panel):
+          closed by default, opened by the top-right toggle above. Holds every training
+          hyperparameter and the DiT speed levers so the left rail stays focused on data. */}
+      {advancedOpen && (
+        <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
+          <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-border/60 px-4">
+            <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+              <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+              Advanced
+            </span>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen(false)}
+              aria-label="Hide advanced settings"
+              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+            </button>
+          </div>
+          <div className="flex flex-col gap-4 overflow-y-auto p-4">
+            <p className="text-xs text-muted-foreground">
+              Defaults suit a first run. Changes apply to the next Start training.
+            </p>
+            {advancedControls}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm-stop dialog (mirrors the LLM Train tab): Continue / Stop / Stop and save. */}
+      <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
+        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop training?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Save the adapter trained so far, or discard this run? Either way the current step
+              finishes first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Continue training</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => void onStop(false)}>
+              Stop
+            </AlertDialogAction>
+            <AlertDialogAction onClick={() => void onStop(true)}>
+              Stop and save
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
