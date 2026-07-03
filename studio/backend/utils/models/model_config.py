@@ -2619,7 +2619,9 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
                 if gguf_audio_type is None:
-                    gguf_audio_type = detect_audio_type(path, hf_token = hf_token, local_files_only = True)
+                    gguf_audio_type = detect_audio_type(
+                        path, hf_token = hf_token, local_files_only = True
+                    )
 
                 # Direct file selections may point into a quant subdir while
                 # mmproj-*.gguf lives at the snapshot root.
