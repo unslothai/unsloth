@@ -186,7 +186,7 @@ def test_lora_request_has_gguf_fields():
     from models.export import ExportLoRAAdapterRequest
 
     r = ExportLoRAAdapterRequest(save_directory = "/tmp/x")
-    assert r.gguf is False and r.gguf_outtype == "f16"
+    assert r.gguf is False and r.gguf_outtype == "q8_0"
     r2 = ExportLoRAAdapterRequest(save_directory = "/tmp/x", gguf = True, gguf_outtype = "q8_0")
     assert r2.gguf is True and r2.gguf_outtype == "q8_0"
 
@@ -208,7 +208,7 @@ def test_orchestrator_and_worker_pass_lora_gguf():
     assert '"gguf": gguf' in o and '"gguf_outtype": gguf_outtype' in o
     w = _src("core/export/worker.py")
     assert 'gguf = cmd.get("gguf", False)' in w
-    assert 'gguf_outtype = cmd.get("gguf_outtype", "f16")' in w
+    assert 'gguf_outtype = cmd.get("gguf_outtype", "q8_0")' in w
 
 
 def test_route_passes_lora_gguf():
