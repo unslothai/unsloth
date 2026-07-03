@@ -190,7 +190,6 @@ def _remove_spans(text: str, spans: list) -> str:
     return "".join(pieces)
 
 
-
 def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
@@ -207,9 +206,7 @@ def heal_openai_message_events(
     pos = 0
     call_count = 0
     for call, (start, end) in zip(parsed, spans):
-        promoted = _promote(
-            [call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas
-        )
+        promoted = _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
         if promoted:
             if content[pos:start]:
                 events.append(("text", content[pos:start]))
@@ -256,7 +253,6 @@ def _earliest_signal(buffer: str) -> int:
         if index >= 0 and (best < 0 or index < best):
             best = index
     return best
-
 
 
 def _closed_signal_span(buffer: str) -> Optional[tuple[int, int]]:

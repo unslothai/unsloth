@@ -1119,7 +1119,6 @@ from core.inference.passthrough_healing import (
     StreamToolCallHealer,
     heal_gate,
     heal_openai_message,
-
     heal_openai_message_events,
     nudge_enabled,
     nudge_messages,
@@ -10455,7 +10454,9 @@ async def _anthropic_passthrough_non_streaming(
 
     healing_active = bool(_allowed_tools)
     healed_events = (
-        heal_openai_message_events(message, _allowed_tools, openai_tools) if healing_active else None
+        heal_openai_message_events(message, _allowed_tools, openai_tools)
+        if healing_active
+        else None
     )
 
     content_blocks = []

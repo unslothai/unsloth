@@ -208,7 +208,6 @@ class TestStreamHealer:
         assert [call["function"]["name"] for call in _events_calls(events)] == ["Read", "Bash"]
         assert _events_text(events).strip() == "then"
 
-
     def test_false_alarm_html_flushes(self):
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed("use the <div> tag") + healer.finalize()
@@ -686,12 +685,13 @@ class TestOpenaiNonStreamingRoute:
             assert indexes.get(1) == "call_native"
 
         asyncio.run(_run())
+
     def test_role_delta_precedes_healed_stream_content(self, monkeypatch):
         async def _run():
             lines = [
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":'
                 + json.dumps(LOOKUP_XML)
-                + '}}]}',
+                + "}}]}",
                 'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
@@ -702,8 +702,6 @@ class TestOpenaiNonStreamingRoute:
             assert "tool_calls" in payloads[1]["choices"][0]["delta"]
 
         asyncio.run(_run())
-
-
 
 
 GARBAGE_SIGNAL = "<tool_call>call lookup somehow???"
@@ -835,7 +833,6 @@ class TestNudgeRetryAnthropic:
             assert data["content"][1]["text"] == "done"
 
         asyncio.run(_run())
-
 
     def test_default_off(self, monkeypatch):
         async def _run():
