@@ -617,6 +617,13 @@ def _disable_flash_attention_if_needed(
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
 
+    # The disable reason here is specific to flash attention. A caller who
+    # explicitly asked for a non-flash backend should keep it rather than be
+    # silently downgraded to the fallback, even when the conservative
+    # supports_* flags below would not have selected it.
+    if requested_attn_implementation in ("sdpa", "flex_attention"):
+        return _set_attn_impl(config, requested_attn_implementation)
+
     if supports_sdpa:
         fallback_attn_implementation = "sdpa"
     elif supports_flex_attention:
