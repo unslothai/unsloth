@@ -5,9 +5,10 @@
 .SYNOPSIS
     Full environment setup for Unsloth Studio on Windows (bundled version).
 .DESCRIPTION
-    Always installs Node.js if needed. When running from pip install:
-    skips frontend build (already bundled). When running from git repo:
-    full setup including frontend build.
+    Uses an isolated, Unsloth-managed Node.js for the frontend build when the
+    system Node/npm do not meet requirements (never modifies the system Node).
+    When running from pip install: skips frontend build (already bundled). When
+    running from git repo: full setup including frontend build.
     Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
     Default output is minimal (step/substep), aligned with studio/setup.sh.
@@ -35,6 +36,18 @@ $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
+
+# Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491).
+# studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
+# lock, which overrides a corporate user's ~/.npmrc proxy and causes 403s behind a
+# firewall. UNSLOTH_NPM_REGISTRY is a deliberate opt-in: when set we splat it as
+# `--registry <url>` into every npm/bun install. `--registry` is the highest-precedence
+# override for BOTH tools and leaves min-release-age / save-exact in force. Empty array
+# (the default) splats to nothing, so normal installs are unchanged.
+$NpmRegistryArgs = @()
+if ($env:UNSLOTH_NPM_REGISTRY) {
+    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
+}
 
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
@@ -389,45 +402,199 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
-# Find Visual Studio Build Tools for cmake -G flag.
-# Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
-# Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
-function Find-VsBuildTools {
-    $map = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+# VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
+# (18->v180, 17->v170), defaulting to v170 when unparseable.
+function Get-VcBuildCustomizationsDir {
+    param(
+        [Parameter(Mandatory)][string]$VsInstallPath,
+        [string]$Generator
+    )
+    $toolset = 'v170'
+    if ($Generator -and ($Generator -match 'Visual Studio (\d+)\b')) {
+        $toolset = "v$($Matches[1])0"
+    }
+    return (Join-Path $VsInstallPath "MSBuild\Microsoft\VC\$toolset\BuildCustomizations")
+}
 
-    # --- Try vswhere first (works when VS is properly registered) ---
+# Installed cmake version, or $null if absent/unparseable.
+function Get-CmakeVersion {
+    $raw = & cmake --version 2>$null | Select-Object -First 1
+    if ($raw -and ($raw -match '(\d+)\.(\d+)(?:\.(\d+))?')) {
+        $patch = if ($Matches[3]) { $Matches[3] } else { '0' }
+        return [version]"$($Matches[1]).$($Matches[2]).$patch"
+    }
+    return $null
+}
+
+# VS 18 2026 generator needs cmake >= 4.2 (added there); true for older VS generators.
+function Test-CmakeSupportsGenerator {
+    param(
+        [Parameter(Mandatory)][string]$CmakeVersion,
+        [Parameter(Mandatory)][string]$Generator
+    )
+    if ($Generator -match 'Visual Studio 18\b') {
+        $clean = ($CmakeVersion -replace '[^0-9.].*$', '').TrimEnd('.')
+        try { $v = [version]$clean } catch { return $false }
+        return ($v -ge [version]'4.2')
+    }
+    return $true
+}
+
+function Test-CmakeListsGenerator {
+    # Does `cmake --help` actually list the generator? A VS-bundled cmake can drive
+    # VS 2026 below the 4.2 floor, so probe rather than trust the version. (#6473)
+    param([Parameter(Mandatory)][string]$Generator)
+    $help = & cmake --help 2>$null | Out-String
+    if (-not $help) { return $false }
+    $haystack = ($help -replace '\s+', ' ')
+    $needle = ($Generator -replace '\s+', ' ')
+    return $haystack.Contains($needle)
+}
+
+function Test-CmakeCanDriveGenerator {
+    # cmake can drive $Generator if it lists it (VS-bundled below 4.2) or meets the floor.
+    param([Parameter(Mandatory)][string]$Generator)
+    if (Test-CmakeListsGenerator -Generator $Generator) { return $true }
+    $verObj = Get-CmakeVersion
+    $verStr = if ($verObj) { $verObj.ToString() } else { '0.0' }
+    return (Test-CmakeSupportsGenerator -CmakeVersion $verStr -Generator $Generator)
+}
+
+function Add-DefaultCmakeToPath {
+    # Prepend the default CMake dir so a freshly winget-installed cmake wins over an
+    # older one already on PATH. $true if found. (#6473)
+    $cmakeDefaults = @(
+        "$env:ProgramFiles\CMake\bin",
+        "${env:ProgramFiles(x86)}\CMake\bin",
+        "$env:LOCALAPPDATA\CMake\bin"
+    )
+    foreach ($d in $cmakeDefaults) {
+        if (Test-Path (Join-Path $d "cmake.exe")) {
+            $env:Path = "$d;$env:Path"
+            Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-FallbackVsGenerator {
+    # Newest pre-2026 VS whose generator the current cmake can drive, for when the
+    # VS 2026 generator is unusable (old/offline cmake) but an older toolchain exists.
+    # vswhere first (catches non-default roots like D:\), then Program Files; matches
+    # Find-VsBuildTools. Returns @{ Generator; InstallPath } or $null. (#6473)
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
+
+    # install path if it holds a usable cl.exe, else $null
+    $tryCandidate = {
+        param($gen, $installPath)
+        if (-not $installPath) { return $null }
+        $vcDir = Join-Path $installPath "VC\Tools\MSVC"
+        if (-not (Test-Path $vcDir)) { return $null }
+        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cl) { return @{ Generator = $gen; InstallPath = $installPath } }
+        return $null
+    }
+
+    # vswhere (non-default roots)
+    $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsw) {
+        $json = & $vsw -all -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | Out-String
+        if ($json) {
+            try { $instances = @($json | ConvertFrom-Json) } catch { $instances = @() }
+            $ranked = $instances | ForEach-Object {
+                $label = if ($_.catalog -and $_.catalog.productLineVersion) { [string]$_.catalog.productLineVersion } else { '' }
+                [pscustomobject]@{ Gen = (Resolve-VsGeneratorFromLabel $label); Path = [string]$_.installationPath }
+            } | Where-Object { $_.Gen -and ($_.Gen -notmatch 'Visual Studio 18\b') }
+            # newest first: 2022 > 2019 > 2017
+            $ranked = $ranked | Sort-Object { switch -regex ($_.Gen) { '17 2022' {0} '16 2019' {1} '15 2017' {2} default {9} } }
+            foreach ($cand in $ranked) {
+                if (-not (Test-CmakeListsGenerator -Generator $cand.Gen)) { continue }
+                $res = & $tryCandidate $cand.Gen $cand.Path
+                if ($res) { return $res }
+            }
+        }
+    }
+
+    # Program Files scan
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    $older = @(
+        @{ Dir = '2022'; Generator = 'Visual Studio 17 2022' },
+        @{ Dir = '2019'; Generator = 'Visual Studio 16 2019' },
+        @{ Dir = '2017'; Generator = 'Visual Studio 15 2017' }
+    )
+    foreach ($entry in $older) {
+        if (-not (Test-CmakeListsGenerator -Generator $entry.Generator)) { continue }
+        foreach ($r in $roots) {
+            $vsBase = Join-Path $r "Microsoft Visual Studio\$($entry.Dir)"
+            if (-not (Test-Path $vsBase)) { continue }
+            foreach ($ed in $knownEditions) {
+                $candidate = Join-Path $vsBase $ed
+                if (-not (Test-Path $candidate)) { continue }
+                $res = & $tryCandidate $entry.Generator $candidate
+                if ($res) { return $res }
+            }
+        }
+    }
+    return $null
+}
+
+# VS version label -> cmake generator. vswhere's productLineVersion is the year for
+# VS <= 2022 but the internal major "18" for VS 2026, and dir names use either form,
+# so accept both. (VS 2026 detection adapted from @LeoBorcherding's #6038.)
+function Resolve-VsGeneratorFromLabel {
+    param([string]$Label)
+    if (-not $Label) { return $null }
+    $map = @{
+        '2026' = 'Visual Studio 18 2026'; '18' = 'Visual Studio 18 2026'
+        '2022' = 'Visual Studio 17 2022'; '17' = 'Visual Studio 17 2022'
+        '2019' = 'Visual Studio 16 2019'; '16' = 'Visual Studio 16 2019'
+        '2017' = 'Visual Studio 15 2017'; '15' = 'Visual Studio 15 2017'
+    }
+    return $map[$Label.Trim()]
+}
+
+# Find VS Build Tools for cmake -G: vswhere, then a filesystem scan (handles broken
+# vswhere registration). Returns @{ Generator; InstallPath; Source } or $null.
+function Find-VsBuildTools {
+    # vswhere first (works when VS is properly registered)
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vsw) {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
         if ($info -and $path) {
-            $y = $info.Trim()
-            $n = $map[$y]
-            if ($n) {
-                return @{ Generator = "Visual Studio $n $y"; InstallPath = $path.Trim(); Source = 'vswhere' }
+            $gen = Resolve-VsGeneratorFromLabel $info
+            if ($gen) {
+                return @{ Generator = $gen; InstallPath = $path.Trim(); Source = 'vswhere' }
             }
         }
     }
 
-    # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
-    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
-    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
-    $years = @('2022', '2019', '2017')
+    # filesystem scan (handles broken vswhere registration); VS 2026+ dir is "18"
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
+    $dirs = @('18', '2026', '2022', '2019', '2017')
 
-    foreach ($y in $years) {
+    foreach ($d in $dirs) {
+        $gen = Resolve-VsGeneratorFromLabel $d
+        if (-not $gen) { continue }
         foreach ($r in $roots) {
-            foreach ($ed in $editions) {
-                $candidate = Join-Path $r "Microsoft Visual Studio\$y\$ed"
-                if (Test-Path $candidate) {
-                    $vcDir = Join-Path $candidate "VC\Tools\MSVC"
-                    if (Test-Path $vcDir) {
-                        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                        if ($cl) {
-                            $n = $map[$y]
-                            if ($n) {
-                                return @{ Generator = "Visual Studio $n $y"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
-                            }
-                        }
+            $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
+            if (-not (Test-Path $vsBase)) { continue }
+            # VS 2026 (dir "18") may use non-standard edition names, so scan every subdir
+            if ($d -eq '18' -or $d -eq '2026') {
+                $editionCandidates = Get-ChildItem -Path $vsBase -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+            } else {
+                $editionCandidates = $knownEditions | ForEach-Object { Join-Path $vsBase $_ }
+            }
+            foreach ($candidate in $editionCandidates) {
+                if (-not (Test-Path $candidate)) { continue }
+                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                if (Test-Path $vcDir) {
+                    $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cl) {
+                        $ed = Split-Path $candidate -Leaf
+                        return @{ Generator = $gen; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
                     }
                 }
             }
@@ -435,6 +602,103 @@ function Find-VsBuildTools {
     }
 
     return $null
+}
+
+# Install CMake + VS Build Tools, deferred here from Phase 1 so the prebuilt path
+# never pays for a multi-GB install. Called only when a source build is committed.
+# CMake is best-effort (build skips downstream if absent); VS Build Tools are
+# required, so exit 1 with guidance if missing. No-ops for VS when already detected.
+function Ensure-BuildToolsForLlamaSourceBuild {
+    # CMake
+    if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) {
+        Write-Host "CMake not found -- installing via winget (needed for the llama.cpp source build)..." -ForegroundColor Yellow
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            try {
+                Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+            } catch { }
+        }
+        # winget may install cmake but not put it on PATH yet; try the default dir
+        if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) {
+            $cmakeDefaults = @(
+                "$env:ProgramFiles\CMake\bin",
+                "${env:ProgramFiles(x86)}\CMake\bin",
+                "$env:LOCALAPPDATA\CMake\bin"
+            )
+            foreach ($d in $cmakeDefaults) {
+                if (Test-Path (Join-Path $d "cmake.exe")) {
+                    $env:Path = "$d;$env:Path"
+                    Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
+                    break
+                }
+            }
+        }
+        if ($null -ne (Get-Command cmake -ErrorAction SilentlyContinue)) { step "cmake" "installed" }
+    }
+
+    # VS Build Tools
+    if ($script:VsInstallPath) { return }   # already detected by the early probe
+    $vsResult = Find-VsBuildTools
+    if (-not $vsResult) {
+        Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
+        Write-Host "   (Needed only for the llama.cpp source build; may take several minutes)" -ForegroundColor Gray
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            $prevEAPTemp = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+            $ErrorActionPreference = $prevEAPTemp
+            # Re-scan after install (don't trust vswhere catalog)
+            $vsResult = Find-VsBuildTools
+        }
+    }
+    if ($vsResult) {
+        $script:CmakeGenerator = $vsResult.Generator
+        $script:VsInstallPath = $vsResult.InstallPath
+        step "vs" "$($vsResult.Generator) ($($vsResult.Source))"
+        if ($vsResult.ClExe) { substep "cl.exe: $($vsResult.ClExe)" }
+    } else {
+        Write-Host "[ERROR] Visual Studio Build Tools are required for the llama.cpp source build but could not be found or installed." -ForegroundColor Red
+        Write-Host "        Manual install:" -ForegroundColor Red
+        Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
+        Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+# Detect the VC++ 2015-2022 Redistributable that the prebuilt llama-server and
+# PyTorch need (they link VCRUNTIME140_1.dll etc., which the Universal CRT lacks).
+# Signal is System32\vcruntime140_1.dll (VS 2019+), registry as fallback.
+function Test-VCRedistInstalled {
+    $sys = $env:SystemRoot
+    if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
+    foreach ($k in @(
+        'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+    )) {
+        try {
+            $r = Get-ItemProperty -Path $k -ErrorAction Stop
+            if ($r.Installed -eq 1 -and [int]$r.Major -ge 14 -and [int]$r.Minor -ge 20) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op).
+function Ensure-VCRedist {
+    if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
+    Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
+    if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+        try {
+            Invoke-SetupCommand { winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+            Refresh-Environment
+        } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
+    }
+    if (Test-VCRedistInstalled) { step "vcredist" "installed" }
+    else {
+        substep "Could not install the VC++ Redistributable automatically." "Yellow"
+        substep "If llama-server or torch reports a missing VCRUNTIME140.dll, install:" "Yellow"
+        substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+    }
 }
 
 # ─────────────────────────────────────────────
@@ -625,6 +889,41 @@ function substep {
     Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
 }
 
+function Show-NpmRegistryHint {
+    # Print actionable guidance when a frontend/OXC npm/bun install fails and the
+    # registry lock is the likely cause (corporate firewall/proxy). No-op once the
+    # user has opted in via UNSLOTH_NPM_REGISTRY. We never switch registries
+    # automatically -- we only guide.
+    if ($env:UNSLOTH_NPM_REGISTRY) { return }
+    $mirror = $env:NPM_CONFIG_REGISTRY
+    if (-not $mirror) {
+        # Read npm config from a dir with no project .npmrc so the frontend's pinned
+        # registry= does not mask the user's ~/.npmrc / global mirror.
+        $pushed = $false
+        try {
+            Push-Location ([System.IO.Path]::GetTempPath()) -ErrorAction Stop
+            $pushed = $true
+            $mirror = (& npm config get registry 2>$null | Out-String).Trim()
+        } catch { $mirror = "" } finally { if ($pushed) { Pop-Location } }
+    }
+    if ($mirror -in @("", "undefined", "null", "https://registry.npmjs.org", "https://registry.npmjs.org/")) {
+        $mirror = ""
+    }
+    Write-Host ""
+    step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "Yellow"
+    if ($mirror) {
+        substep "Studio pins the public npm registry; your mirror is being ignored."
+        substep "Detected a registry in your npm config:"
+        substep "  $mirror"
+        substep "Re-run pointing Studio at it:"
+        substep "  `$env:UNSLOTH_NPM_REGISTRY='$mirror'; .\install.ps1 --local"
+    } else {
+        substep "If you use a private mirror/proxy, point Studio at it and re-run:"
+        substep "  `$env:UNSLOTH_NPM_REGISTRY='https://your-mirror.example/api/npm/'; .\install.ps1 --local"
+    }
+    substep "(min-release-age and save-exact stay enforced.)"
+}
+
 # ─────────────────────────────────────────────
 # Banner
 # ─────────────────────────────────────────────
@@ -801,22 +1100,79 @@ $script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
-    $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
-    if (-not $hipinfoExe) {
-        $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
-        $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
-        if ($hipRoot) {
-            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-            if (Test-Path $hipinfoCandidate) {
-                substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
-                substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
-                substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
-                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
-            } else {
-                substep "[WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" "Yellow"
-                substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
-                substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+    # Ignore the venv hipInfo.exe (AMD wheel, on PATH): not a HIP SDK, so amd-smi
+    # would still auto-elevate. Cf. _path_inside_venv().
+    function Test-HipinfoIsVenvInternal {
+        param([AllowNull()][string]$HipinfoPath)
+        if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+        # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes before
+        # VenvDir is set), so also derive the venv from the setup python + default
+        # Studio home, else the venv hipInfo isn't caught.
+        $venvRoots = @()
+        if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
+        $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
+        if ($vd) { $venvRoots += $vd }
+        if ($env:UNSLOTH_SETUP_PYTHON) {
+            try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
+        }
+        if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
+        # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
+        # venv off the default path; seed it too or its hipInfo escapes the filter.
+        $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
+        if ($studioHomeEnv) {
+            # Expand a leading ~ like the canonical resolver below; else GetFullPath
+            # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
+            if (($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                # A bare "~" leaves an empty child path; Join-Path rejects that on
+                # PS 5.1, so use USERPROFILE directly and only join a real remainder.
+                $studioHomeRest = $studioHomeEnv.Substring(1).TrimStart('/', '\')
+                $studioHomeEnv = if ($studioHomeRest) { Join-Path $env:USERPROFILE $studioHomeRest } else { $env:USERPROFILE }
             }
+            $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio")
+        }
+        try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
+        foreach ($root in $venvRoots) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+            # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON like
+            # C:\Python311\python.exe yields C:) -- it would match every path on that drive.
+            if ($r -match '^[a-zA-Z]:$') { continue }
+            if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+    # Scan all hipinfo and keep the first non-venv one (the venv copy from the
+    # bnb fix could shadow a real HIP SDK's). -CommandType Application matches
+    # only real executables, not a user alias/function named hipinfo.
+    $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
+        Select-Object -First 1
+    if (-not $hipinfoExe) {
+        # Iterate the env roots (mirrors the Python list) and take the first non-venv
+        # bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+        $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
+        foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
+            $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
+            if ([string]::IsNullOrWhiteSpace($hipRoot)) { continue }
+            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+            if (-not (Test-Path $hipinfoCandidate)) {
+                if (-not $hipMissingLabel) { $hipMissingLabel = $hipEnvLabel; $hipMissingRoot = $hipRoot; $hipMissingCandidate = $hipinfoCandidate }
+                continue
+            }
+            if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
+            substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
+            substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
+            substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
+            $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+            break
+        }
+        if ((-not $hipinfoExe) -and $hipMissingLabel) {
+            substep "[WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" "Yellow"
+            substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
+            substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
         }
     }
     if ($hipinfoExe) {
@@ -1109,83 +1465,39 @@ if (-not $HasGit) {
 }
 
 # ============================================
-# 1c. CMake (required for llama.cpp build)
+# 1b.5. Visual C++ Redistributable (runtime for the prebuilt llama.cpp + PyTorch)
 # ============================================
+# Runtime dep, not a build tool: the prebuilt llama-server and PyTorch load it.
+Ensure-VCRedist
+
+# ============================================
+# 1c. CMake (only needed for a llama.cpp SOURCE build -- detection only)
+# ============================================
+# Detection only: the prebuilt path needs no compiler, so do not install or exit
+# here. Ensure-BuildToolsForLlamaSourceBuild installs CMake if a source build runs.
 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-if (-not $HasCmake) {
-    Write-Host "CMake not found -- installing via winget..." -ForegroundColor Yellow
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        try {
-            Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
-            Refresh-Environment
-            $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-        } catch { }
-    }
-    # winget may succeed but cmake isn't on PATH yet (MSI PATH changes need a
-    # new shell). Try the default install location as a fallback.
-    if (-not $HasCmake) {
-        $cmakeDefaults = @(
-            "$env:ProgramFiles\CMake\bin",
-            "${env:ProgramFiles(x86)}\CMake\bin",
-            "$env:LOCALAPPDATA\CMake\bin"
-        )
-        foreach ($d in $cmakeDefaults) {
-            if (Test-Path (Join-Path $d "cmake.exe")) {
-                $env:Path = "$d;$env:Path"
-                # Persist to user PATH (Prepend so this cmake wins over older ones).
-                Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
-                $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-                if ($HasCmake) {
-                    Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
-                    break
-                }
-            }
-        }
-    }
-    if ($HasCmake) {
-        step "cmake" "installed"
-    } else {
-        Write-Host "[ERROR] CMake is required but could not be installed." -ForegroundColor Red
-        Write-Host "        Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
-        exit 1
-    }
-} else {
+if ($HasCmake) {
     step "cmake" "$(cmake --version | Select-Object -First 1)"
+} else {
+    step "cmake" "not detected (only needed if a llama.cpp source build is required)" "Yellow"
 }
 
 # ============================================
-# 1d. Visual Studio Build Tools (C++ compiler for llama.cpp)
+# 1d. Visual Studio Build Tools (only needed for a llama.cpp SOURCE build -- detection only)
 # ============================================
+# Detection only: detect VS for a possible source build, but never install or exit
+# here. Install is deferred to Ensure-BuildToolsForLlamaSourceBuild.
 $CmakeGenerator = $null
 $VsInstallPath = $null
 $vsResult = Find-VsBuildTools
 
-if (-not $vsResult) {
-    Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
-    Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        $prevEAPTemp = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
-        $ErrorActionPreference = $prevEAPTemp
-        # Re-scan after install (don't trust vswhere catalog)
-        $vsResult = Find-VsBuildTools
-    }
-}
-
 if ($vsResult) {
     $CmakeGenerator = $vsResult.Generator
     $VsInstallPath = $vsResult.InstallPath
-    step "vs" "$CmakeGenerator ($($vsResult.Source))"
+    step "vs" "$CmakeGenerator ($($vsResult.Source)) (only used if a source build is needed)"
     if ($vsResult.ClExe) { substep "cl.exe: $($vsResult.ClExe)" }
 } else {
-    Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
-    Write-Host "        Manual install:" -ForegroundColor Red
-    Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
-    Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
-    exit 1
+    step "vs" "not detected (only needed if a llama.cpp source build is required)" "Yellow"
 }
 
 # ============================================
@@ -1428,7 +1740,7 @@ if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
 # the MSBuild .targets/.props files that let VS compile .cu files are missing.
 # cmake fails with "No CUDA toolset found". Fix: copy from CUDA extras dir.
 if ($VsInstallPath -and $CudaToolkitRoot) {
-    $vsCustomizations = Join-Path $VsInstallPath "MSBuild\Microsoft\VC\v170\BuildCustomizations"
+    $vsCustomizations = Get-VcBuildCustomizationsDir -VsInstallPath $VsInstallPath -Generator $CmakeGenerator
     $cudaExtras = Join-Path $CudaToolkitRoot "extras\visual_studio_integration\MSBuildExtensions"
     if ((Test-Path $cudaExtras) -and (Test-Path $vsCustomizations)) {
         $hasTargets = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
@@ -1491,71 +1803,92 @@ if ($HasROCm) {
 # ============================================
 # 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
 # ============================================
+# Frontend and OXC share this Node floor. The helper returns:
+# system | bundled | skip.
+function Get-NodeDecision {
+    param(
+        [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
+        [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
+        [string]$SkipInstall     # "1" => never auto-install
+    )
+    $node = ($NodeVersion -replace '^v', '').Trim()
+    $npm = "$NpmVersion".Trim()
+    if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
+        $nodeMajor = [int]($node.Split('.')[0])
+        $nodeMinor = [int]($node.Split('.')[1])
+        $npmMajor = [int]($npm.Split('.')[0])
+        $nodeOk = ($nodeMajor -eq 20 -and $nodeMinor -ge 19) -or
+                  ($nodeMajor -eq 22 -and $nodeMinor -ge 12) -or
+                  ($nodeMajor -ge 23)
+        if ($nodeOk -and $npmMajor -ge 11) { return "system" }
+    }
+    if ($SkipInstall -eq "1") { return "skip" }
+    return "bundled"
+}
+
 $SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
+$NodeOverride = $null
+$NodeParent = $null
+$NodeDir = $null
+$SysNodeVersion = ""
+$SysNpmVersion = ""
+$NodeSource = $null
+
+if (-not $IsPipInstall) {
+    # Put Node beside the Studio root. OXC can still need npm when the
+    # frontend build is skipped.
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
+    if ($NodeOverride) {
+        if ($NodeOverride -eq "~") {
+            $NodeOverride = $env:USERPROFILE
+        } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
+            $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
+        }
+        if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
+            Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+            exit 1
+        }
+        $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
+        # An override pointing at the legacy default maps to the legacy sibling
+        # ~/.unsloth/node (what the runtime resolver and setup.sh use), not <root>/node.
+        $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+        if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+            $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+        }
+        if ($NodeParent -eq $_legacyStudio) {
+            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+            $NodeOverride = $null
+        }
+    } else {
+        $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+    }
+    $NodeDir = Join-Path $NodeParent "node"
+
+    # Probe system node/npm without letting a missing/broken command abort setup.
+    # Under $ErrorActionPreference = "Stop" a bare `node -v` for an absent node
+    # throws a terminating error `2>$null` cannot swallow, and a present-but-broken
+    # shim throws too. Guard with Get-Command (node/npm independently) + try/catch;
+    # empty version => Get-NodeDecision returns "bundled".
+    $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
+    $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
+    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+}
+
 if ($IsPipInstall) {
     step "frontend" "bundled (pip install)"
 } elseif ($SkipFrontend) {
     step "frontend" "bundled (Tauri)"
 } else {
-    # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-    # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
-    $NeedNode = $true
-    try {
-        $NodeVersion = (node -v 2>$null)
-        $NpmVersion = (npm -v 2>$null)
-        if ($NodeVersion -and $NpmVersion) {
-            $NodeParts = ($NodeVersion -replace 'v','').Split('.')
-            $NodeMajor = [int]$NodeParts[0]
-            $NodeMinor = [int]$NodeParts[1]
-            $NpmMajor = [int]$NpmVersion.Split('.')[0]
-
-            # Vite 8: ^20.19.0 || >=22.12.0
-            $NodeOk = ($NodeMajor -eq 20 -and $NodeMinor -ge 19) -or
-                      ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or
-                      ($NodeMajor -ge 23)
-            if ($NodeOk -and $NpmMajor -ge 11) {
-                substep "Node $NodeVersion and npm $NpmVersion already meet requirements."
-                $NeedNode = $false
-            } else {
-                substep "Node $NodeVersion / npm $NpmVersion too old." "Yellow"
-            }
-        }
-    } catch {
-        substep "Node/npm not found." "Yellow"
-    }
-
-    if ($NeedNode) {
-        substep "installing Node.js LTS via winget..."
-        try {
-            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
-            Refresh-Environment
-        } catch {
-            Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-            Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
-            exit 1
-        }
-    }
-
-    step "node" "$(node -v) | npm $(npm -v)"
-
-    # ── bun (optional, faster package installs) ──
-    # Installed via npm — Node is already guaranteed above. Works on all platforms.
-    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
-        substep "installing bun (faster frontend package installs)..."
-        $prevEAP_bun = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
-        # postinstall fetches its binary; without it the install is a broken stub.
-        Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
-        $ErrorActionPreference = $prevEAP_bun
-        Refresh-Environment
-        if (Get-Command bun -ErrorAction SilentlyContinue) {
-            substep "bun installed ($(bun --version))"
-        } else {
-            substep "bun install skipped (npm will be used instead)"
-        }
+    # Stale npm used to trigger system Node changes. Keep this process-local
+    # and provision only when the build or OXC needs Node.
+    if ($NodeSource -eq "system") {
+        substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
+    } elseif ($NodeSource -eq "bundled") {
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
     } else {
-        substep "bun already installed ($(bun --version))"
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable and UNSLOTH_SKIP_NODE_INSTALL set; frontend build will be skipped." "Yellow"
     }
 }
 
@@ -1630,12 +1963,14 @@ function Add-PythonDirToProcessPath {
 }
 
 # Reuse the install.ps1 / venv interpreter before any system probe.
+$ValidatedSetupPython = $null
 if ($ReusedSetupPython) {
     $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
     if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
         $DetectedPyVer = $_reusedVer
         Add-PythonDirToProcessPath $ReusedSetupPython
         $PythonOk = $true
+        $ValidatedSetupPython = $ReusedSetupPython
     }
 }
 
@@ -1766,6 +2101,86 @@ if ($IsPipInstall) {
         substep "Frontend source changed since last build -- rebuilding..." "Yellow"
     }
 }
+
+# Provision Node when the frontend build OR the OXC runtime install needs it (the
+# OXC `npm install` runs whenever its dir exists, regardless of dist staleness);
+# never eagerly. System Node is used read-only; the isolated one is ours.
+$NeedNodeForSetup = (-not $IsPipInstall) -and ($NeedFrontendBuild -or (Test-Path $OxcValidatorDir))
+if ($NeedNodeForSetup) {
+    if ($NodeSource -eq "skip") {
+        if ($NeedFrontendBuild) {
+            step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
+        }
+        $NeedFrontendBuild = $false
+        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Studio needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
+        substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node" "Yellow"
+    } elseif ($NodeSource -eq "bundled") {
+        New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
+        # Minimal ownership guard for a custom-home dir (the full Studio-owned
+        # helpers are defined later); never os.replace over a user-owned dir.
+        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+            $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
+            $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
+            if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
+                Write-Host "[ERROR] $NodeDir already exists and is not a Studio-owned Node install." -ForegroundColor Red
+                Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+                exit 1
+            }
+        }
+        substep "installing isolated Node (system Node/npm left untouched)..."
+        # The main Python resolver runs later; bare `python` may be a Store stub or
+        # absent this early, so prefer the validated handed-off/venv Python.
+        $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeExit = $LASTEXITCODE
+        if ($nodeExit -eq 3) {
+            Write-Host $nodeOut -ForegroundColor DarkGray
+            step "node" "install blocked by another active Studio install" "Red"
+            exit 3
+        } elseif ($nodeExit -ne 0) {
+            Write-Host $nodeOut -ForegroundColor DarkGray
+            Write-Host "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
+            Write-Host "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
+            exit 1
+        }
+        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+            New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
+        }
+        # Windows Node zip ships node.exe + npm.cmd at the root; prepend it (this
+        # process only) so node/npm/bun resolve here for the build.
+        $env:PATH = "$NodeDir;" + $env:PATH
+        # Keep npm and module resolution inside the isolated Node.
+        $env:NPM_CONFIG_PREFIX = $NodeDir
+        $env:npm_config_prefix = $NodeDir
+        Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+        step "node" "$(node -v) | npm $(npm -v) (isolated)"
+
+        # bun (optional, faster installs); npm -g stays in the isolated prefix.
+        if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+            substep "installing bun (faster frontend package installs)..."
+            $prevEAP_bun = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun @NpmRegistryArgs } | Out-Null
+            $ErrorActionPreference = $prevEAP_bun
+            Refresh-Environment
+            # Refresh-Environment rebuilds PATH (Machine;User;current), demoting the
+            # isolated-Node prepend; re-prepend so it wins for the build and OXC step.
+            $env:PATH = "$NodeDir;" + $env:PATH
+            $env:NPM_CONFIG_PREFIX = $NodeDir
+            $env:npm_config_prefix = $NodeDir
+            Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+            if (Get-Command bun -ErrorAction SilentlyContinue) {
+                substep "bun installed ($(bun --version))"
+            } else {
+                substep "bun install skipped (npm will be used instead)"
+            }
+        }
+    } else {
+        # system Node already satisfies requirements; use it as-is. We do NOT
+        # install global packages (bun) here -- the build falls back to npm.
+        step "node" "$SysNodeVersion | npm $SysNpmVersion (system)"
+    }
+}
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     substep "building frontend..."
@@ -1805,7 +2220,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     # the cache + retry once before falling back to npm.
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install }
+        $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
         # On Windows, .bin/ entries vary by package manager:
         #   npm  → tsc, tsc.cmd, tsc.ps1
         #   bun  → tsc.exe, tsc.bunx
@@ -1819,7 +2234,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install }
+            $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -1838,13 +2253,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install }
+        $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
             Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
             Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Show-NpmRegistryHint
             exit 1
         }
     }
@@ -1876,21 +2292,26 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
 }
 
-if (Test-Path $OxcValidatorDir) {
+if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command npm -ErrorAction SilentlyContinue)) {
     substep "installing OXC validator runtime..."
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install }
+    $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
         Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
+        Show-NpmRegistryHint
         exit 1
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
     step "oxc runtime" "installed"
+} elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
+    # No npm on PATH (e.g. a pip install with no system Node and no isolated Node
+    # provisioned). Skip rather than abort; the runtime resolver degrades. Mirrors setup.sh.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
 # ==========================================================================
@@ -2224,6 +2645,28 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PkgName itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        $_anyioBad = $false
+        try {
+            & python -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>$null
+            if ($LASTEXITCODE -eq 0) { $_anyioBad = $true }
+        } catch {}
+        if ($_anyioBad) {
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -2279,10 +2722,14 @@ if ($script:UnslothVerbose) {
 # of whether the CUDA Toolkit is installed yet.
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
-# Windows MAX_PATH (260 chars) causes Triton kernel compilation to fail because
-# the auto-generated filenames are extremely long. Use a short cache directory.
-$TorchCacheDir = "C:\tc"
-if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
+# Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
+# paths on, cache under Studio home; else use a short drive-root dir for headroom.
+if ($LongPathsEnabled) {
+    $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+} else {
+    $TorchCacheDir = "C:\tc"
+}
+if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
@@ -2360,6 +2807,7 @@ if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
+$ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($ROCmTorchSpec -ne "torch") {
@@ -2377,20 +2825,29 @@ if ($ROCmIndexUrl) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
         Write-Host $output -ForegroundColor Yellow
         $ROCmIndexUrl = $null
+        $ROCmCpuFallback = $true
     } else {
         # Tell install_python_stack.py to skip probe + suppress manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }
 }
 
 if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
+    # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
+    # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
+    # the forced reinstall on a genuine CPU-only host so the common path stays fast.
+    # Build the array directly: an if-expression collapses @("x") to a scalar string,
+    # which @splat would then enumerate char-by-char into broken single-letter args.
+    $cpuForce = @()
+    if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
+        Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -2433,20 +2890,11 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
-$VenvScriptsDir = Join-Path $VenvDir "Scripts"
-$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
-if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
-    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
-    if (Test-Path -LiteralPath $StaleUnslothExe) {
-        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
-    }
-    try {
-        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
-    } catch {
-        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
-    }
-}
+# No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
+# running launcher only ever failed (WinError 32) and printed a scary warning. It's
+# also unnecessary: install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and
+# 'studio update' goes through uv (--upgrade-package), whose pip fallback no-ops on
+# the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
@@ -2457,28 +2905,6 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
-    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
-    # Treat a zero-byte exe as "pip half-wrote a broken binary" -- prefer the
-    # stale-but-working copy in .deleteme.
-    if (Test-Path -LiteralPath "$RunningUnslothExe.deleteme") {
-        $needRestore = -not (Test-Path -LiteralPath $RunningUnslothExe)
-        if (-not $needRestore) {
-            try {
-                $needRestore = (Get-Item -LiteralPath $RunningUnslothExe -ErrorAction Stop).Length -eq 0
-            } catch { $needRestore = $true }
-        }
-        if ($needRestore) {
-            try {
-                if (Test-Path -LiteralPath $RunningUnslothExe) {
-                    Remove-Item -LiteralPath $RunningUnslothExe -Force -ErrorAction SilentlyContinue
-                }
-                Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
-                substep "restored unsloth.exe after failed install"
-            } catch {
-                substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
-            }
-        }
-    }
     exit 1
 }
 
@@ -2753,7 +3179,86 @@ if ($LlamaPr) {
     $SkipPrebuiltInstall = $true
 }
 
-if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+$LocalLlamaCppLinked = $false
+$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
+if ($LocalLlamaCppSrc) {
+    if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
+        exit 1
+    }
+    $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
+    # Reusing a local dir disables both the prebuilt download and the source
+    # build, so a runnable llama-server.exe must already be present. Accept any
+    # layout LlamaCppBackend._layout_candidates() resolves (root-level, build\bin,
+    # or build\bin\Release) so the flag never rejects a tree Studio could run.
+    $LocalLlamaServerFound = $false
+    foreach ($_cand in @(
+            (Join-Path $ResolvedLocal "llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"))) {
+        if (Test-Path -LiteralPath $_cand) { $LocalLlamaServerFound = $true; break }
+    }
+    if ($ResolvedLocal -eq $LlamaCppDir) {
+        # Points at the canonical install location itself: never delete-then-link
+        # onto itself. Reuse an existing build here (skip prebuilt + source) so the
+        # staged prebuilt installer can't replace a build the user asked to reuse;
+        # if nothing is built yet, fall through to the normal install.
+        if ($LocalLlamaServerFound) {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it" "Yellow"
+            $LocalLlamaCppLinked = $true
+            $NeedLlamaSourceBuild = $false
+        } else {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install" "Yellow"
+        }
+    } else {
+        # Fail clearly rather than junction an unbuilt or wrong-platform checkout
+        # and leave Studio with no usable binary.
+        if (-not $LocalLlamaServerFound) {
+            step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
+            exit 1
+        }
+        # If the target is already a junction/symlink (e.g. a previous
+        # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
+        # Remove-Item -Recurse -Force on a reparse point can traverse the link and
+        # wipe the user's real llama.cpp directory on PowerShell 5.1. Dropping the
+        # stale link here also keeps the custom-home ownership check below idempotent.
+        # Use Get-Item -Force (not Test-Path): a *broken* junction whose target was
+        # moved/deleted makes Test-Path return false, which would leave the dangling
+        # link in place and make mklink below fail; Get-Item still resolves it so we
+        # can remove it and relink to a new valid directory.
+        $existing = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+        if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            $existing.Delete()
+        }
+        if ($StudioHomeIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        }
+        if (Test-Path -LiteralPath $LlamaCppDir) {
+            Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+            # A locked/in-use tree can silently survive removal (SilentlyContinue
+            # masks it). Don't then junction/copy over a half-present dir; mirror the
+            # prebuilt path's active-process handling and stop with a clear message.
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+                substep "Close Studio or other llama.cpp users and retry" "Yellow"
+                exit 3
+            }
+        }
+        cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            substep "Could not create directory junction; copying instead..." "Yellow"
+            Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+        }
+        Write-Host ""
+        step "llama.cpp" "linked local directory: $ResolvedLocal"
+        $LocalLlamaCppLinked = $true
+        $NeedLlamaSourceBuild = $false
+    }
+}
+
+if ($LocalLlamaCppLinked) {
+    # local directory linked above; skip prebuilt install
+} elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
@@ -2963,7 +3468,25 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
     }
 }
 
-if (-not $NeedLlamaSourceBuild) {
+# Install build tools now (last resort) rather than eagerly in Phase 1, so the
+# prebuilt path stays fast. Same condition as the if/elseif chain below: a source
+# build runs only when needed and no usable binary is already present. A linked
+# local dir sets $NeedLlamaSourceBuild = $false, so this no-ops for that path.
+$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
+    -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
+if ($WillBuildLlamaFromSource) {
+    Ensure-BuildToolsForLlamaSourceBuild
+    # refresh so the chain below sees a newly installed cmake
+    $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+}
+
+if ($LocalLlamaCppLinked) {
+    # Local dir linked above -- honor the flag's contract: skip BOTH the prebuilt
+    # download and the source build. Falling through here would run CMake inside
+    # the user's checkout (via the junction) when it lacks build\bin\Release\llama-server.exe.
+    Write-Host ""
+    step "llama.cpp" "linked (skipping build)"
+} elseif (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
 } elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
@@ -2985,10 +3508,56 @@ if (-not $NeedLlamaSourceBuild) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
-    # A source build is committed here. The CUDA toolkit is only needed now, so
-    # resolve (and winget-install if needed) it lazily, failing fast if no
-    # driver-compatible toolkit exists. The prebuilt path never reaches this.
+    # Finalize the VS generator (gate/fallback below) BEFORE Resolve-CudaToolkit,
+    # which copies the CUDA .targets into the current generator's dir; a later swap
+    # would strand them. The CMake 4.2 gate for VS 2026 is checked only here, in the
+    # source-build path, so a VS 2026 + cmake < 4.2 host can still use the prebuilt. (#6473)
+    if ($CmakeGenerator -match 'Visual Studio 18\b') {
+        if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
+            $cmakeVerObj = Get-CmakeVersion
+            $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+            substep "CMake $cmakeVerStr cannot drive the Visual Studio 2026 generator (need 4.2+ or a VS-bundled cmake) -- updating via winget..." "Yellow"
+            if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+                # upgrade first (fast if Kitware.CMake is already a winget app), then
+                # prepend the default dir so the new cmake wins over an older one on PATH
+                try {
+                    Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                    Refresh-Environment
+                } catch { substep "CMake winget upgrade failed: $($_.Exception.Message)" "Yellow" }
+                Add-DefaultCmakeToPath | Out-Null
+                # upgrade no-ops if the cmake came from Scoop/Chocolatey/VS, not the
+                # Kitware winget package; install it so a 4.2+ cmake is available
+                if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
+                    try {
+                        Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                        Refresh-Environment
+                    } catch { substep "CMake winget install failed: $($_.Exception.Message)" "Yellow" }
+                    Add-DefaultCmakeToPath | Out-Null
+                }
+            }
+            if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
+                # cmake still cannot drive VS 2026; before failing, fall back to an
+                # older installed VS whose generator it can drive (e.g. VS 2022 + old
+                # cmake on an offline box keeps building)
+                $fallback = Get-FallbackVsGenerator
+                if ($fallback) {
+                    substep "CMake cannot drive $CmakeGenerator; falling back to $($fallback.Generator)" "Yellow"
+                    $CmakeGenerator = $fallback.Generator
+                    $VsInstallPath = $fallback.InstallPath
+                } else {
+                    Write-Host "[ERROR] CMake 4.2+ is required to build llama.cpp with the Visual Studio 2026 generator, and no older Visual Studio toolchain was found to fall back to." -ForegroundColor Red
+                    Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run, or use a prebuilt llama.cpp bundle." -ForegroundColor Red
+                    exit 1
+                }
+            }
+        }
+        substep "CMake can drive the $CmakeGenerator generator"
+    }
+
+    # CUDA resolved here (fail fast if none), after the final VS generator so its
+    # .targets land in the toolset cmake actually uses.
     if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
+
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
@@ -3293,35 +3862,49 @@ if (-not $NeedLlamaSourceBuild) {
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
-            $CmakeArgs += '-DGGML_CUDA=ON'
-            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
-            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
-            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
-            # (covers the configure probe + build), after Refresh-Environment, idempotent.
-            $nvccAllowFlag = '-allow-unsupported-compiler'
-            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
-                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
-            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
-                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
-            }
-            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
-            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
-            if ($CudaArch) {
-                # Validate nvcc actually supports this architecture
-                if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
-                } else {
-                    # GPU arch too new for this toolkit -- fall back to highest supported.
-                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
-                    $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
-                    if ($maxArch) {
-                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                        substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
-                        substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+            # UNSLOTH_LLAMA_CUDA_ARCHS (e.g. "120" or "89;86") forces the build
+            # arch and wins over detection, matching setup.sh.
+            $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
+            if ((-not $CudaArch) -and (-not $CudaArchOverride)) {
+                # No detectable compute capability (#5854): -DGGML_CUDA=ON with no
+                # arch builds a PTX-only binary, so build CPU instead. Mirrors the
+                # Linux fix; set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build.
+                substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build)." "Yellow"
+                $CmakeArgs += '-DGGML_CUDA=OFF'
+            } else {
+                $CmakeArgs += '-DGGML_CUDA=ON'
+                # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+                # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+                # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+                # (covers the configure probe + build), after Refresh-Environment, idempotent.
+                $nvccAllowFlag = '-allow-unsupported-compiler'
+                if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                    $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+                } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                    $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+                }
+                substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+                $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+                if ($CudaArchOverride) {
+                    # Forced arch wins verbatim (no nvcc validation), matching setup.sh.
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchOverride"
+                } elseif ($CudaArch) {
+                    # Validate nvcc actually supports this architecture
+                    if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                    } else {
+                        # GPU arch too new for this toolkit -- fall back to highest supported.
+                        # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                        $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                        if ($maxArch) {
+                            $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                            substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
+                            substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+                        }
+                        # else: omit flag entirely, let cmake pick defaults
                     }
-                    # else: omit flag entirely, let cmake pick defaults
                 }
             }
         } else {
@@ -3340,7 +3923,8 @@ if (-not $NeedLlamaSourceBuild) {
                 Write-Host "   Copy contents of:" -ForegroundColor Yellow
                 Write-Host "     <CUDA_PATH>\extras\visual_studio_integration\MSBuildExtensions" -ForegroundColor Yellow
                 Write-Host "   into:" -ForegroundColor Yellow
-                Write-Host "     <VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" -ForegroundColor Yellow
+                $hintCustomizations = if ($VsInstallPath) { Get-VcBuildCustomizationsDir -VsInstallPath $VsInstallPath -Generator $CmakeGenerator } else { "<VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" }
+                Write-Host "     $hintCustomizations" -ForegroundColor Yellow
             }
         }
     }

@@ -71,6 +71,28 @@ class TestFunctionStyleTrailingText:
         call = _only(text)
         assert call == {"name": "python", "arguments": {"code": 'print("</function>")'}}
 
+    def test_closed_function_with_trailing_prose_heal_path(self):
+        # Regression: the heal / finalize path (allow_incomplete=True) used to fold
+        # </parameter></function> and the trailing prose into the argument and drop
+        # the prose from visible content. It must now match the strict path -- keep a
+        # clean argument and leave the trailing prose outside the call span.
+        text = "<function=web_search><parameter=query>cats</parameter></function> trailing words"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        fn = calls[0]["function"]
+        assert fn["name"] == "web_search"
+        assert json.loads(fn["arguments"]) == {"query": "cats"}
+        # The trailing prose sits outside the removed span, so it stays visible.
+        from core.tool_healing import (
+            parse_tool_calls_from_text as _parse_with_spans,
+        )
+
+        _calls, spans = _parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        out = text
+        for s, e in sorted(spans, reverse = True):
+            out = out[:s] + out[e:]
+        assert out == " trailing words"
+
     def test_incomplete_function_without_close_is_still_rejected(self):
         text = "<function=web_search><parameter=query>weather london"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
@@ -106,9 +128,72 @@ class TestParityWithJsonStyle:
         assert json.loads(js[0]["function"]["arguments"]) == {"query": q}
 
 
+class TestGemmaNativeStyle:
+    def test_closed_native_call_with_trailing_prose_is_accepted(self):
+        text = (
+            '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>' " running it now"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "terminal"
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "command": "ls -la",
+            "workdir": ".",
+        }
+
+    def test_unclosed_native_call_requires_healing(self):
+        text = '<|tool_call>call:terminal{command:"ls"}'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "terminal"
+
+    def test_hyphenated_native_argument_name_is_accepted(self):
+        text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "mcp__srv__create-issue"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
+
+    def test_native_template_quotes_preserve_windows_path(self):
+        text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+
+    def test_bare_unquoted_string_values_are_accepted(self):
+        # Gemma can emit enum/string args unquoted; bare JSON scalars stay typed.
+        text = (
+            "<|tool_call>call:get_weather{location:Tokyo,unit:celsius,days:3,live:true}<tool_call|>"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "location": "Tokyo",
+            "unit": "celsius",
+            "days": 3,
+            "live": True,
+        }
+
+
 class TestHealingPathUnaffected:
     def test_auto_heal_still_repairs_unclosed_function(self):
         text = "<function=web_search><parameter=query>cats"
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
+
+    def test_closed_function_call_keeps_trailing_prose_out_of_arguments(self):
+        # allow_incomplete exists for truncated output; a call that DID close
+        # must parse identically to strict mode, leaving prose after
+        # </function> out of the last parameter and out of the removal span.
+        from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+        text = "<function=web_search><parameter=query>cats</parameter></function> trailing"
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert json.loads(call["function"]["arguments"]) == {"query": "cats"}
+        (span,) = spans
+        assert text[span[0] : span[1]] == (
+            "<function=web_search><parameter=query>cats</parameter></function>"
+        )

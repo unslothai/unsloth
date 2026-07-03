@@ -21,8 +21,9 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
 @pytest.mark.parametrize(
     "cloudflare,host,secure,api_only,is_colab,expected",
     [
-        # Non-secure: historical 0.0.0.0-only behaviour preserved.
+        # Non-secure wildcard binds tunnel by default.
         (True, "0.0.0.0", False, False, False, True),
+        (True, "::", False, False, False, True),
         (True, "127.0.0.1", False, False, False, False),
         (True, "localhost", False, False, False, False),
         # --secure tunnels a loopback bind too.
@@ -30,12 +31,18 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         (True, "0.0.0.0", True, False, False, True),
         # --no-cloudflare always wins.
         (False, "0.0.0.0", False, False, False, False),
+        (False, "::", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
-        # api-only and Colab never tunnel.
+        # Non-secure api-only never tunnels (Tauri).
         (True, "0.0.0.0", False, True, False, False),
-        (True, "127.0.0.1", True, True, False, False),
+        (True, "::", False, True, False, False),
+        # --secure tunnels even api-only (headless secure API server).
+        (True, "127.0.0.1", True, True, False, True),
+        # Colab never tunnels, even --secure.
         (True, "0.0.0.0", False, False, True, False),
+        (True, "::", False, False, True, False),
         (True, "127.0.0.1", True, False, True, False),
+        (True, "127.0.0.1", True, True, True, False),
     ],
 )
 def test_cloudflare_gate(cloudflare, host, secure, api_only, is_colab, expected):
@@ -58,6 +65,20 @@ def test_run_server_accepts_secure_kwarg():
 
     assert "secure" in inspect.signature(run.run_server).parameters
     assert inspect.signature(run.run_server).parameters["secure"].default is False
+
+
+def test_arg_parser_secure_polarity_and_not_secure_alias():
+    # --secure/--no-secure is the documented flag; --not-secure is a hidden,
+    # back-compat alias for --no-secure. Last flag wins (BooleanOptionalAction).
+    import run
+
+    parser = run._build_arg_parser()
+    assert parser.parse_args([]).secure is False
+    assert parser.parse_args(["--secure"]).secure is True
+    assert parser.parse_args(["--no-secure"]).secure is False
+    assert parser.parse_args(["--not-secure"]).secure is False
+    assert parser.parse_args(["--secure", "--not-secure"]).secure is False
+    assert parser.parse_args(["--not-secure", "--secure"]).secure is True
 
 
 def test_run_server_accepts_enable_tools_kwarg():
@@ -115,7 +136,7 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     import run
 
     monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
-    monkeypatch.setattr(run, "_print_cloudflare_line", lambda: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
 
     run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)
@@ -145,6 +166,49 @@ def test_failclosed_message_present_in_source():
     # The exact, user-facing fail-closed message must not drift.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert (
-        "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         in src
     )
+
+
+@pytest.mark.parametrize(
+    "api_only,secure,expected",
+    [
+        (False, False, ["*"]),  # plain server: any origin
+        (False, True, ["*"]),  # secure UI server: any origin
+        (True, True, ["*"]),  # secure api-only: remote browsers need any origin
+        (True, False, "tauri"),  # local api-only: locked to the Tauri app
+    ],
+)
+def test_cors_origins_for_mode(api_only, secure, expected):
+    from utils.host_policy import cors_origins_for_mode
+    origins = cors_origins_for_mode(api_only = api_only, secure = secure)
+    if expected == "tauri":
+        assert origins != ["*"] and any(o.startswith("tauri://") for o in origins)
+    else:
+        assert origins == expected
+
+
+def test_run_server_exports_secure_env_for_cors():
+    # run_server must export UNSLOTH_SECURE before importing main so the CORS
+    # profile can tell remote secure serving from local Tauri use.
+    src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
+
+
+def test_run_server_emit_tauri_port_defaults_on():
+    # Default on keeps the desktop app's stdout contract; the headless
+    # `run --api-only` path opts out explicitly.
+    import inspect
+
+    import run
+
+    params = inspect.signature(run.run_server).parameters
+    assert "emit_tauri_port" in params
+    assert params["emit_tauri_port"].default is True
+
+
+def test_tauri_port_print_is_gated_in_source():
+    # The TAURI_PORT line must depend on emit_tauri_port, not api_only alone.
+    src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    assert "if api_only and emit_tauri_port:" in src

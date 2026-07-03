@@ -48,7 +48,9 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     hint: "Freshly released models from the Unsloth channel.",
     owner: "unsloth",
     format: "all",
-    sort: "lastModified",
+    // Newest by creation date so the feed shows freshly released models, not
+    // ones merely re-touched (lastModified).
+    sort: "createdAt",
   },
   {
     id: "unsloth-safetensors",

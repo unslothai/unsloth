@@ -771,7 +771,10 @@ def test_main_py_read_studio_install_id_validates_hex_and_handles_missing(tmp_pa
 
 
 def test_llama_cpp_search_roots_handles_studio_root_oserror():
-    """_find_llama_server_binary must catch (ImportError, OSError, ValueError) from studio_root() like its sibling."""
+    """Root resolution must catch (ImportError, OSError, ValueError) from studio_root().
+    Discovery (_find_llama_server_binary) and cleanup (_kill_orphaned_servers) both
+    delegate to the shared _resolved_studio_root_and_is_legacy() classifier, which
+    holds the handler so the two never disagree on which root is legacy."""
     llama_cpp = (
         REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     ).read_text()
@@ -783,12 +786,15 @@ def test_llama_cpp_search_roots_handles_studio_root_oserror():
         nxt = llama_cpp.find(f"\n{indent}def ", start + 1)
         return llama_cpp[start : nxt if nxt != -1 else len(llama_cpp)]
 
-    assert "except (ImportError, OSError, ValueError):" in _method_body(
-        "_find_llama_server_binary"
-    ), "_find_llama_server_binary must catch (ImportError, OSError, ValueError) from studio_root()"
-    assert "except (ImportError, OSError, ValueError):" in _method_body(
-        "_kill_orphaned_servers"
-    ), "sibling _kill_orphaned_servers must keep its (ImportError, OSError, ValueError) handler"
+    assert (
+        "except (ImportError, OSError, ValueError):"
+        in _method_body("_resolved_studio_root_and_is_legacy")
+    ), "_resolved_studio_root_and_is_legacy must catch (ImportError, OSError, ValueError) from studio_root()"
+    # Both callers must route through the shared classifier so neither crashes.
+    for caller in ("_find_llama_server_binary", "_kill_orphaned_servers"):
+        assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
+            caller
+        ), f"{caller} must resolve the install root via the shared classifier"
 
 
 def test_install_sh_install_id_survives_symlinked_studio_home(tmp_path):

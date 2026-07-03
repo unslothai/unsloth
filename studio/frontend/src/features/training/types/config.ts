@@ -21,6 +21,7 @@ export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
+  projectName: string;
   trainingMethod: TrainingMethod;
   hfToken: string;
   datasetSource: DatasetSource;
@@ -29,6 +30,7 @@ export interface TrainingConfigState {
   datasetSubset: string | null;
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
+  datasetStreaming: boolean;
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
   datasetUserTemplate: string;
@@ -94,6 +96,7 @@ export interface TrainingConfigActions {
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
+  setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
@@ -107,6 +110,7 @@ export interface TrainingConfigActions {
   setDatasetSubset: (subset: string | null) => void;
   setDatasetSplit: (split: string | null) => void;
   setDatasetEvalSplit: (split: string | null) => void;
+  setDatasetStreaming: (value: boolean) => void;
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setDatasetAdvisorFields: (fields: {
     systemPrompt?: string;

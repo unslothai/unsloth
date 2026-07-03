@@ -263,6 +263,10 @@ export function TrainingStartOverlay({
   const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
   const dataset = useTrainingConfigStore((s) => s.dataset);
+  // Streaming runs never fully download the dataset (only small metadata lands
+  // in the HF cache), so the cache-watching download bar would sit near 0%
+  // forever and read as "stuck downloading". Show a streaming note instead.
+  const datasetStreaming = useTrainingConfigStore((s) => s.datasetStreaming);
   // Only HF datasets have a download phase to track; uploaded files are already
   // on disk by the time the overlay shows up.
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
@@ -380,7 +384,11 @@ export function TrainingStartOverlay({
               step: currentStep,
             })}
           </AnimatedSpan>
-          {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
+          {datasetStreaming ? (
+            <AnimatedSpan className="mt-3 text-muted-foreground">
+              {t("studio.trainingStart.datasetStreaming")}
+            </AnimatedSpan>
+          ) : datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
                 label={t("studio.trainingStart.dataset")}

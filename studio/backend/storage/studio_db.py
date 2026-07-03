@@ -23,6 +23,16 @@ from typing import Any, Iterable, Optional
 
 
 from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.training_runs import extract_project_name
+
+
+def _extract_project_name_from_config_json(config_json: Optional[str]) -> Optional[str]:
+    if not config_json:
+        return None
+    try:
+        return extract_project_name(json.loads(config_json))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -680,6 +690,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
+            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
@@ -719,6 +730,7 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
+        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
@@ -1673,6 +1685,43 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.commit()
         rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def upsert_app_setting_map_entry(
+    key: str, entry_key: str, entry_value: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
+    app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
+    sub-entries cannot drop each other's updates."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], {}) if row else {}
+        if not isinstance(current, dict):
+            current = {}
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(current), now),
+        )
+        conn.commit()
+        return current
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -7,6 +7,7 @@ Apply chat templates to datasets and generate dataset info summaries.
 """
 
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
+from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
 from loggers import get_logger
 logger = get_logger(__name__)
@@ -238,7 +239,13 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                dataset = dataset.map(_apply_custom_mapping, batched = True, batch_size = batch_size)
+                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc)
+                # for streaming IterableDatasets, whose .map() rejects them.
+                custom_map_kwargs = {"batched": True, "batch_size": batch_size}
+                if not is_streaming_dataset(dataset):
+                    custom_map_kwargs["desc"] = "Applying custom ChatML mapping"
+                dataset = dataset.map(_apply_custom_mapping, **custom_map_kwargs)
+                # Update to use conversations format
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
                 is_standardized = True
@@ -295,13 +302,9 @@ def apply_chat_template_to_dataset(
                 'batch_size': batch_size,
             }
 
-            try:
-                from torch.utils.data import IterableDataset
-                _is_torch_iterable = isinstance(dataset, IterableDataset)
-            except ImportError:
-                _is_torch_iterable = False
+            is_iterable = is_streaming_dataset(dataset)
 
-            if not _is_torch_iterable:
+            if not is_iterable:
                 from utils.hardware import dataset_map_num_proc
                 if num_proc is None or type(num_proc) is not int:
                     num_proc = dataset_map_num_proc()
@@ -362,18 +365,14 @@ def apply_chat_template_to_dataset(
             return {"text": texts}
 
         try:
-            try:
-                from torch.utils.data import IterableDataset
-                _is_torch_iterable = isinstance(dataset, IterableDataset)
-            except ImportError:
-                _is_torch_iterable = False
+            is_iterable = is_streaming_dataset(dataset)
 
             dataset_map_kwargs = {
                 'batched': True,
                 'batch_size': batch_size,
             }
 
-            if not _is_torch_iterable:
+            if not is_iterable:
                 from utils.hardware import dataset_map_num_proc
                 if num_proc is None or type(num_proc) is not int:
                     num_proc = dataset_map_num_proc()
@@ -384,7 +383,7 @@ def apply_chat_template_to_dataset(
 
             # Monitor dataset.map() tqdm progress and relay it.
             _tqdm_monitor_stop = None
-            if progress_callback and not _is_torch_iterable:
+            if progress_callback and not is_iterable:
                 import threading
                 from tqdm.auto import tqdm as _tqdm_cls
 

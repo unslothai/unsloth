@@ -56,7 +56,7 @@ httpx
 httpcore
 certifi
 idna
-anyio
+anyio>=3.0,<4.14.0  # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
 sniffio
 h11
 
@@ -73,4 +73,9 @@ pillow
 # this file installs --no-deps; without them Studio runs with RAG disabled.
 sqlite-vec==0.1.9
 pymupdf==1.27.2.3
+# 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
+# lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
+pymupdf4llm==0.3.4
 python-docx==1.2.0
+
+lxml==6.0.2

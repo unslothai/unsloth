@@ -254,10 +254,15 @@ class TestChatTemplatesNoTorchVenv:
             model_mappings.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = model_mappings
 
+            iterable = types.ModuleType('iterable')
+            iterable.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable
+
             # Read and transform the source: replace relative imports with absolute
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
 
             exec(source)
 
@@ -295,10 +300,15 @@ class TestChatTemplatesNoTorchVenv:
             model_mappings.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = model_mappings
 
+            iterable = types.ModuleType('iterable')
+            iterable.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable
+
             ns = {{}}
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
@@ -379,6 +389,10 @@ class TestFormatConversionNoTorchVenv:
             datasets_mod.IterableDataset = type('IterableDataset', (), {{}})
             sys.modules['datasets'] = datasets_mod
 
+            iterable_mod = types.ModuleType('iterable')
+            iterable_mod.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable_mod
+
             # Stub utils.hardware
             utils_mod = types.ModuleType('utils')
             hardware_mod = types.ModuleType('utils.hardware')
@@ -390,6 +404,7 @@ class TestFormatConversionNoTorchVenv:
             # Read and exec format_conversion.py
             source = open({str(FORMAT_CONVERSION)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
+            source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -437,6 +452,10 @@ class TestFormatConversionNoTorchVenv:
             datasets_mod.IterableDataset = type('IterableDataset', (), {{}})
             sys.modules['datasets'] = datasets_mod
 
+            iterable_mod = types.ModuleType('iterable')
+            iterable_mod.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable_mod
+
             utils_mod = types.ModuleType('utils')
             hardware_mod = types.ModuleType('utils.hardware')
             hardware_mod.dataset_map_num_proc = lambda n=None: 1
@@ -446,6 +465,7 @@ class TestFormatConversionNoTorchVenv:
 
             source = open({str(FORMAT_CONVERSION)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
+            source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 

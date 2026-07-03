@@ -43,4 +43,7 @@ export interface RemoteCodeScan {
   scanCreatedRepos: string[];
   unsafeFiles: UnsafeFile[]; // files HF flagged unsafe; non-empty => hard block
   securityBlocked: boolean; // blocked specifically by the malware gate
+  // This user already approved this exact code (same commit + fingerprint): skip the dialog.
+  alreadyApproved: boolean;
+  provider: string | null; // HF org for the "from <provider>" tag; null when unattributable
 }

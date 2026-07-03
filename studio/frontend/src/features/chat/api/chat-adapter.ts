@@ -47,6 +47,7 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   GgufVariantDetail,
@@ -142,6 +143,11 @@ interface ServerTimings {
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
+type OpenAIStreamAdapterOptions = {
+  modelType?: ModelType;
+  pairId?: string;
+};
+
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
@@ -183,6 +189,124 @@ const pendingFirstThreadSaves = new Map<string, Promise<void>>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSystemVariablesMap(raw: string): Record<string, unknown> {
+  if (!raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Invalid JSON: keep unresolved placeholders in output prompt.
+  }
+  return {};
+}
+
+function hasOwn(object: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function getNestedValue(
+  values: Record<string, unknown>,
+  path: string,
+): unknown | undefined {
+  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  let current: unknown = values;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    if (!hasOwn(current, part)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalDate(now: Date): string {
+  return [
+    now.getFullYear(),
+    padDatePart(now.getMonth() + 1),
+    padDatePart(now.getDate()),
+  ].join("-");
+}
+
+function formatLocalTime(now: Date): string {
+  return [
+    padDatePart(now.getHours()),
+    padDatePart(now.getMinutes()),
+    padDatePart(now.getSeconds()),
+  ].join(":");
+}
+
+function formatTimezoneOffset(now: Date): string {
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  return `${sign}${padDatePart(hours)}:${padDatePart(minutes)}`;
+}
+
+function stringifyTemplateValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function resolveSystemPromptVariables(
+  prompt: string,
+  customVariablesRaw: string,
+): string {
+  if (!prompt) {
+    return prompt;
+  }
+  const now = new Date();
+  const localDate = formatLocalDate(now);
+  const localTime = formatLocalTime(now);
+  const systemVariables: Record<string, string> = {
+    $date: localDate,
+    $time: localTime,
+    $now: `${localDate}T${localTime}${formatTimezoneOffset(now)}`,
+  };
+  const customVariables = parseSystemVariablesMap(customVariablesRaw);
+  return prompt.replaceAll(
+    /{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}/g,
+    (full, keyRaw) => {
+      const key = String(keyRaw).trim();
+      if (hasOwn(systemVariables, key)) {
+        return systemVariables[key] ?? full;
+      }
+      const resolved = getNestedValue(customVariables, key);
+      if (resolved === undefined) {
+        return full;
+      }
+      return stringifyTemplateValue(resolved);
+    },
+  );
 }
 
 export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
@@ -1064,7 +1188,17 @@ export function findLatestUserAudioBase64(
 
 async function resolveUseAdapter(
   threadId: string | undefined,
+  options: OpenAIStreamAdapterOptions = {},
 ): Promise<boolean | undefined> {
+  if (options.modelType === "model1" || options.modelType === "model2") {
+    return undefined;
+  }
+  if (
+    options.pairId &&
+    (options.modelType === "base" || options.modelType === "lora")
+  ) {
+    return options.modelType === "lora";
+  }
   if (!threadId) {
     return undefined;
   }
@@ -1511,7 +1645,9 @@ async function autoLoadSmallestModel(): Promise<{
   }
 }
 
-export function createOpenAIStreamAdapter(): ChatModelAdapter {
+export function createOpenAIStreamAdapter(
+  options: OpenAIStreamAdapterOptions = {},
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -1778,7 +1914,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
+        typeof params.systemPrompt === "string"
+          ? resolveSystemPromptVariables(
+              params.systemPrompt,
+              typeof params.systemVariables === "string"
+                ? params.systemVariables
+                : "",
+            )
+          : "";
       const projectInstructions =
         await resolveProjectInstructions(resolvedThreadId);
       const combinedSystemPrompt = [
@@ -1926,6 +2069,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
+          loadError: runtime.lastModelLoadError,
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
@@ -1950,7 +2094,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(resolvedThreadId);
+      const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
@@ -2584,6 +2728,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                             params.checkpoint,
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
+
+                          ...(ragAutoInject === "off"
+                            ? { whole_doc: false }
+                            : {}),
+                          context_length:
+                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
                         },
                       }
                     : {}),
@@ -2623,6 +2773,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               )._toolStatus;
               if (toolStatusText !== undefined) {
                 runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+
+              // Local GGUF sends server-timed reasoning duration. Guard the type
+              // so a malformed or proxied chunk (string/null/NaN duration) can
+              // never turn the label into NaN.
+              const reasoningMs = (
+                chunk as { _reasoningDurationMs?: number } | null | undefined
+              )?._reasoningDurationMs;
+              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
+                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
                 continue;
               }
 
@@ -3174,6 +3335,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
               const textParts = parseAssistantContent(cumulativeText);
 
+              // Fallback when no server-side reasoning_summary arrives.
               if (
                 textParts.some((part) => part.type === "reasoning") &&
                 !reasoningStartAt
@@ -3282,6 +3444,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           finalTokPerSec,
         );
 
+        // Finalize reasoning-only streams.
+        if (reasoningStartAt && !reasoningDuration) {
+          reasoningDuration = Math.max(
+            0,
+            Math.round((Date.now() - reasoningStartAt) / 1000),
+          );
+        }
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),

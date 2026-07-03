@@ -236,12 +236,39 @@ def run_safetensors_tool_loop(
         cumulative_display = ""
         last_emitted = ""
         provisional_render_html_started = False
+        provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
+        # When a human confirmation gate is active the real tool_start is keyed
+        # by an approval id and carries awaiting_confirmation, so an early
+        # provisional card (keyed by tool_call_id, no approval) would show the
+        # tool as "running" before the user has approved it. Suppress the early
+        # card in that case and let the gated tool_start be the first signal.
+        _provisional_confirm_gated = bool(confirm_tool_calls) and not bypass_permissions
 
         gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
 
-        for cumulative in gen:
+        _gen_iter = iter(gen)
+        while True:
+            try:
+                cumulative = next(_gen_iter)
+            except StopIteration:
+                break
+            except Exception:
+                # The model pipeline raised mid-stream. If a provisional
+                # render_html card was already surfaced, close it as errored so
+                # the UI never leaves a tool card spinning after the turn fails.
+                if provisional_render_html_started and not provisional_resolved:
+                    provisional_resolved = True
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": "render_html",
+                        "tool_call_id": provisional_render_html_id,
+                        "result": "Error: generation was interrupted before the tool call completed.",
+                        "provenance": _tool_event_provenance(provisional = True),
+                    }
+                raise
+
             if cancel_event is not None and cancel_event.is_set():
                 return
 
@@ -257,6 +284,7 @@ def run_safetensors_tool_loop(
             if detect_state == _state_draining:
                 if (
                     not _tool_succeeded("render_html")
+                    and not _provisional_confirm_gated
                     and any(
                         ((tool.get("function") or {}).get("name") == "render_html")
                         for tool in active_tools
@@ -295,6 +323,7 @@ def run_safetensors_tool_loop(
                     detect_state = _state_draining
                     if (
                         not _tool_succeeded("render_html")
+                        and not _provisional_confirm_gated
                         and any(
                             ((tool.get("function") or {}).get("name") == "render_html")
                             for tool in active_tools
@@ -353,6 +382,7 @@ def run_safetensors_tool_loop(
                 detect_state = _state_draining
                 if (
                     not _tool_succeeded("render_html")
+                    and not _provisional_confirm_gated
                     and any(
                         ((tool.get("function") or {}).get("name") == "render_html")
                         for tool in active_tools
@@ -460,7 +490,8 @@ def run_safetensors_tool_loop(
                             tool_protocol_active = False,
                         ),
                     }
-                if provisional_render_html_started:
+                if provisional_render_html_started and not provisional_resolved:
+                    provisional_resolved = True
                     yield {
                         "type": "tool_end",
                         "tool_name": "render_html",
@@ -503,6 +534,18 @@ def run_safetensors_tool_loop(
                 if content_text and not assistant_appended:
                     conversation.append(assistant_msg)
                     assistant_appended = True
+                if provisional_match and not provisional_resolved:
+                    # A provisional render_html card is already on screen for
+                    # this id; close it so it never dangles when the controller
+                    # turns the call into an internal no-op (duplicate / repeat).
+                    provisional_resolved = True
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": decision.tool_name,
+                        "tool_call_id": decision.tool_call_id,
+                        "result": "",
+                        "provenance": decision.provenance,
+                    }
                 completion = tool_controller.record_noop(decision)
                 conversation.append(completion.model_message())
                 logger.info(
@@ -541,6 +584,8 @@ def run_safetensors_tool_loop(
                     == "deny"
                 ):
                     decision_slot = None
+                    if provisional_match:
+                        provisional_resolved = True
                     yield {
                         "type": "tool_end",
                         "tool_name": decision.tool_name,
@@ -587,6 +632,8 @@ def run_safetensors_tool_loop(
                     kb_search_count += 1
 
             completion = tool_controller.record_result(decision, result)
+            if provisional_match:
+                provisional_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 

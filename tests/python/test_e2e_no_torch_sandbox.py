@@ -27,6 +27,7 @@ CHAT_TEMPLATES = DATASETS_DIR / "chat_templates.py"
 FORMAT_DETECTION = DATASETS_DIR / "format_detection.py"
 MODEL_MAPPINGS = DATASETS_DIR / "model_mappings.py"
 VLM_PROCESSING = DATASETS_DIR / "vlm_processing.py"
+ITERABLE = DATASETS_DIR / "iterable.py"
 HARDWARE_PY = HARDWARE_DIR / "hardware.py"
 
 # Studio venv for server tests
@@ -280,9 +281,13 @@ class TestBeforeAfterImportChain:
             mm = types.ModuleType('model_mappings')
             mm.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = mm
+            it = types.ModuleType('iterable')
+            it.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = it
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
             exec(source)
             print("OK")
         """)
@@ -323,6 +328,7 @@ class TestBeforeAfterImportChain:
             VLM_PROCESSING,
             DATA_COLLATORS,
             CHAT_TEMPLATES,
+            ITERABLE,
         ]:
             if src.exists():
                 shutil.copy2(src, pkg_dir / src.name)
@@ -431,10 +437,14 @@ class TestDataclassInstantiation:
             mm = types.ModuleType('model_mappings')
             mm.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = mm
+            it = types.ModuleType('iterable')
+            it.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = it
             ns = {{}}
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
             exec(source, ns)
             assert 'Instruction' in ns['DEFAULT_ALPACA_TEMPLATE']
             print("OK")
@@ -544,11 +554,15 @@ class TestEdgeCasesBrokenTorch:
             mm = types.ModuleType('model_mappings')
             mm.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = mm
+            it = types.ModuleType('iterable')
+            it.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = it
 
             ns = {{}}
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
             exec(source, ns)
 
             # Import succeeds -- this is the fix
@@ -852,13 +866,11 @@ class TestInstallPythonStackFiltering:
 
         result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = Path(result_path).read_text(encoding = "utf-8").lower()
+        lines = [
+            l.strip() for l in filtered.splitlines() if l.strip() and not l.strip().startswith("#")
+        ]
 
-        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
-            lines = [
-                l.strip()
-                for l in filtered.splitlines()
-                if l.strip() and not l.strip().startswith("#")
-            ]
+        for pkg in ips.NO_TORCH_SKIP_PACKAGES:
             assert not any(
                 l.startswith(pkg) for l in lines
             ), f"{pkg} should be removed from extras.txt"

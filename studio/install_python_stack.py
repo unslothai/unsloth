@@ -36,6 +36,7 @@ from backend.utils.wheel_utils import (
     probe_torch_wheel_env,
     url_exists,
 )
+from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -86,6 +87,17 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
         "torchvision>=0.19,<0.26.0",
         "torchaudio>=2.4,<2.11.0",
     ),
+}
+# Windows AMD per-arch companion pins for the repo.amd.com index, mirroring the
+# install.ps1 / setup.ps1 floor maps (gfx120X and Strix Halo/Point use the rocm7.2
+# torch 2.11 trio). Pinning the companions keeps AMD's per-arch index -- which
+# publishes each independently -- from resolving an ABI-mismatched one. Unlisted
+# arches have no published floor, so stay bare. Bump with the PS maps at 2.12.x.
+_WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
+    "gfx1201": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
@@ -169,6 +181,41 @@ def _probe_installed_torch_version() -> str | None:
     return lines[-1] if lines else None
 
 
+# constraints.txt caps new anyio resolutions at <4.14 (#6483), but an install
+# from before the cap existed can already be stuck at 4.14+, which later
+# constrained installs won't touch since it already satisfies mcp/fastmcp.
+_ANYIO_BAD_FLOOR = (4, 14)
+
+
+def _installed_anyio_version() -> tuple[int, int] | None:
+    try:
+        from importlib.metadata import version as _pkg_version
+        raw = _pkg_version("anyio")
+    except Exception:
+        return None
+    parts = raw.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(re.sub(r"[^0-9].*", "", parts[1])) if len(parts) > 1 else 0
+    except (IndexError, ValueError):
+        return None
+    return (major, minor)
+
+
+def _repair_bad_anyio() -> None:
+    installed = _installed_anyio_version()
+    if installed is None or installed < _ANYIO_BAD_FLOOR:
+        return
+    _safe_print(_dim(f"   anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14..."))
+    pip_install(
+        "Repairing anyio version",
+        "--no-cache-dir",
+        "--force-reinstall",
+        "anyio<4.14.0",
+        constrain = False,
+    )
+
+
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
@@ -235,6 +282,39 @@ def _amd_smi_env() -> dict[str, str] | None:
     return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
 
 
+def _path_inside_venv(path: str) -> bool:
+    """True if ``path`` is inside the active venv (sys.prefix).
+
+    The venv hipInfo.exe (AMD wheel, put on PATH by the bnb fix) is NOT a HIP SDK
+    (_amd_smi_allowed)."""
+    try:
+        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
+        _root = os.path.normcase(os.path.realpath(sys.prefix))
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on
+        # it. A venv is never at root, so treat that as outside.
+        if os.path.dirname(_root) == _root:
+            return False
+        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
+    except (ValueError, OSError):
+        # Different drive / unresolvable -> treat as outside the venv.
+        return False
+
+
+def _external_hipinfo_on_path() -> bool:
+    """True if a hipinfo OUTSIDE the venv is on PATH.
+
+    shutil.which returns only the first hit, so the venv hipInfo could shadow a
+    real HIP SDK's; scan every PATH entry and skip the venv copy."""
+    for _dir in os.environ.get("PATH", "").split(os.pathsep):
+        _dir = _dir.strip('"')  # PATH entries can be quoted on Windows
+        if not _dir:
+            continue
+        _candidate = os.path.join(_dir, "hipinfo.exe")
+        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
+            return True
+    return False
+
+
 def _amd_smi_allowed() -> bool:
     """Whether it is safe to spawn amd-smi here.
 
@@ -249,11 +329,17 @@ def _amd_smi_allowed() -> bool:
         return True
     if flag in ("0", "false", "no", "off"):
         return False
-    if shutil.which("hipinfo"):
+    # A real HIP SDK lets amd-smi run un-elevated; hipinfo-on-PATH is the proxy.
+    # Ignore the venv hipInfo.exe (AMD wheel via bnb fix): not a HIP SDK, doesn't
+    # stop amd-smi's DiskPart UAC.
+    if _external_hipinfo_on_path():
         return True
     for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         _root = os.environ.get(_var)
-        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+        if not _root:
+            continue
+        _candidate = os.path.join(_root, "bin", "hipinfo.exe")
+        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
             return True
     return False
 
@@ -1096,16 +1182,32 @@ def _ensure_rocm_torch() -> None:
                 print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
             print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
-            pip_install(
+            # Pin companions for the arches install.ps1/setup.ps1 pin (gfx120X /
+            # Strix) so the per-arch index resolves an ABI-consistent trio; other
+            # arches stay bare (no published floor), matching the PowerShell side.
+            _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
+                gfx_arch, ("torch", "torchvision", "torchaudio")
+            )
+            # Nonfatal: a transient AMD-index failure must not abort the whole
+            # install once the PowerShell side has fallen back to CPU torch.
+            # --force-reinstall resolves before uninstalling, so a failed index
+            # leaves the existing build intact; keep it and let the user retry.
+            if not pip_install_try(
                 f"ROCm torch (Windows, {gfx_arch})",
                 "--force-reinstall",
                 "--index-url",
                 index_url,
-                "torch",
-                "torchvision",
-                "torchaudio",
+                _torch_pkg,
+                _vision_pkg,
+                _audio_pkg,
                 constrain = False,
-            )
+            ):
+                print(
+                    f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch}; "
+                    "keeping the existing torch build. Re-run 'unsloth studio update' "
+                    "later to retry ROCm."
+                )
+                return
         # ROCm torch is installed (or already was); flag it so later phases
         # do not overwrite it with the generic CPU torch wheel. BNB is a
         # separate dependency -- a BNB install failure must NOT roll back the
@@ -1308,25 +1410,7 @@ def _ensure_rocm_torch() -> None:
             )
 
 
-def _uv_safe_path(path: object) -> str:
-    # uv 0.11.x: `-c <path with space>` truncates at the space; use 8.3 short form.
-    s = str(path)
-    if not IS_WINDOWS or " " not in s:
-        return s
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        get_short = ctypes.windll.kernel32.GetShortPathNameW
-        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-        get_short.restype = wintypes.DWORD
-        buf = ctypes.create_unicode_buffer(32768)
-        rc = get_short(s, buf, 32768)
-        if 0 < rc < 32768 and " " not in buf.value:
-            return buf.value
-    except Exception:
-        pass
-    return s
+# _uv_safe_path is imported from backend.utils.uv_path_safety (shared with mlx_repair).
 
 
 def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -1415,9 +1499,10 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
+# _uv_safe_path: uv truncates UV_OVERRIDE at the first space too (issue #6503).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
-if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
-    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
+    os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the console encoding may be a legacy code page (e.g. CP1252)
@@ -1592,7 +1677,7 @@ def run(
 
 
 # Packages to skip on Windows (require special build steps)
-WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
+WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
 # These either *are* torch extensions or have unconditional
@@ -1609,7 +1694,6 @@ NO_TORCH_SKIP_PACKAGES = {
     "torchcodec",
     "torch-c-dlpack-ext",
     "openai-whisper",
-    "transformers-cfg",
     "librosa",
 }
 
@@ -1921,7 +2005,7 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    base_total = 10 if IS_WINDOWS else 11
+    base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -2168,25 +2252,25 @@ def install_python_stack() -> int:
     # 4. Overrides (torchao) -- force-reinstall. The torchao version is chosen to
     #    match the torch installed in the venv so its C++ extensions load (see
     #    _select_torchao_spec). Skip when torch is unavailable (e.g. Intel Mac
-    #    GGUF-only mode): torchao requires torch.
+    #    GGUF-only mode): torchao requires torch. Also skipped on Windows ROCm
+    #    (no working build; see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
+    elif _rocm_windows_torch_installed:
+        # No working Windows ROCm torchao build: it imports an absent c10d backend
+        # and crashes transformers.quantizers. Studio stubs it at runtime, so
+        # installing it only ships a package that crashes on import -- skip it.
+        _progress("dependency overrides (skipped, Windows ROCm)")
+        _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:
         _progress("dependency overrides")
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
         _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
-        _override_extra_args: tuple[str, ...] = ()
-        if _rocm_windows_torch_installed:
-            # torchao declares torch as a dependency; without --no-deps uv would
-            # install CPU torch from PyPI, overwriting the AMD ROCm wheels we just
-            # installed.
-            _override_extra_args = ("--no-deps",)
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",
             "--no-cache-dir",
-            *_override_extra_args,
             _torchao_spec,
         )
 
@@ -2234,6 +2318,10 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "studio.txt",
     )
+
+    # 8b. anyio repair (#6483)
+    _progress("anyio check")
+    _repair_bad_anyio()
 
     # 9. Data-designer dependencies
     _progress("data designer deps")

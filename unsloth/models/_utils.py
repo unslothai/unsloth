@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.8"
+__version__ = "2026.6.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -62,6 +62,8 @@ __all__ = [
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
     "apply_unsloth_gradient_checkpointing",
+    "_unsloth_install_pretrain_detector",
+    "_unsloth_reset_stray_compile_cache",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
@@ -84,6 +86,8 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "make_fast_generate_wrapper",
+    "_mark_unsloth_disable_data_parallel",
+    "_patch_transformers_trainer_data_parallel",
 ]
 
 import torch
@@ -158,6 +162,85 @@ from unsloth_zoo.training_utils import (
 )
 
 
+def _iter_wrapped_models(model):
+    seen = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        yield current
+        seen.add(id(current))
+        next_model = getattr(current, "model", None)
+        if next_model is None:
+            next_model = getattr(current, "base_model", None)
+        if next_model is None:
+            next_model = getattr(current, "module", None)
+        current = next_model
+
+
+def _patch_transformers_trainer_data_parallel():
+    try:
+        from transformers.trainer import Trainer
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    original_wrap_model = getattr(Trainer, "_wrap_model", None)
+    if original_wrap_model is None:
+        return False
+    if getattr(original_wrap_model, "_unsloth_data_parallel_patched", False):
+        return True
+    try:
+        supports_dataloader = "dataloader" in inspect.signature(original_wrap_model).parameters
+    except (TypeError, ValueError):
+        supports_dataloader = True
+
+    def _call_original_wrap_model(self, model, wrap_args, wrap_kwargs):
+        if supports_dataloader:
+            return original_wrap_model(self, model, *wrap_args, **wrap_kwargs)
+
+        if "dataloader" in wrap_kwargs:
+            wrap_kwargs = {k: v for k, v in wrap_kwargs.items() if k != "dataloader"}
+        return original_wrap_model(self, model, *wrap_args, **wrap_kwargs)
+
+    @functools.wraps(original_wrap_model)
+    def _unsloth_wrap_model(self, model, *wrap_args, **wrap_kwargs):
+        args = getattr(self, "args", None)
+        disable_data_parallel = getattr(model, "_unsloth_disable_data_parallel", False)
+        is_real_8bit = getattr(model, "is_loaded_in_8bit", False)
+        if (
+            args is None
+            or not disable_data_parallel
+            or is_real_8bit
+            or getattr(args, "n_gpu", 0) <= 1
+        ):
+            return _call_original_wrap_model(self, model, wrap_args, wrap_kwargs)
+
+        had_n_gpu = hasattr(args, "_n_gpu")
+        old_n_gpu = getattr(args, "_n_gpu", None)
+        args._n_gpu = 1
+        try:
+            return _call_original_wrap_model(self, model, wrap_args, wrap_kwargs)
+        finally:
+            if had_n_gpu:
+                args._n_gpu = old_n_gpu
+            else:
+                try:
+                    delattr(args, "_n_gpu")
+                except AttributeError:
+                    pass
+
+    _unsloth_wrap_model._unsloth_data_parallel_patched = True
+    _unsloth_wrap_model._unsloth_original_wrap_model = original_wrap_model
+    Trainer._wrap_model = _unsloth_wrap_model
+    return True
+
+
+def _mark_unsloth_disable_data_parallel(model, disable = True):
+    if disable:
+        _patch_transformers_trainer_data_parallel()
+    for module in _iter_wrapped_models(model):
+        setattr(module, "_unsloth_disable_data_parallel", bool(disable))
+    return model
+
+
 def resolve_hip_gpu_stats_name(gpu_stats):
     name = str(getattr(gpu_stats, "name", "") or "").strip()
     name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
@@ -192,6 +275,109 @@ def resolve_hip_gpu_stats_name(gpu_stats):
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
+
+
+def _unsloth_install_pretrain_detector(model):
+    """Attach a one-shot forward pre-hook recording whether a forward ran before
+    trainer.train(), so prepare_for_training_mode can drop a torch.compile graph cache poisoned
+    by a stray manual forward/backward. Idempotent; no-op if the model cannot take hooks."""
+    if model is None or not hasattr(model, "register_forward_pre_hook"):
+        return model
+    marker = getattr(model, "_unsloth_pretrain_marker", None)
+    if isinstance(marker, dict):
+        # A live hook is already recording: keep it (no duplicates) and DON'T clear seen -- a
+        # grad-enabled probe may have already flagged the poisoned cache, and a re-entrant
+        # get_peft_model/patch_peft_model call must not erase that before train() resets.
+        if "hook" in marker:
+            return model
+        # Marker exists but its hook was torn down -> reinstall fresh, so reset seen.
+        marker["seen"] = False
+    else:
+        marker = {"seen": False}
+        try:
+            model._unsloth_pretrain_marker = marker
+        except Exception:
+            return model
+
+    def _mark(_module, _inp):
+        # Only a grad-enabled forward poisons the AOTAutograd backward-graph cache; a no-grad
+        # probe builds no backward graph, so treat it as clean (avoids a needless dynamo reset).
+        if torch.is_grad_enabled():
+            marker["seen"] = True
+
+    try:
+        marker["hook"] = model.register_forward_pre_hook(_mark)
+    except Exception:
+        pass
+    return model
+
+
+def _unsloth_reset_stray_compile_cache(self):
+    # A manual forward/backward under torch.compile BEFORE trainer.train() (e.g. a grad-norm
+    # probe) caches a forward + AOTAutograd backward graph in a one-off context; reusing it
+    # poisons training with NaN/zero gradients. If such a forward was seen and compile is on,
+    # drop the compiled-graph cache so training recompiles cleanly. No-op on the normal path.
+    # Module-level (not just inside the RL trainer template) so the SFT auto-packing wrapper and
+    # the plain-Trainer loop can import and run it too.
+    import os
+
+    model = getattr(self, "model", None)
+    if model is None:
+        return
+    # The detector hook can sit on any wrapper in the chain, and the probe may have run on a
+    # different one than self.model, so walk the chain: detect a "seen" marker anywhere and
+    # collect every marker to tear down below.
+    markers = []
+    seen = False
+    _curr = model
+    _visited = set()
+    while _curr is not None and id(_curr) not in _visited:
+        _visited.add(id(_curr))
+        _m = getattr(_curr, "_unsloth_pretrain_marker", None)
+        if isinstance(_m, dict):
+            markers.append(_m)
+            if _m.get("seen"):
+                seen = True
+        # Follow the wrapper chain: Unsloth/HF (.model), PEFT (.base_model), DDP/FSDP (.module).
+        _nxt = getattr(_curr, "model", None)
+        if _nxt is None:
+            _nxt = getattr(_curr, "base_model", None)
+        if _nxt is None:
+            _nxt = getattr(_curr, "module", None)
+        _curr = _nxt
+    if seen and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
+        try:
+            import torch._dynamo as _dynamo
+            _dynamo.reset()
+        except Exception:
+            pass
+        try:
+            from unsloth_zoo.gradient_checkpointing import (
+                reset_unsloth_gradient_checkpointing_buffers,
+            )
+            reset_unsloth_gradient_checkpointing_buffers()
+        except Exception:
+            pass
+        try:
+            model.zero_grad(set_to_none = True)
+        except Exception:
+            pass
+        import warnings
+
+        warnings.warn(
+            "Unsloth: detected a manual forward/backward run before trainer.train(); "
+            "reset the torch.compile graph cache it poisoned so training starts clean. "
+            "To avoid this, run any pre-train probe under `with torch.no_grad():`."
+        )
+    # Tear down every one-shot detector hook in the chain so none adds per-step cost.
+    for _m in markers:
+        hook = _m.pop("hook", None)
+        if hook is not None:
+            try:
+                hook.remove()
+            except Exception:
+                pass
+        _m["seen"] = False
 
 
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
@@ -2892,7 +3078,7 @@ class TorchAOConfig:
 def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     """
     Utility to untie input/output embeddings in a HuggingFace model.
-    This is useful if we want to quantize the input/ouput embeddings differently.
+    This is useful if we want to quantize the input/output embeddings differently.
     Model is modified in-place.
     """
 
@@ -3416,8 +3602,27 @@ def make_fast_generate_wrapper(original_generate):
 
     @functools.wraps(original_generate)
     def _fast_generate_wrapper(*args, **kwargs):
-        # Check for vLLM-specific arguments
-        if "sampling_params" in kwargs:
+        def _has_sampling_params(a):
+            # SamplingParams passed directly or inside a positional list/tuple
+            return type(a).__name__ == "SamplingParams" or (
+                isinstance(a, (list, tuple))
+                and any(type(i).__name__ == "SamplingParams" for i in a)
+            )
+
+        def _is_vllm_prompt(a):
+            # str prompt, a vLLM prompt dict (prompt / prompt_token_ids / prompt_embeds /
+            # multi_modal_data), or a list/tuple of those
+            head = a[0] if isinstance(a, (list, tuple)) and len(a) > 0 else a
+            return isinstance(head, str) or (
+                isinstance(head, dict)
+                and any(
+                    k in head
+                    for k in ("prompt", "prompt_token_ids", "prompt_embeds", "multi_modal_data")
+                )
+            )
+
+        # vLLM-only; also catch SamplingParams passed positionally (fast_generate(prompt, params))
+        if "sampling_params" in kwargs or any(_has_sampling_params(a) for a in args):
             raise ValueError(
                 "Unsloth: `sampling_params` is only supported when `fast_inference=True` (vLLM). "
                 "Since `fast_inference=False`, use HuggingFace generate arguments instead:\n"
@@ -3430,33 +3635,26 @@ def make_fast_generate_wrapper(original_generate):
                 "Since `fast_inference=False`, LoRA weights are already merged into the model."
             )
 
-        # Check if first positional argument is a string or list of strings
-        if len(args) > 0:
-            first_arg = args[0]
-            is_string_input = False
-
-            if isinstance(first_arg, str):
-                is_string_input = True
-            elif isinstance(first_arg, (list, tuple)) and len(first_arg) > 0:
-                if isinstance(first_arg[0], str):
-                    is_string_input = True
-
-            if is_string_input:
-                raise ValueError(
-                    "Unsloth: Passing text strings to `fast_generate` is only supported "
-                    "when `fast_inference=True` (vLLM). Since `fast_inference=False`, you must "
-                    "tokenize the input first:\n\n"
-                    "  messages = tokenizer.apply_chat_template(\n"
-                    '      [{"role": "user", "content": "Your prompt here"}],\n'
-                    "      tokenize=True, add_generation_prompt=True,\n"
-                    '      return_tensors="pt", return_dict=True\n'
-                    "  )\n"
-                    "  output = model.fast_generate(\n"
-                    "      **messages.to('cuda'),\n"
-                    "      max_new_tokens=64,\n"
-                    "      temperature=1.0,\n"
-                    "  )"
-                )
+        # A vLLM-style prompt (string, {"prompt":..., "multi_modal_data":...} dict, or a list/tuple
+        # of either) only works under vLLM; tokenize first when fast_inference=False. A positional
+        # arg may be HF token ids, so check it conservatively with _is_vllm_prompt. The `prompts` /
+        # `prompt_token_ids` / `prompt_embeds` keywords are vLLM-only names that HuggingFace generate
+        # does not accept, so any of them being present is a vLLM-style call (even a bare token list,
+        # or an explicit None from a defaulted kwargs dict), hence membership rather than a value check.
+        vllm_prompt_kwarg = any(
+            k in kwargs for k in ("prompts", "prompt_token_ids", "prompt_embeds")
+        )
+        if (len(args) > 0 and _is_vllm_prompt(args[0])) or vllm_prompt_kwarg:
+            raise ValueError(
+                "Unsloth: Passing vLLM-style prompts to `fast_generate` is only supported when "
+                "`fast_inference=True` (vLLM). Since `fast_inference=False`, tokenize first:\n\n"
+                "  inputs = tokenizer.apply_chat_template(\n"
+                '      [{"role": "user", "content": "Your prompt here"}],\n'
+                "      tokenize=True, add_generation_prompt=True,\n"
+                '      return_tensors="pt", return_dict=True,\n'
+                "  )\n"
+                "  output = model.fast_generate(**inputs.to('cuda'), max_new_tokens=64, temperature=1.0)"
+            )
 
         # Call original generate
         return original_generate(*args, **kwargs)

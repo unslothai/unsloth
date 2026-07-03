@@ -79,15 +79,15 @@ jobs:
         # Two surgical fixes against measured Windows-only install
         # waste (vs Mac/Linux on the same SHA):
         #
-        # (1) npm. setup.ps1 line 1109-1145 requires Node 22.12+ (or
-        #     20.19+ / 23+) AND npm >=11 because Vite 8 needs both.
+        # (1) npm. setup.ps1's Get-NodeDecision requires Node 22.12+
+        #     (or 20.19+ / 23+) AND npm >=11 because Vite 8 needs both.
         #     actions/setup-node@v4 with `node-version: '22'` lands
-        #     Node 22.22.2 + the npm 10.9.7 it bundles, so the npm
-        #     check fails and setup.ps1 falls through to the
-        #     "winget install Node.js LTS" branch -- a ~35 s reinstall
-        #     of Node we don't need. `npm install -g npm@^11` updates
-        #     the bundled npm in-place in ~5 s, which makes setup.ps1
-        #     short-circuit on the existing Node.
+        #     Node 22.22.2 + the npm 10.9.7 it bundles, so the decision
+        #     is "bundled" and setup.ps1 downloads an isolated Node (~30
+        #     MB) we don't need on a runner that already has a fine Node.
+        #     `npm install -g npm@^11` updates the runner's npm in-place
+        #     in ~5 s, flipping the decision to "system" so setup.ps1
+        #     reuses the existing Node with no download.
         #
         # (2) Defender. windows-latest's real-time scan opens / hashes
         #     every file Studio writes during install (Vite output =
@@ -133,7 +133,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -180,7 +181,8 @@ jobs:
       - name: First update should be a no-op (prebuilt already validated)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update.log
@@ -199,7 +201,8 @@ jobs:
       - name: Second update must also be a no-op
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update2.log

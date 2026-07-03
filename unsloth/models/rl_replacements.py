@@ -511,8 +511,8 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
-# Use the underlying text tokenizer for ORPO row tokenization when a
-# multimodal processor is supplied as the processing class.
+# Route ORPO/CPO row tokenization through the underlying text tokenizer when the
+# processing class is a multimodal processor; CPO reuses this code (#4952).
 def orpo_trainer_text_tokenizer(function_name, function):
     if function_name == "build_tokenized_answer":
         function = re.sub(
@@ -555,11 +555,12 @@ def orpo_trainer_text_tokenizer(function_name, function):
 
 
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
+RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
 
 
 # Resolve `processing_class.pad_token_id` through the underlying tokenizer when
 # a multimodal processor is supplied (processors lack `pad_token_id`). Without
-# this, ORPOTrainer.__init__ raises AttributeError on
+# this, ORPO/CPOTrainer.__init__ raises AttributeError on
 # `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
 # and on `self.padding_value = ... else processing_class.pad_token_id`.
 _PAD_FALLBACK = (
@@ -572,12 +573,28 @@ _PAD_FALLBACK = (
 def orpo_trainer_processor_pad_token(function_name, function):
     if function_name != "__init__":
         return function
+    # Multimodal processors (e.g. Gemma3/Gemma4 Processor) expose pad_token /
+    # eos_token on `.tokenizer`, not on the processor itself. TRL 1.x CPO/ORPO
+    # __init__ defaults `processing_class.pad_token` from `.eos_token` before
+    # tokenizing, which AttributeErrors on such a processor. Route the default
+    # through the inner tokenizer. Older TRL lacks this block, so the sub is a
+    # no-op there and only the pad_token_id fallback below applies.
+    function = re.sub(
+        r"(?m)^([ \t]*)if processing_class\.pad_token is None:\n"
+        r"\1[ \t]+processing_class\.pad_token\s*=\s*processing_class\.eos_token\n",
+        r"\1_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)\n"
+        r"\1if getattr(_unsloth_proc_tok, 'pad_token', None) is None:\n"
+        r"\1    _unsloth_proc_tok.pad_token = getattr(_unsloth_proc_tok, 'eos_token', None)\n",
+        function,
+        count = 1,
+    )
     if "processing_class.pad_token_id" not in function:
         return function
     return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)
 
 
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_processor_pad_token)
+RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_processor_pad_token)
 
 
 # Fix bare pop("push_to_hub_token") in compiled SFT/IterativeSFT trainer __init__
@@ -744,7 +761,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        self.model.for_training(use_gradient_checkpointing=getattr(self.args, 'gradient_checkpointing', True))"""
+        _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
+        self.model.for_training(use_gradient_checkpointing=_use_gc)"""
 
     function = function.replace(line_to_replace, replacement_lines)
 
@@ -1320,11 +1338,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
 
             temperature = self.temperature
-            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
-            logit_scale_multiply = getattr(model.config, "logit_scale", 0)
+            model_config = _unsloth_get_model_config(model)
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model)
+            logit_scale_multiply = getattr(model_config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
-            logit_scale_divide = getattr(model.config, "logits_scaling", 0)
+            logit_scale_divide = getattr(model_config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
 
@@ -1454,7 +1473,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
 
-def _unsloth_get_final_logit_softcapping(config):
+def _unsloth_get_model_config(model):
+    """Return HuggingFace model config, unwrapping DDP/Accelerate wrappers."""
+    config = getattr(model, "config", None)
+    if config is None and hasattr(model, "module"):
+        config = getattr(model.module, "config", None)
+    return config
+
+
+def _unsloth_get_final_logit_softcapping(model):
     """Return final_logit_softcapping for a model config, falling back to the
     nested text sub-config for composite models. Handles both:
       - Gemma-4-style configs where the attribute lives on ``config.text_config``
@@ -1462,6 +1489,9 @@ def _unsloth_get_final_logit_softcapping(config):
         reachable via ``config.get_text_config()``
     Returns 0 if unset, matching the previous behaviour.
     """
+    config = _unsloth_get_model_config(model)
+    if config is None:
+        return 0
     softcap = getattr(config, "final_logit_softcapping", None)
     if softcap is None:
         text_cfg = getattr(config, "text_config", None)
@@ -1482,6 +1512,7 @@ grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
@@ -1530,7 +1561,11 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
-        current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
+        # Missing when evaluate() runs standalone; eval does not accumulate, so
+        # fall back to 1 to avoid underreporting eval_loss (#2464).
+        current_gradient_accumulation_steps = getattr(
+            self, "current_gradient_accumulation_steps", 1
+        )
         num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
@@ -1595,11 +1630,12 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
-        logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
+        model_config = _unsloth_get_model_config(model)
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model)  # Gemma
+        logit_scale_multiply = getattr(model_config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
-        logit_scale_divide = getattr(model.config, "logits_scaling", 0)  # Granite
+        logit_scale_divide = getattr(model_config, "logits_scaling", 0)  # Granite
         if logit_scale_divide is None:
             logit_scale_divide = 0
 
