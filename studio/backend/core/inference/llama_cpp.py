@@ -5879,8 +5879,10 @@ class LlamaCppBackend:
                 if use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
-                    # Fits on selected GPU(s) -- offload all layers
-                    cmd.extend(["-ngl", "-1"])
+                    # Fits on selected GPU(s) -- force all layers on GPU. --fit off is
+                    # required: without it llama.cpp's default --fit on second-guesses
+                    # and offloads ~1 GB at --parallel 4 even though the model fits.
+                    cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
 
                 server_caps = self.probe_server_capabilities(binary)
@@ -6265,6 +6267,28 @@ class LlamaCppBackend:
                         _split_axis_crash = self._is_tensor_split_assert(
                             "\n".join(self._stdout_lines[-50:])
                         )
+                        if (
+                            _spawn_attempt == 0
+                            and fully_gpu_offloaded
+                            and _startup_crashed
+                            and not _split_axis_crash
+                        ):
+                            # We forced --fit off because Studio's (conservative) VRAM
+                            # math placed the model fully on GPU. A startup crash here
+                            # means that estimate was optimistic, so fall back to --fit
+                            # on and let llama.cpp offload rather than fail the load.
+                            logger.warning(
+                                "llama-server crashed during startup (exit code %s) "
+                                "with forced --fit off; the fit estimate was optimistic, "
+                                "retrying once with --fit on so it can offload. "
+                                "Crash log: %s",
+                                self._process.returncode,
+                                self._llama_log_path,
+                            )
+                            _run = list(run_cmd)
+                            _run[_run.index("--fit") + 1] = "on"
+                            run_cmd = _run
+                            continue
                         if (
                             _spawn_attempt == 0
                             and _fit_retry_allowed
