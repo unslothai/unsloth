@@ -55,8 +55,12 @@ export function buildAgentCommand(
 
   const host = normalizeHost(url.hostname);
   const loopback = isLoopbackHost(host);
-  // Default local server (127.0.0.1/localhost:8888): bare command auto-discovers it.
-  if (isDefaultLocalHost(host) && url.port === DEFAULT_STUDIO_PORT) return bare;
+  // Default local server (http://127.0.0.1/localhost:8888): bare command
+  // auto-discovers it. The CLI's bare default probes plain HTTP, so an HTTPS
+  // loopback on the same port must keep its explicit UNSLOTH_STUDIO_URL.
+  if (url.protocol === "http:" && isDefaultLocalHost(host) && url.port === DEFAULT_STUDIO_PORT) {
+    return bare;
+  }
 
   // Non-default server: set the URL; non-loopback also needs an explicit key.
   let cmd = bare;

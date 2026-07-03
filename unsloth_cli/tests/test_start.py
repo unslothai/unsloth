@@ -1800,3 +1800,49 @@ def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypa
     wslenv = captured["env"]["WSLENV"].split(":")
     assert "HOME/p" in wslenv
     assert "USERPROFILE/p" in wslenv
+
+
+def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp_path, monkeypatch):
+    # UNSLOTH_API_KEY exported for some OTHER server must not fail the launch
+    # against a server this run just auto-started: validate, then fall back to
+    # the local mint path, and never remember the foreign key for this base.
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models") and token == "sk-unsloth-other-server":
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    key = start._agent_api_key(BASE, "sk-unsloth-other-server", auto_started = True)
+    assert key == "sk-unsloth-feedfacefeedface"  # minted for the fresh server
+    cached = json.loads((tmp_path / "agent_api_key.json").read_text())
+    assert "sk-unsloth-other-server" not in json.dumps(cached["servers"].get(BASE, {}))
+
+
+def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_path):
+    # An explicit key the fresh server accepts (e.g. persisted in this Studio
+    # home's auth db across restarts) keeps working exactly as before.
+    key = start._agent_api_key(BASE, "sk-unsloth-deadbeefdeadbeef", auto_started = True)
+    assert key == "sk-unsloth-deadbeefdeadbeef"
+    cached = json.loads((tmp_path / "agent_api_key.json").read_text())
+    assert cached["servers"][BASE]["saved"] == ["sk-unsloth-deadbeefdeadbeef"]
+
+
+def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path):
+    # A previously printed recipe may still be running an agent whose sessions
+    # or sqlite state live in the stable home; a re-run must not wipe it.
+    with start._session_config("codex", launch = False) as home:
+        marker = home / "sessions" / "live.sqlite"
+        marker.parent.mkdir(parents = True)
+        marker.write_text("state")
+    with start._session_config("codex", launch = False) as home2:
+        assert home2 == home
+        assert (home2 / "sessions" / "live.sqlite").read_text() == "state"

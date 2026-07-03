@@ -502,11 +502,17 @@ def _key_accepted(base: str, key: str) -> bool:
         )
 
 
-def _agent_api_key(base: str, explicit: Optional[str]) -> str:
+def _agent_api_key(base: str, explicit: Optional[str], *, auto_started: bool = False) -> str:
     cache = _key_cache_path()
     if explicit:
-        _remember_key(cache, base, explicit, "saved")
-        return explicit
+        if not auto_started or _key_accepted(base, explicit):
+            _remember_key(cache, base, explicit, "saved")
+            return explicit
+        # The server was auto-started for this run, so an exported
+        # UNSLOTH_API_KEY meant for some other server must not fail the
+        # launch: the loopback mint path below is guaranteed to work.
+        # (An explicit key that the fresh server accepts, e.g. one persisted
+        # in this Studio home's auth db, is still honored above.)
 
     # Replay a key the user saved for *this exact* server first (scoped per base,
     # so it only goes back there -- including a remote/SSH-tunnelled Studio whose
@@ -907,7 +913,7 @@ def _connect(
                 load = load._replace(gguf_variant = variant)
     base, server = _require_studio(model, load, serve = serve, launch = launch)
     try:
-        key = _agent_api_key(base, api_key)
+        key = _agent_api_key(base, api_key, auto_started = server is not None)
         # A server we just started has exactly the requested model loaded, so resolve to
         # whatever it is serving instead of re-matching the raw --model string.
         entry = _resolve_model(base, key, None if server is not None else model, load)
@@ -960,8 +966,8 @@ def _session_config(agent: str, launch: bool):
 
     launch: an ephemeral temp dir removed after the agent process exits, so nothing
     persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run later
-    on this machine), reset each run. Either way the user's real ~/.<agent> config is
-    left untouched.
+    on this machine), reused across runs. Either way the user's real ~/.<agent>
+    config is left untouched.
     """
     if launch:
         path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
@@ -970,8 +976,10 @@ def _session_config(agent: str, launch: bool):
         finally:
             shutil.rmtree(path, ignore_errors = True)
     else:
+        # Never wipe this dir: a previously printed recipe may still be running
+        # an agent whose sessions/state live here, and every config writer
+        # merges idempotently into an existing home anyway.
         path = _agents_config_root() / agent
-        shutil.rmtree(path, ignore_errors = True)
         path.mkdir(parents = True, exist_ok = True, mode = 0o700)
         yield path
 
