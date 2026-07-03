@@ -1338,11 +1338,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
 
             temperature = self.temperature
-            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
-            logit_scale_multiply = getattr(model.config, "logit_scale", 0)
+            model_config = _unsloth_get_model_config(model)
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model)
+            logit_scale_multiply = getattr(model_config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
-            logit_scale_divide = getattr(model.config, "logits_scaling", 0)
+            logit_scale_divide = getattr(model_config, "logits_scaling", 0)
             if logit_scale_divide is None:
                 logit_scale_divide = 0
 
@@ -1697,7 +1698,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
 
-def _unsloth_get_final_logit_softcapping(config):
+def _unsloth_get_model_config(model):
+    """Return HuggingFace model config, unwrapping DDP/Accelerate wrappers."""
+    config = getattr(model, "config", None)
+    if config is None and hasattr(model, "module"):
+        config = getattr(model.module, "config", None)
+    return config
+
+
+def _unsloth_get_final_logit_softcapping(model):
     """Return final_logit_softcapping for a model config, falling back to the
     nested text sub-config for composite models. Handles both:
       - Gemma-4-style configs where the attribute lives on ``config.text_config``
@@ -1705,6 +1714,9 @@ def _unsloth_get_final_logit_softcapping(config):
         reachable via ``config.get_text_config()``
     Returns 0 if unset, matching the previous behaviour.
     """
+    config = _unsloth_get_model_config(model)
+    if config is None:
+        return 0
     softcap = getattr(config, "final_logit_softcapping", None)
     if softcap is None:
         text_cfg = getattr(config, "text_config", None)
@@ -1725,6 +1737,7 @@ grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
@@ -1842,11 +1855,12 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
-        logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
+        model_config = _unsloth_get_model_config(model)
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model)  # Gemma
+        logit_scale_multiply = getattr(model_config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
-        logit_scale_divide = getattr(model.config, "logits_scaling", 0)  # Granite
+        logit_scale_divide = getattr(model_config, "logits_scaling", 0)  # Granite
         if logit_scale_divide is None:
             logit_scale_divide = 0
 
