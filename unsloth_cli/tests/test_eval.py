@@ -1225,9 +1225,7 @@ def test_resolve_tasks_dataset_before_group_still_avoids_child_names(tmp_path):
 
 def test_resolve_tasks_rejects_builtin_child_shadowed_by_sibling(tmp_path):
     (tmp_path / "suite.yaml").write_text(yaml.safe_dump({"group": "suite", "task": ["gsm8k"]}))
-    (tmp_path / "gsm8k.yaml").write_text(
-        yaml.safe_dump({"task": "gsm8k", "dataset_path": "json"})
-    )
+    (tmp_path / "gsm8k.yaml").write_text(yaml.safe_dump({"task": "gsm8k", "dataset_path": "json"}))
     with pytest.raises(ValueError, match = "depends on the lm-eval version"):
         evalmod.resolve_tasks(
             str(tmp_path / "suite.yaml"),

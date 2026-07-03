@@ -171,7 +171,11 @@ _TaskYamlLoader.add_multi_constructor(
 )
 
 
-def _load_task_spec(path: Path, depth: int = 0, first_include_wins: bool = False) -> dict:
+def _load_task_spec(
+    path: Path,
+    depth: int = 0,
+    first_include_wins: bool = False,
+) -> dict:
     # the task/group name may live in an included base config, which lm-eval
     # resolves during indexing — mirror that (child keys override the base);
     # depth-limited in case of include cycles. Current lm-eval merges include
@@ -357,9 +361,7 @@ def resolve_tasks(
                     if (
                         isinstance(child, str)
                         and child_name in reserved
-                        and _sibling_defines_task(
-                            path.resolve().parent, path.resolve(), child_name
-                        )
+                        and _sibling_defines_task(path.resolve().parent, path.resolve(), child_name)
                     ):
                         raise ValueError(
                             f"Custom task file '{entry}' lists child task '{child_name}', "
@@ -798,7 +800,5 @@ def evaluate(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
-    results_path.write_text(
-        json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8"
-    )
+    results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")
