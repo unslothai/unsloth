@@ -1062,6 +1062,9 @@ from models.inference import (
     DiffusionLoadProgressResponse,
     GalleryImage,
     GalleryListResponse,
+    ImageGenerationRequest,
+    ImageGenerationData,
+    ImageGenerationResponse,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -11322,3 +11325,167 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     return DiffusionGenerateProgressResponse(**get_active_diffusion_engine().generate_progress())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# OpenAI-compatible images API (POST /v1/images/generations)
+#
+# The inference router is mounted at both /api/inference and /v1, so this also
+# answers /v1/images/generations for off-the-shelf OpenAI clients. It maps
+# OpenAI's CreateImageRequest onto the in-process diffusion backend and returns
+# an ImagesResponse. Studio's own Image tab uses the richer /images/generate
+# route above; this is the spec-shaped surface, and the single error boundary
+# mapping backend exceptions to OpenAI error envelopes (the global /v1 handler
+# wraps HTTPException detail into the envelope).
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Diffusion dims must land in [256, 2048] on a multiple of 16 (8x VAE downsample
+# x 2x patch); the named OpenAI sizes (1024x1024, 1536x1024, 256x256, ...) all
+# satisfy this. Mirrors DiffusionGenerateRequest's width/height bounds so both
+# generate paths accept the same geometry.
+_IMAGE_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
+_IMAGE_DIM_MIN, _IMAGE_DIM_MAX = 256, 2048
+# Sanitized 503 detail shared by the pre-check and the unload-race branch, so both
+# "no image model" responses stay identical.
+_NO_IMAGE_MODEL_MSG = "No image model loaded. Load an image model first."
+
+
+def _parse_openai_image_size(size: str) -> tuple[int, int]:
+    """OpenAI ``size`` -> (width, height). ``auto``/empty -> 1024x1024 (~1MP, what
+    these models target). Raises ValueError with a client-facing message."""
+    text = (size or "").strip().lower()
+    if text in ("", "auto"):
+        return 1024, 1024
+    match = _IMAGE_SIZE_RE.match(text)
+    if not match:
+        raise ValueError("size must be 'auto' or '<width>x<height>', e.g. '1024x1024'.")
+    width, height = int(match.group(1)), int(match.group(2))
+    for label, value in (("width", width), ("height", height)):
+        if not _IMAGE_DIM_MIN <= value <= _IMAGE_DIM_MAX:
+            raise ValueError(f"size {label} must be between {_IMAGE_DIM_MIN} and {_IMAGE_DIM_MAX}.")
+        if value % 16 != 0:
+            raise ValueError(f"size {label} must be a multiple of 16.")
+    return width, height
+
+
+def _absolute_image_url(request: Request, relative: str) -> str:
+    """Join a relative gallery path onto the request's own scheme+host, for the
+    response_format=url links. Like every Studio route, the target needs the
+    bearer token; b64_json avoids that for clients that can't carry it."""
+    return str(request.base_url).rstrip("/") + relative
+
+
+@router.post(
+    "/images/generations",
+    response_model = ImageGenerationResponse,
+    response_model_exclude_none = True,
+)
+async def openai_image_generations(
+    body: ImageGenerationRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """OpenAI-compatible text-to-image (POST /v1/images/generations).
+
+    Generates ``n`` images from ``prompt`` on the loaded diffusion model and
+    returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
+    and guidance have no OpenAI knob, so they default per loaded model."""
+    from core.inference import image_gallery
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import default_generation_params
+
+    if body.stream:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "Streaming image generation is not supported.", status = 400, param = "stream"
+            ),
+        )
+    try:
+        width, height = _parse_openai_image_size(body.size)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
+        )
+
+    # Use the active engine (diffusers OR native sd.cpp on a no-GPU host), the same
+    # accessor /images/generate uses, so a model loaded on the native engine isn't
+    # wrongly reported unloaded here.
+    backend = get_active_diffusion_engine()
+    status = backend.status()
+    if not status.get("loaded"):
+        # Mirror /v1/completions and /v1/embeddings, which 503 when their backend
+        # isn't loaded; the global handler turns this into the OpenAI envelope.
+        raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+
+    # Fall back to the resolved base repo so a local-path load (whose repo_id is a
+    # filesystem path) still gets the right per-model steps/guidance.
+    steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+    try:
+        result = await asyncio.to_thread(
+            backend.generate,
+            prompt = body.prompt,
+            width = width,
+            height = height,
+            steps = steps,
+            guidance = guidance,
+            batch_size = body.n,
+        )
+    except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
+        # A RuntimeError with the model now unloaded means it was evicted/unloaded
+        # between the readiness check above and the call (a transient race): 503.
+        # Every other failure (CUDA OOM, a diffusers shape/device error, both also
+        # RuntimeError) is a real 500, and its raw message must not reach the client.
+        if isinstance(exc, RuntimeError) and not backend.is_loaded:
+            raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+        logger.error("openai_images.generate_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+    created = int(time.time())
+    want_b64 = body.response_format == "b64_json"
+    # Persist each image with its full recipe embedded, like /images/generate, so
+    # the response_format=url links resolve and the images show up in the gallery.
+    recipe = {
+        "prompt": body.prompt,
+        "negative_prompt": None,
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "guidance": guidance,
+        # The batch shares one base seed, so restoring a batch_index>0 sibling needs the
+        # original batch_size to replay it (same as /images/generate); persist it.
+        "batch_size": body.n,
+        "model": result.get("repo_id"),
+        "created_at": float(created),
+    }
+    # The diffusers batch shares one seed; the native sd.cpp batch uses a distinct seed
+    # per image (returned in ``seeds``), so record each image's own seed, like
+    # /images/generate, or a native batch_index>0 image shows the wrong seed.
+    per_image_seeds = result.get("seeds")
+
+    def _persist() -> list[ImageGenerationData]:
+        items: list[ImageGenerationData] = []
+        for index, image in enumerate(result["images"]):
+            seed = (
+                per_image_seeds[index]
+                if per_image_seeds and index < len(per_image_seeds)
+                else result["seed"]
+            )
+            record = image_gallery.save(image, {**recipe, "batch_index": index, "seed": seed})
+            if want_b64:
+                encoded = image_gallery.image_b64(record["id"])
+                if encoded is None:  # vanished between write and read — fail the call
+                    raise RuntimeError("generated image could not be read back for encoding")
+                items.append(ImageGenerationData(b64_json = encoded))
+            else:
+                items.append(ImageGenerationData(url = _absolute_image_url(request, record["url"])))
+        return items
+
+    try:
+        data = await asyncio.to_thread(_persist)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("openai_images.persist_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+
+    return ImageGenerationResponse(created = created, data = data)

@@ -326,6 +326,136 @@ def build_sd_cpp_upscale_command(
     return cmd
 
 
+def build_sd_cpp_server_command(
+    binary: str,
+    files: SdCppModelFiles,
+    *,
+    host: str,
+    port: int,
+    vae_format: Optional[str] = None,
+    offload: Optional[list[str]] = None,
+    native_speed: Optional[str] = None,
+    threads: Optional[int] = None,
+    scratch_dir: Optional[str] = None,
+    verbose: bool = False,
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Build the ``sd-server`` argv: model + hardware/server flags only.
+
+    ``sd-server`` (stable-diffusion.cpp ``examples/server``) loads the model once at
+    spawn from the SAME flags ``sd-cli`` takes (``--diffusion-model`` / ``--vae`` /
+    the text encoders / ``--vae-format`` / offload + speed), and adds ``--listen-ip``
+    / ``--listen-port``. Per-generation parameters (prompt, size, steps, seed, cfg,
+    sampler, batch) are NOT here -- they go in each ``/sdcpp/v1/img_gen`` request, so
+    one resident process serves many generations without reloading the weights.
+
+    ``offload`` / ``native_speed`` map to the exact same sd.cpp flags as the one-shot
+    engine (``--offload-to-cpu`` / ``--diffusion-fa`` / ...), verified to be accepted
+    by ``sd-server --help``. ``scratch_dir`` (if given) is pointed at by the LoRA /
+    hires-upscaler / embeddings directory flags: sd-server's img_gen handler recursively
+    iterates those dirs, and an unset / missing dir makes it fail the request, so we give
+    it a real (empty) directory. ``extra_args`` is appended last so a power user can
+    override anything (sd.cpp's parser is last-wins).
+    """
+    if not files.diffusion_model:
+        raise ValueError("diffusion_model path is required")
+
+    cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
+    for flag, value in (
+        ("--vae", files.vae),
+        ("--clip_l", files.clip_l),
+        ("--clip_g", files.clip_g),
+        ("--t5xxl", files.t5xxl),
+        ("--llm", files.llm),
+        ("--qwen2vl", files.qwen2vl),
+    ):
+        if value:
+            cmd += [flag, value]
+    if vae_format:
+        cmd += ["--vae-format", vae_format]
+    cmd += ["--listen-ip", str(host), "--listen-port", str(int(port))]
+    if scratch_dir:
+        cmd += [
+            "--lora-model-dir",
+            scratch_dir,
+            "--hires-upscalers-dir",
+            scratch_dir,
+            "--embd-dir",
+            scratch_dir,
+        ]
+    if threads is not None:
+        cmd += ["--threads", str(int(threads))]
+
+    offload = list(offload or [])
+    if offload:
+        cmd += offload
+    # De-dup speed flags against offload (offload may already include --diffusion-fa).
+    cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
+    if verbose:
+        cmd += ["-v"]
+    if extra_args:
+        cmd += list(extra_args)
+    return cmd
+
+
+def build_img_gen_request(
+    *,
+    prompt: str,
+    negative_prompt: Optional[str] = None,
+    width: int = 1024,
+    height: int = 1024,
+    steps: Optional[int] = None,
+    seed: Optional[int] = None,
+    batch_count: int = 1,
+    sample_method: Optional[str] = None,
+    flow_shift: Optional[float] = None,
+    cfg_scale: Optional[float] = None,
+    distilled_guidance: Optional[float] = None,
+    output_format: str = "png",
+) -> dict:
+    """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
+
+    The native ``sdcpp`` API takes the whole batch in one request (``batch_count``),
+    so a batch reuses the resident model with no reload. Sampling lives under
+    ``sample_params``; guidance is split exactly like the one-shot engine's
+    ``_map_guidance``: a FLUX distilled value goes to ``guidance.distilled_guidance``,
+    a real classifier-free scale goes to ``guidance.txt_cfg``. Only set keys are
+    emitted so the server applies its own defaults for the rest.
+    """
+    if not str(prompt).strip():
+        raise ValueError("prompt is required")
+
+    guidance: dict = {}
+    if cfg_scale is not None:
+        guidance["txt_cfg"] = float(cfg_scale)
+    if distilled_guidance is not None:
+        guidance["distilled_guidance"] = float(distilled_guidance)
+
+    sample_params: dict = {}
+    if steps is not None:
+        sample_params["sample_steps"] = int(steps)
+    if sample_method:
+        sample_params["sample_method"] = str(sample_method)
+    if flow_shift is not None:
+        sample_params["flow_shift"] = float(flow_shift)
+    if guidance:
+        sample_params["guidance"] = guidance
+
+    req: dict = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt or "",
+        "width": int(width),
+        "height": int(height),
+        "batch_count": max(1, int(batch_count)),
+        "output_format": output_format,
+    }
+    if seed is not None:
+        req["seed"] = int(seed)
+    if sample_params:
+        req["sample_params"] = sample_params
+    return req
+
+
 def _fmt_float(value: float) -> str:
     """Compact float -> str: drop a trailing ``.0`` so ``1.0`` -> ``1`` (sd-cli
     accepts both, but the tidy form keeps logged commands readable)."""

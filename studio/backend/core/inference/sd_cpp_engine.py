@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 # target is ``sd-cli``; older builds shipped ``sd`` -- both are probed on PATH.
 _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
+# The persistent HTTP server target (stable-diffusion.cpp ``examples/server``). It
+# ships next to ``sd-cli`` in both the prebuilt archives and the cmake build tree.
+_SERVER_STEM = "sd-server"
 
 
 class SdCppCancelled(RuntimeError):
@@ -119,11 +122,11 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
     return env
 
 
-def _layout_candidates(root: Path) -> list[Path]:
-    """sd-cli locations under a stable-diffusion.cpp checkout/install ``root``,
+def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
+    """``stem`` locations under a stable-diffusion.cpp checkout/install ``root``,
     highest priority first: the cmake ``build/bin`` tree, then a Windows Release
     subdir, then the root itself."""
-    name = _binary_name(_BINARY_STEM)
+    name = _binary_name(stem)
     cands = [
         root / "build" / "bin" / name,
         root / "build" / "bin" / "Release" / name,
@@ -133,37 +136,39 @@ def _layout_candidates(root: Path) -> list[Path]:
     return cands
 
 
-def find_sd_cpp_binary() -> Optional[str]:
-    """Locate the ``sd-cli`` binary, or None.
+def _first_file(paths: list[Path]) -> Optional[str]:
+    for p in paths:
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            continue
+    return None
 
-    Search order (mirrors the llama.cpp finder so a Studio install lands where
-    both engines look):
-      1. ``SD_CLI_PATH`` env -- a direct path to the binary.
+
+def _find_binary(
+    *, direct_env: str, path_stems: tuple[str, ...], layout_stem: str
+) -> Optional[str]:
+    """Shared finder for the stable-diffusion.cpp binaries.
+
+    Search order (mirrors the llama.cpp finder so a Studio install lands where every
+    binary is looked for):
+      1. ``direct_env`` -- a direct path to the binary.
       2. ``UNSLOTH_SD_CPP_PATH`` env -- a stable-diffusion.cpp install dir.
-      3. The default install root build layouts (the installer target); honors
-         ``UNSLOTH_STUDIO_HOME`` / ``STUDIO_HOME``, else ``~/.unsloth/stable-diffusion.cpp``.
+      3. the installer target: ``<UNSLOTH_STUDIO_HOME>/../stable-diffusion.cpp`` when
+         that env (or ``STUDIO_HOME``) is set, else ``~/.unsloth/stable-diffusion.cpp``.
       4. ``./stable-diffusion.cpp`` in-tree build (developer checkout).
-      5. ``sd-cli`` (then legacy ``sd``) on PATH.
+      5. ``path_stems`` on PATH (in order).
     """
-
-    def _first_file(paths: list[Path]) -> Optional[str]:
-        for p in paths:
-            try:
-                if p.is_file():
-                    return str(p)
-            except OSError:
-                continue
-        return None
-
     # 1. Direct binary path.
-    env_bin = os.environ.get("SD_CLI_PATH")
+    env_bin = os.environ.get(direct_env)
     if env_bin and Path(env_bin).is_file():
         return env_bin
 
     # 2. Custom install dir.
     custom = os.environ.get("UNSLOTH_SD_CPP_PATH")
     if custom:
-        hit = _first_file(_layout_candidates(Path(custom)))
+        hit = _first_file(_layout_candidates(Path(custom), layout_stem))
         if hit:
             return hit
 
@@ -177,25 +182,53 @@ def find_sd_cpp_binary() -> Optional[str]:
         if studio_home
         else Path.home() / ".unsloth" / "stable-diffusion.cpp"
     )
-    hit = _first_file(_layout_candidates(default_root))
+    hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit
 
     # 4. In-tree developer build: <repo_root>/stable-diffusion.cpp.
     try:
         project_root = Path(__file__).resolve().parents[4]
-        hit = _first_file(_layout_candidates(project_root / "stable-diffusion.cpp"))
+        hit = _first_file(_layout_candidates(project_root / "stable-diffusion.cpp", layout_stem))
         if hit:
             return hit
     except (OSError, IndexError):
         pass
 
     # 5. PATH.
-    for stem in (_BINARY_STEM, _LEGACY_STEM):
+    for stem in path_stems:
         on_path = shutil.which(stem)
         if on_path:
             return on_path
     return None
+
+
+def find_sd_cpp_binary() -> Optional[str]:
+    """Locate the one-shot ``sd-cli`` binary (env ``SD_CLI_PATH``), or None.
+
+    Probes ``sd-cli`` then legacy ``sd`` on PATH. This is the fallback engine once the
+    persistent ``sd-server`` exists; it also still backs the ESRGAN upscale mode.
+    """
+    return _find_binary(
+        direct_env = "SD_CLI_PATH",
+        path_stems = (_BINARY_STEM, _LEGACY_STEM),
+        layout_stem = _BINARY_STEM,
+    )
+
+
+def find_sd_server_binary() -> Optional[str]:
+    """Locate the persistent ``sd-server`` binary (env ``SD_SERVER_PATH``), or None.
+
+    Same precedence as ``find_sd_cpp_binary`` but keyed to the ``sd-server`` stem, so
+    a Studio install (prebuilt archive or cmake build, both of which ship ``sd-server``
+    next to ``sd-cli``) is found in the same places. Preferred over the one-shot CLI:
+    it loads the model once and serves many generations without reloading from disk.
+    """
+    return _find_binary(
+        direct_env = "SD_SERVER_PATH",
+        path_stems = (_SERVER_STEM,),
+        layout_stem = _SERVER_STEM,
+    )
 
 
 class SdCppEngine:

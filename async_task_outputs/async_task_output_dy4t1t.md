@@ -1,1 +1,0 @@
-- check PR 6658 int8/fp8 mem
