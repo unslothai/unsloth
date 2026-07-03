@@ -263,6 +263,49 @@ def get_device() -> DeviceType:
     return DEVICE
 
 
+def export_capability() -> dict:
+    """Whether model export can run here, with a torch-aware reason when it cannot.
+
+    Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at
+    import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The
+    reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch.
+
+    Returns {export_supported, export_unsupported_reason, export_unsupported_message}.
+    """
+    if get_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+        return {
+            "export_supported": True,
+            "export_unsupported_reason": None,
+            "export_unsupported_message": None,
+        }
+    # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
+    # would be wrong advice on a Mac even when torch is also absent.
+    if is_apple_silicon():
+        reason = "mlx_unavailable"
+        message = (
+            "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
+            "`unsloth studio update` to restore MLX and enable export."
+        )
+    elif not _has_torch():
+        reason = "pytorch_not_installed"
+        message = (
+            "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+            "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+        )
+    else:
+        reason = "no_accelerator"
+        message = (
+            "Export requires an NVIDIA, AMD, or Intel GPU, or Apple Silicon (MLX). No supported "
+            "accelerator was found on this host. (PyTorch is installed, but Unsloth cannot export "
+            "on CPU only.)"
+        )
+    return {
+        "export_supported": False,
+        "export_unsupported_reason": reason,
+        "export_unsupported_message": message,
+    }
+
+
 def clear_gpu_cache():
     """
     Clear GPU memory cache for the current device.
