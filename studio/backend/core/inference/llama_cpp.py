@@ -1294,6 +1294,25 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _is_external_link(path: Path) -> bool:
+    """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
+    or a Windows directory junction / reparse point. Such a link resolves into
+    the user's own llama.cpp checkout, which Studio does not own."""
+    try:
+        if os.path.islink(path):
+            return True
+    except OSError:
+        return False
+    if os.name == "nt":
+        try:
+            import stat
+            attrs = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]
+            return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        except (OSError, AttributeError):
+            return False
+    return False
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -1325,6 +1344,7 @@ class LlamaCppBackend:
         self._is_diffusion: bool = False
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
+        self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
         self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
@@ -1532,6 +1552,21 @@ class LlamaCppBackend:
         """Return the model's native context length from GGUF metadata."""
         return self._context_length
 
+    @staticmethod
+    def _read_rss_bytes(pid: int) -> Optional[int]:
+        """Resident set size of ``pid`` in bytes, from /proc/<pid>/status (Linux).
+        0 when the status has no VmRSS line (zombie / kernel thread); None where
+        /proc is unavailable (macOS/Windows) or the value is unreadable."""
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        # IndexError guards a "VmRSS:" line with no value column.
+                        return int(line.split()[1]) * 1024  # kB -> bytes
+        except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
+            return None
+        return 0  # readable but no VmRSS line
+
     def load_progress(self) -> Optional[dict]:
         """Return live model-load progress, or None if not loading.
 
@@ -1591,22 +1626,32 @@ class LlamaCppBackend:
             except OSError:
                 pass
 
-        # Read VmRSS from /proc/<pid>/status (kilobytes on Linux).
-        bytes_loaded = 0
-        try:
-            with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        kb = int(line.split()[1])
-                        bytes_loaded = kb * 1024
-                        break
-        except (FileNotFoundError, PermissionError, ValueError, OSError):
+        # VmRSS of the llama-server; None where /proc is unavailable.
+        bytes_loaded = LlamaCppBackend._read_rss_bytes(pid)
+        if bytes_loaded is None:
             return None
+
+        # RSS climbs as weights page in, then drops once -ngl offloads them to
+        # VRAM and the mmap pages are freed. Hold a per-process high-water mark
+        # so the bar never regresses to ~8% mid-load (#5740).
+        hwm_pid, hwm = getattr(self, "_load_rss_hwm", (None, 0))
+        hwm = bytes_loaded if hwm_pid != pid else max(hwm, bytes_loaded)
+        self._load_rss_hwm = (pid, hwm)
+        bytes_loaded = hwm
 
         phase = "ready" if self._healthy else "mmap"
         fraction = 0.0
         if bytes_total > 0:
             fraction = min(1.0, bytes_loaded / bytes_total)
+        # Once llama-server is healthy the load is complete by definition. With
+        # layers offloaded to VRAM (-ngl) the process releases the mmap'd weight
+        # pages, so VmRSS sinks back well below the shard total; the raw RSS
+        # fraction would then report a partial (~8%) load indefinitely and freeze
+        # a fraction-driven progress bar even though the model is ready (#5740).
+        if self._healthy:
+            if bytes_total > 0:
+                bytes_loaded = bytes_total
+            fraction = 1.0
         return {
             "phase": phase,
             "bytes_loaded": bytes_loaded,
@@ -4282,6 +4327,17 @@ class LlamaCppBackend:
                 "llama-server was terminated (signal 15) before it became "
                 "healthy. If you cancelled or unloaded the model this is "
                 "expected; otherwise check the llama-server log for the cause."
+            )
+
+        # A live server that never answered 200 on /health is not a bad GGUF:
+        # the load is too large for VRAM/context, or a local proxy/VPN grabbed
+        # the loopback probe (#5740).
+        if "health check timed out" in lowered:
+            return (
+                "llama-server started but never became healthy on its local "
+                "/health endpoint. Try a smaller context length or a more "
+                "quantized GGUF, and if you use a VPN or HTTP proxy make sure "
+                "localhost bypasses it (NO_PROXY=127.0.0.1,localhost)."
             )
 
         # Fallback: genuinely unknown failure (OOM, missing binary ...).
@@ -7237,6 +7293,13 @@ class LlamaCppBackend:
             resolved_roots: list[Path] = []
             for root in install_roots:
                 try:
+                    # A --with-llama-cpp-dir local link (symlink/junction)
+                    # resolves into the user's own checkout. Adding it would let
+                    # us treat the user's externally-launched llama-server as our
+                    # orphan and kill it, so leave such roots out of the
+                    # allowlist (we forgo orphan-reaping for local-link installs).
+                    if _is_external_link(root):
+                        continue
                     resolved_roots.append(root.resolve())
                 except OSError:
                     pass
@@ -7546,6 +7609,10 @@ class LlamaCppBackend:
 
             time.sleep(interval)
 
+        # Leave a marker so _classify_llama_start_failure tells a live but
+        # never-healthy load (too large, or a proxy hijacking the loopback
+        # probe) apart from a bad GGUF (#5740).
+        self._stdout_lines.append(f"llama-server health check timed out after {timeout}s")
         logger.error(f"llama-server health check timed out after {timeout}s")
         return False
 

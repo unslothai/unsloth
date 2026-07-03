@@ -128,13 +128,7 @@ class TestToolActionNudge:
         assert "call render_html once" in nudge
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
-        assert (
-            _build_tool_action_nudge(
-                tools = [],
-                model_name = "Llama-3.1-8B-Instruct",
-            )
-            == ""
-        )
+        assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
 
 # =====================================================================

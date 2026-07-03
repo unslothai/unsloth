@@ -1473,12 +1473,14 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
-        """get_gpu_utilization dispatches to amd.py via _smi_query when IS_ROCM."""
+        """get_gpu_utilization dispatches visible metrics through amd.py on ROCm."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert '_smi_query("get_primary_gpu_utilization"' in func_body
+        assert "_smi_query(" in func_body
+        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_reconcile_rocm_unified_memory" in func_body
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
