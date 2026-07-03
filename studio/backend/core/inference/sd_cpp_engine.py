@@ -155,8 +155,8 @@ def _find_binary(
     binary is looked for):
       1. ``direct_env`` -- a direct path to the binary.
       2. ``UNSLOTH_SD_CPP_PATH`` env -- a stable-diffusion.cpp install dir.
-      3. the installer target: ``<UNSLOTH_STUDIO_HOME>/../stable-diffusion.cpp`` when
-         that env (or ``STUDIO_HOME``) is set, else ``~/.unsloth/stable-diffusion.cpp``.
+      3. The default install root build layouts (the installer target); honors
+         ``UNSLOTH_STUDIO_HOME`` / ``STUDIO_HOME``, else ``~/.unsloth/stable-diffusion.cpp``.
       4. ``./stable-diffusion.cpp`` in-tree build (developer checkout).
       5. ``path_stems`` on PATH (in order).
     """
