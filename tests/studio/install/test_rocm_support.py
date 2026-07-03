@@ -2294,6 +2294,41 @@ class TestRocmTorchInstalledEnvVar:
         mock_bnb.assert_not_called()
 
 
+class TestWindowsRocmTorchaoGuard:
+    """Verify the torchao skip can detect an installed Windows ROCm torch build."""
+
+    def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = "yes"
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is True
+
+    def test_installed_torch_is_windows_rocm_rejects_non_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = ""
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    def test_installed_torch_is_windows_rocm_is_non_windows_noop(self):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    def test_install_python_stack_uses_direct_windows_rocm_torchao_guard(self):
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        assert (
+            "elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():"
+            in source
+        )
+
+
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
 
 

@@ -181,6 +181,39 @@ def _probe_installed_torch_version() -> str | None:
     return lines[-1] if lines else None
 
 
+def _installed_torch_is_windows_rocm() -> bool:
+    """Return True when the target venv currently has a Windows ROCm torch build.
+
+    This is a belt-and-suspenders guard for the torchao override step: if the
+    earlier ROCm install path failed to set _rocm_windows_torch_installed but the
+    venv already contains a ROCm torch wheel, still skip torchao because it
+    crashes on import on Windows ROCm.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, torch; "
+                    "hip = getattr(getattr(torch, 'version', None), 'hip', None) or ''; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "sys.stdout.write('yes' if (hip or 'rocm' in ver or 'rocmsdk' in ver) else '')"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 90,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0 and (probe.stdout or "").strip() == "yes"
+
+
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
@@ -2221,7 +2254,7 @@ def install_python_stack() -> int:
     #    (no working build; see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
-    elif _rocm_windows_torch_installed:
+    elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
         # No working Windows ROCm torchao build: it imports an absent c10d backend
         # and crashes transformers.quantizers. Studio stubs it at runtime, so
         # installing it only ships a package that crashes on import -- skip it.
