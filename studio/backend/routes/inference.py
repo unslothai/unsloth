@@ -10451,22 +10451,21 @@ async def _anthropic_passthrough_non_streaming(
 
     # Promote text-form tool calls (declared client tools only) into structured
     # tool_calls BEFORE block building, so the tool_use loop and the stop_reason
-    # line below treat them exactly like native calls. The legacy XML strip
-    # still runs on whatever text remains, preserving today's cleanup when
-    # nothing was promoted (or healing is opted out).
-    healed = False
-    if _allowed_tools:
-        healed = heal_openai_message(message, _allowed_tools)
+    # line below treat them exactly like native calls.
+    healing_active = bool(_allowed_tools)
+    if healing_active:
+        heal_openai_message(message, _allowed_tools)
 
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        # Once healing promoted a call it span-trims only that declared call's
-        # markup and leaves every unpromoted byte (undeclared text-form calls
-        # included) in place to relay as text. Running the blanket legacy strip
-        # then would delete those bytes, so only apply it when nothing was
-        # promoted (or healing is opted out), matching the OpenAI passthrough.
-        if not healed:
+        # Healing span-trims only the promoted declared calls and leaves every
+        # unpromoted byte (undeclared or malformed text-form calls included) in
+        # place to relay as text -- the OpenAI passthrough relays those bytes
+        # verbatim too, and silently emptying the message recreates the dead
+        # turn this path exists to fix. The blanket legacy strip therefore only
+        # runs when healing is off (no declared tools, or opted out).
+        if not healing_active:
             text = _TOOL_XML_RE.sub("", text)
         text = text.strip()
         if text:
