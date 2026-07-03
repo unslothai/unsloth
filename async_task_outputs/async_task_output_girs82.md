@@ -1,1 +1,0 @@
-- Pending: compare `sd` vs PyTorch
