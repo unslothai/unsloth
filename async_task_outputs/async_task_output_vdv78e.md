@@ -1,1 +1,0 @@
-- sd.cpp unwired; live path diffusers+GGUF

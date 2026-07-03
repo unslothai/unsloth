@@ -1,1 +1,0 @@
-- PENDING: consumer GPU FP32 accum nerf; test 2:4 sparse

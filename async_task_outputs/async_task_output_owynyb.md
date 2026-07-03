@@ -1,3 +1,0 @@
-- Decision: removed global weight buffers because benchmarks/allocator profile showed neutral/no useful memory win.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_speed.py`: removed `install_weight_buffer` stub and weight_buffer assertions; `eager` now expects no GGUF accelerator.
-- Pending: search/remove remaining refs, delete `scripts/buffer_bench.py`, run `CUDA_VISIBLE_DEVICES="" python -m pytest tests/ -q -k "diffusion"`.

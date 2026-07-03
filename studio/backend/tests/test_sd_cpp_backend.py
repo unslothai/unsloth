@@ -77,8 +77,68 @@ def _loaded_backend(fam_name = "z-image", engine = None):
         vae_format = fam.sd_cpp_vae_format,
         sampling_method = fam.sd_cpp_sampling_method,
         flow_shift = fam.sd_cpp_flow_shift,
+        mode = "oneshot",  # this fixture injects an engine, so it exercises the one-shot path
     )
     return b
+
+
+class _FakeServer:
+    """Stands in for SdCppServer: records the spawn + one img_gen per whole batch."""
+
+    def __init__(self, binary):
+        self.binary = binary
+        self.started = None
+        self.stopped = False
+        self.payloads = []
+        self.timeouts = []
+        self.alive = True
+        self.lora_dir = None  # set by a test to the server's --lora-model-dir scratch dir
+
+    def is_alive(self):
+        return self.alive and not self.stopped
+
+    def start(
+        self,
+        files,
+        *,
+        vae_format = None,
+        offload = None,
+        native_speed = None,
+        threads = None,
+    ):
+        self.started = dict(
+            files = files,
+            vae_format = vae_format,
+            offload = offload,
+            native_speed = native_speed,
+            threads = threads,
+        )
+
+    def img_gen(
+        self,
+        payload,
+        *,
+        on_step = None,
+        cancel_event = None,
+        total_timeout = None,
+    ):
+        import io as _io
+
+        self.payloads.append(payload)
+        self.timeouts.append(total_timeout)
+        if on_step is not None:
+            steps = payload.get("sample_params", {}).get("sample_steps", 0)
+            on_step(f"  {steps}/{steps}")
+        n = int(payload.get("batch_count", 1))
+        blobs = []
+        for i in range(n):
+            buf = _io.BytesIO()
+            Image.new("RGB", (1, 1), (i, i, i)).save(buf, format = "PNG")
+            blobs.append(buf.getvalue())
+        return blobs
+
+    def stop(self):
+        self.stopped = True
 
 
 # ── asset resolution ──────────────────────────────────────────────────────────
@@ -321,6 +381,260 @@ def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
     assert b._state is not None and b._state.repo_id == "unsloth/Z-Image-Turbo-GGUF"
 
 
+# ── persistent sd-server mode ──────────────────────────────────────────────────
+
+
+def test_resolve_backend_prefers_server(monkeypatch):
+    b = SdCppDiffusionBackend()  # no injected engine
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    mode, binary, engine = b._resolve_backend()
+    assert mode == "server" and binary == "/x/sd-server" and engine is None
+
+
+def test_resolve_backend_injected_engine_forces_oneshot():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    mode, binary, engine = b._resolve_backend()
+    assert mode == "oneshot" and binary is None and engine is not None
+
+
+def test_resolve_backend_falls_back_to_oneshot_without_server(monkeypatch):
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    monkeypatch.setattr(bk, "_install_allowed", lambda: False)  # don't attempt a real install
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/usr/bin/sd-cli")
+    mode, binary, engine = b._resolve_backend()
+    assert mode == "oneshot" and engine is not None
+
+
+def test_resolve_backend_cached_fallback_engine_does_not_pin_oneshot(monkeypatch):
+    # A lazily cached fallback engine (NOT an explicit injection) must not force one-shot:
+    # once a server is available again, the next load can use it.
+    b = SdCppDiffusionBackend()  # no injected engine
+    b._engine = _FakeEngine()  # simulate a prior lazy one-shot fallback caching the engine
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    mode, binary, engine = b._resolve_backend()
+    assert mode == "server" and binary == "/x/sd-server" and engine is None
+
+
+def _run_server_load(
+    monkeypatch,
+    b,
+    servers,
+    fam_name = "z-image",
+):
+    fam = detect_family(fam_name)
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    # The fake binary path is not a real executable; skip the up-front runnability probe.
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+
+    def _factory(binary):
+        s = _FakeServer(binary)
+        servers.append(s)
+        return s
+
+    monkeypatch.setattr(bk, "SdCppServer", _factory)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+    )
+
+
+def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    assert len(servers) == 1
+    assert servers[0].started is not None  # the model is loaded once, at spawn
+    assert b._state is not None and b._state.mode == "server" and b._state.server is servers[0]
+    assert b.status()["native_mode"] == "server"
+
+
+def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 7, batch_size = 3)
+    assert len(out["images"]) == 3
+    assert all(isinstance(im, Image.Image) for im in out["images"])
+    # ONE job for the whole batch (no per-image model reload), unlike the one-shot path.
+    assert len(servers[0].payloads) == 1
+    assert servers[0].payloads[0]["batch_count"] == 3
+    assert out["seed"] == 7 and out["seeds"] == [7, 8, 9]
+    # step progress was driven from the server's stdout line.
+    assert b._gen is None  # cleared after generate
+
+
+def test_server_generate_splits_batches_above_server_limit(monkeypatch):
+    # A batch above the server's per-job limit is chunked (the one-shot path did these
+    # image-by-image); each chunk gets a timeout proportional to its image count.
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 100, batch_size = 10)
+    assert len(out["images"]) == 10
+    counts = [p["batch_count"] for p in servers[0].payloads]
+    assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
+    # Each chunk's timeout scales with its image count, not one fixed batch deadline.
+    assert servers[0].timeouts == [
+        bk._SERVER_PER_IMAGE_TIMEOUT_S * 8,
+        bk._SERVER_PER_IMAGE_TIMEOUT_S * 2,
+    ]
+    # Seeds run contiguously across chunks (chunk 2 submitted at base + 8).
+    assert out["seeds"] == list(range(100, 110))
+    assert servers[0].payloads[1]["seed"] == 108
+
+
+def test_server_generate_masks_large_seed(monkeypatch):
+    # sd.cpp's image seed is signed int64; a larger explicit seed must be masked before it
+    # reaches the server (the request model / diffusers accept up to 2**64 - 1).
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 2**64 - 1, batch_size = 1)
+    assert servers[0].payloads[0]["seed"] <= (1 << 63) - 1
+    assert all(s <= (1 << 63) - 1 for s in out["seeds"])
+
+
+def test_status_clears_when_server_died(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    assert b.status()["loaded"] is True
+    servers[0].alive = False  # the resident server crashed / was OOM-killed
+    st = b.status()
+    assert st["loaded"] is False
+    assert b._state is None  # stale state was dropped so clients reload
+
+
+def test_server_generate_progress_from_stdout(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+
+    seen = {}
+
+    class _WatchServer(_FakeServer):
+        def img_gen(
+            self,
+            payload,
+            *,
+            on_step = None,
+            cancel_event = None,
+            total_timeout = None,
+        ):
+            on_step("  4/8")
+            seen["mid"] = b.generate_progress()
+            return super().img_gen(
+                payload, on_step = on_step, cancel_event = cancel_event, total_timeout = total_timeout
+            )
+
+    b._state = bk._SdState(
+        repo_id = b._state.repo_id,
+        base_repo = b._state.base_repo,
+        family = b._state.family,
+        device = b._state.device,
+        files = b._state.files,
+        vae_format = b._state.vae_format,
+        sampling_method = b._state.sampling_method,
+        flow_shift = b._state.flow_shift,
+        server = _WatchServer("/x/sd-server"),
+        mode = "server",
+    )
+    b.generate(prompt = "x", steps = 8, seed = 1)
+    assert seen["mid"]["step"] == 4 and seen["mid"]["total_steps"] == 8
+
+
+def test_server_unload_stops_server(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    st = b.unload()
+    assert st["loaded"] is False
+    assert servers[0].stopped is True
+    assert b._state is None
+
+
+def test_server_reload_stops_old_server_before_new(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    # A second load must tear down the first server and start a fresh one.
+    b._load_token = 2
+    fam = detect_family("z-image")
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 2,
+    )
+    assert len(servers) == 2
+    assert servers[0].stopped is True  # old server stopped
+    assert b._state.server is servers[1] and servers[1].stopped is False
+
+
+def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
+    # A present-but-broken sd-server must not fail the load when sd-cli works.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    # Probe passes; the failure we exercise here is in start(), not the up-front probe.
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+
+    class _BadServer:
+        def __init__(self, binary):
+            self.stopped = False
+
+        def start(self, *a, **k):
+            raise RuntimeError("sd-server broken")
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(bk, "SdCppServer", _BadServer)
+    fake = _FakeEngine()
+    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+    )
+    assert b._state is not None and b._state.mode == "oneshot" and b._state.server is None
+    # and it can still generate via the one-shot engine
+    out = b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(out["images"]) == 1 and len(fake.calls) == 1
+
+
 def test_run_load_redacts_paths_in_progress_error(monkeypatch):
     # A load failure surfaced via load_progress() must run through redact_native_paths, the
     # same scrub the diffusers load path applies, so a registered native path can't leak.
@@ -355,3 +669,108 @@ def test_run_load_redacts_paths_in_progress_error(monkeypatch):
         with npl._REDACTION_LOCK:
             if secret_root in npl._NATIVE_PATH_REDACTIONS:
                 npl._NATIVE_PATH_REDACTIONS.remove(secret_root)
+
+
+# ── LoRA (native engine) ────────────────────────────────────────────────────────
+
+
+def _fake_materialize(resolved, dest):
+    """Stand-in for diffusion_lora.materialize_native_dir: write a stub file per adapter
+    into ``dest`` and return the resolved list pointing at the written paths (mirroring the
+    real helper's contract without touching the Hub / real weights)."""
+    from pathlib import Path as _P
+
+    from core.inference import diffusion_lora as dl
+
+    dest.mkdir(parents = True, exist_ok = True)
+    out = []
+    for r in resolved:
+        p = _P(dest) / f"{r.alias}.safetensors"
+        p.write_bytes(b"stub")
+        out.append(dl.ResolvedLora(r.id, r.alias, str(p), r.fmt, r.weight))
+    return out
+
+
+def _patch_lora(monkeypatch, resolved, supported = True):
+    from core.inference import diffusion_lora as dl
+
+    monkeypatch.setattr(dl, "supports_lora", lambda **k: supported)
+    monkeypatch.setattr(dl, "resolve_specs", lambda specs, **k: list(resolved))
+    monkeypatch.setattr(dl, "materialize_native_dir", _fake_materialize)
+
+
+def test_generate_oneshot_applies_loras_via_prompt_tags(monkeypatch):
+    # One-shot sd-cli LoRA: adapters materialized into a --lora-model-dir and selected with
+    # <lora:ALIAS:w> tags injected into the prompt (the real inject_prompt_tags runs here).
+    from core.inference import diffusion_lora as dl
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)  # mode = "oneshot"
+    _patch_lora(monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.8)])
+    b.generate(prompt = "a fox", steps = 4, seed = 1, loras = [("id1", 0.8)])
+    _, params, _, _ = eng.calls[0]
+    assert params.lora_dir is not None and params.lora_apply_mode == "auto"
+    assert "<lora:myalias:0.8>" in params.prompt
+
+
+def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tmp_path):
+    # Server-mode LoRA rides the structured `lora` request field (the sdcpp API ignores
+    # <lora:> prompt tags): adapters staged into the server's --lora-model-dir, referenced
+    # by their path relative to it + the validated multiplier.
+    from pathlib import Path as _P
+
+    from core.inference import diffusion_lora as dl
+
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    servers[0].lora_dir = str(tmp_path)
+    _patch_lora(monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.7)])
+    b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    payload = servers[0].payloads[0]
+    assert "lora" in payload and len(payload["lora"]) == 1
+    assert payload["lora"][0]["multiplier"] == 0.7
+    assert payload["lora"][0]["path"].endswith("myalias.safetensors")
+    assert "<lora:" not in payload["prompt"]  # no prompt-tag mechanism on the server
+    # The per-request stage subdir under the server's lora dir is removed after the batch.
+    assert not list(_P(tmp_path).glob("gen_*"))
+
+
+def test_generate_rejects_loras_on_unsupported_family(monkeypatch):
+    b = _loaded_backend(engine = _FakeEngine())
+    _patch_lora(monkeypatch, [], supported = False)
+    with pytest.raises(ValueError, match = "LoRA is not supported"):
+        b.generate(prompt = "x", steps = 4, seed = 1, loras = [("id1", 1.0)])
+
+
+def test_generate_zero_weight_loras_are_noop(monkeypatch):
+    # weight-0 rows are dropped BEFORE the support gate, so a request carrying only disabled
+    # adapters stays a no-op even on a family where native LoRA is unsupported.
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    _patch_lora(monkeypatch, [], supported = False)  # would raise if the gate were reached
+    b.generate(prompt = "x", steps = 4, seed = 1, loras = [("id1", 0.0)])
+    _, params, _, _ = eng.calls[0]
+    assert params.lora_dir is None  # nothing applied
+
+
+def test_generate_rejects_controlnet_on_native_engine():
+    # ControlNet is diffusers-only. The route passes `controlnet` to whichever engine is
+    # active, so the native backend must reject it with a clean ValueError (-> 400) rather
+    # than TypeError on an unexpected kwarg (-> opaque 500).
+    b = _loaded_backend(engine = _FakeEngine())
+    with pytest.raises(ValueError, match = "ControlNet is not yet supported on the native"):
+        b.generate(prompt = "x", steps = 4, seed = 1, controlnet = ("id", "img", "canny", 1.0, 0.0, 1.0))
+
+
+def test_generate_rejects_image_conditioned_on_native_engine():
+    # img2img / inpaint / reference / upscale are likewise diffusers-only; a direct API call
+    # with an init image on the native engine gets a clean ValueError, not a silent txt2img.
+    b = _loaded_backend(engine = _FakeEngine())
+    with pytest.raises(ValueError, match = "not yet supported on the native"):
+        b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")
+
+
+def test_status_native_reports_supports_controlnet_false():
+    b = _loaded_backend()
+    assert b.status()["supports_controlnet"] is False
