@@ -10454,13 +10454,21 @@ async def _anthropic_passthrough_non_streaming(
     # line below treat them exactly like native calls. The legacy XML strip
     # still runs on whatever text remains, preserving today's cleanup when
     # nothing was promoted (or healing is opted out).
+    healed = False
     if _allowed_tools:
-        heal_openai_message(message, _allowed_tools)
+        healed = heal_openai_message(message, _allowed_tools)
 
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        text = _TOOL_XML_RE.sub("", text).strip()
+        # Once healing promoted a call it span-trims only that declared call's
+        # markup and leaves every unpromoted byte (undeclared text-form calls
+        # included) in place to relay as text. Running the blanket legacy strip
+        # then would delete those bytes, so only apply it when nothing was
+        # promoted (or healing is opted out), matching the OpenAI passthrough.
+        if not healed:
+            text = _TOOL_XML_RE.sub("", text)
+        text = text.strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
