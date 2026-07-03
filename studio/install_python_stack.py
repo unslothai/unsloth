@@ -214,6 +214,7 @@ def _installed_torch_is_windows_rocm() -> bool:
     lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
     return probe.returncode == 0 and bool(lines and lines[-1] == "yes")
 
+
 # constraints.txt caps new anyio resolutions at <4.14 (#6483), but an install
 # from before the cap existed can already be stuck at 4.14+, which later
 # constrained installs won't touch since it already satisfies mcp/fastmcp.
