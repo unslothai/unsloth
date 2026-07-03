@@ -8317,7 +8317,7 @@ async def _responses_stream(
             body.get("tools"),
             body.get("tool_choice"),
         )
-        healer = StreamToolCallHealer(_allowed_tools) if _allowed_tools else None
+        healer = StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
         healed_tc_index = 0
 
         def _healed_tc(call: dict):
@@ -10245,7 +10245,9 @@ async def _anthropic_passthrough_stream(
         _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
         if _allowed_tools:
             emitter.enable_healing(
-                _allowed_tools, disable_parallel_tool_use = disable_parallel_tool_use
+                _allowed_tools,
+                openai_tools,
+                disable_parallel_tool_use = disable_parallel_tool_use,
             )
         for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
             yield line
@@ -10426,7 +10428,7 @@ async def _anthropic_passthrough_non_streaming(
     if (
         _allowed_tools
         and nudge_enabled(nudge_tool_calls)
-        and nudge_should_retry(data, _allowed_tools)
+        and nudge_should_retry(data, _allowed_tools, openai_tools)
     ):
         retry_body = {
             **body,
@@ -10440,7 +10442,7 @@ async def _anthropic_passthrough_non_streaming(
             )
             if retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools):
+                if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
                     data = retry_data
         except (httpx.RequestError, ValueError) as exc:
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
@@ -10454,7 +10456,7 @@ async def _anthropic_passthrough_non_streaming(
     # line below treat them exactly like native calls.
     healing_active = bool(_allowed_tools)
     if healing_active:
-        heal_openai_message(message, _allowed_tools)
+        heal_openai_message(message, _allowed_tools, openai_tools)
 
     content_blocks = []
     text = message.get("content") or ""
@@ -10944,7 +10946,7 @@ async def _openai_passthrough_stream(
             last_chunk_id = completion_id
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
-            healer = StreamToolCallHealer(_allowed_tools) if _allowed_tools else None
+            healer = StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
             healed_call_index = 0
 
             def _synthetic_finish_line() -> str:
@@ -11363,7 +11365,7 @@ async def _openai_passthrough_non_streaming(
     if (
         _allowed_tools
         and nudge_enabled(payload.nudge_tool_calls)
-        and nudge_should_retry(data, _allowed_tools)
+        and nudge_should_retry(data, _allowed_tools, body.get("tools"))
     ):
         retry_body = {
             **body,
@@ -11377,7 +11379,7 @@ async def _openai_passthrough_non_streaming(
             )
             if retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools):
+                if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
                     resp, data = retry_resp, retry_data
         except (httpx.RequestError, ValueError) as exc:
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
@@ -11396,7 +11398,7 @@ async def _openai_passthrough_non_streaming(
         # Anthropic paths): a call cut off at max_tokens keeps
         # finish_reason="length" so the client knows the arguments may be
         # incomplete, while the healed call itself stays attached.
-        if _allowed_tools and heal_openai_message(msg, _allowed_tools):
+        if _allowed_tools and heal_openai_message(msg, _allowed_tools, body.get("tools")):
             if choice.get("finish_reason") == "stop":
                 choice["finish_reason"] = "tool_calls"
             changed = True

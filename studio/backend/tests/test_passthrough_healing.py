@@ -33,6 +33,18 @@ TOOLS = [
     {"type": "function", "function": {"name": "Bash", "parameters": {}}},
     {"type": "function", "function": {"name": "Read", "parameters": {}}},
 ]
+
+BASH_COMMAND_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "Bash",
+        "parameters": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+    },
+}
 XML_BASH = '<tool_call>{"name":"Bash","arguments":{"cmd":"ls"}}</tool_call>'
 XML_UNDECLARED = '<tool_call>{"name":"Nuke","arguments":{}}</tool_call>'
 
@@ -106,14 +118,22 @@ class TestHealOpenaiMessage:
         msg = {"role": "assistant", "content": "just an answer"}
         assert heal_openai_message(msg, {"Bash"}) is False
 
-    def test_bad_json_arguments_coerced_under_canonical_key(self):
+    def test_bare_string_arguments_use_schema_key(self):
         msg = {
             "role": "assistant",
             "content": '<tool_call>{"name":"Bash","arguments":"echo hi"}</tool_call>',
         }
-        assert heal_openai_message(msg, {"Bash"}) is True
+        assert heal_openai_message(msg, {"Bash"}, [BASH_COMMAND_TOOL]) is True
         args = json.loads(msg["tool_calls"][0]["function"]["arguments"])
-        assert args == {"query": "echo hi"}
+        assert args == {"command": "echo hi"}
+
+    def test_bare_string_arguments_decline_ambiguous_schema(self):
+        msg = {
+            "role": "assistant",
+            "content": '<tool_call>{"name":"Bash","arguments":"echo hi"}</tool_call>',
+        }
+        assert heal_openai_message(msg, {"Bash"}, TOOLS) is False
+        assert "tool_calls" not in msg
 
     def test_mixed_declared_and_undeclared_promotes_declared_keeps_undeclared_text(self):
         # Span-exact removal: only the promoted Bash markup is dropped; the
@@ -504,6 +524,20 @@ class TestOpenaiNonStreamingRoute:
             assert choice["message"]["content"] is None
             assert data["usage"]["total_tokens"] == 3  # usage preserved
             assert len(client.posts) == 1  # healing never re-requests
+
+        asyncio.run(_run())
+
+
+    def test_bare_string_uses_client_schema_key(self, monkeypatch):
+        async def _run():
+            content = '<tool_call>{"name":"Bash","arguments":"echo hi"}</tool_call>'
+            _, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(tools = [BASH_COMMAND_TOOL]),
+                [_upstream_message(content)],
+            )
+            (call,) = data["choices"][0]["message"]["tool_calls"]
+            assert json.loads(call["function"]["arguments"]) == {"command": "echo hi"}
 
         asyncio.run(_run())
 

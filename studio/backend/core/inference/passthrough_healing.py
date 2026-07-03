@@ -26,6 +26,7 @@ own enable-tools loop are untouched. Per-request opt-out:
 
 import json
 import os
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from core.inference.tool_call_parser import TOOL_XML_SIGNALS, has_tool_signal
@@ -86,16 +87,76 @@ def heal_gate(
     return names or None
 
 
+def _tool_schemas_by_name(tools: Optional[list]) -> dict[str, Any]:
+    schemas: dict[str, Any] = {}
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str):
+            schemas[name] = function.get("parameters")
+    return schemas
+
+
+def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    required = schema.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        return None
+    required_names = [name for name in required if isinstance(name, str)]
+    if len(required_names) != 1:
+        return None
+    key = required_names[0]
+
+    if key not in properties:
+        return None
+    prop_schema = properties.get(key)
+    if isinstance(prop_schema, dict):
+        prop_type = prop_schema.get("type")
+        if isinstance(prop_type, list):
+            if "string" not in prop_type:
+                return None
+        elif prop_type is not None and prop_type != "string":
+            return None
+    return key
+
+
+def _coerce_promoted_arguments(
+    raw_args: Any,
+    tool_name: str,
+    tool_schemas: Optional[dict],
+) -> Optional[dict]:
+    if isinstance(raw_args, Mapping):
+        return dict(raw_args)
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+            if isinstance(parsed, Mapping):
+                return dict(parsed)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        if tool_schemas is not None:
+            key = _string_arg_key_from_schema(tool_schemas.get(tool_name))
+            return {key: raw_args} if key else None
+    coerced = coerce_tool_arguments(raw_args, heal = True, tool_name = tool_name)
+    return coerced.arguments
+
 def _promote(
     calls: list,
     allowed_tools: set,
     id_offset: int = 0,
+    tool_schemas: Optional[dict] = None,
 ) -> list:
     """Filter parsed calls to declared tools and normalize their arguments.
 
-    ``function.arguments`` leaves ``parse_tool_calls_from_text`` as whatever the
-    model wrote; OpenAI clients require a JSON-object string, so coerce through
-    the same canonical-key healing the enable-tools loop uses.
+    Bare string arguments on the client-tool passthrough use the declared
+    schema's single required string property. If the schema is ambiguous, the
+    call stays text instead of inventing a generic key.
     """
     promoted = []
     for call in calls:
@@ -103,14 +164,16 @@ def _promote(
         name = function.get("name") if isinstance(function, dict) else None
         if name not in allowed_tools:
             continue
-        coerced = coerce_tool_arguments(function.get("arguments"), heal = True, tool_name = name)
+        arguments = _coerce_promoted_arguments(function.get("arguments"), name, tool_schemas)
+        if arguments is None:
+            continue
         promoted.append(
             {
                 "id": f"call_{id_offset + len(promoted)}",
                 "type": "function",
                 "function": {
                     "name": name,
-                    "arguments": json.dumps(coerced.arguments, ensure_ascii = False),
+                    "arguments": json.dumps(arguments, ensure_ascii = False),
                 },
             }
         )
@@ -128,7 +191,11 @@ def _remove_spans(text: str, spans: list) -> str:
     return "".join(pieces)
 
 
-def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
+def heal_openai_message(
+    msg: dict,
+    allowed_tools: set,
+    tools: Optional[list] = None,
+) -> bool:
     """Promote text-form tool calls in a non-streaming OpenAI message. In place.
 
     No-op (returns False) unless the message has NO structured ``tool_calls``
@@ -145,10 +212,14 @@ def heal_openai_message(msg: dict, allowed_tools: set) -> bool:
     # allow_incomplete: the response is final, so a trailing unclosed block is a
     # model failure worth repairing (same as the enable-tools loop at drain).
     parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
+
     calls = []
     promoted_spans = []
     for call, span in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = len(calls))
+        promoted = _promote(
+            [call], allowed_tools, id_offset = len(calls), tool_schemas = tool_schemas
+        )
         if promoted:
             calls.append(promoted[0])
             promoted_spans.append(span)
@@ -190,8 +261,10 @@ class StreamToolCallHealer:
     text verbatim.
     """
 
-    def __init__(self, allowed_tools: set) -> None:
+    def __init__(self, allowed_tools: set, tools: Optional[list] = None) -> None:
         self._allowed = set(allowed_tools)
+
+        self._tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
@@ -249,7 +322,12 @@ class StreamToolCallHealer:
                     continue
                 return events
             start, end = spans[0]
-            promoted = _promote([parsed[0]], self._allowed, id_offset = self._id_offset)
+            promoted = _promote(
+                [parsed[0]],
+                self._allowed,
+                id_offset = self._id_offset,
+                tool_schemas = self._tool_schemas,
+            )
             if promoted:
                 if start:
                     events.append(("text", self._buffer[:start]))
@@ -287,7 +365,12 @@ class StreamToolCallHealer:
         pos = 0
         any_promoted = False
         for call, (start, end) in zip(parsed, spans):
-            promoted = _promote([call], self._allowed, id_offset = self._id_offset)
+            promoted = _promote(
+                [call],
+                self._allowed,
+                id_offset = self._id_offset,
+                tool_schemas = self._tool_schemas,
+            )
             if promoted:
                 if residue[pos:start]:
                     events.append(("text", residue[pos:start]))
@@ -325,13 +408,22 @@ def _last_assistant_text(data: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _heal_would_promote(text: str, allowed_tools: set) -> bool:
+def _heal_would_promote(
+    text: str,
+    allowed_tools: set,
+    tools: Optional[list] = None,
+) -> bool:
     """Whether ``heal_openai_message`` would promote at least one call."""
     parsed = parse_tool_calls_from_text(text, allow_incomplete = True)
-    return bool(_promote(parsed, allowed_tools))
+    tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
+    return bool(_promote(parsed, allowed_tools, tool_schemas = tool_schemas))
 
 
-def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
+def response_has_promotable_calls(
+    data: Any,
+    allowed_tools: set,
+    tools: Optional[list] = None,
+) -> bool:
     """True when a non-streaming chat response carries a usable tool call
     (structured naming a DECLARED tool, or text-form that healing would
     promote). Used to decide whether a nudge retry actually improved on the
@@ -354,10 +446,14 @@ def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
     text = message.get("content")
     if not isinstance(text, str):
         return False
-    return _heal_would_promote(text, allowed_tools)
+    return _heal_would_promote(text, allowed_tools, tools)
 
 
-def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
+def nudge_should_retry(
+    data: Any,
+    allowed_tools: Optional[set],
+    tools: Optional[list] = None,
+) -> bool:
     """True when the first response tried to call a tool but nothing healed.
 
     Trigger only on: healing enabled (allowed_tools set), zero structured
@@ -372,7 +468,7 @@ def nudge_should_retry(data: Any, allowed_tools: Optional[set]) -> bool:
     text = message.get("content")
     if not isinstance(text, str) or not has_tool_signal(text):
         return False
-    return not _heal_would_promote(text, allowed_tools)
+    return not _heal_would_promote(text, allowed_tools, tools)
 
 
 def nudge_messages(data: Any, allowed_tools: set) -> list:

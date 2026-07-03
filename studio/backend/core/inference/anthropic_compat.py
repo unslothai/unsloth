@@ -503,6 +503,7 @@ class AnthropicPassthroughEmitter:
     def enable_healing(
         self,
         allowed_tools: set,
+        tools: Optional[list] = None,
         *,
         disable_parallel_tool_use: bool = False,
     ) -> None:
@@ -514,7 +515,7 @@ class AnthropicPassthroughEmitter:
         """
         from core.inference.passthrough_healing import StreamToolCallHealer
 
-        self._healer = StreamToolCallHealer(allowed_tools)
+        self._healer = StreamToolCallHealer(allowed_tools, tools)
         self._heal_disable_parallel = disable_parallel_tool_use
 
     def start(
