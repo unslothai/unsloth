@@ -1496,7 +1496,7 @@ def install_llm_compressor():
     else:
         raise RuntimeError(
             "Unsloth: cannot install llm-compressor because this environment has neither pip nor "
-            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} llmcompressor\n"
+            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
             "(pin torch and transformers to your current versions to avoid upgrading them)."
         )
     cpath = None
@@ -1510,8 +1510,8 @@ def install_llm_compressor():
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             "Unsloth: Failed to install llm-compressor. Install it manually with:\n"
-            f"    uv pip install --python {sys.executable} llmcompressor\n"
-            f"or, if pip is available:\n    {sys.executable} -m pip install llmcompressor\n"
+            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
+            f"or, if pip is available:\n    {sys.executable} -m pip install '{_LLM_COMPRESSOR_SPEC}'\n"
             "(pin torch and transformers to your current versions to avoid upgrading them).\n"
             f"Underlying error: {e}"
         )
