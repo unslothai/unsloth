@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  AiMagicIcon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
@@ -66,6 +67,7 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import { DiffusionTrainDialog } from "./diffusion-train-dialog";
 
 // Curated diffusion GGUFs the picker recommends. The backend resolves each one's
 // pipeline + base diffusers repo from its repo id, so the rail just lists them;
@@ -946,6 +948,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // offers. Applied at generate time; available adapters are refreshed per loaded family.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // "Train a LoRA" dialog (SDXL). Independent of the loaded generation model.
+  const [trainOpen, setTrainOpen] = useState(false);
+  // Bumped when a training run completes, to force the LoRA discovery effect to rescan so
+  // a freshly-trained adapter appears in the picker without a model reload.
+  const [loraRefreshKey, setLoraRefreshKey] = useState(0);
   // ControlNet for the next generation: the chosen model id, a control image (data URL),
   // how to derive the control map, and the conditioning strength. Available models refresh
   // per loaded family; applied at generate time only when a model + control image are set.
@@ -1074,7 +1081,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [loraCapable, status?.family]);
+  }, [loraCapable, status?.family, loraRefreshKey]);
 
   // Refresh the ControlNet picker's options when the loaded model (family) changes, and clear
   // a stale selection the new model can't use so an incompatible ControlNet is never sent.
@@ -1902,24 +1909,52 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           open={active && selectorOpen}
           onOpenChange={(o) => setSelectorOpen(active && o)}
         />
-        {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
-            toggle, same icon in both states so it never moves). Highlighted when open. */}
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen((o) => !o)}
-          aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-          aria-pressed={advancedOpen}
-          title="Advanced options"
-          className={cn(
-            "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            advancedOpen
-              ? "bg-muted text-foreground"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-        >
-          <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Train a LoRA (SDXL): opens a self-contained dialog; available regardless of
+              whether a generation model is loaded. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-[34px]"
+            onClick={() => setTrainOpen(true)}
+            title="Teach SDXL your own style or subject from a folder of images"
+          >
+            <HugeiconsIcon icon={AiMagicIcon} className="mr-1.5 size-3.5" />
+            Train LoRA
+          </Button>
+          {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
+              toggle, same icon in both states so it never moves). Highlighted when open. */}
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
+            aria-pressed={advancedOpen}
+            title="Advanced options"
+            className={cn(
+              "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              advancedOpen
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+          </button>
+        </div>
       </div>
+      <DiffusionTrainDialog
+        open={active && trainOpen}
+        onOpenChange={setTrainOpen}
+        defaultBaseModel={
+          status?.family === "sdxl"
+            ? // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF or
+              // single-file SDXL load repo_id is the checkpoint path, which the trainer's
+              // from_pretrained cannot open. base_repo is the companion pipeline.
+              status?.base_repo ?? status?.repo_id ?? undefined
+            : undefined
+        }
+        onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
+      />
 
       {/* ── Controls rail + preview canvas. Padding mirrors the other tabs
           (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */}

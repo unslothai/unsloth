@@ -256,3 +256,104 @@ export async function fetchGalleryObjectUrl(url: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   return URL.createObjectURL(await res.blob());
 }
+
+// ── Diffusion (SDXL) LoRA training ────────────────────────────────────────────
+// Mirrors DiffusionTrainingStartRequest on the backend; only the paths are required.
+export interface DiffusionTrainingStartRequest {
+  base_model: string;
+  data_dir: string;
+  output_dir: string;
+  instance_prompt?: string | null;
+  resolution?: number;
+  train_steps?: number;
+  learning_rate?: number;
+  train_batch_size?: number;
+  gradient_accumulation_steps?: number;
+  lora_rank?: number;
+  lora_alpha?: number | null;
+  lora_target_modules?: string[];
+  max_grad_norm?: number;
+  seed?: number;
+  mixed_precision?: "bf16" | "fp16" | "no";
+  gradient_checkpointing?: boolean;
+  lr_scheduler?: string;
+  // Forwarded to StableDiffusionXLPipeline.from_pretrained for a gated/private base repo.
+  hf_token?: string | null;
+}
+
+// A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
+export interface DiffusionTrainingStatus {
+  active: boolean;
+  job_id: string | null;
+  status: string;
+  message: string;
+  step: number;
+  total_steps: number;
+  loss: number | null;
+  avg_loss: number | null;
+  learning_rate: number | null;
+  num_images: number | null;
+  in_model_load: boolean;
+  output_dir: string | null;
+  lora_path: string | null;
+  started_at: number | null;
+  updated_at: number | null;
+}
+
+export async function startDiffusionTraining(
+  body: DiffusionTrainingStartRequest,
+): Promise<{ job_id: string; status: string }> {
+  return parseJson(
+    await authFetch("/api/train/diffusion/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function stopDiffusionTraining(): Promise<{ status: string }> {
+  return parseJson(await authFetch("/api/train/diffusion/stop", { method: "POST" }));
+}
+
+export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
+  return parseJson(await authFetch("/api/train/diffusion/status"));
+}
+
+// One image-dataset folder under the Studio datasets root (GET /api/train/diffusion/info).
+export interface DiffusionDatasetSummary {
+  name: string;
+  path: string;
+  image_count: number;
+  caption_count: number;
+}
+
+// Where diffusion training reads/writes on this Studio, plus usable dataset folders.
+export interface DiffusionTrainingInfo {
+  datasets_root: string;
+  outputs_root: string;
+  datasets: DiffusionDatasetSummary[];
+}
+
+export async function getDiffusionTrainingInfo(): Promise<DiffusionTrainingInfo> {
+  return parseJson(await authFetch("/api/train/diffusion/info"));
+}
+
+export interface DiffusionDatasetUploadResult extends DiffusionDatasetSummary {
+  uploaded: number;
+}
+
+/** Upload images (+ optional caption .txt / metadata.jsonl) into a named dataset folder.
+ * Repeat uploads into the same name accumulate; the returned name is a valid data_dir
+ * for startDiffusionTraining. */
+export async function uploadDiffusionDataset(
+  name: string,
+  files: File[],
+): Promise<DiffusionDatasetUploadResult> {
+  const form = new FormData();
+  form.append("name", name);
+  for (const f of files) form.append("files", f);
+  return parseJson(
+    await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),
+  );
+}
