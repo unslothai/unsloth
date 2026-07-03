@@ -1032,30 +1032,44 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
 
-  // Refresh the LoRA picker's options when the loaded model (family) changes, and drop any
-  // selected adapters the new model can't use so a stale/incompatible LoRA is never sent.
+  // Refresh the LoRA picker's suggestions when the loaded model (family) changes. A LoRA is
+  // trained for a specific base family, so a real model SWAP invalidates the current selection
+  // -- clear it then (the user re-adds a suggestion or types a Hub repo id for the new family).
+  // But do NOT clear on the first load or an unload: a user can restore a saved recipe (which
+  // sets loras) BEFORE the model finishes loading, and clearing on that load->capable
+  // transition would silently drop the restored adapters. We track the previously-loaded
+  // family in a ref and clear only when it changes to a different loaded family. We also do
+  // NOT filter the selection against the discovered catalog: a valid pick can be a free-text
+  // Hugging Face repo id that is not in the (often empty) curated list.
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
+  const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (!loraCapable) {
+      // Options are gone with the model, but keep the selection: it may have just been
+      // restored while the model is (re)loading. It is only SENT when loraCapable, and a
+      // real family swap below clears it.
       setAvailableLoras([]);
-      setLoras([]);
       return;
     }
+    const fam = status?.family ?? null;
+    const prev = prevLoraFamilyRef.current;
+    if (prev != null && prev !== fam) {
+      setLoras([]);
+    }
+    prevLoraFamilyRef.current = fam;
     let cancelled = false;
     listDiffusionLoras(status?.family ?? undefined)
       .then((list) => {
-        if (cancelled) return;
-        setAvailableLoras(list);
-        const ids = new Set(list.map((l) => l.id));
-        setLoras((prev) => prev.filter((s) => ids.has(s.id)));
+        if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
-        if (cancelled) return;
-        // Clear the SELECTED adapters too, not just the options: leaving a stale `loras`
-        // selection in state (with the picker now hidden/empty) would still be posted by
-        // handleGenerate and could apply adapters from the previous model, or fail.
-        setAvailableLoras([]);
-        setLoras([]);
+        // Clear only the OPTIONS on a failed catalog refresh. Unlike the catalog-only
+        // picker below the stack, this free-text picker holds selections (bare HF repo
+        // ids) that are valid without being in the catalog; a transient refresh failure
+        // must not wipe them. Stale cross-family selections are already cleared by the
+        // family-swap check above, and hidden LoRAs are never sent (handleGenerate is
+        // gated on loraCapable).
+        if (!cancelled) setAvailableLoras([]);
       });
     return () => {
       cancelled = true;
@@ -1199,6 +1213,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The batch shared one seed, so image batch_index>0 only reproduces by replaying the
     // whole batch: restore the batch size too (older recipes without it default to 1).
     setBatchSize(image.batch_size ?? 1);
+    // Restore the LoRA selection. The recipe stores each adapter as an "id:weight" string;
+    // the id itself may contain a colon (owner/name:weight-file.safetensors), so split on
+    // the LAST colon to recover the weight. A malformed entry falls back to weight 1.
+    setLoras(
+      (image.loras ?? []).map((s) => {
+        const idx = s.lastIndexOf(":");
+        const w = idx > 0 ? Number.parseFloat(s.slice(idx + 1)) : NaN;
+        return Number.isFinite(w) ? { id: s.slice(0, idx), weight: w } : { id: s, weight: 1 };
+      }),
+    );
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -1704,8 +1728,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           strength: condStrength,
           upscale: condUpscale,
           reference_images: condRefImages,
-          // Drop zero-weight rows so the recipe records only adapters that actually applied.
-          loras: loras.length ? loras.filter((l) => l.weight > 0) : undefined,
+          // Drop empty (no id typed yet) and zero-weight rows, and trim hand-typed repo ids,
+          // so the recipe records only adapters that actually applied. Empty -> omit entirely.
+          // Gate on loraCapable: a restore can leave adapters in state while the loaded model
+          // does not support LoRA (picker hidden), and sending them would fail generation with
+          // no visible row to remove.
+          loras: (() => {
+            if (!loraCapable) return undefined;
+            const active = loras
+              .map((l) => ({ id: l.id.trim(), weight: l.weight }))
+              .filter((l) => l.id && l.weight > 0);
+            return active.length ? active : undefined;
+          })(),
           // ControlNet: sent only when a model + control image are chosen; v1 conditions plain
           // text-to-image only, so skip it for image-conditioned workflows.
           controlnet:
@@ -2172,43 +2206,46 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
-          {/* LoRA adapters: shown only when the loaded model + quant can apply them and at
-              least one adapter is discoverable. Stack multiple, each with a 0-2 weight. The
-              backend owns how they apply (native prompt tags / diffusers set_adapters); the
+          {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a
+              Hugging Face repo id (owner/name, or owner/name:weight-file.safetensors) or pick
+              a discovered adapter from the suggestions. Stack multiple, each with a 0-2 weight.
+              The backend owns how they apply (native prompt tags / diffusers set_adapters); the
               UI only sends {id, weight}. */}
-          {loraCapable && availableLoras.length > 0 && (
+          {loraCapable && (
             <Field
               label="LoRAs"
-              hint="Style or character adapters applied on top of the model. Stack several; each has its own strength (1.0 = full effect, 0 disables)."
+              hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
             >
               <div className="space-y-2">
+                {availableLoras.length > 0 && (
+                  <datalist id="diffusion-lora-suggestions">
+                    {availableLoras.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.display_name}
+                      </option>
+                    ))}
+                  </datalist>
+                )}
                 {loras.map((sel, i) => (
                   <div
                     key={sel.id || i}
                     className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                   >
                     <div className="flex items-center gap-2">
-                      <Select
+                      <Input
                         value={sel.id}
-                        onValueChange={(v) =>
-                          setLoras((prev) => prev.map((p, j) => (j === i ? { ...p, id: v } : p)))
+                        list={availableLoras.length > 0 ? "diffusion-lora-suggestions" : undefined}
+                        placeholder="owner/name or owner/name:file.safetensors"
+                        spellCheck={false}
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        className="h-8 flex-1 text-xs"
+                        onChange={(e) =>
+                          setLoras((prev) =>
+                            prev.map((p, j) => (j === i ? { ...p, id: e.target.value } : p)),
+                          )
                         }
-                      >
-                        <SelectTrigger className="h-8 flex-1 text-xs">
-                          <SelectValue placeholder="Select a LoRA" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableLoras.map((a) => (
-                            <SelectItem
-                              key={a.id}
-                              value={a.id}
-                              disabled={a.id !== sel.id && loras.some((l) => l.id === a.id)}
-                            >
-                              {a.display_name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      />
                       <Button
                         type="button"
                         variant="ghost"
@@ -2232,20 +2269,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     />
                   </div>
                 ))}
-                {loras.length < Math.min(availableLoras.length, 8) && (
+                {loras.length < 8 && (
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     className="w-full"
                     onClick={() => {
+                      // Prefill with the first unused suggestion when a curated catalog exists,
+                      // else an empty row the user fills with a Hugging Face repo id.
                       const taken = new Set(loras.map((l) => l.id));
                       const next = availableLoras.find((a) => !taken.has(a.id));
-                      if (next)
-                        setLoras((prev) => [
-                          ...prev,
-                          { id: next.id, weight: next.weight_default || 1 },
-                        ]);
+                      setLoras((prev) => [
+                        ...prev,
+                        next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
+                      ]);
                     }}
                   >
                     <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
