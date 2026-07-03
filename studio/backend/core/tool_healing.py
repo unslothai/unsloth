@@ -403,13 +403,21 @@ def parse_tool_calls_from_text(
                 body_end = len(content)
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
-            if not allow_incomplete:
-                close_idx = body.rfind(_FUNC_CLOSE_TAG)
-                if close_idx < 0:
-                    continue
+            # Cut the body at the real </function> when present, in BOTH modes. The
+            # heal/finalize path (allow_incomplete=True) used to strip only an
+            # end-anchored </function>, so a closed call followed by trailing prose
+            # (<function=..>..</parameter></function> words) folded the close tags and
+            # the prose into the argument and deleted the prose from visible content.
+            close_idx = body.rfind(_FUNC_CLOSE_TAG)
+            if close_idx >= 0:
+                span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
                 body = body[:close_idx]
+            elif not allow_incomplete:
+                continue
             else:
+                # Genuinely truncated (no </function> yet): keep what streamed so far.
                 body = _TC_FUNC_CLOSE_RE.sub("", body)
+                span_end = body_end
 
             arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
@@ -460,10 +468,8 @@ def parse_tool_calls_from_text(
             # enclosing <tool_call>...</tool_call> wrapper when present
             # (docstring format 3), so removal leaves no dangling wrapper tags.
             span_start = fm.start()
-            if not allow_incomplete:
-                span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
-            else:
-                span_end = body_end
+            # span_end was set above at the real </function> (or body_end when the
+            # call is genuinely truncated).
             wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
             wrap_close = re.match(r"\s*</tool_call>", content[span_end:])
             if wrap_open and wrap_close:
