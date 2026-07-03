@@ -370,12 +370,17 @@ def _fake_torch(
     cuda_available = False,
     device_count = 0,
     mps_available = False,
+    xpu_available = False,
+    xpu_count = 0,
 ):
     torch_mod = types.ModuleType("torch")
     torch_mod.cuda = SimpleNamespace(
         is_available = lambda: cuda_available, device_count = lambda: device_count
     )
     torch_mod.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: mps_available))
+    torch_mod.xpu = SimpleNamespace(
+        is_available = lambda: xpu_available, device_count = lambda: xpu_count
+    )
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
 
 
@@ -399,15 +404,40 @@ def test_hf_device_error_validates_mps_strings(monkeypatch):
     assert "MPS is not available" in evalmod._hf_device_error("mps")
 
 
-def test_hf_device_error_rejects_unknown_literals():
+def test_hf_device_error_rejects_unknown_literals(monkeypatch):
+    _fake_torch(monkeypatch)
     assert evalmod._hf_device_error("cpu") is None
-    # indexed accelerator forms HFLM recognises pass through
-    assert evalmod._hf_device_error("npu:0") is None
-    assert evalmod._hf_device_error("xpu:1") is None
-    assert evalmod._hf_device_error("hpu:0") is None
     # typos would silently fall back to HFLM's default device
     for bad in ("cpuu", "cude", "gpu", "xpu", "npu"):
         assert "invalid --device" in evalmod._hf_device_error(bad), bad
+
+
+def test_hf_device_error_validates_indexed_accelerators(monkeypatch):
+    # an unavailable or out-of-range accelerator would also silently fall back
+    _fake_torch(monkeypatch, xpu_available = True, xpu_count = 2)
+    assert evalmod._hf_device_error("xpu:0") is None
+    assert evalmod._hf_device_error("xpu:1") is None
+    assert "only 2 XPU" in evalmod._hf_device_error("xpu:2")
+    # this torch build has no npu/hpu module at all
+    assert "NPU is not available" in evalmod._hf_device_error("npu:0")
+    assert "HPU is not available" in evalmod._hf_device_error("hpu:0")
+    _fake_torch(monkeypatch, xpu_available = False)
+    assert "XPU is not available" in evalmod._hf_device_error("xpu:0")
+
+
+def test_metric_number_unwraps_numpy_like_scalars():
+    class _FakeScalar:
+        def __init__(self, value):
+            self._value = value
+
+        def item(self):
+            return self._value
+
+    assert evalmod._metric_number(0.5) == 0.5
+    assert evalmod._metric_number(3) == 3
+    assert evalmod._metric_number(_FakeScalar(0.25)) == 0.25
+    assert evalmod._metric_number(_FakeScalar("not a number")) is None
+    assert evalmod._metric_number("alias-ish string") is None
 
 
 def test_resolve_tasks_yaml_without_task_name_raises(tmp_path):

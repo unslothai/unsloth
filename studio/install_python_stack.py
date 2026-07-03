@@ -1922,17 +1922,47 @@ def pip_install(
             temp_req.unlink(missing_ok = True)
 
 
+def _eval_extra_requirements(local_repo: str) -> list:
+    """The [eval] extra's third-party requirements from the checkout's pyproject.
+
+    Self-referential entries (``unsloth[huggingface]``) are dropped: the local
+    checkout is already overlaid with --no-deps and must not be re-resolved
+    from PyPI over the editable install.
+    """
+    try:
+        import tomllib
+
+        with open(Path(local_repo) / "pyproject.toml", "rb") as fh:
+            data = tomllib.load(fh)
+        requirements = data["project"]["optional-dependencies"]["eval"]
+        if isinstance(requirements, list):
+            filtered = [
+                requirement
+                for requirement in requirements
+                if re.split(r"[\[<>=!~; ]", str(requirement).strip(), maxsplit = 1)[0].lower()
+                != "unsloth"
+            ]
+            if filtered:
+                return filtered
+    except Exception:
+        pass
+    # fallback mirrors the pin in pyproject.toml
+    return ["lm_eval>=0.4.4"]
+
+
 def _install_eval_extra(*, package_name: str, local_repo: str) -> None:
     """Install pyproject.toml's [eval] extra (lm-eval-harness for `unsloth eval`)."""
     if NO_TORCH or package_name != "unsloth":
         return
     _progress("eval extra")
     if local_repo:
+        # the checkout is overlaid with --no-deps so the torch/CUDA stack is
+        # not re-resolved; a full `-e repo[eval]` install would resolve the
+        # base deps again, so install only the extra's own packages
         pip_install(
             "Installing unsloth[eval] extra",
             "--no-cache-dir",
-            "-e",
-            f"{local_repo}[eval]",
+            *_eval_extra_requirements(local_repo),
         )
     else:
         pip_install(

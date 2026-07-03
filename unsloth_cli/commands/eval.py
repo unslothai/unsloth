@@ -125,13 +125,39 @@ def _hf_device_error(device: str) -> Optional[str]:
         mps = getattr(torch.backends, "mps", None)
         if not (mps and mps.is_available()):
             return f"--device {device} requested but MPS is not available."
-    elif device != "cpu" and not re.fullmatch(r"(npu|xpu|hpu):\d+", device):
-        # a typo like 'cpuu' or 'cude' would silently fall back to HFLM's
-        # default device
-        return (
-            f"invalid --device '{device}' — use 'cpu', 'cuda[:<index>]', 'mps', "
-            "or '<npu|xpu|hpu>:<index>'."
-        )
+    elif device != "cpu":
+        match = re.fullmatch(r"(npu|xpu|hpu):(\d+)", device)
+        if not match:
+            # a typo like 'cpuu' or 'cude' would silently fall back to HFLM's
+            # default device
+            return (
+                f"invalid --device '{device}' — use 'cpu', 'cuda[:<index>]', 'mps', "
+                "or '<npu|xpu|hpu>:<index>'."
+            )
+        # an unavailable or out-of-range accelerator would also silently fall
+        # back, so validate against the installed torch build like cuda above
+        kind, index = match.group(1), int(match.group(2))
+        import torch
+
+        backend_mod = getattr(torch, kind, None)
+        try:
+            available = bool(backend_mod is not None and backend_mod.is_available())
+        except Exception:
+            available = False
+        if not available:
+            return (
+                f"--device {device} requested but {kind.upper()} is not available "
+                "in this torch build."
+            )
+        try:
+            count = int(backend_mod.device_count())
+        except Exception:
+            count = 0
+        if index >= count:
+            return (
+                f"--device {device} requested but only {count} {kind.upper()} "
+                "device(s) are available."
+            )
     return None
 
 
@@ -448,6 +474,21 @@ def resolve_tasks(
     return names, include_paths
 
 
+def _metric_number(value):
+    # numpy float32/int64 aren't int/float subclasses; unwrap scalars via item()
+    if isinstance(value, (int, float)):
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            value = item()
+        except Exception:
+            return None
+        if isinstance(value, (int, float)):
+            return value
+    return None
+
+
 def _json_default(value):
     # numpy/torch scalars and arrays serialise as numbers/lists, not strings,
     # so results.json agrees numerically with the in-memory results
@@ -476,13 +517,16 @@ def _render_results(results: dict) -> None:
         rows.setdefault(task, metrics)
 
     for task, metrics in rows.items():
-        for key, value in metrics.items():
-            if key == "alias" or "_stderr" in key or not isinstance(value, (int, float)):
+        for key, raw_value in metrics.items():
+            if key == "alias" or "_stderr" in key:
+                continue
+            value = _metric_number(raw_value)
+            if value is None:
                 continue
             metric, _, flt = key.partition(",")
             stderr_key = f"{metric}_stderr,{flt}" if flt else f"{metric}_stderr"
-            stderr = metrics.get(stderr_key)
-            stderr_str = f"{stderr:.4f}" if isinstance(stderr, (int, float)) else "—"
+            stderr = _metric_number(metrics.get(stderr_key))
+            stderr_str = f"{stderr:.4f}" if stderr is not None else "—"
             table.add_row(task, key, f"{value:.4f}", stderr_str)
 
     Console().print(table)
