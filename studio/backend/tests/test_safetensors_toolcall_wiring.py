@@ -61,7 +61,12 @@ class RecordingTokenizer:
         self.call_count = 0
 
     def apply_chat_template(
-        self, messages, *, tokenize=False, add_generation_prompt=True, **kwargs
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kwargs,
     ):
         self.call_count += 1
         self.tools_seen.append(kwargs.get("tools"))
@@ -83,17 +88,17 @@ class StubExecutor:
         name,
         arguments,
         *,
-        cancel_event=None,
-        timeout=None,
-        session_id=None,
-        rag_scope=None,
-        disable_sandbox=False,
+        cancel_event = None,
+        timeout = None,
+        session_id = None,
+        rag_scope = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         return self.result
 
 
-def _collect(generator, max_events=200):
+def _collect(generator, max_events = 200):
     events = []
     for ev in generator:
         events.append(ev)
@@ -114,12 +119,12 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     turns = iter([TOOL_CALL_TEXT, FINAL_ANSWER])
     active_tools_seen: list = []
 
-    def single_turn(conversation, *, active_tools=None):
+    def single_turn(conversation, *, active_tools = None):
         # Mirror the real backend ``_single_turn`` (inference.py / mlx_inference.py): render the prompt
         # through the REAL shared helper so tools flow to the tokenizer exactly as production does,
         # then yield cumulative snapshots (each yield is all text so far, per the loop contract).
         active_tools_seen.append(active_tools)
-        apply_chat_template_for_generation(tok, conversation, tools=active_tools)
+        apply_chat_template_for_generation(tok, conversation, tools = active_tools)
         text = next(turns)
         mid = len(text) // 2
         acc = ""
@@ -129,11 +134,11 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
 
     events = _collect(
         run_safetensors_tool_loop(
-            single_turn=single_turn,
-            messages=[{"role": "user", "content": "What is the weather in Paris?"}],
-            tools=[FAKE_TOOL],
-            execute_tool=executor,
-            max_tool_iterations=3,
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "What is the weather in Paris?"}],
+            tools = [FAKE_TOOL],
+            execute_tool = executor,
+            max_tool_iterations = 3,
         )
     )
 
