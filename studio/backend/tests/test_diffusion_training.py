@@ -339,6 +339,20 @@ def test_request_model_num_epochs_bounds():
             DiffusionTrainingStartRequest(**base, num_epochs = bad)
 
 
+def test_request_model_base_precision_accepts_mxfp8():
+    # The base_precision Literal now includes mxfp8 (the DiT dense speed mode); a bogus
+    # mode is still rejected.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
+    assert DiffusionTrainingStartRequest(**base).base_precision == "nf4"  # default
+    assert DiffusionTrainingStartRequest(**base, base_precision = "mxfp8").base_precision == "mxfp8"
+    with pytest.raises(ValidationError):
+        DiffusionTrainingStartRequest(**base, base_precision = "bogus")
+
+
 def test_route_start_rejects_uncontained_paths(client):
     # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})

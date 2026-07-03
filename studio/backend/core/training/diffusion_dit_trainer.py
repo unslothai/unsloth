@@ -218,8 +218,8 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
 
     - nf4: a prequant (bnb-4bit) repo carries its quantization config and loads 4-bit
       as-is; a dense base is quantized to nf4 on the fly. The memory floor.
-    - bf16 / fp8: the dense transformer (fp8 converts its frozen linears to float8
-      training compute AFTER the LoRA attaches; storage stays bf16).
+    - bf16 / fp8 / mxfp8: the dense transformer (fp8/mxfp8 convert its frozen linears to
+      float8 training compute AFTER the LoRA attaches; storage stays bf16).
     - int8: the dense transformer quantized in place to torchao weight-only int8 (the
       PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
     import torch
@@ -238,7 +238,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             transformer = transformer.to(device)
         return transformer
 
-    # Dense load for bf16 / fp8 / int8. int8 quantizes AFTER the LoRA attaches (see
+    # Dense load for bf16 / fp8 / mxfp8 / int8. int8 quantizes AFTER the LoRA attaches (see
     # _int8_quantize_base): quantizing first makes peft dispatch its TorchaoLoraLinear
     # wrapper, whose peft-0.18 constructor is incompatible with the torchao-0.16 config API
     # (missing get_apply_tensor_subclass).
@@ -299,6 +299,45 @@ def _apply_fp8_training(transformer, on_event) -> bool:
         return False
 
 
+def _mx_module_filter(mod, fqn: str) -> bool:
+    """Which frozen linears get mxfp8 training compute: skip anything LoRA-owned (the
+    adapters must stay high precision), the output projection (same guard as fp8), and
+    shapes the 32-wide MX block scaling cannot tile (dims not divisible by 32)."""
+    import torch.nn as nn
+
+    if not isinstance(mod, nn.Linear):
+        return False
+    if "lora_" in fqn:
+        return False
+    if fqn.endswith("proj_out") or ".proj_out." in fqn:
+        return False
+    return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
+
+
+def _apply_mxfp8_training(transformer, on_event) -> bool:
+    """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
+    Blackwell-native block-scaled format; the swap is in place and the weights stay bf16
+    in memory, so like fp8 this is a speed mode, not a memory mode). Applied AFTER
+    add_adapter so the filter can exclude the LoRA modules. Only competitive under
+    torch.compile and only ahead of compiled bf16 at large token counts (high resolution
+    or batch), which is why it stays an explicit opt-in rather than an "auto" pick.
+    Never fatal: on any failure the run continues in bf16 with a warning."""
+    try:
+        from torchao.prototype.mx_formats import MXLinearConfig
+        from torchao.quantization import quantize_
+        quantize_(
+            transformer,
+            MXLinearConfig.from_recipe_name("mxfp8_cublas"),
+            filter_fn = _mx_module_filter,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
+        _emit(
+            on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}"
+        )
+        return False
+
+
 def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp8) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the
     fastest dense mode whose weights + headroom (activations, optimizer, cache) fit the
@@ -330,7 +369,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     transformer onto the CPU."""
     mode = (cfg.base_precision or "nf4").strip().lower()
     if mode != "auto":
-        if mode in ("bf16", "int8", "fp8") and device != "cuda":
+        if mode in ("bf16", "int8", "fp8", "mxfp8") and device != "cuda":
             raise ValueError(
                 f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
                 f"Use base_precision='nf4' or 'auto'."
@@ -977,8 +1016,9 @@ def _should_compile(
         return True
     # auto: regional compile is the whole point of the dense modes (measured 2.6x on
     # Z-Image bf16) but fragile over bitsandbytes 4-bit modules (graph breaks in the
-    # dequant path), so it stays off for QLoRA. fp8 is only competitive compiled.
-    return base_precision in ("bf16", "fp8")
+    # dequant path), so it stays off for QLoRA. fp8/mxfp8 are only competitive compiled
+    # (eager, their per-matmul dynamic casts run 4-5x slower than bf16).
+    return base_precision in ("bf16", "fp8", "mxfp8")
 
 
 def _maybe_compile_transformer(
@@ -994,11 +1034,14 @@ def _maybe_compile_transformer(
     event, and dynamo's suppress_errors keeps a frame that fails to COMPILE at the first
     step running eager instead of raising mid-run."""
     if not _should_compile(cfg, base_is_bnb, device, base_precision):
-        if base_precision == "fp8":
+        if base_precision in ("fp8", "mxfp8"):
             _emit(
                 on_event,
                 "warning",
-                message = "fp8 training without torch.compile is slow; enable compile for the speedup.",
+                message = (
+                    f"{base_precision} training without torch.compile is slow; "
+                    f"enable compile for the speedup."
+                ),
             )
         return False
     import torch
@@ -1177,8 +1220,8 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     variant_rng = random.Random(cfg.seed + 1)
 
     # Phase 3: only now load the transformer, in the resolved base precision (nf4 QLoRA by
-    # default; bf16 / int8 / fp8 are the dense speed modes; "auto" picks from free VRAM
-    # measured before the load).
+    # default; bf16 / int8 / fp8 / mxfp8 are the dense speed modes; "auto" picks from
+    # free VRAM measured before the load).
     base_precision = _resolve_base_precision(cfg, spec, device)
     transformer = spec.load_transformer(cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
@@ -1207,11 +1250,13 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
-    # int8 / fp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter
-    # modules are excluded and stay high precision.
+    # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the
+    # adapter modules are excluded and stay high precision.
     if base_precision == "int8":
         _int8_quantize_base(transformer)
     if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
+        base_precision = "bf16"
+    if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
         base_precision = "bf16"
 
     compiled = _maybe_compile_transformer(

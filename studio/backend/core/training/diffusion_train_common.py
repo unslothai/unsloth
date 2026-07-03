@@ -128,15 +128,17 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
 def repo_is_prequantized(base_model: str) -> bool:
     """Heuristic: a repo whose name marks a bitsandbytes 4-bit build already ships a
     quantized transformer, so it loads as-is for nf4 and cannot serve the dense
-    (bf16/int8/fp8) base precisions."""
+    (bf16/int8/fp8/mxfp8) base precisions."""
     name = str(base_model or "").lower()
     return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
 
 
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4
-    always works; bf16/int8/auto need CUDA; fp8 needs an fp8-capable GPU (sm89+). Used by
-    the /info endpoint so the UI can gate the precision selector. Never raises."""
+    always works; bf16/int8/auto need CUDA; fp8 needs an fp8-capable GPU (sm89+); mxfp8
+    (block-scaled fp8 compute) needs the Blackwell tensor cores (sm100+) its cuBLAS
+    kernels target. Used by the /info endpoint so the UI can gate the precision
+    selector. Never raises."""
     modes = ["nf4"]
     recommended = "nf4"
     try:
@@ -146,6 +148,8 @@ def train_precision_modes() -> tuple[list[str], str]:
             major, minor = torch.cuda.get_device_capability()
             if (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
+            if (major, minor) >= (10, 0):
+                modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> nf4 only
@@ -219,8 +223,9 @@ def family_train_infos() -> list[dict[str, Any]]:
         if fam is None:
             continue
         repos = list(fam.train_base_repos) or [fam.base_repo]
-        # base_precision / compile apply to the DiT trainer only; SDXL keeps its
-        # mixed_precision lever, so the UI hides the selector for it.
+        # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision
+        # lever, so the UI hides the precision selector for it. compile applies everywhere:
+        # the SDXL trainer regionally compiles the U-Net's transformer blocks too.
         is_dit = name in ("flux.1", "qwen-image", "z-image", "krea-2")
         infos.append(
             {
@@ -232,7 +237,7 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "vram_note": _FAMILY_VRAM_NOTES.get(name, ""),
                 "precision_modes": dit_modes if is_dit else [],
                 "recommended_precision": dit_recommended if is_dit else "nf4",
-                "supports_compile": is_dit,
+                "supports_compile": True,
             }
         )
     return infos
@@ -329,9 +334,11 @@ class DiffusionLoraConfig:
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
         base_precision = str(self.base_precision or "nf4").strip().lower()
-        if base_precision not in ("nf4", "bf16", "int8", "fp8", "auto"):
-            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / auto")
-        if base_precision in ("bf16", "int8", "fp8"):
+        if base_precision not in ("nf4", "bf16", "int8", "fp8", "mxfp8", "auto"):
+            raise ValueError(
+                "base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto"
+            )
+        if base_precision in ("bf16", "int8", "fp8", "mxfp8"):
             if repo_is_prequantized(self.base_model):
                 raise ValueError(
                     f"base_precision={base_precision!r} needs a dense base repo, but "

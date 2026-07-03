@@ -182,17 +182,22 @@ export function DiffusionTrainPanel({
   const isDiT = familyName !== "sdxl";
   // The quantised base precisions this family can train in, with a stable fallback when the
   // backend does not report them (older backend, or a preset-only family).
-  const precisionModes = useMemo<Array<"nf4" | "bf16" | "int8" | "fp8" | "auto">>(() => {
+  const precisionModes = useMemo<
+    Array<"nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto">
+  >(() => {
     const reported = reportedFamily?.precision_modes?.filter(
-      (m): m is "nf4" | "bf16" | "int8" | "fp8" =>
-        m === "nf4" || m === "bf16" || m === "int8" || m === "fp8",
+      (m): m is "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" =>
+        m === "nf4" || m === "bf16" || m === "int8" || m === "fp8" || m === "mxfp8",
     );
     if (reported && reported.length > 0) return ["auto", ...reported];
+    // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a
+    // Blackwell probe, so it is offered strictly when the backend advertises it).
     return ["auto", "nf4", "bf16", "int8", "fp8"];
   }, [reportedFamily?.precision_modes]);
-  // Whether to show the torch.compile control. Default on for DiT families when the backend
-  // does not say otherwise; sdxl's U-Net path does not expose it here.
-  const supportsCompile = isDiT && (reportedFamily?.supports_compile ?? true);
+  // Whether to show the torch.compile control. The backend advertises this per family
+  // (the SDXL U-Net path compiles regionally too now); default on for DiT families when
+  // an older backend does not report it.
+  const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
 
   const [baseChoice, setBaseChoice] = useState<string>(family?.base_repos[0] ?? "");
   const [customBase, setCustomBase] = useState("");
@@ -235,7 +240,7 @@ export function DiffusionTrainPanel({
   // lets the backend pick the family's recommended mode. Re-seeded to the family's
   // recommendation on family change (unless the user picked one).
   const [basePrecision, setBasePrecision] = useState<
-    "nf4" | "bf16" | "int8" | "fp8" | "auto"
+    "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto"
   >("auto");
   // Whether to torch.compile the DiT transformer. "auto" defers to the backend.
   const [compileTransformer, setCompileTransformer] = useState<"off" | "on" | "auto">(
@@ -737,11 +742,14 @@ export function DiffusionTrainPanel({
     </div>
   );
 
-  const precisionLabel = (m: "nf4" | "bf16" | "int8" | "fp8" | "auto"): string => {
+  const precisionLabel = (
+    m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
+  ): string => {
     if (m === "auto") return "Auto (recommended)";
     if (m === "nf4") return "nf4 (4-bit QLoRA, lowest VRAM)";
     if (m === "bf16") return "bf16 (fastest, most VRAM)";
     if (m === "int8") return "int8 (8-bit)";
+    if (m === "mxfp8") return "mxfp8 (Blackwell, best at high res/batch)";
     return "fp8 (experimental)";
   };
 

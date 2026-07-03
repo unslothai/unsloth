@@ -736,11 +736,12 @@ class DiffusionTrainingStartRequest(BaseModel):
     enable_tf32: bool = Field(
         True, description = "TF32 matmuls + cudnn autotuning (near-lossless speedup)"
     )
-    base_precision: Literal["nf4", "bf16", "int8", "fp8", "auto"] = Field(
+    base_precision: Literal["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"] = Field(
         "nf4",
         description = (
             "DiT base transformer precision: nf4 QLoRA (memory floor, default), bf16 dense, "
             "int8 torchao weight-only, fp8 float8 training compute (Ada/Hopper/Blackwell), "
+            "mxfp8 block-scaled float8 compute (Blackwell, best at high resolution/batch), "
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
         ),
     )
