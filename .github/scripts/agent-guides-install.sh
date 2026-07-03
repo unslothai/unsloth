@@ -25,13 +25,14 @@ install_fail() {
 }
 
 # npm registry flakiness is common in CI; retry 3x with linear backoff.
+# Extra npm flags may precede the package (e.g. npm_retry --ignore-scripts pkg).
 npm_retry() {
-  local pkg="$1" i
+  local i
   for i in 1 2 3; do
-    if npm install -g "$pkg" >> "$LOG" 2>&1; then
+    if npm install -g "$@" >> "$LOG" 2>&1; then
       return 0
     fi
-    echo "[install] npm install -g $pkg attempt $i failed; backing off $((i * 10))s" | tee -a "$LOG"
+    echo "[install] npm install -g $* attempt $i failed; backing off $((i * 10))s" | tee -a "$LOG"
     sleep "$((i * 10))"
   done
   return 1
@@ -91,11 +92,13 @@ case "$AGENT" in
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
   pi)
-    # No start.py recipe; the agent's documented package name. The CLI moved
-    # from the now-deprecated @mariozechner scope to @earendil-works (the old
-    # scope is frozen, so installing it would test a stale Pi against the API).
-    npm_retry "@earendil-works/pi-coding-agent" \
-      || install_fail "npm install -g @earendil-works/pi-coding-agent failed"
+    # start.py install_hint: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+    # (--ignore-scripts matches Pi's documented recipe; exercising the exact hint
+    # catches guide drift). The CLI moved from the now-deprecated @mariozechner
+    # scope to @earendil-works (the old scope is frozen, so installing it would
+    # test a stale Pi against the API).
+    npm_retry --ignore-scripts "@earendil-works/pi-coding-agent" \
+      || install_fail "npm install -g --ignore-scripts @earendil-works/pi-coding-agent failed"
     ;;
   *)
     install_fail "unknown agent '$AGENT'"
