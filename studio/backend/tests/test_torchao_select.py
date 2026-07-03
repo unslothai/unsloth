@@ -80,10 +80,7 @@ def test_default_spec_matches_table(monkeypatch):
     ],
 )
 def test_skips_torchao_on_windows_rocm(
-    monkeypatch,
-    tmp_path,
-    rocm_windows_torch_installed,
-    installed_torch_is_windows_rocm,
+    monkeypatch, tmp_path, rocm_windows_torch_installed, installed_torch_is_windows_rocm
 ):
     """The overrides step must skip torchao on Windows ROCm: no working build exists
     there (it imports an absent c10d backend and crashes transformers.quantizers),
@@ -111,7 +108,9 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "IS_MAC_ARM", False)
     monkeypatch.setattr(mod, "NO_TORCH", False)
     monkeypatch.setattr(mod, "_rocm_windows_torch_installed", rocm_windows_torch_installed)
-    monkeypatch.setattr(mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm)
+    monkeypatch.setattr(
+        mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
+    )
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
