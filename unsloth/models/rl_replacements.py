@@ -1373,6 +1373,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 "no",
                 "off",
             )
+            if _pk_enabled:
+                # The packed path leaves masked prompt/pad logprob columns at 0, which only stays finite
+                # if the unsloth_zoo grpo_compute_loss zeroes those columns before exp() (zoo#840). Detect
+                # that guard once (cached on the model) and disable packing against an older unsloth_zoo
+                # so we never feed a NaN-prone loss; it re-enables automatically once the guard is present.
+                _pk_guard = getattr(unwrapped_model, "_unsloth_zoo_masked_col_guard", None)
+                if _pk_guard is None:
+                    try:
+                        import inspect as _pk_inspect
+                        from unsloth_zoo.rl_replacements import RL_REPLACEMENTS as _pk_RL
+                        _pk_guard = "torch.where(_keep, new" in _pk_inspect.getsource(_pk_RL["grpo_compute_loss"])
+                    except Exception:
+                        _pk_guard = False
+                    unwrapped_model._unsloth_zoo_masked_col_guard = _pk_guard
+                _pk_enabled = _pk_guard
             _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
             if (
                 _pk_enabled
