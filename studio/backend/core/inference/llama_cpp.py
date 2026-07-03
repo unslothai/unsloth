@@ -6285,8 +6285,13 @@ class LlamaCppBackend:
                                 self._process.returncode,
                                 self._llama_log_path,
                             )
+                            # Flip Studio's own --fit off (added first, before any
+                            # user extra args) to on; a user's later --fit still wins
+                            # by last-arg. Defensive: if absent, the default is already
+                            # --fit on, so leave it.
                             _run = list(run_cmd)
-                            _run[_run.index("--fit") + 1] = "on"
+                            if "--fit" in _run:
+                                _run[_run.index("--fit") + 1] = "on"
                             run_cmd = _run
                             continue
                         if (
