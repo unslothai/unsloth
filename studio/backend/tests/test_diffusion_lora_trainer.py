@@ -208,7 +208,9 @@ def test_config_rejects_known_non_sdxl_base_models():
         "z-image-turbo-Q4_K_M.gguf",
     ):
         with pytest.raises(ValueError, match = "SDXL"):
-            DiffusionLoraConfig(base_model = bad, data_dir = "d", output_dir = "o").normalized()
+            DiffusionLoraConfig(
+                base_model = bad, data_dir = "d", output_dir = "o"
+            ).normalized()
 
 
 def test_config_accepts_sdxl_and_unknown_base_models():

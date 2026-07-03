@@ -2826,10 +2826,24 @@ def _guard_chat_load_against_training(
     from routes.training_vram import can_load_chat_during_training
 
     try:
-        if not get_training_backend().is_training_active():
-            return
+        llm_active = get_training_backend().is_training_active()
     except Exception as e:
         logger.warning("Could not check training state for chat-load guard: %s", e)
+        return
+
+    if not llm_active:
+        # An SDXL LoRA trainer runs in its own subprocess and its VRAM can't be cheaply
+        # fit-checked here, so refuse the chat load outright while one is active rather
+        # than risk OOMing the run. Symmetric with the image-load guard.
+        if _diffusion_training_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Can't load this model while diffusion (Images) training is running: "
+                    "its GPU memory use can't be verified against the trainer, so the load "
+                    "was refused to protect the run. Try again after training finishes."
+                ),
+            )
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
@@ -11024,6 +11038,16 @@ async def _openai_passthrough_non_streaming(
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _diffusion_training_active() -> bool:
+    """Whether a diffusion (SDXL) LoRA job is running. Best-effort so a load is never
+    blocked just because the training service could not be imported/read."""
+    try:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        return get_diffusion_training_service().is_active()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -11032,10 +11056,14 @@ def _guard_diffusion_load_against_training() -> None:
     from core.training import get_training_backend
 
     try:
-        if not get_training_backend().is_training_active():
-            return
+        llm_active = get_training_backend().is_training_active()
     except Exception as e:
         logger.warning("Could not check training state for image-load guard: %s", e)
+        return
+    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so an image
+    # load must be refused while one is active too -- otherwise the resident pipeline
+    # competes with the trainer for VRAM. Symmetric with the diffusion-start interlock.
+    if not llm_active and not _diffusion_training_active():
         return
     raise HTTPException(
         status_code = 409,
