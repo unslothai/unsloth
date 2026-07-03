@@ -398,7 +398,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
           // Prefer server timing when available.
           duration={persistedDuration || duration}
         />
-        <MessageResponseModelBadge className="min-w-0 max-w-[12rem] sm:max-w-[16rem]" />
+        <span className="hidden min-w-0 max-w-[12rem] group-hover/assistant-message:inline-flex group-focus-within/assistant-message:inline-flex sm:max-w-[16rem]">
+          <MessageResponseModelBadge className="min-w-0" />
+        </span>
         <div className="ml-auto flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (
             <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />

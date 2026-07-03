@@ -59,6 +59,8 @@ def test_response_model_chip_is_user_configurable_and_rendered_in_metadata_rows(
     assert "pointer-events-none relative h-0" in thread_src
     assert "MessageResponseModelBadge" in reasoning_src
     assert 'className="min-w-0 flex-none"' in reasoning_src
+    assert "hidden min-w-0 max-w-[12rem]" in reasoning_src
+    assert "group-hover/assistant-message:inline-flex" in reasoning_src
 
 
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
