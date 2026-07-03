@@ -994,11 +994,21 @@ class InferenceBackend:
                 # saw an empty template and cached only the document eos, so
                 # generate_stream below would miss the ChatML turn-end token and
                 # run past the assistant boundary (the loop this PR fixes).
-                # Re-resolve from the now-templated tokenizer and refresh the cache.
+                # Re-resolve from the now-templated tokenizer and UNION into the
+                # existing cache -- never overwrite. get_chat_template can hand back
+                # a different tokenizer object whose vocab was remapped (e.g. Gemma:
+                # <end_of_turn> folded onto the eos id), while generate_stream below
+                # re-reads model_info["tokenizer"] (the original). Overwriting there
+                # would drop a valid load-time id (e.g. <end_of_turn>=107) and let
+                # generation run past the real turn marker. The load-time ids come
+                # from the tokenizer generation actually uses, so keeping them and
+                # only adding the refreshed ones is always safe.
                 try:
-                    model_info["chat_turn_end_eos_ids"] = resolve_chat_turn_end_eos_ids(
+                    refreshed = resolve_chat_turn_end_eos_ids(
                         getattr(tokenizer, "tokenizer", tokenizer)
                     )
+                    existing = model_info.get("chat_turn_end_eos_ids") or []
+                    model_info["chat_turn_end_eos_ids"] = sorted(set(existing) | set(refreshed))
                 except Exception as e:
                     logger.warning(f"Could not refresh chat turn-end eos after template: {e}")
             else:

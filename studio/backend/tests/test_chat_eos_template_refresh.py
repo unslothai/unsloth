@@ -19,6 +19,7 @@ from core.inference import inference as inf_mod  # noqa: E402
 from core.inference.inference import InferenceBackend  # noqa: E402
 
 _CHATML = "{% for m in messages %}<|im_start|>{{m.role}}\n{{m.content}}<|im_end|>{% endfor %}"
+_GEMMA = "{% for m in messages %}<start_of_turn>{{m.role}}\n{{m.content}}<end_of_turn>{% endfor %}"
 
 
 class _FakeTokenizer:
@@ -74,3 +75,46 @@ def test_turn_end_eos_refreshed_after_generate_time_template(monkeypatch):
     # After the effective template is applied the cache must include the ChatML
     # turn-end id, not just the stale document eos.
     assert model_info["chat_turn_end_eos_ids"] == [151643, 151645]
+
+
+def test_turn_end_eos_refresh_preserves_load_time_ids_on_destructive_swap(monkeypatch):
+    # Regression: get_chat_template can hand back a DIFFERENT tokenizer whose vocab
+    # was remapped (Gemma: <end_of_turn> folded onto the eos id) while generate_stream
+    # re-reads model_info["tokenizer"] (the original, where <end_of_turn> keeps its
+    # own id). Resolving on the swapped tokenizer yields a NARROWER set; overwriting
+    # the cache with it dropped the real turn-end id and let generation run past
+    # <end_of_turn>. The refresh must UNION into the load-time cache, never overwrite.
+    import utils.datasets as ds
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "unsloth/gemma-2b-it"
+
+    # Original tokenizer (the one generate_stream uses): <end_of_turn>=107 distinct
+    # from eos=1, so the load-time cache resolved to [1, 107].
+    orig_tok = _FakeTokenizer(1, chat_template = _GEMMA, token_ids = {"<end_of_turn>": 107})
+    model_info = {
+        "tokenizer": orig_tok,
+        "is_vision": False,
+        "chat_turn_end_eos_ids": [1, 107],
+    }
+    backend.models = {backend.active_model_name: model_info}
+
+    # get_chat_template returns a destructively-swapped tokenizer: <end_of_turn> now
+    # maps onto eos id 1, so resolving on it yields only [1] (drops 107).
+    swapped_tok = _FakeTokenizer(1, chat_template = _GEMMA, token_ids = {"<end_of_turn>": 1})
+    monkeypatch.setattr(inf_mod, "get_chat_template", lambda tok, chat_template = None: swapped_tok)
+    monkeypatch.setattr(
+        ds, "MODEL_TO_TEMPLATE_MAPPER", {backend.active_model_name: "gemma-3"}, raising = False
+    )
+
+    monkeypatch.setattr(backend, "_normalize_top_k", lambda k: k, raising = False)
+    monkeypatch.setattr(
+        backend, "_apply_chat_template_for_generation", lambda *a, **k: "PROMPT", raising = False
+    )
+    monkeypatch.setattr(backend, "generate_stream", lambda *a, **k: iter(()), raising = False)
+
+    list(backend._generate_chat_response_inner(messages = [{"role": "user", "content": "hi"}]))
+
+    # The load-time <end_of_turn>=107 (valid in the generation tokenizer) must
+    # survive: overwriting with the swapped [1] would regress and loop past the turn.
+    assert model_info["chat_turn_end_eos_ids"] == [1, 107]
