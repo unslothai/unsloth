@@ -16,5 +16,7 @@ anyio<4.14.0
 # those checkpoints fail to load. An override excludes it from transitive
 # resolution too -- the fresh install.sh path pulls mlx-lm via unsloth-zoo before
 # the guarded MLX-stack install step runs. 0.31.2 and >=0.31.4 are fine; see
-# mlx-lm #1242.
-mlx-lm!=0.31.3
+# mlx-lm #1242. A uv override replaces the transitive constraint, so keep the
+# >=0.22.0 floor (mirrors mlx_repair.py _MLX_MIN_VERSIONS) here too, otherwise
+# the absolute override could let the resolver drop below the supported minimum.
+mlx-lm>=0.22.0,!=0.31.3

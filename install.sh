@@ -2674,9 +2674,13 @@ if [ "$_MIGRATED" = true ]; then
             run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
+        # Pin mlx-lm away from 0.31.3 on Apple Silicon here too (mlx-lm is a
+        # transitive dep with deps enabled): a curl-piped migration has no repo
+        # overrides file, so UV_OVERRIDE is unset and this positional is the only
+        # cover, matching the fresh install at the ${_MLX_LM_EXCLUDE_ARG:-} site below.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
