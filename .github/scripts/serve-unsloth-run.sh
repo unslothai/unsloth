@@ -27,7 +27,7 @@
 #
 # Outputs written to $GITHUB_ENV (and echoed):
 #   UNSLOTH_API_KEY        the sk-unsloth-* key minted on the banner
-#   UNSLOTH_STUDIO_URL     http://127.0.0.1:<PORT>  (so `unsloth connect`
+#   UNSLOTH_STUDIO_URL     http://127.0.0.1:<PORT>  (so `unsloth start`
 #                          finds THIS server, not the hardcoded :8888)
 #   UNSLOTH_BASE_URL       same as UNSLOTH_STUDIO_URL (alias for clarity)
 #   UNSLOTH_MODEL_ID       the canonical id reported by /v1/models
