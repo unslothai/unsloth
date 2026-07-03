@@ -23,6 +23,7 @@ _CHAT_TURN_END_TOKENS = (
     "<|eot_id|>",  # Llama 3.x
     "<|eom_id|>",  # Llama 3.x tool turns
     "<end_of_turn>",  # Gemma
+    "<turn|>",  # Gemma-4
     "<|end|>",  # Phi
 )
 # gpt-oss/harmony uses <|end|> as an intra-message channel delimiter (not the turn
@@ -38,24 +39,39 @@ def _eos_id_set(eos_token_id) -> set:
     return set()
 
 
-def resolve_chat_turn_end_eos_ids(tokenizer) -> list:
-    """tokenizer.eos plus any canonical turn-end marker the model's chat_template
-    actually uses. Cheap (convert_tokens_to_ids per marker, no get_vocab); intended
-    to be resolved once at load. Returns eos unchanged for harmony templates."""
-    ids = _eos_id_set(getattr(tokenizer, "eos_token_id", None))
-    template = getattr(tokenizer, "chat_template", None) or ""
+def resolve_chat_turn_end_eos_ids_using(template_tokenizer, id_tokenizer) -> list:
+    """eos of ``id_tokenizer`` plus any canonical turn-end marker the
+    ``template_tokenizer``'s chat_template uses, resolved to ids on ``id_tokenizer`` --
+    the tokenizer generation actually uses.
+
+    Pass the same tokenizer for both at load time. After a mapped ``get_chat_template``
+    pass the MAPPED tokenizer as ``template_tokenizer`` (it carries the effective
+    template) and the ORIGINAL generation tokenizer as ``id_tokenizer``: a mapped
+    template registered ``map_eos_token=True`` can hand back a tokenizer whose vocab
+    folds the turn-end token onto the doc-eos id, and generate_stream re-reads the
+    original tokenizer, so resolving ids on the mapped tokenizer would store the wrong
+    (doc-eos) id and let generation run past the real turn marker."""
+    ids = _eos_id_set(getattr(id_tokenizer, "eos_token_id", None))
+    template = getattr(template_tokenizer, "chat_template", None) or ""
     if not isinstance(template, str) or any(h in template for h in _HARMONY_MARKERS):
         return sorted(ids)
-    unk = getattr(tokenizer, "unk_token_id", None)
+    unk = getattr(id_tokenizer, "unk_token_id", None)
     for marker in _CHAT_TURN_END_TOKENS:
         if marker in template:
             try:
-                tid = tokenizer.convert_tokens_to_ids(marker)
+                tid = id_tokenizer.convert_tokens_to_ids(marker)
             except Exception:
                 tid = None
             if tid is not None and tid != unk and int(tid) >= 0:
                 ids.add(int(tid))
     return sorted(ids)
+
+
+def resolve_chat_turn_end_eos_ids(tokenizer) -> list:
+    """tokenizer.eos plus any canonical turn-end marker the model's chat_template
+    actually uses. Cheap (convert_tokens_to_ids per marker, no get_vocab); intended
+    to be resolved once at load. Returns eos unchanged for harmony templates."""
+    return resolve_chat_turn_end_eos_ids_using(tokenizer, tokenizer)
 
 
 def chat_eos_repair(current_eos, turn_end_ids) -> Optional[list]:

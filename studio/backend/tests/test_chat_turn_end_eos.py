@@ -20,6 +20,7 @@ if str(_BACKEND) not in sys.path:
 from core.inference.chat_eos import (  # noqa: E402
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids,
+    resolve_chat_turn_end_eos_ids_using,
 )
 
 
@@ -68,6 +69,27 @@ def test_harmony_template_is_left_untouched():
 def test_llama3_eot_id_from_template():
     tok = _FakeTokenizer(128001, chat_template = "...<|eot_id|>...", token_ids = {"<|eot_id|>": 128009})
     assert resolve_chat_turn_end_eos_ids(tok) == [128001, 128009]
+
+
+def test_gemma4_turn_marker_from_template():
+    # Gemma-4 ends turns with <turn|> (map_eos_token=False), so the tokenizer keeps a
+    # document eos while the template uses <turn|>; it must be added as a stop token.
+    tok = _FakeTokenizer(
+        1, chat_template = "...<start_of_turn>...<turn|>...", token_ids = {"<turn|>": 106}
+    )
+    assert resolve_chat_turn_end_eos_ids(tok) == [1, 106]
+
+
+def test_resolve_using_reads_markers_from_template_but_ids_from_generation_tokenizer():
+    # map_eos_token=True: the mapped template tokenizer remaps <|im_end|> onto the
+    # doc-eos id, but the original generation tokenizer keeps it atomic at its own id.
+    # Resolving marker STRINGS from the template but IDS on the original recovers the
+    # real turn-end id (7), not the remapped doc-eos id (2).
+    template_tok = _FakeTokenizer(2, chat_template = _CHATML, token_ids = {"<|im_end|>": 2})
+    id_tok = _FakeTokenizer(2, chat_template = "", token_ids = {"<|im_end|>": 7})
+    assert resolve_chat_turn_end_eos_ids_using(template_tok, id_tok) == [2, 7]
+    # Same tokenizer for both reproduces the plain resolve (load-time behaviour).
+    assert resolve_chat_turn_end_eos_ids_using(template_tok, template_tok) == [2]
 
 
 def test_list_eos_preserved():

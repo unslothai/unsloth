@@ -46,8 +46,10 @@ def test_turn_end_eos_refreshed_after_generate_time_template(monkeypatch):
     backend.active_model_name = "unsloth/qwen2.5-0.5b"
 
     # Loaded tokenizer ships NO chat_template, so the load-time cache saw an
-    # empty template and stored only the document eos.
-    bare_tok = _FakeTokenizer(151643, chat_template = "")
+    # empty template and stored only the document eos. It DOES carry <|im_end|>
+    # atomically in its vocab (the id generation actually uses), just unused by a
+    # template until the mapper installs one.
+    bare_tok = _FakeTokenizer(151643, chat_template = "", token_ids = {"<|im_end|>": 151645})
     model_info = {
         "tokenizer": bare_tok,
         "is_vision": False,
@@ -118,3 +120,45 @@ def test_turn_end_eos_refresh_preserves_load_time_ids_on_destructive_swap(monkey
     # The load-time <end_of_turn>=107 (valid in the generation tokenizer) must
     # survive: overwriting with the swapped [1] would regress and loop past the turn.
     assert model_info["chat_turn_end_eos_ids"] == [1, 107]
+
+
+def test_turn_end_eos_refresh_resolves_marker_id_on_original_not_remapped(monkeypatch):
+    # Yi-style map_eos_token=True: the ORIGINAL tokenizer carries <|im_end|> atomically
+    # at its own id, but get_chat_template returns a REMAPPED tokenizer that folds
+    # <|im_end|> onto the doc-eos id. generate_stream uses the original tokenizer, so the
+    # marker id must be resolved on the ORIGINAL (recovering the real id), not on the
+    # remapped returned tokenizer (which would store only the doc-eos id and loop past
+    # the turn). The refresh reads the marker STRINGS from the mapped template but the
+    # IDS from the original tokenizer.
+    import utils.datasets as ds
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "01-ai/yi-6b"
+
+    # Original: no template of its own, doc eos = 2, <|im_end|> atomic = 7.
+    orig_tok = _FakeTokenizer(2, chat_template = "", token_ids = {"<|im_end|>": 7})
+    model_info = {
+        "tokenizer": orig_tok,
+        "is_vision": False,
+        "chat_turn_end_eos_ids": [2],
+    }
+    backend.models = {backend.active_model_name: model_info}
+
+    # get_chat_template returns a remapped tokenizer: ChatML template, but <|im_end|>
+    # folded onto the doc-eos id 2 in its own vocab, eos = 2.
+    remapped_tok = _FakeTokenizer(2, chat_template = _CHATML, token_ids = {"<|im_end|>": 2})
+    monkeypatch.setattr(inf_mod, "get_chat_template", lambda tok, chat_template = None: remapped_tok)
+    monkeypatch.setattr(
+        ds, "MODEL_TO_TEMPLATE_MAPPER", {backend.active_model_name: "chatml"}, raising = False
+    )
+
+    monkeypatch.setattr(backend, "_normalize_top_k", lambda k: k, raising = False)
+    monkeypatch.setattr(
+        backend, "_apply_chat_template_for_generation", lambda *a, **k: "PROMPT", raising = False
+    )
+    monkeypatch.setattr(backend, "generate_stream", lambda *a, **k: iter(()), raising = False)
+
+    list(backend._generate_chat_response_inner(messages = [{"role": "user", "content": "hi"}]))
+
+    # The real <|im_end|>=7 (original vocab) must be recovered, not the remapped 2.
+    assert model_info["chat_turn_end_eos_ids"] == [2, 7]

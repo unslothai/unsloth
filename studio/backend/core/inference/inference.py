@@ -27,7 +27,11 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.runtime_context import runtime_context_length
 from core.inference.message_content import content_to_text
-from core.inference.chat_eos import chat_eos_repair, resolve_chat_turn_end_eos_ids
+from core.inference.chat_eos import (
+    chat_eos_repair,
+    resolve_chat_turn_end_eos_ids,
+    resolve_chat_turn_end_eos_ids_using,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -994,18 +998,20 @@ class InferenceBackend:
                 # saw an empty template and cached only the document eos, so
                 # generate_stream below would miss the ChatML turn-end token and
                 # run past the assistant boundary (the loop this PR fixes).
-                # Re-resolve from the now-templated tokenizer and UNION into the
-                # existing cache -- never overwrite. get_chat_template can hand back
-                # a different tokenizer object whose vocab was remapped (e.g. Gemma:
-                # <end_of_turn> folded onto the eos id), while generate_stream below
-                # re-reads model_info["tokenizer"] (the original). Overwriting there
-                # would drop a valid load-time id (e.g. <end_of_turn>=107) and let
-                # generation run past the real turn marker. The load-time ids come
-                # from the tokenizer generation actually uses, so keeping them and
-                # only adding the refreshed ones is always safe.
+                # Re-resolve with the now-templated tokenizer and UNION into the
+                # existing cache -- never overwrite. get_chat_template can hand back a
+                # different tokenizer object whose vocab was remapped (map_eos_token=True
+                # templates fold the turn-end token onto the doc-eos id), while
+                # generate_stream below re-reads model_info["tokenizer"] (the original).
+                # So read the turn-end marker STRINGS from the mapped tokenizer's
+                # template but resolve their IDs on the ORIGINAL generation tokenizer;
+                # otherwise the stored id is the wrong (doc-eos) one and generation runs
+                # past the real turn marker. Union keeps every valid load-time id.
                 try:
-                    refreshed = resolve_chat_turn_end_eos_ids(
-                        getattr(tokenizer, "tokenizer", tokenizer)
+                    _gen_tok = model_info.get("tokenizer") or tokenizer
+                    refreshed = resolve_chat_turn_end_eos_ids_using(
+                        getattr(tokenizer, "tokenizer", tokenizer),
+                        getattr(_gen_tok, "tokenizer", _gen_tok),
                     )
                     existing = model_info.get("chat_turn_end_eos_ids") or []
                     model_info["chat_turn_end_eos_ids"] = sorted(set(existing) | set(refreshed))
