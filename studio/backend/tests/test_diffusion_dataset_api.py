@@ -197,10 +197,31 @@ def test_list_dataset_examples(client, ds_root):
     r = client.get("/api/train/diffusion/dataset-examples")
     assert r.status_code == 200, r.text
     ids = {e["id"] for e in r.json()["examples"]}
-    assert {"dreambooth-dog", "tuxemon", "tarot-1920"} <= ids
+    assert {
+        "dreambooth-dog",
+        "tuxemon",
+        "tarot-1920",
+        "smithsonian-butterflies",
+        "pixel-nouns",
+    } <= ids
     dog = next(e for e in r.json()["examples"] if e["id"] == "dreambooth-dog")
     assert dog["suggested_trigger"] == "a photo of sks dog"
     assert dog["license"]
+
+
+def test_list_dataset_examples_large_sets(client, ds_root):
+    # The two ~100-image sets: butterflies is a subject set (trigger, no caption column),
+    # nouns is a captioned style set (caption column, no trigger). Both cap at 100.
+    r = client.get("/api/train/diffusion/dataset-examples")
+    examples = {e["id"]: e for e in r.json()["examples"]}
+    butterflies = examples["smithsonian-butterflies"]
+    assert butterflies["image_cap"] == 100
+    assert butterflies["suggested_trigger"] == "a photo of a sks butterfly"
+    assert "CC0" in butterflies["license"]
+    nouns = examples["pixel-nouns"]
+    assert nouns["image_cap"] == 100
+    assert nouns["suggested_trigger"] is None
+    assert nouns["license"] == "cc0-1.0"
 
 
 class _FakeImageFeature:
