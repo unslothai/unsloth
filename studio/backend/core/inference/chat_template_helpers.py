@@ -12,7 +12,7 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 
 
-def detect_think_prefill(prompt: Optional[str], special_tokens=None) -> str:
+def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
     """Return the trailing open ``<think>`` prefill of a rendered prompt.
 
     Reasoning templates (Qwen3.6, DeepSeek-R1-style) end the generation

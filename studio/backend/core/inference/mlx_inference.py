@@ -493,9 +493,7 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        cumulative = detect_think_prefill(
-            prompt, getattr(chat_target, "all_special_tokens", None)
-        )
+        cumulative = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
         # Emit it before the first token so the block renders during prefill.
         if cumulative:
             yield cumulative

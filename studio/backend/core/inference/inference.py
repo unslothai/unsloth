@@ -1364,8 +1364,10 @@ class InferenceBackend:
             # skip_prompt swallows an open <think> prefilled by the template;
             # re-emit it so the frontend can render the thinking block.
             # gpt-oss emits its own tags via HarmonyTextStreamer.
-            think_prefix = "" if self._is_gpt_oss_model() else detect_think_prefill(
-                prompt, getattr(tokenizer, "all_special_tokens", None)
+            think_prefix = (
+                ""
+                if self._is_gpt_oss_model()
+                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
             )
 
             # gpt-oss models: HarmonyTextStreamer parses the multi-channel
