@@ -111,15 +111,10 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     # Kimi K2 envelope truncated.
     re.compile(r"<\|tool_calls_section_begin\|>.*$", re.DOTALL),
     re.compile(r"<\|tool_call_begin\|>.*$", re.DOTALL),
-    # Gemma 4 wrapper-less ``call:NAME{...}`` (skip_special_tokens stripped
-    # the ``<|tool_call>`` markers). Bounded to a single brace level so it
-    # cleans the common query/command leak without eating unrelated prose.
-    re.compile(r"(?<!\w)call:[\w\.\-]+\{[^{}]*\}", re.DOTALL),
-    # Truncated wrapper-less Gemma ``call:NAME{...`` cut off mid-arguments (no
-    # closing brace) -- eat to EOS so the raw call does not leak. Runs after the
-    # closed form above (and _strip_gemma_wrapperless_calls handles balanced
-    # nested ones), so a complete call + trailing prose keeps its prose.
-    re.compile(r"(?<!\w)call:[\w\.\-]+\{.*$", re.DOTALL),
+    # Gemma 4 wrapper-less ``call:NAME{...}`` (closed, nested, and truncated) is
+    # handled entirely by ``_strip_gemma_wrapperless_calls`` above -- the single
+    # authority so the enabled-name gate is honoured (a disabled/example name in
+    # prose is kept, not deleted). It runs before this list in every caller.
 ]
 
 
@@ -429,11 +424,16 @@ def _strip_mistral_closed_calls(text: str) -> str:
     return "".join(out)
 
 
-def _strip_gemma_wrapperless_calls(text: str) -> str:
+def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
     scanning, so a nested object/array argument (``call:f{loc:{city:NYC},n:3}``) is
     removed whole instead of leaving a trailing ``}`` -- the ``[^{}]*`` cleanup regex
-    only matches brace-free bodies. Unclosed runs are left for the regex tails."""
+    only matches brace-free bodies. Unclosed runs are left for the regex tails.
+
+    ``enabled_tool_names`` (when given) gates the strip on the name the same way
+    ``_parse_gemma_tool_calls`` gates parsing: a disabled/example ``call:foo{...}`` in
+    prose is kept visible instead of being deleted from the answer. ``None`` strips
+    every closed call (unrestricted mode / direct callers)."""
     n = len(text)
     out = []
     cursor = 0
@@ -442,13 +442,20 @@ def _strip_gemma_wrapperless_calls(text: str) -> str:
         if not m:
             out.append(text[cursor:])
             break
+        disabled = enabled_tool_names is not None and m.group(1) not in enabled_tool_names
         brace = m.end() - 1  # _GEMMA_BARE_TC_RE consumes through the opening ``{``
         _value, next_index, closed = _gemma_parse_mapping(text, brace)
         if not closed:
-            # Unclosed -- leave from the call onward for the caller / final tails.
-            out.append(text[cursor:])
+            # Unclosed (truncated / still-streaming) call. Drop a real (enabled) call
+            # to EOS so the raw markup does not leak; keep a disabled/example name as
+            # prose. Nothing parseable follows an unclosed call, so stop either way.
+            out.append(text[cursor:] if disabled else text[cursor : m.start()])
             break
-        out.append(text[cursor : m.start()])
+        if disabled:
+            # Disabled/example name -- prose, not a call: keep it whole and continue.
+            out.append(text[cursor:next_index])
+        else:
+            out.append(text[cursor : m.start()])
         cursor = next_index  # already past the matching ``}``
     return "".join(out)
 
@@ -496,6 +503,26 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _glm_value_close(text: str, vs: int) -> int:
+    """Index of the ``</arg_value>`` that really ends the GLM value beginning at
+    ``vs``: the first one whose next non-space token is ``<arg_key>``, ``</tool_call>``
+    or end-of-text. A literal ``</arg_value>`` inside the value (e.g.
+    ``print("</arg_value>")``) is followed by ordinary text and skipped; a literal
+    ``</tool_call>`` inside the value does not end it. Returns -1 if unclosed."""
+    n = len(text)
+    search = vs
+    while True:
+        ve = text.find(_GLM_ARG_VAL_CLOSE, search)
+        if ve < 0:
+            return -1
+        j = ve + len(_GLM_ARG_VAL_CLOSE)
+        while j < n and text[j] in " \t\r\n":
+            j += 1
+        if j >= n or text.startswith(_GLM_ARG_KEY_OPEN, j) or text.startswith(_GLM_TC_CLOSE, j):
+            return ve
+        search = ve + len(_GLM_ARG_VAL_CLOSE)
+
+
 def _strip_glm_calls(text: str, *, final: bool) -> str:
     """Strip GLM 4.x ``<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>
     ...</tool_call>`` calls by scanning to each call's REAL ``</tool_call>``.
@@ -536,7 +563,10 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
                 apos = ke + len(_GLM_ARG_KEY_CLOSE)
                 continue
             vs = vstart + len(_GLM_ARG_VAL_OPEN)
-            ve = text.find(_GLM_ARG_VAL_CLOSE, vs)
+            # Real </arg_value> = first whose next non-space token is <arg_key> /
+            # </tool_call> / end (mirror _parse_glm_tool_calls), so a literal
+            # </arg_value> or </tool_call> inside the value is data, not an early close.
+            ve = _glm_value_close(text, vs)
             if ve < 0:
                 break  # unclosed <arg_value> -- truncated
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
@@ -554,12 +584,19 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
-def strip_tool_markup(text: str, *, final: bool = False) -> str:
+def strip_tool_markup(
+    text: str,
+    *,
+    final: bool = False,
+    enabled_tool_names: Optional[set] = None,
+) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
-    ``final=True`` also drops trailing unclosed runs and trims."""
+    ``final=True`` also drops trailing unclosed runs and trims. ``enabled_tool_names``
+    gates the markerless Gemma ``call:NAME{...}`` strip so a disabled/example name in
+    prose is kept (mirrors the parser gate); ``None`` strips every closed call."""
     text = _strip_mistral_closed_calls(text)
     if final:
-        text = _strip_gemma_wrapperless_calls(text)
+        text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
     # Scan-strip the function-XML form (parser-accurate: a literal ``<function=...>``
     # inside a parameter value is data, not a call), then the remaining regex arms
     # cover the other formats. The function regex arms stay in the pattern lists for
@@ -588,7 +625,11 @@ def has_tool_signal(text: str) -> bool:
 _EMBEDDED_MARKER_RE = re.compile(
     _DEEPSEEK_OPEN_RE_SRC + "|" + re.escape(_KIMI_SECTION_BEGIN) + "|" + re.escape(_KIMI_CALL_BEGIN)
 )
-_OUTER_ENVELOPE_OPEN_RE = re.compile(r"<tool_call>|<function=")
+# Both ``<function=NAME>`` and the attribute form ``<function name="NAME">`` are
+# supported outer envelopes (see ``_TC_FUNC_START_RE``), so the guard must cover
+# both -- otherwise an attribute-form call whose argument embeds a DeepSeek/Kimi
+# marker is hijacked by the marker pre-pass and the wrong tool runs.
+_OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")')
 
 
 def _marker_inside_leading_envelope(content: str) -> bool:
@@ -651,11 +692,22 @@ def parse_tool_calls_from_text(
         _parse_function_xml,  # <function name="..."> attribute form
         _parse_llama3_python_tag,  # Llama-3 <|python_tag|>
         _parse_mistral_tool_calls,  # Mistral [TOOL_CALLS]
-        _parse_gemma_tool_calls,  # Gemma wrapper-less call:NAME{...} (tokens stripped)
     ):
         calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
         if calls:
             return calls
+
+    # Gemma wrapper-less ``call:NAME{...}`` (special tokens stripped). Markerless like
+    # the Llama-3.2 bare-JSON form below, so it takes the same ``enabled_tool_names``
+    # gate: a disabled/example name in prose must not be stolen as a call.
+    calls = _parse_gemma_tool_calls(
+        content,
+        id_offset = id_offset,
+        allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
+    )
+    if calls:
+        return calls
 
     # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict (starts with ``{``
     # and parses to the right shape) so plain prose stays untouched.
@@ -1305,13 +1357,20 @@ def _parse_gemma_tool_calls(
     *,
     id_offset: int,
     allow_incomplete: bool = True,
+    enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``.
 
     Also handles the ``skip_special_tokens`` stream where the ``<|tool_call>``
     wrapper and ``<|"|>`` string markers were stripped, leaving a bare
     ``call:NAME{k:v, ...}`` with unquoted values.
-    """
+
+    ``enabled_tool_names`` (when given) gates on the parsed name, exactly like the
+    markerless Llama-3.2 bare-JSON form: once the ``<|tool_call>`` wrapper is gone the
+    ``call:NAME{...}`` shape is indistinguishable from prose that documents the Gemma
+    tool syntax, so an example/disabled name (``call:foo{x:1}``) must not be stolen as
+    a call -- that suppresses the real answer. ``None`` keeps the name-agnostic
+    behaviour (unrestricted mode / direct callers)."""
     out: list[dict] = []
     # The wrapped ``<|tool_call>call:...<tool_call|>`` form -- including its
     # strict (Auto-Heal off) and nested-marker handling -- is owned by the
@@ -1322,6 +1381,10 @@ def _parse_gemma_tool_calls(
         return out
     for m in _GEMMA_BARE_TC_RE.finditer(content):
         name = m.group(1)
+        # Markerless: only a call when the name is an enabled tool, else it is prose
+        # (an example / disabled name) and must stay in the visible answer.
+        if enabled_tool_names is not None and name not in enabled_tool_names:
+            continue
         body_start = m.end() - 1
         end = _balanced_brace_end(content, body_start)
         if end is None:
@@ -1675,6 +1738,36 @@ def _gemma_parse_mapping(text: str, start: int):
 # ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
 
 
+def _find_outside_json_strings(text: str, needle: str, start: int) -> int:
+    """Index of ``needle`` at or after ``start`` that lies OUTSIDE any JSON string
+    (double-quoted, backslash-escaped), or -1. A sentinel/marker that legitimately
+    appears inside a tool-call argument string (e.g. a query mentioning the DeepSeek
+    envelope-end token) must not be mistaken for the real structural terminator."""
+    i = start
+    n = len(text)
+    in_string = False
+    esc = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            i += 1
+            continue
+        if text.startswith(needle, i):
+            return i
+        i += 1
+    return -1
+
+
 def _parse_deepseek_tool_calls(
     content: str,
     *,
@@ -1694,7 +1787,11 @@ def _parse_deepseek_tool_calls(
     if not begin:
         return out
     scan_start = begin.end()
-    end_pos = content.find(_DEEPSEEK_END, scan_start)
+    # Find the envelope-end OUTSIDE JSON strings: a call argument (search query,
+    # code) may legitimately contain the literal <｜tool▁calls▁end｜> token, and a
+    # raw find would truncate ``body`` before the balanced JSON closes, dropping the
+    # whole valid call.
+    end_pos = _find_outside_json_strings(content, _DEEPSEEK_END, scan_start)
     # Strict mode (Auto-Heal off): an envelope with no closing <｜tool▁calls▁end｜>
     # is truncated mid-stream; reject instead of healing out to EOF.
     if not allow_incomplete and end_pos < 0:
@@ -1881,7 +1978,11 @@ def _parse_glm_tool_calls(
                 apos = ke + len(_GLM_ARG_KEY_CLOSE)
                 continue
             vs = vstart + len(_GLM_ARG_VAL_OPEN)
-            ve = content.find(_GLM_ARG_VAL_CLOSE, vs)
+            # The value's real </arg_value> is the first whose next non-space token is
+            # <arg_key> / </tool_call> / end: a value may legitimately contain a literal
+            # </arg_value> (print("</arg_value>")) or </tool_call>, and a first-match
+            # find would truncate it and execute the tool with corrupted arguments.
+            ve = _glm_value_close(content, vs)
             key = content[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
             if ve < 0:
                 # Unclosed <arg_value>: strict mode rejects the whole call instead

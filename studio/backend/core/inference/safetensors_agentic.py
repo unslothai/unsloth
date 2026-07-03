@@ -103,8 +103,11 @@ def strip_tool_markup_streaming(
     *,
     auto_heal_tool_calls: bool = True,
     tool_protocol_active: bool = False,
+    enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Strip open-ended tool XML from display text without trimming whitespace."""
+    """Strip open-ended tool XML from display text without trimming whitespace.
+    ``enabled_tool_names`` gates the markerless Gemma ``call:NAME{...}`` strip so a
+    disabled/example name in prose is kept (mirrors the parser gate)."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
     # Mirror the final strip's scan order so streaming and final display agree.
@@ -116,7 +119,7 @@ def strip_tool_markup_streaming(
     # trailing prose after the call survives. No final trim so incremental length
     # comparisons in the streaming loop still hold.
     text = _strip_mistral_closed_calls(text)
-    text = _strip_gemma_wrapperless_calls(text)
+    text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
     text = _strip_function_xml_calls(text, final = True)
     text = _strip_glm_calls(text, final = True)
     for pat in _TOOL_ALL_PATS:
@@ -129,10 +132,11 @@ def _strip_tool_markup_final(
     *,
     auto_heal_tool_calls: bool,
     tool_protocol_active: bool = False,
+    enabled_tool_names: Optional[set] = None,
 ) -> str:
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    return strip_tool_markup(text, final = True)
+    return strip_tool_markup(text, final = True, enabled_tool_names = enabled_tool_names)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -401,6 +405,7 @@ def run_safetensors_tool_loop(
                         before_tool,
                         auto_heal_tool_calls = auto_heal_tool_calls,
                         tool_protocol_active = tool_protocol_active,
+                        enabled_tool_names = _enabled_tool_names,
                     )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
@@ -431,6 +436,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_tool_names,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -523,6 +529,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_tool_names,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -555,6 +562,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_tool_names,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -589,7 +597,9 @@ def run_safetensors_tool_loop(
                 # "Let me search." that never exit BUFFERING (else the loop ends).
                 if content_buffer:
                     cumulative_display += content_buffer
-                    cleaned = strip_tool_markup(cumulative_display, final = True)
+                    cleaned = strip_tool_markup(
+                        cumulative_display, final = True, enabled_tool_names = _enabled_tool_names
+                    )
                     if len(cleaned) > len(last_emitted):
                         last_emitted = cleaned
                         yield {"type": "content", "text": cleaned}
@@ -650,6 +660,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 tool_protocol_active = True,
+                enabled_tool_names = _enabled_tool_names,
             )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
@@ -672,6 +683,7 @@ def run_safetensors_tool_loop(
                         content_accum,
                         auto_heal_tool_calls = auto_heal_tool_calls,
                         tool_protocol_active = False,
+                        enabled_tool_names = _enabled_tool_names,
                     )
                     # A truncated/oversized bare-JSON tool call (``{"name":..``)
                     # was drained here but did not parse. With Auto-Heal on, drop it
@@ -698,6 +710,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 tool_protocol_active = True,
+                enabled_tool_names = _enabled_tool_names,
             )
 
         if tool_calls:

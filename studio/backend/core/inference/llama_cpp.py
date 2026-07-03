@@ -8088,6 +8088,12 @@ class LlamaCppBackend:
                 "duration_ms": round((time.monotonic() - started_at) * 1000.0),
             }
 
+        # Enabled-tool-name gate for the markerless Gemma ``call:NAME{...}`` strip,
+        # so a disabled/example name in prose is kept instead of deleted. Set per
+        # iteration from the active tools below; None here keeps the pre-loop
+        # (name-agnostic) behaviour for any strip before the first iteration.
+        _enabled_tool_names = None
+
         def _strip_tool_markup(
             text: str,
             *,
@@ -8096,7 +8102,9 @@ class LlamaCppBackend:
         ) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return _shared_strip_tool_markup(text, final = final)
+            return _shared_strip_tool_markup(
+                text, final = final, enabled_tool_names = _enabled_tool_names
+            )
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
@@ -8108,7 +8116,7 @@ class LlamaCppBackend:
             # go first (nested JSON would be truncated by the non-greedy pattern
             # arms); no final trim so incremental length comparisons still hold.
             text = _strip_mistral_closed_calls(text)
-            text = _strip_gemma_wrapperless_calls(text)
+            text = _strip_gemma_wrapperless_calls(text, _enabled_tool_names)
             # Guarded function-XML and GLM scans each close at the call's REAL terminator
             # (parser-accurate) BEFORE the regex arms, matching the final strip: a literal
             # ``<function=...>`` / ``</tool_call>`` inside a parameter value is data, not a
