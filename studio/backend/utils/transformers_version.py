@@ -1600,25 +1600,40 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
         _VENV_LLMCOMPRESSOR_DIR,
     )
-    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors=True)
-    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok=True)
+    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
+    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
 
     # Prefer uv (faster) then pip; install every spec at once, --no-deps, prereleases allowed
     # (compressed-tensors ships as a pre-release).
-    base = ["--target", _VENV_LLMCOMPRESSOR_DIR, "--no-deps", "--prerelease=allow", *_VENV_LLMCOMPRESSOR_SPECS]
+    base = [
+        "--target",
+        _VENV_LLMCOMPRESSOR_DIR,
+        "--no-deps",
+        "--prerelease=allow",
+        *_VENV_LLMCOMPRESSOR_SPECS,
+    ]
     cmds = []
     if shutil.which("uv"):
         cmds.append(["uv", "pip", "install", "--python", sys.executable, *base])
-    cmds.append([sys.executable, "-m", "pip", "install", *[a for a in base if a != "--prerelease=allow"], "--pre"])
+    cmds.append(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            *[a for a in base if a != "--prerelease=allow"],
+            "--pre",
+        ]
+    )
 
     last_out = ""
     for cmd in cmds:
         result = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=child_env_without_native_path_secret(),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
         last_out = result.stdout or ""
