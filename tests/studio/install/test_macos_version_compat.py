@@ -223,7 +223,7 @@ def _fake_macos_releases(tags):
 
 
 class TestMacosReleasePin:
-    """A pre-26 macOS host pins the last upstream release that loads on it (b9415); macOS 26+ and unknown-version hosts use normal latest selection."""
+    """Pre-26 upstream macOS pins the last loadable ggml-org release."""
 
     TAGS = [f"b{n}" for n in range(9442, 9400, -1)]  # newest-first, includes b9415
 

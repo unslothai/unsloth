@@ -332,7 +332,9 @@ def MistralForCausalLM_fast_forward(
                 logit_softcapping = logit_softcapping,
             )
             if not return_dict:
-                output = (logits,) + outputs[1:]
+                # Fused CE never materializes `logits`; use EMPTY_LOGITS
+                # like the return_dict branch below (fixes #2068).
+                output = (EMPTY_LOGITS,) + outputs[1:]
                 return (loss,) + output if loss is not None else output
 
             output = CausalLMOutputWithPast(

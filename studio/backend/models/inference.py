@@ -106,8 +106,7 @@ class LoadRequest(BaseModel):
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Studio-managed flags (model identity, port, context length, GPU placement, "
-            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
-            "non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
 
@@ -781,6 +780,16 @@ class ChatCompletionRequest(BaseModel):
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
+            "model emitted a tool signal that healing could not repair, retry ONCE with "
+            "a short nudge appended (the retry shares the full prompt prefix, so the "
+            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
+            "the process default."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
         None,
         description = (
@@ -1102,6 +1111,8 @@ class ChoiceDelta(BaseModel):
 
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
@@ -1137,6 +1148,8 @@ class CompletionMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
     refusal: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 class CompletionChoice(BaseModel):
@@ -1608,6 +1621,14 @@ class AnthropicMessagesRequest(BaseModel):
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        True,
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
+    )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
     )
     model_config = {"extra": "allow"}
 

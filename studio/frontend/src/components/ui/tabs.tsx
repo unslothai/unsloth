@@ -66,25 +66,38 @@ export const tabsListVariants = cva(
 export function TabsList({
   className,
   variant = "default",
+  unstyled = false,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.List> &
-  VariantProps<typeof tabsListVariants>): React.ReactElement {
+  VariantProps<typeof tabsListVariants> & {
+    unstyled?: boolean;
+  }): React.ReactElement {
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
       data-variant={variant}
-      className={cn(tabsListVariants({ variant }), className)}
+      className={cn(
+        unstyled
+          ? "group/tabs-list text-muted-foreground inline-flex items-center justify-center group-data-[orientation=vertical]/tabs:flex-col"
+          : tabsListVariants({ variant }),
+        className,
+      )}
       {...props}
     />
   );
 }
 
+type TabsTriggerProps = React.ComponentProps<typeof TabsPrimitive.Trigger> & {
+  indicatorClassName?: string;
+};
+
 export function TabsTrigger({
   className,
+  indicatorClassName,
   value,
   children,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Trigger>): React.ReactElement {
+}: TabsTriggerProps): React.ReactElement {
   const ctx = React.useContext(TabsContext);
   const isActive = ctx.value === value;
 
@@ -106,7 +119,11 @@ export function TabsTrigger({
       {isActive && (
         <motion.span
           layoutId={`tab-bg-${ctx.id}`}
-          className="absolute inset-0 rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0"
+          className={cn(
+            "absolute inset-0",
+            indicatorClassName ??
+              "rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0",
+          )}
           transition={{
             type: "spring",
             stiffness: 500,

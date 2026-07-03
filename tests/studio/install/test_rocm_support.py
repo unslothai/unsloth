@@ -1221,6 +1221,8 @@ _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "work
 _EXPORT_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
 # Shared torchao Windows-ROCm stub used by both workers.
 _TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
+# RAG embedder -- runs in the main backend process and also needs the stub.
+_EMBEDDINGS_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "rag" / "embeddings.py"
 # Wheel-probe script literal lives in wheel_utils after the resolver refactor.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
 
@@ -1471,12 +1473,14 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
-        """get_gpu_utilization dispatches to amd.py via _smi_query when IS_ROCM."""
+        """get_gpu_utilization dispatches visible metrics through amd.py on ROCm."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert '_smi_query("get_primary_gpu_utilization"' in func_body
+        assert "_smi_query(" in func_body
+        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_reconcile_rocm_unified_memory" in func_body
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -2327,6 +2331,13 @@ class TestWorkerWindowsRocmPatches:
     def test_export_worker_calls_shared_torchao_stub(self):
         """export/worker.py must invoke the same shared torchao stub entrypoint."""
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
+    def test_embedder_calls_shared_torchao_stub(self):
+        """embeddings.py must install the stub before importing sentence-transformers:
+        it runs in the main process (not a stubbed worker), so otherwise transformers
+        -> torchao crashes on Windows ROCm and the embedder drops to llama-server."""
+        source = _EMBEDDINGS_PATH.read_text(encoding = "utf-8")
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_torchao_stub_uses_stub_type_meta(self):
@@ -3375,7 +3386,7 @@ class TestLlamaCppRuntimeWslOrdering:
 
     def test_prepends_before_binary_dir(self):
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
-        idx_helper = source.find("for _wsl_rocm in _wsl_system_rocm_lib_dirs()")
+        idx_helper = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert idx_helper != -1 and idx_binary != -1
         assert idx_helper < idx_binary

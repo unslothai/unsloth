@@ -423,6 +423,46 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
     assert out == "before  after"
 
 
+def test_tool_healing_strip_handles_gemma_native_tool_call():
+    from core.tool_healing import strip_tool_call_markup
+    out = strip_tool_call_markup(
+        'before <|tool_call>call:mcp__srv__list-issues{repo:"octocat/hello"}<tool_call|> after'
+    )
+    assert out == "before  after"
+
+
+def test_tool_healing_strip_handles_gemma_close_only_marker():
+    from core.tool_healing import strip_tool_call_markup
+    assert strip_tool_call_markup("before <tool_call|> after") == "before  after"
+    assert strip_tool_call_markup("before <tool_call|> after", final = True) == "before  after"
+
+
+def test_tool_healing_parser_handles_gemma_native_windows_path():
+    from core.tool_healing import parse_tool_calls_from_text
+    import json as _json
+
+    calls = parse_tool_calls_from_text(
+        r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+    )
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "ls"
+    assert _json.loads(calls[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+
+
+def test_tool_healing_json_parser_preserves_literal_gemma_quote_token():
+    from core.tool_healing import parse_tool_calls_from_text
+    import json as _json
+
+    text = (
+        "<tool_call>"
+        + _json.dumps({"name": "python", "arguments": {"code": "print('<|\"|>')"}})
+        + "</tool_call>"
+    )
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+    assert len(calls) == 1
+    assert _json.loads(calls[0]["function"]["arguments"]) == {"code": "print('<|\"|>')"}
+
+
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):
     """A tool call not in the per-request list must be refused by the GGUF
     agentic loop (mirroring the safetensors path)."""

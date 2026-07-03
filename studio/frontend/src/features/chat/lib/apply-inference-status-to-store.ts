@@ -175,6 +175,9 @@ export function applyActiveModelStatusToStore(
     status.chat_template === undefined
       ? prevState.defaultChatTemplate
       : status.chat_template;
+  // While a load is in flight, performLoad owns the load params. Seeding them
+  // from a stale poll here would clobber the values the load dialog just set.
+  const seedLoadParams = !prevState.modelLoading;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -199,22 +202,26 @@ export function applyActiveModelStatusToStore(
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
-    ...(prevState.loadedSpeculativeType === null && {
-      speculativeType: currentSpecType,
-      loadedSpeculativeType: currentSpecType,
-    }),
-    ...(status.spec_draft_n_max !== undefined &&
+    ...(seedLoadParams &&
+      prevState.loadedSpeculativeType === null && {
+        speculativeType: currentSpecType,
+        loadedSpeculativeType: currentSpecType,
+      }),
+    ...(seedLoadParams &&
+      status.spec_draft_n_max !== undefined &&
       prevState.loadedSpecDraftNMax === null &&
       prevState.specDraftNMax === null && {
         specDraftNMax: status.spec_draft_n_max ?? null,
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
-    ...(status.cache_type_kv !== undefined &&
+    ...(seedLoadParams &&
+      status.cache_type_kv !== undefined &&
       prevState.loadedKvCacheDtype === null && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
-    ...(status.tensor_parallel !== undefined &&
+    ...(seedLoadParams &&
+      status.tensor_parallel !== undefined &&
       prevState.loadedTensorParallel === null && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
