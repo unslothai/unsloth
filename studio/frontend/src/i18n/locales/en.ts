@@ -41,6 +41,7 @@ export const en = {
       recipes: "Recipes",
       export: "Export",
       recents: "Recents",
+      noChatsYet: "No chats yet",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",
