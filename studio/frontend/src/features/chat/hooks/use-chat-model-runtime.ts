@@ -350,6 +350,7 @@ export function useChatModelRuntime() {
           loadedIsDiffusion: false,
         });
       }
+      useChatRuntimeStore.getState().setModelRuntimeHydrated(true);
     } catch (error) {
       if (signal?.aborted) return;
       const message =
@@ -358,10 +359,6 @@ export function useChatModelRuntime() {
       toast.error("Failed to refresh models", {
         description: message,
       });
-    } finally {
-      if (!signal?.aborted) {
-        useChatRuntimeStore.getState().setModelRuntimeHydrated(true);
-      }
     }
   }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
 

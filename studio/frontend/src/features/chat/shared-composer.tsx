@@ -1049,10 +1049,7 @@ export function SharedComposer({
             previousCheckpoint &&
             (previousCheckpoint !== sel.id || previousVariant !== nextGgufVariant)
           ) {
-            await unloadModel(
-              { model_path: previousCheckpoint },
-              { signal: compareSignal },
-            );
+            await unloadModel({ model_path: previousCheckpoint });
             previousWasUnloaded = true;
             throwIfCompareCancelled();
           }
