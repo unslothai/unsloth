@@ -13,18 +13,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
-import { isTauri } from "@/lib/api-base";
-import { openModelsDir } from "@/features/native-intents";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { toast } from "@/lib/toast";
-import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
+import { openModelsDir } from "@/features/native-intents";
+import { emitTrainingRunsChanged } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
@@ -34,6 +34,20 @@ import {
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
+import { type ModelsFolder, loadModelsFolder } from "../api/models-folder";
+import {
+  type PreviewSharingSettings,
+  loadPreviewSharing,
+  rotatePreviewLinks,
+  updatePreviewSharing,
+} from "../api/preview-sharing";
+import {
+  type EmbeddingModelSettings,
+  EmbeddingModelVerificationError,
+  loadEmbeddingModelSettings,
+  resetEmbeddingModelSettings,
+  updateEmbeddingModelSettings,
+} from "../api/embedding-model";
 import {
   DEFAULT_UPLOAD_LIMIT_MB,
   type UploadLimitSettings,
@@ -41,6 +55,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -73,6 +88,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_load_on_selection",
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
+  "unsloth_models_fit_on_device_only",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -88,6 +104,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_monitor_overlay",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
@@ -146,7 +163,25 @@ export function GeneralTab() {
     null,
   );
   const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
+  const [previewSharing, setPreviewSharing] =
+    useState<PreviewSharingSettings | null>(null);
+  const [previewSharingError, setPreviewSharingError] = useState<string | null>(
+    null,
+  );
+  const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
+  const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
+  const [isRevokingPreview, setIsRevokingPreview] = useState(false);
   const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
+  const [embeddingModel, setEmbeddingModel] =
+    useState<EmbeddingModelSettings | null>(null);
+  const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
+  const [embeddingModelError, setEmbeddingModelError] = useState<string | null>(
+    null,
+  );
+  // Set after a 409 (unverifiable model); offers "Save anyway".
+  const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
+    useState(false);
+  const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -222,6 +257,48 @@ export function GeneralTab() {
 
   useEffect(() => {
     let cancelled = false;
+    void loadPreviewSharing()
+      .then((settings) => {
+        if (cancelled) return;
+        setPreviewSharing(settings);
+        setPreviewSharingError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPreviewSharingError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.previewSharing.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadEmbeddingModelSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setEmbeddingModel(settings);
+        setDraftEmbeddingModel(settings.embeddingModel);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setEmbeddingModelError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.rag.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
     void loadModelsFolder()
       .then((folder) => {
         if (cancelled) return;
@@ -271,6 +348,96 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingHelperPrecache(false);
+    }
+  };
+
+  const savePreviewSharing = async (enabled: boolean) => {
+    setIsSavingPreviewSharing(true);
+    setPreviewSharingError(null);
+    try {
+      const settings = await updatePreviewSharing(enabled);
+      setPreviewSharing(settings);
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
+      // refresh the history grid (hide/show the Copy preview link buttons).
+      emitTrainingRunsChanged();
+    } catch (error) {
+      setPreviewSharingError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.previewSharing.saveError"),
+      );
+    } finally {
+      setIsSavingPreviewSharing(false);
+    }
+  };
+
+  const revokePreviewLinks = async () => {
+    setIsRevokingPreview(true);
+    try {
+      await rotatePreviewLinks();
+      // The secret rotated, so any preview_sig the history grid still holds is
+      // now stale. Refresh so copied links use freshly minted signatures.
+      emitTrainingRunsChanged();
+      setRevokePreviewOpen(false);
+      toast.success(t("settings.general.previewSharing.revoked"));
+    } catch (error) {
+      toast.error(t("settings.general.previewSharing.revokeError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsRevokingPreview(false);
+    }
+  };
+
+  const saveEmbeddingModel = async (force: boolean) => {
+    const trimmed = draftEmbeddingModel.trim();
+    if (!trimmed) {
+      setEmbeddingModelError(t("settings.general.rag.emptyError"));
+      return;
+    }
+    setIsSavingEmbeddingModel(true);
+    setEmbeddingModelError(null);
+    try {
+      const settings = await updateEmbeddingModelSettings(trimmed, {
+        hfToken: hfToken || undefined,
+        force,
+      });
+      setEmbeddingModel(settings);
+      setDraftEmbeddingModel(settings.embeddingModel);
+      setEmbeddingModelNeedsForce(false);
+      toast.success(t("settings.general.rag.saved"), {
+        description: t("settings.general.rag.reindexWarning"),
+      });
+    } catch (error) {
+      if (error instanceof EmbeddingModelVerificationError) {
+        setEmbeddingModelNeedsForce(true);
+      }
+      setEmbeddingModelError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.rag.saveError"),
+      );
+    } finally {
+      setIsSavingEmbeddingModel(false);
+    }
+  };
+
+  const resetEmbeddingModel = async () => {
+    setIsSavingEmbeddingModel(true);
+    setEmbeddingModelError(null);
+    setEmbeddingModelNeedsForce(false);
+    try {
+      const settings = await resetEmbeddingModelSettings();
+      setEmbeddingModel(settings);
+      setDraftEmbeddingModel(settings.embeddingModel);
+    } catch (error) {
+      setEmbeddingModelError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.rag.saveError"),
+      );
+    } finally {
+      setIsSavingEmbeddingModel(false);
     }
   };
 
@@ -424,32 +591,109 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+      <SettingsSection
+        title={t("settings.general.previewSharing.sectionTitle")}
+      >
         <SettingsRow
-          label={t("settings.general.helperLlm.preloadOnStartup")}
-          description={t(
-            "settings.general.helperLlm.preloadOnStartupDescription",
-          )}
+          label={t("settings.general.previewSharing.enableLabel")}
+          description={t("settings.general.previewSharing.enableDescription")}
         >
           <div className="flex flex-col items-end gap-1">
             <Switch
-              checked={helperPrecache?.enabled ?? false}
-              disabled={
-                !helperPrecache ||
-                isSavingHelperPrecache ||
-                helperPrecache.disabledByEnv
-              }
-              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+              checked={previewSharing?.enabled ?? false}
+              disabled={!previewSharing || isSavingPreviewSharing}
+              onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
             />
-            {helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
-                {t("settings.general.helperLlm.disabledByEnv")}
-              </span>
-            ) : helperPrecacheError ? (
+            {previewSharingError ? (
               <span className="max-w-[260px] text-right text-xs text-destructive">
-                {helperPrecacheError}
+                {previewSharingError}
               </span>
             ) : null}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          destructive={true}
+          label={t("settings.general.previewSharing.revokeLabel")}
+          description={t("settings.general.previewSharing.revokeDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRevokePreviewOpen(true)}
+            className="text-destructive hover:text-destructive hover:border-destructive/60"
+          >
+            {t("settings.general.previewSharing.revokeAction")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.rag.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.rag.embeddingModel")}
+          description={t("settings.general.rag.embeddingModelDescription", {
+            defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
+          })}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <EmbeddingModelCombobox
+                value={draftEmbeddingModel}
+                onChange={(next) => {
+                  setDraftEmbeddingModel(next);
+                  setEmbeddingModelNeedsForce(false);
+                  setEmbeddingModelError(null);
+                }}
+                accessToken={hfToken || undefined}
+                disabled={!embeddingModel}
+                placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
+                ariaLabel={t("settings.general.rag.embeddingModel")}
+                className="w-[220px]"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  !embeddingModel ||
+                  isSavingEmbeddingModel ||
+                  draftEmbeddingModel.trim() === embeddingModel.embeddingModel
+                }
+                onClick={() => void saveEmbeddingModel(false)}
+              >
+                {isSavingEmbeddingModel
+                  ? t("common.saving")
+                  : t("common.save")}
+              </Button>
+            </div>
+            {embeddingModelError ? (
+              <span className="max-w-[300px] text-right text-xs text-destructive">
+                {embeddingModelError}
+              </span>
+            ) : null}
+            <div className="flex items-center gap-2">
+              {embeddingModelNeedsForce ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isSavingEmbeddingModel}
+                  onClick={() => void saveEmbeddingModel(true)}
+                >
+                  {t("settings.general.rag.saveAnyway")}
+                </Button>
+              ) : null}
+              {embeddingModel?.isCustom ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={isSavingEmbeddingModel}
+                  onClick={() => void resetEmbeddingModel()}
+                >
+                  {t("settings.general.rag.resetAction")}
+                </Button>
+              ) : null}
+            </div>
+            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
+              {t("settings.general.rag.reindexWarning")}
+            </span>
           </div>
         </SettingsRow>
       </SettingsSection>
@@ -519,6 +763,36 @@ export function GeneralTab() {
         </SettingsSection>
       )}
 
+      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.helperLlm.preloadOnStartup")}
+          description={t(
+            "settings.general.helperLlm.preloadOnStartupDescription",
+          )}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={helperPrecache?.enabled ?? false}
+              disabled={
+                !helperPrecache ||
+                isSavingHelperPrecache ||
+                helperPrecache.disabledByEnv
+              }
+              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+            />
+            {helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                {t("settings.general.helperLlm.disabledByEnv")}
+              </span>
+            ) : helperPrecacheError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {helperPrecacheError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
@@ -557,6 +831,36 @@ export function GeneralTab() {
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {t("settings.general.resetPreferences.confirmAction")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={revokePreviewOpen} onOpenChange={setRevokePreviewOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("settings.general.previewSharing.revokeConfirmTitle")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.general.previewSharing.revokeConfirmDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRevokePreviewOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() => void revokePreviewLinks()}
+              disabled={isRevokingPreview}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+            >
+              {isRevokingPreview
+                ? t("settings.general.previewSharing.revoking")
+                : t("settings.general.previewSharing.revokeConfirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>

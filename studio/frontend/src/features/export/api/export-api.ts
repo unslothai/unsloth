@@ -162,6 +162,8 @@ export async function exportGGUF(params: {
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
+  imatrix?: boolean;
+  imatrix_path?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -425,5 +427,12 @@ export async function streamExportLogs(options: {
   } catch (err) {
     if (isAbortError(err)) return;
     throw err;
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
+    }
   }
 }
