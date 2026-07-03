@@ -1405,10 +1405,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
                     )
                     _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                    # read the known-unsafe length here so we can skip the packed forward entirely
+                    # (running it then falling back wastes a full pass and can OOM at large T)
+                    _pk_unsafe = getattr(
+                        unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
+                    )
                     if (
                         _pk_T >= 2
                         and len(_pk_nz_cpu) > 0
                         and _pk_sw_ok
+                        and not (_pk_unsafe is not None and _pk_T >= _pk_unsafe)
                         and (_pk_ok is True or _pk_active >= 2)
                     ):
                         # reset 0-based position_ids per segment
@@ -1464,9 +1470,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_vS = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
                         )
-                        _pk_unsafe = getattr(
-                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
-                        )
                         _pk_force_verify = (
                             os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
                         )
@@ -1477,8 +1480,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             and _pk_maxseg <= _pk_vS
                         ):
                             _pk_use = True  # already verified for this shape
-                        elif _pk_unsafe is not None and _pk_T >= _pk_unsafe:
-                            _pk_use = False  # known-unsafe length region
                         else:
                             # verify against the per-row clean forward (exact ground truth)
                             _pk_ref = torch.zeros_like(_pk_result)
@@ -1529,12 +1530,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             # floor ~0.25 through different kernels; cross-sample contamination is >= 2.4
                             if _pk_diff < 7e-1:
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
-                                unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
-                                    _pk_vT, _pk_T
-                                )
-                                unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
-                                    _pk_vS, _pk_maxseg
-                                )
+                                # only widen the trusted shape when >= 2 completion rows actually
+                                # exercised cross-sample packing; a < 2 row pass proves nothing, so
+                                # keep re-verifying larger shapes until a real multi-row batch clears
+                                if _pk_active >= 2:
+                                    unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
+                                        _pk_vT, _pk_T
+                                    )
+                                    unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
+                                        _pk_vS, _pk_maxseg
+                                    )
                                 _pk_ok = True
                                 _pk_use = True
                             else:
@@ -1571,6 +1576,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if _pk_use and _pk_result is not None:
                 logprobs = _pk_result  # verified -> skip the loop
                 zipped_inputs = []
+            else:
+                # fell back to the padded loop: drop the packed intermediates first so the loop does
+                # not run with the full flattened hidden state / reference buffer still resident
+                _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
 
             with _get_inference_mode_context_manager(model):
                 for (
