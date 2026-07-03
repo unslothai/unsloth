@@ -1119,6 +1119,8 @@ from core.inference.passthrough_healing import (
     StreamToolCallHealer,
     heal_gate,
     heal_openai_message,
+
+    heal_openai_message_events,
     nudge_enabled,
     nudge_messages,
     nudge_should_retry,
@@ -10451,45 +10453,64 @@ async def _anthropic_passthrough_non_streaming(
     message = choice.get("message") or {}
     finish_reason = choice.get("finish_reason")
 
-    # Promote text-form tool calls (declared client tools only) into structured
-    # tool_calls BEFORE block building, so the tool_use loop and the stop_reason
-    # line below treat them exactly like native calls.
     healing_active = bool(_allowed_tools)
-    if healing_active:
-        heal_openai_message(message, _allowed_tools, openai_tools)
+    healed_events = (
+        heal_openai_message_events(message, _allowed_tools, openai_tools) if healing_active else None
+    )
 
     content_blocks = []
-    text = message.get("content") or ""
-    if text:
-        # Healing span-trims only the promoted declared calls and leaves every
-        # unpromoted byte (undeclared or malformed text-form calls included) in
-        # place to relay as text -- the OpenAI passthrough relays those bytes
-        # verbatim too, and silently emptying the message recreates the dead
-        # turn this path exists to fix. The blanket legacy strip therefore only
-        # runs when healing is off (no declared tools, or opted out).
-        if not healing_active:
-            text = _TOOL_XML_RE.sub("", text)
-        text = text.strip()
-        if text:
-            content_blocks.append(AnthropicResponseTextBlock(text = text))
-
-    tool_calls = message.get("tool_calls") or []
-    # disable_parallel_tool_use: keep only the first tool_use block.
-    if disable_parallel_tool_use and len(tool_calls) > 1:
-        tool_calls = tool_calls[:1]
-    for tc in tool_calls:
-        fn = tc.get("function") or {}
-        try:
-            args = json.loads(fn.get("arguments", "{}"))
-        except json.JSONDecodeError:
-            args = {}
-        content_blocks.append(
-            AnthropicResponseToolUseBlock(
-                id = anthropic_tool_use_id(tc.get("id")),
-                name = fn.get("name", ""),
-                input = args,
+    tool_calls = []
+    if healed_events:
+        emitted_tool_uses = 0
+        for kind, value in healed_events:
+            if kind == "text":
+                text = str(value).strip()
+                if text:
+                    content_blocks.append(AnthropicResponseTextBlock(text = text))
+                continue
+            if disable_parallel_tool_use and emitted_tool_uses >= 1:
+                continue
+            fn = value.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(value)
+            emitted_tool_uses += 1
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = anthropic_tool_use_id(value.get("id")),
+                    name = fn.get("name", ""),
+                    input = args,
+                )
             )
-        )
+    else:
+        text = message.get("content") or ""
+        if text:
+            # Keep unpromoted bytes when healing is active; legacy stripping is
+            # only for opted-out or no-client-tool requests.
+            if not healing_active:
+                text = _TOOL_XML_RE.sub("", text)
+            text = text.strip()
+            if text:
+                content_blocks.append(AnthropicResponseTextBlock(text = text))
+
+        tool_calls = message.get("tool_calls") or []
+        if disable_parallel_tool_use and len(tool_calls) > 1:
+            tool_calls = tool_calls[:1]
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = anthropic_tool_use_id(tc.get("id")),
+                    name = fn.get("name", ""),
+                    input = args,
+                )
+            )
 
     stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
 
@@ -11052,10 +11073,12 @@ async def _openai_passthrough_stream(
                     # Nothing held or promoted: the healer passed the chunk
                     # through whole, so keep the verbatim upstream bytes.
                     return [raw_line]
-                lines = _healer_sse_lines(events)
-                # The healer re-emits (or withholds) the text, so drop it from the
-                # relayed chunk; keep the chunk only if it still carries anything.
                 del delta["content"]
+                prefix_lines = []
+                if delta:
+                    prefix_lines.append("data: " + json.dumps(chunk_data, ensure_ascii = False))
+                    delta.clear()
+                lines = prefix_lines + _healer_sse_lines(events)
                 if delta or finish or chunk_data.get("usage"):
                     if healer.healed and finish == "stop":
                         choice["finish_reason"] = "tool_calls"

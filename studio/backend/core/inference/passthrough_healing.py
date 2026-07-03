@@ -190,6 +190,41 @@ def _remove_spans(text: str, spans: list) -> str:
     return "".join(pieces)
 
 
+
+def heal_openai_message_events(
+    msg: dict,
+    allowed_tools: set,
+    tools: Optional[list] = None,
+) -> Optional[list]:
+    if not isinstance(msg, dict) or msg.get("tool_calls"):
+        return None
+    content = msg.get("content")
+    if not isinstance(content, str) or not has_tool_signal(content):
+        return None
+    parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
+    events: list = []
+    pos = 0
+    call_count = 0
+    for call, (start, end) in zip(parsed, spans):
+        promoted = _promote(
+            [call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas
+        )
+        if promoted:
+            if content[pos:start]:
+                events.append(("text", content[pos:start]))
+            events.append(("tool_call", promoted[0]))
+            call_count += 1
+        else:
+            events.append(("text", content[pos:end]))
+        pos = end
+    if not call_count:
+        return None
+    if content[pos:]:
+        events.append(("text", content[pos:]))
+    return events
+
+
 def heal_openai_message(
     msg: dict,
     allowed_tools: set,
@@ -203,28 +238,14 @@ def heal_openai_message(
     calls' markup spans are removed from the content; undeclared calls and
     anything the parser did not consume stay in the text byte-intact.
     """
-    if not isinstance(msg, dict) or msg.get("tool_calls"):
+    events = heal_openai_message_events(msg, allowed_tools, tools)
+    if not events:
         return False
-    content = msg.get("content")
-    if not isinstance(content, str) or not has_tool_signal(content):
-        return False
-    # allow_incomplete: the response is final, so a trailing unclosed block is a
-    # model failure worth repairing (same as the enable-tools loop at drain).
-    parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
-    tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
-
-    calls = []
-    promoted_spans = []
-    for call, span in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = len(calls), tool_schemas = tool_schemas)
-        if promoted:
-            calls.append(promoted[0])
-            promoted_spans.append(span)
-    if not calls:
-        return False
+    calls = [value for kind, value in events if kind == "tool_call"]
+    content = "".join(value for kind, value in events if kind == "text").strip()
     msg["tool_calls"] = calls
     # OpenAI requires content = null on a pure tool-call turn.
-    msg["content"] = _remove_spans(content, promoted_spans).strip() or None
+    msg["content"] = content or None
     return True
 
 
@@ -235,6 +256,23 @@ def _earliest_signal(buffer: str) -> int:
         if index >= 0 and (best < 0 or index < best):
             best = index
     return best
+
+
+
+def _closed_signal_span(buffer: str) -> Optional[tuple[int, int]]:
+    spans = []
+    for open_tag, close_tag in (
+        ("<tool_call>", "</tool_call>"),
+        ("<|tool_call>", "<tool_call|>"),
+        ("<function=", "</function>"),
+    ):
+        start = buffer.find(open_tag)
+        if start < 0:
+            continue
+        end = buffer.find(close_tag, start)
+        if end >= 0:
+            spans.append((start, end + len(close_tag)))
+    return min(spans, key = lambda span: span[0]) if spans else None
 
 
 def _partial_signal_suffix(buffer: str) -> int:
@@ -316,6 +354,13 @@ class StreamToolCallHealer:
                 with_spans = True,
             )
             if not parsed:
+                closed_span = _closed_signal_span(self._buffer)
+                if closed_span:
+                    _start, end = closed_span
+                    events.append(("text", self._buffer[:end]))
+                    self._buffer = self._buffer[end:]
+                    self._holding = False
+                    continue
                 if len(self._buffer) > _MAX_HOLD_CHARS:
                     events.append(("text", self._buffer))
                     self._buffer = ""

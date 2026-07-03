@@ -153,17 +153,13 @@ class TestHealOpenaiMessage:
         assert heal_openai_message(msg, {"Bash"}) is True
         assert len(msg["tool_calls"]) == 2
 
-    def test_mixed_format_suppressed_function_block_not_deleted(self):
-        # parse_tool_calls_from_text only parses <function=...> blocks when no
-        # JSON/Gemma call parsed, so the Read call below is never promoted.
-        # Its markup must then SURVIVE in the content, not be stripped away.
+    def test_mixed_formats_promote_in_document_order(self):
         func_read = "<function=Read><parameter=path>a.txt</parameter></function>"
-        content = f"{XML_BASH} then {func_read}"
+        content = f"{func_read} then {XML_BASH}"
         msg = {"role": "assistant", "content": content}
         assert heal_openai_message(msg, {"Bash", "Read"}) is True
-        (call,) = msg["tool_calls"]
-        assert call["function"]["name"] == "Bash"
-        assert func_read in msg["content"]
+        assert [call["function"]["name"] for call in msg["tool_calls"]] == ["Read", "Bash"]
+        assert msg["content"] == "then"
 
     def test_unparseable_closed_block_not_deleted(self):
         # A closed <tool_call> block whose body never parses is model output,
@@ -198,6 +194,20 @@ class TestStreamHealer:
         events += healer.finalize()
         assert _events_text(events) == ""
         assert len(_events_calls(events)) == 1
+
+    def test_closed_malformed_tool_block_flushes_immediately(self):
+        healer = StreamToolCallHealer({"Bash"})
+        events = healer.feed("<tool_call>not json</tool_call> after")
+        assert _events_text(events) == "<tool_call>not json</tool_call> after"
+        assert not _events_calls(events)
+
+    def test_mixed_formats_stream_in_document_order(self):
+        healer = StreamToolCallHealer({"Bash", "Read"})
+        func_read = "<function=Read><parameter=path>a.txt</parameter></function>"
+        events = healer.feed(f"{func_read} then {XML_BASH}") + healer.finalize()
+        assert [call["function"]["name"] for call in _events_calls(events)] == ["Read", "Bash"]
+        assert _events_text(events).strip() == "then"
+
 
     def test_false_alarm_html_flushes(self):
         healer = StreamToolCallHealer({"Bash"})
@@ -676,6 +686,24 @@ class TestOpenaiNonStreamingRoute:
             assert indexes.get(1) == "call_native"
 
         asyncio.run(_run())
+    def test_role_delta_precedes_healed_stream_content(self, monkeypatch):
+        async def _run():
+            lines = [
+                'data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":'
+                + json.dumps(LOOKUP_XML)
+                + '}}]}',
+                'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+            chunks = await _drive_stream(monkeypatch, _payload(stream = True), lines)
+            payloads = _stream_payloads(chunks)
+            first_delta = payloads[0]["choices"][0]["delta"]
+            assert first_delta == {"role": "assistant"}
+            assert "tool_calls" in payloads[1]["choices"][0]["delta"]
+
+        asyncio.run(_run())
+
+
 
 
 GARBAGE_SIGNAL = "<tool_call>call lookup somehow???"
@@ -800,6 +828,15 @@ class TestNudgeRetryAnthropic:
 
         asyncio.run(_run())
 
+    def test_healed_tool_use_precedes_trailing_text(self, monkeypatch):
+        async def _run():
+            _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} done")])
+            assert [block["type"] for block in data["content"]] == ["tool_use", "text"]
+            assert data["content"][1]["text"] == "done"
+
+        asyncio.run(_run())
+
+
     def test_default_off(self, monkeypatch):
         async def _run():
             client, _ = await self._drive(monkeypatch, [_upstream_message(GARBAGE_SIGNAL)])
@@ -842,13 +879,10 @@ class TestAnthropicPassthroughHealingText:
             # Declared lookup call is promoted into a structured tool_use block.
             (tool_use,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert tool_use["name"] == "lookup"
-            # Undeclared Nuke call was not promoted; its markup must survive in a
-            # text block instead of being deleted by the legacy XML strip.
-            (text_block,) = [b for b in data["content"] if b["type"] == "text"]
-            assert XML_UNDECLARED in text_block["text"]
-            assert "Running now." in text_block["text"] and "done." in text_block["text"]
-            # The promoted lookup markup is gone from the visible text.
-            assert LOOKUP_XML not in text_block["text"]
+            text = " ".join(b["text"] for b in data["content"] if b["type"] == "text")
+            assert XML_UNDECLARED in text
+            assert "Running now." in text and "done." in text
+            assert LOOKUP_XML not in text
 
         asyncio.run(_run())
 
