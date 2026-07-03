@@ -44,7 +44,12 @@ _MISSING = object()
 
 class _Obj:
     """Bare attribute bag; ``_unsloth_gradient_checkpointing`` present only when recorded."""
-    def __init__(self, recorded=_MISSING, gradient_checkpointing=_MISSING):
+
+    def __init__(
+        self,
+        recorded = _MISSING,
+        gradient_checkpointing = _MISSING,
+    ):
         if recorded is not _MISSING:
             self._unsloth_gradient_checkpointing = recorded
         if gradient_checkpointing is not _MISSING:
@@ -52,7 +57,11 @@ class _Obj:
 
 
 class _Self:
-    def __init__(self, model=None, args=None):
+    def __init__(
+        self,
+        model = None,
+        args = None,
+    ):
         if model is not None:
             self.model = model
         self.args = args
@@ -65,19 +74,21 @@ class _Self:
 _MATRIX = [
     ("unsloth", False, "unsloth"),  # the #4735 case: args=False must NOT win
     (True, False, True),
-    (False, True, False),           # user turned GC off; args=True must NOT re-enable it
-    (None, True, None),             # explicit None is restored, not treated as "unrecorded"
-    (_MISSING, True, True),         # nothing recorded -> fall back to args
+    (False, True, False),  # user turned GC off; args=True must NOT re-enable it
+    (None, True, None),  # explicit None is restored, not treated as "unrecorded"
+    (_MISSING, True, True),  # nothing recorded -> fall back to args
     (_MISSING, False, False),
 ]
 
 
 def _eval_ternary(expr, recorded, args_gc):
     """Eval a restore expression that references either ``model``/``args`` or ``self.model``/``self.args``."""
-    model = _Obj(recorded=recorded)
-    args = _Obj(gradient_checkpointing=args_gc)
-    self = _Self(model=model, args=args)
-    return eval(expr, {"hasattr": hasattr, "getattr": getattr}, {"model": model, "args": args, "self": self})
+    model = _Obj(recorded = recorded)
+    args = _Obj(gradient_checkpointing = args_gc)
+    self = _Self(model = model, args = args)
+    return eval(
+        expr, {"hasattr": hasattr, "getattr": getattr}, {"model": model, "args": args, "self": self}
+    )
 
 
 def test_ternary_restore_semantics():
@@ -88,9 +99,9 @@ def test_ternary_restore_semantics():
     for expr in exprs:
         for recorded, args_gc, expected in _MATRIX:
             got = _eval_ternary(expr, recorded, args_gc)
-            assert got == expected and type(got) is type(expected), (
-                f"{expr!r}: recorded={recorded!r} args={args_gc!r} -> {got!r}, expected {expected!r}"
-            )
+            assert got == expected and type(got) is type(
+                expected
+            ), f"{expr!r}: recorded={recorded!r} args={args_gc!r} -> {got!r}, expected {expected!r}"
 
 
 def _extract_prepare_restore_block():
@@ -101,14 +112,17 @@ def _extract_prepare_restore_block():
     ``else:``/``use_gc = ...`` pair.
     """
     lines = _RL.splitlines()
-    start = next(i for i, l in enumerate(lines) if l.strip() == "_model = getattr(self, 'model', None)")
+    start = next(
+        i for i, l in enumerate(lines) if l.strip() == "_model = getattr(self, 'model', None)"
+    )
     # End at the fallback assignment rather than a fixed line count, so inserting
     # lines into the block can't silently truncate what gets exec'd.
     end = next(
-        i for i, l in enumerate(lines)
+        i
+        for i, l in enumerate(lines)
         if i > start and "use_gc = getattr(self.args, 'gradient_checkpointing', True)" in l
     )
-    block = lines[start:end + 1]
+    block = lines[start : end + 1]
     # dedent to column 0 so it execs as a top-level block
     indent = len(block[0]) - len(block[0].lstrip())
     return "\n".join(l[indent:] for l in block)
@@ -120,14 +134,14 @@ def test_prepare_for_training_mode_block_semantics():
     ast.parse(block)
 
     for recorded, args_gc, expected in _MATRIX:
-        model = _Obj(recorded=recorded)
-        args = _Obj(gradient_checkpointing=args_gc)
-        ns = {"self": _Self(model=model, args=args), "hasattr": hasattr, "getattr": getattr}
+        model = _Obj(recorded = recorded)
+        args = _Obj(gradient_checkpointing = args_gc)
+        ns = {"self": _Self(model = model, args = args), "hasattr": hasattr, "getattr": getattr}
         exec(block, {}, ns)
         got = ns["use_gc"]
-        assert got == expected and type(got) is type(expected), (
-            f"prepare block: recorded={recorded!r} args={args_gc!r} -> {got!r}, expected {expected!r}"
-        )
+        assert (
+            got == expected and type(got) is type(expected)
+        ), f"prepare block: recorded={recorded!r} args={args_gc!r} -> {got!r}, expected {expected!r}"
 
 
 def test_prepare_block_tolerates_missing_model():
@@ -135,8 +149,8 @@ def test_prepare_block_tolerates_missing_model():
     # getattr(self, 'model', None), so a trainer without a .model attribute must fall
     # back to args rather than raising AttributeError.
     block = _extract_prepare_restore_block()
-    args = _Obj(gradient_checkpointing=True)
-    self_no_model = _Self(model=None, args=args)  # _Self leaves .model unset when model is None
+    args = _Obj(gradient_checkpointing = True)
+    self_no_model = _Self(model = None, args = args)  # _Self leaves .model unset when model is None
     assert not hasattr(self_no_model, "model")
     ns = {"self": self_no_model, "hasattr": hasattr, "getattr": getattr}
     exec(block, {}, ns)
@@ -162,10 +176,10 @@ def test_recording_sites_are_real_module_code():
         )
 
     fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    assert "patch_peft_model" in fns and assigns_marker(fns["patch_peft_model"]), (
-        "patch_peft_model must record _unsloth_gradient_checkpointing so loaded adapters are covered"
-    )
+    assert "patch_peft_model" in fns and assigns_marker(
+        fns["patch_peft_model"]
+    ), "patch_peft_model must record _unsloth_gradient_checkpointing so loaded adapters are covered"
     # The pass-through branch lives in get_peft_model.
-    assert assigns_marker(fns["get_peft_model"]), (
-        "get_peft_model pass-through must record _unsloth_gradient_checkpointing"
-    )
+    assert assigns_marker(
+        fns["get_peft_model"]
+    ), "get_peft_model pass-through must record _unsloth_gradient_checkpointing"
