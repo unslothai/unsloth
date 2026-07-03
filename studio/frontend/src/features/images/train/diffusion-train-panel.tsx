@@ -812,52 +812,29 @@ export function DiffusionTrainPanel({
         </div>
 
         {isDiT ? (
-          <>
-            <div className="grid gap-1.5">
-              <Label className="text-xs">Base precision</Label>
-              <select
-                value={basePrecision}
-                onChange={(e) => {
-                  precisionDirty.current = true;
-                  setBasePrecision(e.target.value as typeof basePrecision);
-                }}
-                className={selectClass}
-                aria-label="Base precision"
-              >
-                {precisionModes.map((m) => (
-                  <option key={m} value={m}>
-                    {precisionLabel(m)}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
-                bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
-                mode.
-              </p>
-            </div>
-            {supportsCompile && (
-              <div className="grid gap-1.5">
-                <Label className="text-xs">Compile transformer</Label>
-                <select
-                  value={compileTransformer}
-                  onChange={(e) =>
-                    setCompileTransformer(e.target.value as typeof compileTransformer)
-                  }
-                  className={selectClass}
-                  aria-label="Compile transformer"
-                >
-                  <option value="auto">Auto</option>
-                  <option value="on">On (faster after warmup)</option>
-                  <option value="off">Off</option>
-                </select>
-                <p className="text-[11px] leading-snug text-muted-foreground">
-                  torch.compile the transformer. Adds a one-time warmup, then speeds up each
-                  step.
-                </p>
-              </div>
-            )}
-          </>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Base precision</Label>
+            <select
+              value={basePrecision}
+              onChange={(e) => {
+                precisionDirty.current = true;
+                setBasePrecision(e.target.value as typeof basePrecision);
+              }}
+              className={selectClass}
+              aria-label="Base precision"
+            >
+              {precisionModes.map((m) => (
+                <option key={m} value={m}>
+                  {precisionLabel(m)}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
+              bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
+              mode.
+            </p>
+          </div>
         ) : (
           <div className="grid gap-1.5">
             <Label className="text-xs">Precision</Label>
@@ -873,6 +850,27 @@ export function DiffusionTrainPanel({
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
               Mixed-precision autocast for the U-Net. bf16 suits modern GPUs.
+            </p>
+          </div>
+        )}
+        {supportsCompile && (
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Compile transformer</Label>
+            <select
+              value={compileTransformer}
+              onChange={(e) =>
+                setCompileTransformer(e.target.value as typeof compileTransformer)
+              }
+              className={selectClass}
+              aria-label="Compile transformer"
+            >
+              <option value="auto">Auto</option>
+              <option value="on">On (faster after warmup)</option>
+              <option value="off">Off</option>
+            </select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              torch.compile the transformer blocks. Adds a one-time warmup, then speeds up
+              each step.
             </p>
           </div>
         )}
