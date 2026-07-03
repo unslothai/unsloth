@@ -60,6 +60,10 @@ _INT8_EXCLUDE_NAME_TOKENS = (
     "guidance_embed",
     "time_text_embed",  # Flux/Qwen time_text_embed.* (pooled-text + timestep); NOT context_embedder
     "pooled",
+    # Krea 2's Krea2TimestepEmbedding ("time_embed.linear_2", 6144->6144 at M = batch);
+    # its other M=1 projection ("time_mod_proj") is already caught by "_mod", and
+    # img_in / final_layer.linear / text_fusion.projector fall under min_features.
+    "time_embed",
 )
 
 

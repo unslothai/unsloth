@@ -159,7 +159,7 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
         return run_diffusion_lora_training
-    if key in ("flux.1", "qwen-image", "z-image"):
+    if key in ("flux.1", "qwen-image", "z-image", "krea-2"):
         from core.training.diffusion_dit_trainer import run_dit_lora_training
         return run_dit_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
@@ -173,6 +173,9 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
     "qwen-image": {"lora_rank": 16, "learning_rate": 5e-5, "resolution": 512},
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
+    # The Krea 2 authors' recommended starting point (their DreamBooth script defaults):
+    # rank/alpha 32, lr 3e-4, 512px.
+    "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
 }
 
 
@@ -188,6 +191,7 @@ _FAMILY_LABELS = {
     "flux.1": "FLUX.1-dev",
     "qwen-image": "Qwen-Image",
     "z-image": "Z-Image",
+    "krea-2": "Krea 2",
 }
 _FAMILY_VRAM_NOTES = {
     "sdxl": "Trains on ~12 GB+ (bf16 LoRA). The lightest, fastest option.",
@@ -197,6 +201,7 @@ _FAMILY_VRAM_NOTES = {
     ),
     "qwen-image": "20B model, QLoRA (nf4) by default (~24 GB+). The heaviest option.",
     "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
+    "krea-2": "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only.",
 }
 
 
@@ -215,7 +220,7 @@ def family_train_infos() -> list[dict[str, Any]]:
         repos = list(fam.train_base_repos) or [fam.base_repo]
         # base_precision / compile apply to the DiT trainer only; SDXL keeps its
         # mixed_precision lever, so the UI hides the selector for it.
-        is_dit = name in ("flux.1", "qwen-image", "z-image")
+        is_dit = name in ("flux.1", "qwen-image", "z-image", "krea-2")
         infos.append(
             {
                 "name": name,

@@ -282,6 +282,25 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
         ),
     ),
+    # Krea 2 (diffusers >= 0.39): a ~12B single-stream flow-matching DiT with a
+    # Qwen3-VL-4B text encoder (12 tapped hidden layers fused in-transformer) and the
+    # Qwen-Image VAE. Loaded per-component through core/inference/diffusion_krea2.py
+    # because the krea repo ships transformers-5.x style configs (see that module).
+    # No GGUF/sd.cpp mapping yet, so the no-GPU route falls back to diffusers.
+    DiffusionFamily(
+        name = "krea-2",
+        pipeline_class = "Krea2Pipeline",
+        transformer_class = "Krea2Transformer2DModel",
+        base_repo = "krea/Krea-2-Turbo",
+        aliases = ("krea2",),
+        # LoRA training via the DiT trainer (no prequant repo yet, so nf4 quantizes the
+        # 12B transformer on the fly under the default precision).
+        trainable = True,
+        train_base_repos = ("krea/Krea-2-Turbo",),
+        # The checkpoint is exported bf16-only (the model card pins bfloat16); fp16 is
+        # unvalidated upstream, so keep the fp16 fallback off like z-image.
+        fp16_incompatible = True,
+    ),
     # SDXL is the one U-Net family here: the denoiser is ``pipe.unet``
     # (UNet2DConditionModel), not a DiT ``pipe.transformer``, and a single-file
     # ``.safetensors`` is the WHOLE pipeline rather than a transformer-only file.

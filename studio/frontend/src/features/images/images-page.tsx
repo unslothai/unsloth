@@ -98,6 +98,8 @@ const editGguf = (id: string, name: string): ModelOption => ({
 type SafetensorsSpec = { kind: "pipeline" | "single_file"; filename?: string };
 const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
   "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
+  // Krea 2 Turbo: official vendor repo (bf16 pipeline), on the backend allowlist.
+  "krea/Krea-2-Turbo": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-FP8": {
     kind: "single_file",
@@ -132,6 +134,7 @@ const MODELS: ModelOption[] = [
     "Z-Image-Turbo (bnb-4bit)",
     "Safetensors · bnb-4bit",
   ),
+  safetensors("krea/Krea-2-Turbo", "Krea 2 Turbo", "Safetensors · bf16"),
   safetensors(
     "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
     "Qwen-Image 2512 (bnb-4bit)",
@@ -208,6 +211,9 @@ const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "z-image-turbo", steps: 9, guidance: 0 },
+  // Krea 2 Turbo is distilled (TDM): 8 steps, no CFG (the base/midtrain checkpoints
+  // would want ~28 steps + CFG 4.5, but only Turbo is curated today).
+  { match: "krea-2", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
   { match: "kontext", steps: 28, guidance: 2.5 },

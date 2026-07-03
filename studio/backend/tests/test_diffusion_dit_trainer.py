@@ -21,15 +21,18 @@ from core.training.diffusion_dit_trainer import (
 from core.training.diffusion_train_common import DiffusionLoraConfig, family_train_infos
 
 
-def test_specs_cover_the_three_dit_families():
-    assert set(_SPECS) == {"flux.1", "qwen-image", "z-image"}
-    # FLUX / Qwen share the added-kv attention target set; Z-Image is single-stream.
+def test_specs_cover_the_dit_families():
+    assert set(_SPECS) == {"flux.1", "qwen-image", "z-image", "krea-2"}
+    # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are
+    # single-stream.
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
     assert "add_q_proj" in _SPECS["qwen-image"].lora_targets
     assert "add_q_proj" not in _SPECS["z-image"].lora_targets
-    # Z-Image and Qwen are bf16-only.
+    assert "add_q_proj" not in _SPECS["krea-2"].lora_targets
+    # Z-Image, Qwen and Krea 2 are bf16-only.
     assert _SPECS["z-image"].force_bf16 is True
     assert _SPECS["qwen-image"].force_bf16 is True
+    assert _SPECS["krea-2"].force_bf16 is True
 
 
 @pytest.mark.parametrize(
