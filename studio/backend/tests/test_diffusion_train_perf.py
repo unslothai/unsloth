@@ -328,3 +328,30 @@ def test_perf_flags_cpu_roundtrip():
     snap = _apply_perf_flags(_cfg(), "cpu")
     assert isinstance(snap, dict)
     _restore_perf_flags(snap)  # no exception
+
+
+def test_perf_flags_tf32_off_clears_flags():
+    # enable_tf32=False is the strict-fp32 A/B mode: it must actively clear the TF32 flags
+    # (cudnn TF32 defaults ON in torch) rather than inherit ambient state, and restore must
+    # put the ambient values back. The flag attributes are plain Python state, present and
+    # settable on CPU-only torch builds, so this runs without a GPU.
+    import torch
+
+    before = (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+        torch.get_float32_matmul_precision(),
+    )
+    snap = _apply_perf_flags(_cfg(enable_tf32 = False), "cuda")
+    try:
+        assert torch.backends.cuda.matmul.allow_tf32 is False
+        assert torch.backends.cudnn.allow_tf32 is False
+        assert torch.get_float32_matmul_precision() == "highest"
+    finally:
+        _restore_perf_flags(snap)
+    after = (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+        torch.get_float32_matmul_precision(),
+    )
+    assert after == before
