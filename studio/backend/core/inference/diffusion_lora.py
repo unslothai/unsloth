@@ -15,6 +15,7 @@ directory / the HF hub before anything is loaded.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -118,6 +119,11 @@ def _scan_local() -> list[LoraCatalogEntry]:
         except OSError:
             size = 0
         entry_id = p.name if stem_counts.get(p.stem, 0) > 1 else p.stem
+        # A ``<stem>.json`` sidecar (written by the diffusion trainer on publish) records the
+        # adapter's family + default weight, so a trained adapter is family-gated in the
+        # picker instead of showing as "unknown" for every model. Best-effort: a missing or
+        # malformed sidecar just leaves the defaults (families = (), weight_default = 1.0).
+        families, weight_default = _read_lora_sidecar(p)
         entries.append(
             LoraCatalogEntry(
                 id = entry_id,
@@ -126,9 +132,36 @@ def _scan_local() -> list[LoraCatalogEntry]:
                 fmt = "gguf" if ext == ".gguf" else "safetensors",
                 local_path = str(p),
                 size_bytes = size,
+                families = families,
+                weight_default = weight_default,
             )
         )
     return entries
+
+
+def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
+    """Read the ``<stem>.json`` metadata sidecar next to a local adapter, returning
+    ``(families, weight_default)``. Returns ``((), 1.0)`` when the sidecar is absent or
+    unreadable, so discovery never fails on a bad file."""
+    sidecar = weight_path.with_suffix(".json")
+    try:
+        data = json.loads(sidecar.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return (), 1.0
+    if not isinstance(data, dict):
+        return (), 1.0
+    raw_family = data.get("family")
+    raw_families = data.get("families")
+    names: list[str] = []
+    if isinstance(raw_families, (list, tuple)):
+        names = [str(f).strip().lower() for f in raw_families if str(f).strip()]
+    elif isinstance(raw_family, str) and raw_family.strip():
+        names = [raw_family.strip().lower()]
+    weight_default = 1.0
+    raw_weight = data.get("weight_default")
+    if isinstance(raw_weight, (int, float)) and raw_weight > 0:
+        weight_default = float(raw_weight)
+    return tuple(names), weight_default
 
 
 def list_loras(*, family: Optional[str] = None) -> list[LoraCatalogEntry]:

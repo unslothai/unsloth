@@ -60,6 +60,7 @@ from models import (
 from models.training import (
     DiffusionDatasetSummary,
     DiffusionDatasetUploadResponse,
+    DiffusionMetricHistory,
     DiffusionTrainingInfoResponse,
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
@@ -1204,7 +1205,15 @@ async def stop_diffusion_training(current_subject: str = Depends(get_current_sub
 async def diffusion_training_status(current_subject: str = Depends(get_current_subject)):
     """Poll the current diffusion training job's status/progress (JSON)."""
     from core.training.diffusion_training_service import get_diffusion_training_service
-    return DiffusionTrainingStatusResponse(**get_diffusion_training_service().status())
+
+    snap = get_diffusion_training_service().status()
+    # Fold the service's flat history arrays into the nested metric_history the UI charts.
+    metric_history = DiffusionMetricHistory(
+        steps = snap.pop("metric_steps", []),
+        loss = snap.pop("metric_loss", []),
+        lr = snap.pop("metric_lr", []),
+    )
+    return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
 
 
 # Extensions accepted into an image-training dataset folder: images the trainer reads,

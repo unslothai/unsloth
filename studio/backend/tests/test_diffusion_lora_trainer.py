@@ -222,3 +222,81 @@ def test_config_accepts_sdxl_and_unknown_base_models():
     ):
         cfg = DiffusionLoraConfig(base_model = ok, data_dir = "d", output_dir = "o").normalized()
         assert cfg.base_model == ok
+
+
+# ── trainer registry + family resolution + metadata sidecar (PR A platform) ──
+def test_get_trainer_resolves_sdxl():
+    from core.training.diffusion_lora_trainer import get_trainer, run_diffusion_lora_training
+    assert get_trainer("sdxl") is run_diffusion_lora_training
+    assert get_trainer("SDXL") is run_diffusion_lora_training  # case-insensitive
+
+
+def test_get_trainer_unknown_family_raises():
+    from core.training.diffusion_lora_trainer import get_trainer
+    with pytest.raises(ValueError, match = "No trainer"):
+        get_trainer("flux.1")  # not registered until the DiT trainers ship
+
+
+def test_normalized_sets_resolved_family():
+    cfg = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert cfg.resolved_family == "sdxl"
+    cfg2 = DiffusionLoraConfig(
+        base_model = "my-custom-thing", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert cfg2.resolved_family == "sdxl"  # unknown -> default SDXL trainer
+
+
+def test_explicit_model_family_validated():
+    from core.training.diffusion_lora_trainer import DiffusionLoraConfig as C
+
+    # A bogus explicit family is rejected up front.
+    with pytest.raises(ValueError, match = "Unknown model_family"):
+        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "not-a-family").normalized()
+    # A known-but-not-yet-trainable family is rejected with the SDXL hint.
+    with pytest.raises(ValueError, match = "SDXL"):
+        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "flux.1").normalized()
+    # SDXL explicit passes.
+    assert (
+        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "sdxl")
+        .normalized()
+        .resolved_family
+        == "sdxl"
+    )
+
+
+def test_publish_writes_metadata_sidecar(tmp_path, monkeypatch):
+    import json as _json
+    from pathlib import Path
+
+    from core.inference import diffusion_lora
+    from core.training.diffusion_lora_trainer import _publish_to_lora_catalog
+
+    loras = tmp_path / "loras"
+    loras.mkdir()
+    monkeypatch.setattr(diffusion_lora, "loras_dir", lambda: loras)
+
+    src = tmp_path / "run" / "pytorch_lora_weights.safetensors"
+    src.parent.mkdir(parents = True)
+    src.write_bytes(b"fake-adapter")
+    cfg = DiffusionLoraConfig(
+        base_model = "stabilityai/sdxl-turbo",
+        data_dir = "d",
+        output_dir = str(tmp_path / "run"),
+        adapter_name = "my.style",
+        instance_prompt = "a photo in sks style",
+        lora_rank = 8,
+    ).normalized()
+
+    dest = _publish_to_lora_catalog(str(src), cfg)
+    assert dest is not None
+    sidecar = Path(dest).with_suffix(".json")
+    assert sidecar.is_file()
+    meta = _json.loads(sidecar.read_text())
+    assert meta["family"] == "sdxl"
+    assert meta["families"] == ["sdxl"]
+    assert meta["base_model"] == "stabilityai/sdxl-turbo"
+    assert meta["lora_rank"] == 8
+    assert meta["trigger_prompt"] == "a photo in sks style"
+    assert meta["source"] == "studio-trained"

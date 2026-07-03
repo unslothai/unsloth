@@ -118,6 +118,14 @@ class DiffusionFamily:
     # leaves sd-cli's defaults (correct for the distilled flux/z-image families).
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
+    # True when Studio can TRAIN a LoRA on this family (a trainer is registered for it in
+    # core.training). Loadable-for-inference is the default; training is opt-in per family
+    # because each architecture needs its own training loop. The diffusion training start
+    # path resolves the base model's family and refuses a non-trainable one up front.
+    trainable: bool = False
+    # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA-friendly
+    # prequant repo, then a bf16 repo). Surfaced by the Train UI as the base-model choices.
+    train_base_repos: tuple[str, ...] = field(default_factory = tuple)
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -286,8 +294,21 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "StableDiffusionXLInpaintPipeline",
         controlnet_pipeline_class = "StableDiffusionXLControlNetPipeline",
         controlnet_model_class = "ControlNetModel",
+        # SDXL is the one family with a shipped LoRA trainer today (the U-Net trainer).
+        # DiT families (flux.1 / qwen-image / z-image) become trainable in a follow-up.
+        trainable = True,
+        train_base_repos = (
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            "stabilityai/sdxl-turbo",
+        ),
     ),
 )
+
+
+def trainable_family_names() -> tuple[str, ...]:
+    """Names of families Studio can train a LoRA on, in registry order."""
+    return tuple(fam.name for fam in _FAMILIES if fam.trainable)
+
 
 # Editing / inpaint checkpoints share an arch keyword but need a different
 # pipeline and an input image, which this text-to-image backend doesn't drive.

@@ -50,6 +50,12 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     )
 
 
+# Cap on retained metric points. When exceeded, the arrays are decimated (every other
+# point dropped) so a long run stays bounded in memory while the live loss chart keeps a
+# faithful shape. 4000 points comfortably covers a typical run at full resolution.
+_METRIC_CAP = 4000
+
+
 def _idle_state() -> dict[str, Any]:
     return {
         "active": False,
@@ -65,9 +71,55 @@ def _idle_state() -> dict[str, Any]:
         "in_model_load": False,
         "output_dir": None,
         "lora_path": None,
+        "catalog_path": None,
+        "family": None,
+        "base_model": None,
+        "samples_per_second": None,
+        "peak_memory_gb": None,
         "started_at": None,
         "updated_at": None,
+        # Bounded, paired history arrays for the live loss chart (see _append_metric).
+        "metric_steps": [],
+        "metric_loss": [],
+        "metric_lr": [],
     }
+
+
+def _append_metric(state: dict[str, Any], step: Any, loss: Any, lr: Any) -> None:
+    """Append one (step, loss, lr) point to the bounded history arrays on ``state``.
+
+    Only records finite, positive-step points (mirrors the LLM trainer, which logs history
+    only for step > 0 with a real loss). When the arrays hit ``_METRIC_CAP`` they are
+    decimated in place (keep every other point) so appends stay bounded without losing the
+    curve's shape. lr may be None (kept as None so the LR series can be sparse)."""
+    try:
+        istep = int(step)
+    except (TypeError, ValueError):
+        return
+    if istep <= 0 or loss is None:
+        return
+    try:
+        floss = float(loss)
+    except (TypeError, ValueError):
+        return
+    if floss != floss:  # NaN guard
+        return
+    flr: Optional[float]
+    try:
+        flr = float(lr) if lr is not None else None
+    except (TypeError, ValueError):
+        flr = None
+    steps = state["metric_steps"]
+    losses = state["metric_loss"]
+    lrs = state["metric_lr"]
+    if len(steps) >= _METRIC_CAP:
+        state["metric_steps"] = steps[::2]
+        state["metric_loss"] = losses[::2]
+        state["metric_lr"] = lrs[::2]
+        steps, losses, lrs = state["metric_steps"], state["metric_loss"], state["metric_lr"]
+    steps.append(istep)
+    losses.append(floss)
+    lrs.append(flr)
 
 
 class DiffusionTrainingService:
@@ -144,6 +196,7 @@ class DiffusionTrainingService:
                 job_id = job_id,
                 status = "running",
                 message = "Starting diffusion LoRA training...",
+                base_model = config.get("base_model") or config.get("model_name"),
                 started_at = now,
                 updated_at = now,
             )
@@ -237,6 +290,14 @@ class DiffusionTrainingService:
                     learning_rate = ev.get("learning_rate", s["learning_rate"]),
                     message = "Training...",
                 )
+                # Fold optional perf fields (emitted by the trainers) so the UI can show
+                # throughput + peak VRAM without a separate channel.
+                if ev.get("samples_per_second") is not None:
+                    s["samples_per_second"] = ev.get("samples_per_second")
+                if ev.get("peak_memory_gb") is not None:
+                    s["peak_memory_gb"] = ev.get("peak_memory_gb")
+                # Retain a bounded (step, loss, lr) history for the live loss chart.
+                _append_metric(s, ev.get("step"), ev.get("loss"), ev.get("learning_rate"))
             elif etype == "complete":
                 # Reset in_model_load: a stop during model load emits complete without a
                 # preceding model_load_completed, which would otherwise leave a stale
@@ -251,6 +312,12 @@ class DiffusionTrainingService:
                     if ev.get("stopped")
                     else "Training complete.",
                 )
+                if ev.get("catalog_path") is not None:
+                    s["catalog_path"] = ev.get("catalog_path")
+                if ev.get("family") is not None:
+                    s["family"] = ev.get("family")
+                if ev.get("base_model") is not None:
+                    s["base_model"] = ev.get("base_model")
             elif etype == "error":
                 # Reset in_model_load too: an error raised during model loading has no
                 # model_load_completed, so the terminal state must clear it explicitly.

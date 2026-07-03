@@ -373,3 +373,39 @@ def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
     with pytest.raises(ValueError, match = "GGUF LoRA"):
         _backend()._apply_loras(_fake_state(pipe), [("styleA", 1.0)], threading.Event())
     assert pipe.loaded == []  # never touched the pipe
+
+
+def test_scan_local_reads_family_sidecar(tmp_path, monkeypatch):
+    import json
+
+    d = tmp_path / "loras"
+    d.mkdir()
+    (d / "trained.safetensors").write_bytes(b"x")
+    (d / "trained.json").write_text(
+        json.dumps({"family": "sdxl", "base_model": "b", "weight_default": 0.8})
+    )
+    (d / "plain.safetensors").write_bytes(b"y")  # no sidecar -> unknown family
+    monkeypatch.setattr(dl, "loras_dir", lambda: d)
+
+    by_id = {e.id: e for e in dl.list_loras()}
+    assert by_id["trained"].families == ("sdxl",)
+    assert by_id["trained"].weight_default == 0.8
+    assert by_id["plain"].families == ()
+    assert by_id["plain"].weight_default == 1.0
+
+    # Family filter: the sdxl-tagged adapter is kept for sdxl and hidden for flux.1;
+    # the untagged one is always shown (unknown compatibility).
+    sdxl_ids = {e.id for e in dl.list_loras(family = "sdxl")}
+    flux_ids = {e.id for e in dl.list_loras(family = "flux.1")}
+    assert "trained" in sdxl_ids and "plain" in sdxl_ids
+    assert "trained" not in flux_ids and "plain" in flux_ids
+
+
+def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
+    d = tmp_path / "loras"
+    d.mkdir()
+    (d / "a.safetensors").write_bytes(b"x")
+    (d / "a.json").write_text("{ not valid json")
+    monkeypatch.setattr(dl, "loras_dir", lambda: d)
+    entry = next(e for e in dl.list_loras() if e.id == "a")
+    assert entry.families == () and entry.weight_default == 1.0
