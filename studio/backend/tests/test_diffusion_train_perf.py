@@ -194,8 +194,11 @@ def test_should_compile_policy():
     assert _should_compile(_cfg(compile_transformer = "on"), False, "cuda") is True
     # auto stays off over a bitsandbytes base (graph breaks in the dequant path).
     assert _should_compile(_cfg(compile_transformer = "auto"), True, "cuda") is False
-    # auto turns on for a dense (non-bnb) base on cuda.
-    assert _should_compile(_cfg(compile_transformer = "auto"), False, "cuda") is True
+    # auto turns on for the dense bf16 base precision on cuda.
+    assert (
+        _should_compile(_cfg(compile_transformer = "auto"), False, "cuda", base_precision = "bf16")
+        is True
+    )
     # Any mode is a no-op on cpu.
     for mode in ("off", "on", "auto"):
         assert _should_compile(_cfg(compile_transformer = mode), False, "cpu") is False

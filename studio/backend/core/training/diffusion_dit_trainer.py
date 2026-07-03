@@ -47,6 +47,7 @@ from core.training.diffusion_train_common import (
     _publish_to_lora_catalog,
     _restore_perf_flags,
     discover_image_caption_pairs,
+    repo_is_prequantized,
 )
 
 # Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks
@@ -74,6 +75,9 @@ class _FamilySpec:
     lora_targets: tuple[str, ...]
     # bf16 only (Z-Image overflows fp16 and its RoPE/embedder run in fp32).
     force_bf16: bool
+    # Approximate dense-bf16 transformer weight size, used by base_precision="auto" to
+    # decide which mode fits the free VRAM (with headroom for activations + optimizer).
+    dense_bf16_gb: float
     # Phased load, so the (multi-GB) transformer never has to coexist with the text
     # encoders + VAE: ``load_conditioners`` builds the pipeline WITHOUT its transformer
     # (encode_prompt + VAE only) and returns (pipe, vae); ``load_transformer`` loads the
@@ -155,12 +159,9 @@ def _bnb_4bit_config():
     )
 
 
-def _repo_is_prequantized(base_model: str) -> bool:
-    """Heuristic: a repo whose name marks a bitsandbytes 4-bit build already ships a
-    quantized transformer, so we load it as-is rather than re-quantizing on the fly. A
-    dense (bf16) base instead gets on-the-fly nf4 quantization for QLoRA."""
-    name = str(base_model or "").lower()
-    return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
+# Kept as a module name for existing callers/tests; the heuristic itself moved to
+# diffusion_train_common so config validation can use it without importing this module.
+_repo_is_prequantized = repo_is_prequantized
 
 
 def _load_quantized_transformer(transformer_cls, cfg):
@@ -191,24 +192,132 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
     return pipe, pipe.vae
 
 
-def _load_dit_transformer(transformer_cls, cfg, device, qlora):
-    """Load the transformer alone. A prequant (bnb-4bit) repo carries its quantization
-    config and loads 4-bit as-is; a dense base is quantized to nf4 on the fly when
-    ``qlora`` (the default) so QLoRA still fits."""
+def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
+    """Load the transformer alone in the resolved ``base_precision``:
+
+    - nf4: a prequant (bnb-4bit) repo carries its quantization config and loads 4-bit
+      as-is; a dense base is quantized to nf4 on the fly. The memory floor.
+    - bf16 / fp8: the dense transformer (fp8 converts its frozen linears to float8
+      training compute AFTER the LoRA attaches; storage stays bf16).
+    - int8: the dense transformer quantized in place to torchao weight-only int8 (the
+      PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
     import torch
 
-    if qlora and not _repo_is_prequantized(cfg.base_model):
-        return _load_quantized_transformer(transformer_cls, cfg)
-    transformer = transformer_cls.from_pretrained(
+    if base_precision == "nf4":
+        if not repo_is_prequantized(cfg.base_model):
+            return _load_quantized_transformer(transformer_cls, cfg)
+        transformer = transformer_cls.from_pretrained(
+            cfg.base_model,
+            subfolder = "transformer",
+            torch_dtype = torch.bfloat16,
+            token = cfg.hf_token,
+        )
+        # A prequant load is already device-placed by bitsandbytes.
+        if not getattr(transformer, "is_loaded_in_4bit", False):
+            transformer = transformer.to(device)
+        return transformer
+
+    # Dense load for bf16 / fp8 / int8. int8 quantizes AFTER the LoRA attaches (see
+    # _int8_quantize_base): quantizing first makes peft dispatch its TorchaoLoraLinear
+    # wrapper, whose peft-0.18 constructor is incompatible with the torchao-0.16 config API
+    # (missing get_apply_tensor_subclass).
+    return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
+    ).to(device)
+
+
+def _int8_quantize_base(transformer) -> None:
+    """torchao weight-only int8 on the big frozen linears, applied after add_adapter so
+    the base_layer inside each LoRA wrapper quantizes while the adapters stay high
+    precision. ``make_filter_fn`` (shared with the inference quant layer) keeps only
+    Linears with >= 512 features -- which also naturally skips the rank-sized LoRA
+    matrices -- and drops the M=1 modulation projections int8 kernels reject."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+    from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+    quantize_(
+        transformer,
+        Int8WeightOnlyConfig(),
+        filter_fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8")),
     )
-    # A bnb-quantized load is already device-placed; a dense one still sits on CPU.
-    if not getattr(transformer, "is_loaded_in_4bit", False):
-        transformer = transformer.to(device)
-    return transformer
+
+
+def _fp8_module_filter(mod, fqn: str) -> bool:
+    """Which frozen linears get float8 training compute: skip anything LoRA-owned (the
+    adapters must stay high precision -- PEFT has no float8 base support), the output
+    projection, and shapes float8 kernels reject (dims not divisible by 16), matching the
+    diffusers FLUX2 reference filter."""
+    import torch.nn as nn
+
+    if not isinstance(mod, nn.Linear):
+        return False
+    if "lora_" in fqn:
+        return False
+    if fqn.endswith("proj_out") or ".proj_out." in fqn:
+        return False
+    return mod.in_features % 16 == 0 and mod.out_features % 16 == 0
+
+
+def _apply_fp8_training(transformer, on_event) -> bool:
+    """Convert the frozen base linears to torchao float8 training compute (dynamic scaling;
+    weights stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the
+    LoRA modules. Never fatal: on any failure the run continues in bf16 with a warning."""
+    try:
+        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
+
+        convert_to_float8_training(
+            transformer,
+            module_filter_fn = _fp8_module_filter,
+            config = Float8LinearConfig(pad_inner_dim = True),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
+        _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
+        return False
+
+
+def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp8) -> str:
+    """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the
+    fastest dense mode whose weights + headroom (activations, optimizer, cache) fit the
+    free VRAM at decision time. bf16 + regional compile is the measured speed winner
+    (2.3-2.6x over nf4 on B200); fp8 stays an explicit opt-in because torchao float8's
+    dynamic-scaling overhead made it SLOWER than compiled bf16 at LoRA-training shapes on
+    the same hardware. ``capability``/``has_fp8`` remain parameters so the policy can be
+    revisited per GPU generation without changing callers."""
+    _ = capability, has_fp8
+    if prequant or device != "cuda" or not free_gb or not dense_gb:
+        return "nf4"
+    headroom = 1.5
+    if free_gb > dense_gb * headroom:
+        return "bf16"
+    if free_gb > dense_gb * 0.55 * headroom:
+        return "int8"
+    return "nf4"
+
+
+def _resolve_base_precision(cfg, spec, device) -> str:
+    """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads);
+    explicit modes pass through (normalized() already validated them)."""
+    mode = (cfg.base_precision or "nf4").strip().lower()
+    if mode != "auto":
+        return mode
+    prequant = repo_is_prequantized(cfg.base_model)
+    free_gb = None
+    capability = None
+    has_fp8 = False
+    if device == "cuda":
+        try:
+            import torch
+
+            free_gb = torch.cuda.mem_get_info()[0] / 1e9
+            capability = torch.cuda.get_device_capability()
+            has_fp8 = hasattr(torch, "float8_e4m3fn")
+        except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
+            pass
+    return _pick_auto_precision(prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8)
 
 
 # ── FLUX.1-dev ────────────────────────────────────────────────────────────────
@@ -217,9 +326,9 @@ def _flux_load_conditioners(cfg, device, weight_dtype):
     return _load_pipe_without_transformer(FluxPipeline, cfg, device)
 
 
-def _flux_load_transformer(cfg, device, weight_dtype, qlora):
+def _flux_load_transformer(cfg, device, weight_dtype, base_precision):
     from diffusers import FluxTransformer2DModel
-    return _load_dit_transformer(FluxTransformer2DModel, cfg, device, qlora)
+    return _load_dit_transformer(FluxTransformer2DModel, cfg, device, base_precision)
 
 
 def _flux_encode_prompts(pipe, captions, device):
@@ -325,12 +434,12 @@ def _qwen_load_conditioners(cfg, device, weight_dtype):
     return _load_pipe_without_transformer(QwenImagePipeline, cfg, device)
 
 
-def _qwen_load_transformer(cfg, device, weight_dtype, qlora):
+def _qwen_load_transformer(cfg, device, weight_dtype, base_precision):
     # The prequant default (unsloth/Qwen-Image-2512-unsloth-bnb-4bit) ships the transformer
-    # 4-bit and loads trainable as-is; the dense 20B Qwen/Qwen-Image is quantized to nf4 on
-    # the fly so QLoRA still fits.
+    # 4-bit and loads trainable as-is under nf4; the dense modes need the 20B
+    # Qwen/Qwen-Image base.
     from diffusers import QwenImageTransformer2DModel
-    return _load_dit_transformer(QwenImageTransformer2DModel, cfg, device, qlora)
+    return _load_dit_transformer(QwenImageTransformer2DModel, cfg, device, base_precision)
 
 
 def _qwen_encode_prompts(pipe, captions, device):
@@ -443,11 +552,11 @@ def _zimage_load_conditioners(cfg, device, weight_dtype):
     return _load_pipe_without_transformer(ZImagePipeline, cfg, device)
 
 
-def _zimage_load_transformer(cfg, device, weight_dtype, qlora):
-    # Prequant default loads 4-bit as-is; the dense bf16 Tongyi-MAI base is quantized to nf4
-    # on the fly. Z-Image is bf16 only (its RoPE/embedder run fp32; fp16 overflows).
+def _zimage_load_transformer(cfg, device, weight_dtype, base_precision):
+    # Prequant default loads 4-bit as-is under nf4; the dense modes use the bf16 Tongyi-MAI
+    # base. Z-Image is bf16 only (its RoPE/embedder run fp32; fp16 overflows).
     from diffusers import ZImageTransformer2DModel
-    return _load_dit_transformer(ZImageTransformer2DModel, cfg, device, qlora)
+    return _load_dit_transformer(ZImageTransformer2DModel, cfg, device, base_precision)
 
 
 def _zimage_encode_prompts(pipe, captions, device):
@@ -513,6 +622,7 @@ _SPECS: dict[str, _FamilySpec] = {
         family = "flux.1",
         lora_targets = _FLUX_TARGETS,
         force_bf16 = False,
+        dense_bf16_gb = 23.8,
         load_conditioners = _flux_load_conditioners,
         load_transformer = _flux_load_transformer,
         encode_prompts = _flux_encode_prompts,
@@ -526,6 +636,7 @@ _SPECS: dict[str, _FamilySpec] = {
         family = "qwen-image",
         lora_targets = _QWEN_TARGETS,
         force_bf16 = True,
+        dense_bf16_gb = 41.0,
         load_conditioners = _qwen_load_conditioners,
         load_transformer = _qwen_load_transformer,
         encode_prompts = _qwen_encode_prompts,
@@ -539,6 +650,7 @@ _SPECS: dict[str, _FamilySpec] = {
         family = "z-image",
         lora_targets = _ZIMAGE_TARGETS,
         force_bf16 = True,
+        dense_bf16_gb = 12.3,
         load_conditioners = _zimage_load_conditioners,
         load_transformer = _zimage_load_transformer,
         encode_prompts = _zimage_encode_prompts,
@@ -684,23 +796,36 @@ def _sample_cached_latents(cache, idxs, variant_rng, device):
     return lat_a + lat_b * torch.randn_like(lat_a)
 
 
-def _should_compile(cfg, base_is_bnb, device) -> bool:
+def _should_compile(cfg, base_is_bnb, device, base_precision = "nf4") -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
+    # torch.compile cannot trace the torchao int8 subclass in training (inductor rejects
+    # the aliased subclass graph outputs), so int8 always runs eager.
+    if base_precision == "int8":
+        return False
     if mode == "on":
         return True
-    # auto: regional compile is a clean win on a dense base but fragile over bitsandbytes
-    # 4-bit modules (graph breaks in the dequant path), so it stays off for QLoRA.
-    return not base_is_bnb
+    # auto: regional compile is the whole point of the dense modes (measured 2.6x on
+    # Z-Image bf16) but fragile over bitsandbytes 4-bit modules (graph breaks in the
+    # dequant path), so it stays off for QLoRA. fp8 is only competitive compiled.
+    return base_precision in ("bf16", "fp8")
 
 
-def _maybe_compile_transformer(transformer, cfg, base_is_bnb, device, on_event) -> bool:
+def _maybe_compile_transformer(
+    transformer, cfg, base_is_bnb, device, on_event, base_precision = "nf4"
+) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after
     the LoRA is attached. Never fatal: a wrap failure falls back to eager with a warning
     event, and dynamo's suppress_errors keeps a frame that fails to COMPILE at the first
     step running eager instead of raising mid-run."""
-    if not _should_compile(cfg, base_is_bnb, device):
+    if not _should_compile(cfg, base_is_bnb, device, base_precision):
+        if base_precision == "fp8":
+            _emit(
+                on_event,
+                "warning",
+                message = "fp8 training without torch.compile is slow; enable compile for the speedup.",
+            )
         return False
     import torch
 
@@ -719,10 +844,12 @@ def _maybe_compile_transformer(transformer, cfg, base_is_bnb, device, on_event) 
                     setattr(dynamo_cfg, attr, max(getattr(dynamo_cfg, attr) or 0, 64))
             if hasattr(dynamo_cfg, "suppress_errors"):
                 dynamo_cfg.suppress_errors = True
-        # Shapes are static under the latent cache (fixed resolution/batch/text bucket), so
-        # dynamic=False lets inductor specialise. fullgraph only on a dense base: bnb 4-bit
-        # layers graph-break by design.
-        fn(fullgraph = not base_is_bnb, dynamic = False)
+        # dynamic=True matches the inference speed layer's proven default: on torch 2.10 /
+        # B200 the dynamic=False specialisation fused a gemm_and_bias epilogue that failed
+        # with CUBLAS_STATUS_EXECUTION_FAILED then an illegal memory access on the FLUX
+        # training graph. fullgraph only on a dense base: bnb 4-bit layers graph-break by
+        # design.
+        fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
         _emit(on_event, "warning", message = f"torch.compile disabled (eager fallback): {exc}")
@@ -858,10 +985,12 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     # the same seed-deterministic sequence whether or not the cache is enabled.
     variant_rng = random.Random(cfg.seed + 1)
 
-    # Phase 3: only now load the transformer (QLoRA nf4 by default: the prequant Qwen /
-    # Z-Image repos are already 4-bit; FLUX quantizes on the fly).
-    transformer = spec.load_transformer(cfg, device, weight_dtype, qlora = True)
-    base_is_bnb = True  # the DiT base is always a bitsandbytes 4-bit QLoRA load today
+    # Phase 3: only now load the transformer, in the resolved base precision (nf4 QLoRA by
+    # default; bf16 / int8 / fp8 are the dense speed modes; "auto" picks from free VRAM
+    # measured before the load).
+    base_precision = _resolve_base_precision(cfg, spec, device)
+    transformer = spec.load_transformer(cfg, device, weight_dtype, base_precision)
+    base_is_bnb = base_precision == "nf4"
 
     # Freeze the base; attach the trainable LoRA to the transformer.
     transformer.requires_grad_(False)
@@ -887,7 +1016,16 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
-    compiled = _maybe_compile_transformer(transformer, cfg, base_is_bnb, device, on_event)
+    # int8 / fp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter
+    # modules are excluded and stay high precision.
+    if base_precision == "int8":
+        _int8_quantize_base(transformer)
+    if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
+        base_precision = "bf16"
+
+    compiled = _maybe_compile_transformer(
+        transformer, cfg, base_is_bnb, device, on_event, base_precision
+    )
     # Compiled Qwen graphs need one fixed text length across steps: pin the pad bucket to
     # the dataset's longest caption (encode_prompt already caps it at 1024 tokens).
     qwen_pad_to = None
@@ -908,7 +1046,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         num_training_steps = cfg.train_steps,
     )
 
-    _emit(on_event, "model_load_completed", compiled = compiled)
+    _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
 
     transformer.train()
     n_images = len(image_paths)

@@ -124,6 +124,35 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     return "sdxl"
 
 
+def repo_is_prequantized(base_model: str) -> bool:
+    """Heuristic: a repo whose name marks a bitsandbytes 4-bit build already ships a
+    quantized transformer, so it loads as-is for nf4 and cannot serve the dense
+    (bf16/int8/fp8) base precisions."""
+    name = str(base_model or "").lower()
+    return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
+
+
+def train_precision_modes() -> tuple[list[str], str]:
+    """(supported base_precision modes, recommended pick) for the current machine: nf4
+    always works; bf16/int8/auto need CUDA; fp8 needs an fp8-capable GPU (sm89+). Used by
+    the /info endpoint so the UI can gate the precision selector. Never raises."""
+    modes = ["nf4"]
+    recommended = "nf4"
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            modes += ["bf16", "int8"]
+            major, minor = torch.cuda.get_device_capability()
+            if (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
+                modes.append("fp8")
+            modes.append("auto")
+            recommended = "auto"
+    except Exception:  # noqa: BLE001 -- no torch / probe failure -> nf4 only
+        pass
+    return modes, recommended
+
+
 def get_trainer(family: str) -> Callable[..., str]:
     """Return the training entrypoint for ``family``. Imports the trainer module lazily so
     this shared module stays free of the heavy trainer imports (and any import cycle)."""
@@ -178,12 +207,16 @@ def family_train_infos() -> list[dict[str, Any]]:
     the family registry so it stays in sync with what the trainers actually support."""
     from core.inference.diffusion_families import detect_family
 
+    dit_modes, dit_recommended = train_precision_modes()
     infos: list[dict[str, Any]] = []
     for name in trainable_family_names():
         fam = detect_family("", override = name)
         if fam is None:
             continue
         repos = list(fam.train_base_repos) or [fam.base_repo]
+        # base_precision / compile apply to the DiT trainer only; SDXL keeps its
+        # mixed_precision lever, so the UI hides the selector for it.
+        is_dit = name in ("flux.1", "qwen-image", "z-image")
         infos.append(
             {
                 "name": name,
@@ -192,6 +225,9 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "base_repos": repos,
                 "defaults": train_defaults(name),
                 "vram_note": _FAMILY_VRAM_NOTES.get(name, ""),
+                "precision_modes": dit_modes if is_dit else [],
+                "recommended_precision": dit_recommended if is_dit else "nf4",
+                "supports_compile": is_dit,
             }
         )
     return infos
@@ -240,6 +276,12 @@ class DiffusionLoraConfig:
     # TF32 matmuls + high fp32 matmul precision + cudnn autotuning for the run. Near-lossless;
     # disable for strict bit-reproducibility A/Bs.
     enable_tf32: bool = True
+    # DiT base transformer precision: "nf4" (bitsandbytes QLoRA, the memory floor and the
+    # default), "bf16" (dense, fastest eager, compile-friendly), "int8" (torchao
+    # weight-only, half of bf16), "fp8" (torchao float8 training compute on the frozen
+    # linears, Ada/Hopper/Blackwell + compile), or "auto" (pick by free VRAM + GPU class).
+    # Non-nf4 modes need a dense base repo (not a prequant bnb-4bit one). SDXL ignores it.
+    base_precision: str = "nf4"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
     # Optional explicit family override ("sdxl" / "flux.1" / ...); None = detect from
@@ -276,6 +318,21 @@ class DiffusionLoraConfig:
         compile_transformer = str(self.compile_transformer or "auto").strip().lower()
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
+        base_precision = str(self.base_precision or "nf4").strip().lower()
+        if base_precision not in ("nf4", "bf16", "int8", "fp8", "auto"):
+            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / auto")
+        if base_precision in ("bf16", "int8", "fp8"):
+            if repo_is_prequantized(self.base_model):
+                raise ValueError(
+                    f"base_precision={base_precision!r} needs a dense base repo, but "
+                    f"'{self.base_model}' is already bitsandbytes-quantized. Pick the "
+                    f"family's dense (bf16) base repo for this mode, or use nf4/auto."
+                )
+            if self.mixed_precision != "bf16":
+                raise ValueError(
+                    f"base_precision={base_precision!r} trains in bf16 compute; set "
+                    f"mixed_precision to bf16."
+                )
         # learning_rate can arrive as a string ("1e-4") from the Studio config path, which
         # preserves it as a string after validation; coerce so AdamW receives a float.
         try:
@@ -298,6 +355,7 @@ class DiffusionLoraConfig:
             hf_token = token or None,
             cache_variants = int(self.cache_variants),
             compile_transformer = compile_transformer,
+            base_precision = base_precision,
             resolved_family = resolved_family,
         )
 
@@ -428,6 +486,18 @@ def _apply_perf_flags(
             torch.set_float32_matmul_precision("high")
         if cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
+        # The cuDNN SDPA backend's TRAINING graph is broken for the FLUX attention shapes
+        # on torch 2.10 + cu130 (B200): mha_graph.execute fails, then poisons the context
+        # into illegal memory accesses. Flash / mem-efficient SDPA are mathematically
+        # equivalent, so pin those for the run (restored on exit).
+        cuda_backends = getattr(torch.backends, "cuda", None)
+        if cuda_backends is not None and hasattr(cuda_backends, "enable_cudnn_sdp"):
+            try:
+                snap["cudnn_sdp"] = bool(cuda_backends.cudnn_sdp_enabled())
+            except Exception:  # noqa: BLE001 -- flag unreadable: skip the tweak entirely
+                snap["cudnn_sdp"] = None
+            if snap["cudnn_sdp"]:
+                cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
     return snap
@@ -441,13 +511,15 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
     from core.inference.diffusion_speed import restore_backend_flags
 
     restore_backend_flags(snap.get("flags"))
-    if snap.get("matmul_precision"):
-        try:
-            import torch
+    try:
+        import torch
 
+        if snap.get("matmul_precision"):
             torch.set_float32_matmul_precision(snap["matmul_precision"])
-        except Exception:  # noqa: BLE001 -- best-effort restore
-            pass
+        if snap.get("cudnn_sdp"):
+            torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception:  # noqa: BLE001 -- best-effort restore
+        pass
 
 
 def _assert_trusted_base_model(base_model: str) -> None:

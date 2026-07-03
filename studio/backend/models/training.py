@@ -727,6 +727,14 @@ class DiffusionTrainingStartRequest(BaseModel):
     enable_tf32: bool = Field(
         True, description = "TF32 matmuls + cudnn autotuning (near-lossless speedup)"
     )
+    base_precision: Literal["nf4", "bf16", "int8", "fp8", "auto"] = Field(
+        "nf4",
+        description = (
+            "DiT base transformer precision: nf4 QLoRA (memory floor, default), bf16 dense, "
+            "int8 torchao weight-only, fp8 float8 training compute (Ada/Hopper/Blackwell), "
+            "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
+        ),
+    )
 
 
 class DiffusionTrainingStopRequest(BaseModel):
@@ -801,6 +809,12 @@ class DiffusionTrainableFamily(BaseModel):
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
     vram_note: str = ""
+    # base_precision modes this machine supports for the family (empty = the family has no
+    # precision selector, e.g. SDXL), plus the recommended pick and whether regional
+    # torch.compile applies. Defaults keep older backends' payloads valid.
+    precision_modes: List[str] = Field(default_factory = list)
+    recommended_precision: str = "nf4"
+    supports_compile: bool = False
 
 
 class DiffusionTrainingInfoResponse(BaseModel):
