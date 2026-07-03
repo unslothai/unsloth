@@ -988,6 +988,19 @@ class InferenceBackend:
                     tokenizer,
                     chat_template = template_name,
                 )
+                # The mapper installs the effective chat template here, at
+                # generate time. For mapper models whose tokenizer shipped no
+                # chat_template of its own, the load-time turn-end-eos resolution
+                # saw an empty template and cached only the document eos, so
+                # generate_stream below would miss the ChatML turn-end token and
+                # run past the assistant boundary (the loop this PR fixes).
+                # Re-resolve from the now-templated tokenizer and refresh the cache.
+                try:
+                    model_info["chat_turn_end_eos_ids"] = resolve_chat_turn_end_eos_ids(
+                        getattr(tokenizer, "tokenizer", tokenizer)
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not refresh chat turn-end eos after template: {e}")
             else:
                 logger.info(
                     f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
