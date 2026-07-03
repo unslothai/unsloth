@@ -232,7 +232,61 @@ class TestLocalGgufVisionDetection:
 
 
 # ---------------------------------------------------------------------------
-# Exception handling — cache the False fallback
+# Remote GGUF audio capability path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("audio_type", "expected_is_audio", "expected_has_audio_input"),
+    [
+        ("snac", True, False),
+        ("whisper", False, True),
+    ],
+)
+def test_remote_gguf_config_reports_audio_capability(
+    monkeypatch, audio_type, expected_is_audio, expected_has_audio_input
+):
+    import utils.models.model_config as mc
+
+    fake_llama_cpp = _types.ModuleType("core.inference.llama_cpp")
+
+    class _FakeLlamaCppBackend:
+        @staticmethod
+        def _find_llama_server_binary(include_denied = False):
+            return "/tmp/llama-server"
+
+    fake_llama_cpp.LLAMA_SERVER_NOT_FOUND_DETAIL = "missing llama-server"
+    fake_llama_cpp.LlamaServerNotFoundError = RuntimeError
+    fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
+    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
+    monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda name, *_a, **_k: name)
+    monkeypatch.setattr(
+        mc,
+        "detect_gguf_model_remote",
+        lambda *_a, **_k: "whisper-Q4_K_M.gguf",
+    )
+    monkeypatch.setattr(
+        mc,
+        "list_gguf_variants",
+        lambda *_a, **_k: (
+            [_types.SimpleNamespace(filename = "whisper-Q4_K_M.gguf")],
+            False,
+        ),
+    )
+    monkeypatch.setattr(mc, "detect_audio_type", lambda *_a, **_k: audio_type)
+
+    config = ModelConfig.from_identifier("org/whisper-GGUF")
+
+    assert config is not None
+    assert config.is_gguf is True
+    assert config.is_audio is expected_is_audio
+    assert config.audio_type == audio_type
+    assert config.has_audio_input is expected_has_audio_input
+
+
+# ---------------------------------------------------------------------------
+# Exception handling - cache the False fallback
+# ---------------------------------------------------------------------------
 
 
 class TestVisionCacheOnException:

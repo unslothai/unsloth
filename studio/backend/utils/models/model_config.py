@@ -934,6 +934,7 @@ def _is_vision_model_uncached(
 
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
+GGUF_TTS_AUDIO_TYPES = ("snac", "bicodec", "dac")
 
 # Keyed like the vision cache by (name, token, local_files_only) so an unauthenticated
 # or offline miss cannot poison a later authenticated / online lookup.
@@ -2602,18 +2603,23 @@ class ModelConfig:
                 gguf_is_vision = False
                 gguf_dir = Path(gguf_file).parent
 
-                # Is this a vision model, per export metadata?
+                # Is this a vision/audio model, per export metadata?
                 base_is_vision = False
+                gguf_audio_type = None
                 meta_path = gguf_dir / "export_metadata.json"
                 if meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())
                         base = meta.get("base_model")
-                        if base and is_vision_model(base, hf_token = hf_token):
-                            base_is_vision = True
-                            logger.info(f"GGUF base model '{base}' is a vision model")
+                        if base:
+                            if is_vision_model(base, hf_token = hf_token):
+                                base_is_vision = True
+                                logger.info(f"GGUF base model '{base}' is a vision model")
+                            gguf_audio_type = detect_audio_type(base, hf_token = hf_token)
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
+                if gguf_audio_type is None:
+                    gguf_audio_type = detect_audio_type(path, hf_token = hf_token, local_files_only = True)
 
                 # Direct file selections may point into a quant subdir while
                 # mmproj-*.gguf lives at the snapshot root.
@@ -2639,6 +2645,9 @@ class ModelConfig:
                     is_vision = gguf_is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_audio = gguf_audio_type in GGUF_TTS_AUDIO_TYPES,
+                    audio_type = gguf_audio_type,
+                    has_audio_input = is_audio_input_type(gguf_audio_type),
                     gguf_file = gguf_file,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
@@ -2671,6 +2680,7 @@ class ModelConfig:
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
+                gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "
@@ -2685,6 +2695,9 @@ class ModelConfig:
                     is_vision = has_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_audio = gguf_audio_type in GGUF_TTS_AUDIO_TYPES,
+                    audio_type = gguf_audio_type,
+                    has_audio_input = is_audio_input_type(gguf_audio_type),
                     gguf_file = None,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
