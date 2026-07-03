@@ -316,6 +316,29 @@ def test_route_start_forwards_extra_training_knobs(client):
     assert client._fake.started_with["lora_target_modules"] == ["to_q", "to_v"]
 
 
+def test_route_start_forwards_num_epochs(client):
+    # Epochs mode: the frontend omits train_steps and sends num_epochs; it must reach the
+    # service so the trainer can resolve it against the dataset size.
+    body = {k: v for k, v in _BODY.items() if k != "train_steps"}
+    r = client.post("/api/train/diffusion/start", json = {**body, "num_epochs": 8})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["num_epochs"] == 8
+
+
+def test_request_model_num_epochs_bounds():
+    # The request schema mirrors DiffusionLoraConfig's 0..1000 num_epochs range.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
+    assert DiffusionTrainingStartRequest(**base).num_epochs == 0  # default = use train_steps
+    assert DiffusionTrainingStartRequest(**base, num_epochs = 1000).num_epochs == 1000
+    for bad in (-1, 1001):
+        with pytest.raises(ValidationError):
+            DiffusionTrainingStartRequest(**base, num_epochs = bad)
+
+
 def test_route_start_rejects_uncontained_paths(client):
     # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})

@@ -691,6 +691,15 @@ class DiffusionTrainingStartRequest(BaseModel):
         1024, ge = 64, le = 2048, description = "Square training resolution (multiple of 8)"
     )
     train_steps: int = Field(500, ge = 1, le = 100000)
+    num_epochs: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = (
+            "0 = use train_steps; > 0 overrides train_steps with epochs x "
+            "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
+        ),
+    )
     learning_rate: float = Field(1e-4, gt = 0)
     train_batch_size: int = Field(1, ge = 1, le = 64)
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)

@@ -16,6 +16,7 @@ actual training loop; this module only routes a request to the right one.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
@@ -245,6 +246,9 @@ class DiffusionLoraConfig:
     instance_prompt: Optional[str] = None
     resolution: int = 1024
     train_steps: int = 500
+    # 0 = disabled (train for train_steps). > 0 overrides train_steps with a run length of
+    # num_epochs full passes over the dataset, in optimizer steps (see resolve_train_steps).
+    num_epochs: int = 0
     learning_rate: float = 1e-4
     train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
@@ -298,6 +302,8 @@ class DiffusionLoraConfig:
         resolved_family = resolve_trainable_family(self.base_model, self.model_family)
         if self.train_steps < 1:
             raise ValueError("train_steps must be >= 1")
+        if not 0 <= int(self.num_epochs) <= 1000:
+            raise ValueError("num_epochs must be between 0 and 1000 (0 uses train_steps)")
         if self.train_batch_size < 1:
             raise ValueError("train_batch_size must be >= 1")
         if self.gradient_accumulation_steps < 1:
@@ -357,6 +363,18 @@ class DiffusionLoraConfig:
             base_precision = base_precision,
             resolved_family = resolved_family,
         )
+
+
+def resolve_train_steps(cfg: "DiffusionLoraConfig", n_images: int) -> int:
+    """The effective optimizer-step count for a run. When ``cfg.num_epochs`` is set (> 0),
+    one epoch is one full pass over the dataset in optimizer steps -- ceil(N / (batch x
+    grad_accum)) steps -- so the run is ``num_epochs`` such passes, capped at 100000. With
+    ``num_epochs == 0`` the explicit ``cfg.train_steps`` is used unchanged."""
+    if cfg.num_epochs > 0:
+        per_step = max(1, cfg.train_batch_size * cfg.gradient_accumulation_steps)
+        steps_per_epoch = max(1, math.ceil(n_images / per_step))
+        return min(100000, cfg.num_epochs * steps_per_epoch)
+    return cfg.train_steps
 
 
 def discover_image_caption_pairs(
@@ -596,6 +614,10 @@ def _write_lora_sidecar(sidecar_path: Path, cfg: DiffusionLoraConfig) -> None:
 _CONFIG_ALIASES = {
     "model_name": "base_model",
     "max_steps": "train_steps",
+    # The generic payload's num_epochs already matches the diffusion field name, but list it
+    # so the epochs override is threaded through the shared-payload path as explicitly as
+    # max_steps -> train_steps is.
+    "num_epochs": "num_epochs",
     "batch_size": "train_batch_size",
     "lora_r": "lora_rank",
     "lr_scheduler_type": "lr_scheduler",
