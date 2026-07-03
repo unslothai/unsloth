@@ -1,2 +1,0 @@
-- Completed: sd.cpp CUDA works; diffusers GPU 10-16x faster; beats ComfyUI 3.9-7.9x on FLUX.1/Qwen.
-- Pending: Z-Image, FLUX.2-klein, LPIPS accuracy, CPU ComfyUI-vs-sd.cpp.

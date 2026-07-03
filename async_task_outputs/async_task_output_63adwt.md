@@ -1,1 +1,0 @@
-- Asked support: `Mac`, GPU, GGUF

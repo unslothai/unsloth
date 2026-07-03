@@ -415,6 +415,23 @@ def test_resolve_fast_accum(monkeypatch):
     assert tq._resolve_fast_accum(False) is False  # forced off (e.g. on a consumer card)
 
 
+def test_fp8_config_uses_per_row_granularity():
+    """FP8 must use PerRow (per-token activation + per-channel weight) scaling. torchao's
+    default is per-TENSOR: on a DiT with extreme activation outliers (z-image's ~6.6e4) one
+    outlier forces a tensor-wide scale that pushes normal values below fp8 resolution and the
+    denoise collapses to noise. This is the regression guard for that fix (validated on B200:
+    per-tensor fp8 = noise, per-row fp8 = matches bf16)."""
+    torchao_quant = pytest.importorskip("torchao.quantization")
+    per_row = getattr(torchao_quant, "PerRow", None)
+    if per_row is None:
+        pytest.skip("torchao build without PerRow granularity")
+    cfg = tq._make_quant_config(TQ_FP8)
+    gran = getattr(cfg, "granularity", None)
+    assert gran is not None, "fp8 config must set an explicit granularity, not torchao's default"
+    grans = gran if isinstance(gran, (list, tuple)) else [gran]
+    assert grans and all(isinstance(g, per_row) for g in grans), f"expected all PerRow, got {gran}"
+
+
 def test_quantize_transformer_applies_and_marks(monkeypatch):
     monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode: TQ_FP8)
     seen: dict = {}

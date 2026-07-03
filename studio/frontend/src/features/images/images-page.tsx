@@ -2003,7 +2003,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
       </div>
-
       {/* Train mode: the full-page training workspace. Kept unmounted in Create mode so its
           polling stops; Create's own state (gallery, model, workflow) is untouched. */}
       {pageMode === "train" ? (
