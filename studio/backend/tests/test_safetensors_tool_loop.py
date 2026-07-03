@@ -967,6 +967,31 @@ def test_unrestricted_mode_split_rehearsal_name_is_not_streamed():
     assert not any("web_search" in t for t in contents), contents
 
 
+def test_unrestricted_mode_split_after_bracket_is_not_streamed():
+    # The chunk boundary can land right after the bracket (``NAME[``) in unrestricted
+    # mode; that bare-``[`` prefix must still be held, or the partial tool markup
+    # ``web_search[`` leaks to display before the call drains -- parity with the
+    # restricted-mode startswith hold.
+    exec_fn = FakeExecuteTool(["RESULT"])
+    _turns = iter([["web_search[", 'web_search[ARGS]{"q":"x"}'], ["done"]])
+
+    def st(_messages, active_tools = None):
+        yield from next(_turns)
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = st,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [],  # unrestricted
+            execute_tool = exec_fn,
+            max_tool_iterations = 2,
+        )
+    )
+    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("web_search[" in t for t in contents), contents
+
+
 def test_unrestricted_mode_plain_prose_still_streams():
     # The unrestricted rehearsal hold must not corrupt or drop ordinary prose: a
     # held leading identifier is released once the rest of the sentence follows.

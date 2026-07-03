@@ -69,9 +69,12 @@ def _active_tool_names(active_tools: list[dict]) -> list[str]:
 
 
 # Unrestricted mode ships no tool list, so any bare identifier may be the NAME of
-# a ``NAME[ARGS]`` rehearsal (optionally part-way into ``[ARGS``); the complete
-# ``NAME[ARGS]`` is caught as a match before this prefix check runs.
-_UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[A(?:R(?:G(?:S)?)?)?)?")
+# a ``NAME[ARGS]`` rehearsal (optionally part-way into ``[ARGS``, including the bare
+# ``[`` boundary); the complete ``NAME[ARGS]`` is caught as a match before this
+# prefix check runs. The ``[`` and each ``ARGS`` letter must stay individually
+# optional so a chunk split right after ``NAME[`` is held, not streamed, matching
+# the restricted-mode ``startswith`` check.
+_UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[(?:A(?:R(?:G(?:S)?)?)?)?)?")
 
 
 def _is_rehearsal_prefix(
