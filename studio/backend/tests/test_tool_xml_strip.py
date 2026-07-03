@@ -41,9 +41,12 @@ from core.inference.tool_call_parser import (
     _strip_mistral_closed_calls,
 )
 
+from typing import Optional as _Optional
+
 _ns = {
     "_re": _re,
     "_DS_OPEN_SRC": _DS_OPEN_SRC,
+    "Optional": _Optional,
     "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
     "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
     "_strip_glm_calls": _strip_glm_calls,
@@ -52,8 +55,10 @@ _ns = {
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
 
+# Signatures may span multiple lines and now carry the enabled_tool_names gate; match
+# the whole (possibly multi-line) signature up to ``-> str:`` then the indented body.
 _xml_helper = _re.search(
-    r"def _strip_tool_xml\(text: str\) -> str:\n(?:    .+\n)+",
+    r"def _strip_tool_xml\((?:.|\n)*?\) -> str:\n(?:    .+\n)+",
     _src,
 )
 assert _xml_helper, "could not extract _strip_tool_xml source"
@@ -61,10 +66,10 @@ assert "_strip_mistral_closed_calls" in _xml_helper.group(
     0
 ), "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
 exec(_xml_helper.group(0), _ns)
+_strip_tool_xml = _ns["_strip_tool_xml"]
 
 _helper = _re.search(
-    r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
-    r"(?:    .+\n)+",
+    r"def _strip_tool_xml_for_display\((?:.|\n)*?\) -> str:\n(?:    .+\n)+",
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
@@ -468,3 +473,17 @@ def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
     # (_inside_open_parameter) before the regex, matching the core strip.
     text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
+
+
+def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
+    # The route strip must gate the markerless Gemma call:NAME{...} form on the enabled
+    # tool names, like the parser/loop, so a disabled/example name in prose is preserved
+    # in Anthropic/display/history cleanup instead of deleted from the answer.
+    prose = "To document syntax you write call:foo{query:example}. That shows the format."
+    assert "call:foo{query:example}" in _strip_tool_xml(prose, {"web_search"})
+    # An enabled name is still a real call and stripped.
+    assert "call:web_search" not in _strip_tool_xml(
+        "Answer. call:web_search{query:x}", {"web_search"}
+    )
+    # No gate (legacy) strips every closed call.
+    assert "call:foo" not in _strip_tool_xml(prose)

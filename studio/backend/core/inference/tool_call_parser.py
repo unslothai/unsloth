@@ -2060,7 +2060,10 @@ def _parse_kimi_tool_calls(
         if section_start < 0:
             break
         scan_start = section_start + len(_KIMI_SECTION_BEGIN)
-        section_end = content.find(_KIMI_SECTION_END, scan_start)
+        # Find the section-end OUTSIDE JSON strings: a later call's argument (query,
+        # code) may legitimately contain the literal <|tool_calls_section_end|> token,
+        # and a raw find would truncate the body there, dropping the later valid call.
+        section_end = _find_outside_json_strings(content, _KIMI_SECTION_END, scan_start)
         scan_end = section_end if section_end >= 0 else len(content)
         body = content[scan_start:scan_end]
         # Truncated tail: parse what we have, then exit. In strict mode a section

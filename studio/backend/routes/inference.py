@@ -1686,7 +1686,22 @@ _TOOL_XML_RE = _re.compile(
 )
 
 
-def _strip_tool_xml(text: str) -> str:
+def _gemma_strip_gate(tools) -> Optional[set]:
+    """Enabled tool NAMES for gating the wrapper-less Gemma ``call:NAME{...}`` strip,
+    or None when no tools are enabled. Mirrors the parser/loop gate: a markerless
+    ``call:foo{...}`` is a real call only when ``foo`` is an enabled tool; otherwise it
+    is prose (an example/disabled name) and must survive in display/history. ``None``
+    keeps the legacy strip-all behaviour (unrestricted / no tools)."""
+    names = {
+        (t.get("function") or {}).get("name")
+        for t in (tools or [])
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    }
+    names.discard(None)
+    return names or None
+
+
+def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Combine the parser's scan-based strips with ``_TOOL_XML_RE``: the Mistral
     ``[TOOL_CALLS]`` balanced-brace strip and the Gemma ``call:NAME{...}``
     wrapper-less form (no XML, not in ``_TOOL_XML_RE``, else they leak through
@@ -1695,23 +1710,32 @@ def _strip_tool_xml(text: str) -> str:
     leaked tail); and the guarded function-XML scan (skips ``<function=`` openers
     inside an open ``<parameter>`` value -- same ``_inside_open_parameter`` guard as
     the parser -- so a literal nested ``<function=...></function>`` in an argument
-    does not truncate the strip and leak the tail)."""
+    does not truncate the strip and leak the tail).
+    ``enabled_tool_names`` gates the markerless Gemma strip so a disabled/example
+    ``call:foo{...}`` in prose is preserved (mirrors the parser/loop gate); ``None``
+    strips every closed call."""
     cleaned = _strip_glm_calls(
-        _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text)), final = True
+        _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text), enabled_tool_names),
+        final = True,
     )
     cleaned = _strip_function_xml_calls(cleaned, final = True)
     return _TOOL_XML_RE.sub("", cleaned)
 
 
-def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
+def _strip_tool_xml_for_display(
+    text: str,
+    *,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names: Optional[set] = None,
+) -> str:
     """Route-level tool-call leak cleanup, only when Auto-Heal is enabled.
     Delegates to ``_strip_tool_xml`` so the Mistral ``[TOOL_CALLS]`` balanced-brace
     pass runs here too -- ``_TOOL_XML_RE`` alone has no ``[TOOL_CALLS]`` arm and
     would leak Mistral textual calls (nested JSON) into OpenAI-compatible display
-    and stale-history paths."""
+    and stale-history paths. ``enabled_tool_names`` gates the Gemma strip."""
     if not auto_heal_tool_calls:
         return text
-    return _strip_tool_xml(text)
+    return _strip_tool_xml(text, enabled_tool_names)
 
 
 logger = get_logger(__name__)
@@ -5434,6 +5458,7 @@ async def openai_chat_completions(
                     _msg["content"] = _strip_tool_xml_for_display(
                         _msg["content"],
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                        enabled_tool_names = _gemma_strip_gate(tools_to_use),
                     ).strip()
 
             def gguf_generate_with_tools():
@@ -5567,6 +5592,7 @@ async def openai_chat_completions(
                         clean_cumulative = _strip_tool_xml_for_display(
                             raw_cumulative,
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            enabled_tool_names = _gemma_strip_gate(tools_to_use),
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -5672,6 +5698,7 @@ async def openai_chat_completions(
                             full_text = _strip_tool_xml_for_display(
                                 event.get("text", ""),
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                                enabled_tool_names = _gemma_strip_gate(tools_to_use),
                             )
                     return full_text, usage, finish
                 finally:
@@ -6151,6 +6178,7 @@ async def openai_chat_completions(
                         "content": _strip_tool_xml_for_display(
                             _msg["content"],
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                            enabled_tool_names = _gemma_strip_gate(_sf_tools_to_use),
                         ).strip(),
                     }
                 )
@@ -6269,6 +6297,7 @@ async def openai_chat_completions(
                     clean_cumulative = _strip_tool_xml_for_display(
                         raw_cumulative,
                         auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        enabled_tool_names = _gemma_strip_gate(_sf_tools_to_use),
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
@@ -6359,6 +6388,7 @@ async def openai_chat_completions(
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                            enabled_tool_names = _gemma_strip_gate(_sf_tools_to_use),
                         )
                 return full_text
 
@@ -8959,7 +8989,9 @@ async def anthropic_messages(
         # Strip stale tool-call XML from conversation
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                _msg["content"] = _strip_tool_xml(_msg["content"]).strip()
+                _msg["content"] = _strip_tool_xml(
+                    _msg["content"], _gemma_strip_gate(openai_tools)
+                ).strip()
 
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
@@ -9004,6 +9036,7 @@ async def anthropic_messages(
                 message_id,
                 model_name,
                 disable_parallel_tool_use = _disable_parallel,
+                openai_tools = openai_tools,
             )
         )
 
@@ -9113,7 +9146,7 @@ async def _anthropic_tool_stream(
                 # content event that was purely tool XML doesn't count as text.
                 if etype == "content":
                     event = dict(event)
-                    event["text"] = _strip_tool_xml(event["text"])
+                    event["text"] = _strip_tool_xml(event["text"], _gemma_strip_gate(openai_tools))
                 # disable_parallel_tool_use: keep only the first tool_use block,
                 # dropping every later tool_start and its paired tool_end (robust
                 # to empty tool-call ids — tracked by state, not id matching).
@@ -9271,6 +9304,7 @@ async def _anthropic_tool_non_streaming(
     message_id,
     model_name,
     disable_parallel_tool_use = False,
+    openai_tools = None,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -9299,7 +9333,7 @@ async def _anthropic_tool_non_streaming(
         etype = event.get("type", "")
         if etype == "content":
             # Strip leaked tool-call XML
-            clean = _strip_tool_xml(event["text"])
+            clean = _strip_tool_xml(event["text"], _gemma_strip_gate(openai_tools))
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
@@ -9694,7 +9728,7 @@ async def _anthropic_passthrough_non_streaming(
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        text = _strip_tool_xml(text).strip()
+        text = _strip_tool_xml(text, _gemma_strip_gate(openai_tools)).strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 

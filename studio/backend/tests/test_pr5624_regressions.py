@@ -564,3 +564,24 @@ def test_wrapperless_gemma_call_gated_by_enabled_tools():
     assert "call:web_search" not in strip_tool_markup(
         real, final = True, enabled_tool_names = {"web_search"}
     )
+
+
+def test_kimi_section_end_inside_arg_string_is_not_a_truncation():
+    # In a Kimi section with multiple calls, a LATER call whose argument string contains
+    # the literal <|tool_calls_section_end|> token must not truncate the section: a raw
+    # find cut the body there and, since an earlier call already parsed, the bare-call
+    # fallback was skipped and the later valid call was dropped. Mirror of the DeepSeek
+    # envelope-end fix.
+    content = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.search:0<|tool_call_argument_begin|>"
+        '{"q":"cats"}<|tool_call_end|>'
+        "<|tool_call_begin|>functions.explain:1<|tool_call_argument_begin|>"
+        '{"text":"the token <|tool_calls_section_end|> means end"}<|tool_call_end|>'
+        "<|tool_calls_section_end|>"
+    )
+    calls = parse_tool_calls_from_text(content)
+    assert [c["function"]["name"] for c in calls] == ["search", "explain"], calls
+    assert json.loads(calls[1]["function"]["arguments"]) == {
+        "text": "the token <|tool_calls_section_end|> means end"
+    }
