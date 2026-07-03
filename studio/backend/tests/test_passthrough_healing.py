@@ -329,6 +329,17 @@ class TestNudgeHelpers:
         assert response_has_promotable_calls(self._resp("", undeclared), {"Bash"}) is False
         assert response_has_promotable_calls(self._resp("", declared), {"Bash"}) is True
 
+    def test_retry_with_mixed_structured_calls_is_not_an_improvement(self):
+        # ALL structured calls must be declared: the caller forwards the whole
+        # list (and a parallel cap could keep only the FIRST), so a mixed retry
+        # could still hand the client an undeclared tool.
+        mixed = [
+            {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}},
+            {"id": "y", "type": "function", "function": {"name": "Bash", "arguments": "{}"}},
+        ]
+        assert response_has_promotable_calls(self._resp("", mixed), {"Bash"}) is False
+        assert response_has_promotable_calls(self._resp("", list(reversed(mixed))), {"Bash"}) is False
+
     @pytest.mark.parametrize(
         "data",
         [
@@ -1069,6 +1080,27 @@ class TestAnthropicNonStreamingRoute:
             _, data = await self._drive(monkeypatch, [_upstream_message(xml)])
             assert data["stop_reason"] == "end_turn"
             assert not any(b["type"] == "tool_use" for b in data["content"])
+            # Healing preserves what it does not promote: the undeclared call
+            # reaches the client as text instead of being silently stripped.
+            (text_block,) = [b for b in data["content"] if b["type"] == "text"]
+            assert text_block["text"] == xml
+
+        asyncio.run(_run())
+
+    def test_mixed_undeclared_text_preserved_after_heal(self, monkeypatch):
+        async def _run():
+            # Declared call promoted to tool_use; the undeclared call's markup
+            # stays in the text block (the legacy strip must not run after a
+            # span-exact heal), matching the OpenAI passthrough.
+            rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
+            _, data = await self._drive(
+                monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")]
+            )
+            (tool_block,) = [b for b in data["content"] if b["type"] == "tool_use"]
+            assert tool_block["name"] == "lookup"
+            (text_block,) = [b for b in data["content"] if b["type"] == "text"]
+            assert rogue in text_block["text"]
+            assert data["stop_reason"] == "tool_use"
 
         asyncio.run(_run())
 

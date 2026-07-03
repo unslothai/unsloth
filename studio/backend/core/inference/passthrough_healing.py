@@ -341,7 +341,11 @@ def response_has_promotable_calls(data: Any, allowed_tools: set) -> bool:
         return False
     tool_calls = message.get("tool_calls")
     if tool_calls:
-        return any(
+        # ALL structured calls must be declared: the caller forwards the whole
+        # list (and a parallel cap could keep only the FIRST one), so a mixed
+        # response with a single hallucinated name could still hand the client
+        # an undeclared tool.
+        return all(
             isinstance(tc, dict)
             and isinstance(tc.get("function"), dict)
             and tc["function"].get("name") in allowed_tools
