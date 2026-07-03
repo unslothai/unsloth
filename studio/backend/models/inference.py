@@ -1813,6 +1813,22 @@ class DiffusionLoadRequest(BaseModel):
         return value.strip().lower() if isinstance(value, str) else value
 
 
+class LoraSpec(BaseModel):
+    """One LoRA adapter to apply for a generation, referenced by its discovery id.
+
+    The id is resolved against the backend's own LoRA catalog + local scan (see
+    core/inference/diffusion_lora.py); the client never supplies a raw filesystem
+    path, so an arbitrary file can't be loaded. Weight 0 disables the adapter.
+    """
+
+    id: str = Field(
+        ..., min_length = 1, max_length = 512, description = "LoRA discovery id (repo id or local stem)"
+    )
+    weight: float = Field(
+        1.0, ge = 0.0, le = 2.0, description = "Adapter strength; 0 disables, 1.0 is full strength"
+    )
+
+
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
@@ -1873,6 +1889,30 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Additional reference images (base64/data-URL) for the FLUX.2 reference "
         "workflow, combined with init_image. Up to 3; ignored by other workflows.",
     )
+    loras: Optional[list[LoraSpec]] = Field(
+        None,
+        max_length = 8,
+        description = "LoRA adapters to apply for this generation (by discovery id + weight). "
+        "Omitted/empty applies none and behaves exactly as before. Rejected with a clear "
+        "message when the loaded model or its quantisation can't apply LoRA.",
+    )
+
+    @field_validator("loras")
+    @classmethod
+    def _unique_lora_ids(cls, value: Optional[list[LoraSpec]]) -> Optional[list[LoraSpec]]:
+        # Both apply paths break alias collisions by suffixing the adapter name/file, so a
+        # repeated id would load the SAME adapter as several distinct adapters and stack
+        # its effect past the per-adapter weight bound. The UI already prevents duplicates;
+        # reject them for API clients too so each adapter takes effect at most once.
+        if value:
+            seen: set[str] = set()
+            for spec in value:
+                if spec.id in seen:
+                    raise ValueError(
+                        f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
+                    )
+                seen.add(spec.id)
+        return value
 
     @field_validator("reference_images")
     @classmethod
@@ -1913,6 +1953,9 @@ class GalleryImage(BaseModel):
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    loras: list[str] = Field(
+        default_factory = list, description = "LoRA adapters applied, formatted as 'id:weight'"
+    )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
 
 
@@ -2001,6 +2044,12 @@ class DiffusionStatusResponse(BaseModel):
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    supports_lora: bool = Field(
+        False,
+        description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
+        "LoRA picker's enabled state). False on unsupported families/quant (e.g. torchao fp8/int8 "
+        "dense, GGUF-via-diffusers, or Qwen-Image on the native engine).",
     )
 
 

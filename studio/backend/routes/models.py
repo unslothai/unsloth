@@ -2031,6 +2031,40 @@ async def scan_loras(
         )
 
 
+@router.get("/diffusion-loras")
+async def scan_diffusion_loras(
+    family: Optional[str] = Query(
+        default = None, description = "Filter to LoRAs compatible with this diffusion family"
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """List diffusion image LoRA adapters for the Images workflow.
+
+    Merges the curated catalog with local files in ``<studio_home>/loras/diffusion``,
+    optionally filtered to the loaded model's family. Cheap: one directory scan, no network
+    (a hub adapter is only downloaded when actually selected for a generation). Distinct from
+    ``/loras`` above, which lists trained/exported TEXT adapters.
+    """
+    from core.inference import diffusion_lora
+
+    entries = diffusion_lora.list_loras(family = family)
+    return {
+        "loras": [
+            {
+                "id": e.id,
+                "display_name": e.display_name,
+                "source": e.source,
+                "format": e.fmt,
+                "families": list(e.families),
+                "size_bytes": e.size_bytes,
+                "weight_default": e.weight_default,
+            }
+            for e in entries
+        ],
+        "loras_dir": str(diffusion_lora.loras_dir()),
+    }
+
+
 def _is_path_under(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())

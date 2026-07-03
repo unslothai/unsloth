@@ -412,6 +412,7 @@ def build_img_gen_request(
     cfg_scale: Optional[float] = None,
     distilled_guidance: Optional[float] = None,
     output_format: str = "png",
+    lora: Optional[list[dict]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -453,6 +454,11 @@ def build_img_gen_request(
         req["seed"] = int(seed)
     if sample_params:
         req["sample_params"] = sample_params
+    # Structured LoRA list: the sdcpp API resolves each ``path`` against the server's
+    # scanned ``--lora-model-dir`` (prompt-embedded ``<lora:>`` tags are intentionally
+    # unsupported server-side), so LoRAs must be staged there and named here.
+    if lora:
+        req["lora"] = lora
     return req
 
 

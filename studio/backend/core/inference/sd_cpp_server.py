@@ -121,6 +121,14 @@ class SdCppServer:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    @property
+    def lora_dir(self) -> Optional[str]:
+        """The server's ``--lora-model-dir`` scratch dir. Adapters staged here are picked
+        up per request (the sdcpp ``img_gen`` route refreshes its LoRA scan each call), so
+        server-mode LoRA works by materializing here and referencing the files via the
+        structured ``lora`` request field (the server ignores ``<lora:>`` prompt tags)."""
+        return self._scratch_dir
+
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
 

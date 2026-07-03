@@ -11161,6 +11161,7 @@ async def generate_diffusion_image(
             strength = request.strength,
             upscale = request.upscale,
             reference_images = request.reference_images,
+            loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
         )
     except ValueError as exc:
         # Bad client input (undecodable image/mask, or a workflow the loaded family
@@ -11220,6 +11221,9 @@ async def generate_diffusion_image(
                         # needs the original batch_size: persist it so restore can replay.
                         "batch_size": request.batch_size,
                         "model": result.get("repo_id"),
+                        "loras": (
+                            [f"{l.id}:{l.weight:g}" for l in request.loras] if request.loras else []
+                        ),
                         "created_at": created_at,
                     },
                 )

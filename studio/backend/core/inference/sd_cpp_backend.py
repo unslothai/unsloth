@@ -213,6 +213,8 @@ class _SdState:
     flow_shift: Optional[float] = None
     server: Optional[SdCppServer] = None
     mode: str = "server"
+    # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
+    hf_token: Optional[str] = None
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -571,6 +573,7 @@ class SdCppDiffusionBackend:
                     flow_shift = fam.sd_cpp_flow_shift,
                     server = server,
                     mode = mode,
+                    hf_token = hf_token,
                 )
                 with self._lock:
                     if self._load_token != _load_token:
@@ -706,10 +709,16 @@ class SdCppDiffusionBackend:
         upscale: Optional[float] = None,
         # Reference workflow is GPU/diffusers-only (FLUX.2); accepted for interface parity.
         reference_images: Optional[list[str]] = None,
+        # LoRA adapters as (id, weight) pairs; resolved up front, then applied per engine
+        # path: <lora:ALIAS:w> prompt tags for one-shot sd-cli, structured `lora` entries
+        # for the resident sd-server. None/empty = no LoRA.
+        loras: Optional[list[tuple[str, float]]] = None,
     ) -> dict[str, Any]:
         import tempfile
 
         from PIL import Image
+
+        from core.inference import diffusion_lora
 
         if (
             init_image is not None
@@ -748,6 +757,27 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
+                # Resolve any selected LoRA adapters up front (downloads land in the HF
+                # cache; a bad id fails here as a clear 400 before we generate). Drop
+                # weight-0 rows BEFORE the support gate: weight 0 disables an adapter, so a
+                # request carrying only disabled rows stays a no-op even on a family where
+                # native LoRA is unsupported, rather than 400 on a dead selection.
+                lora_resolved: list = []
+                active_loras = [(i, w) for (i, w) in (loras or []) if w != 0]
+                if active_loras:
+                    if not diffusion_lora.supports_lora(
+                        engine = "sd_cpp",
+                        family = state.family.name,
+                        model_kind = "gguf",
+                        transformer_quant = None,
+                    ):
+                        raise ValueError(
+                            f"LoRA is not supported for {state.family.name} on the native "
+                            "sd.cpp engine."
+                        )
+                    lora_resolved = diffusion_lora.resolve_specs(
+                        active_loras, hf_token = state.hf_token, cancel_event = cancel
+                    )
                 self._gen = _SdGen(total_steps = int(steps))
                 if state.mode == "server" and state.server is not None:
                     images, seeds = self._generate_server(
@@ -761,6 +791,7 @@ class SdCppDiffusionBackend:
                         batch_size = batch_size,
                         cfg_scale = cfg_scale,
                         flux_guidance = flux_guidance,
+                        lora_resolved = lora_resolved,
                         cancel = cancel,
                     )
                 else:
@@ -775,6 +806,7 @@ class SdCppDiffusionBackend:
                         batch_size = batch_size,
                         cfg_scale = cfg_scale,
                         flux_guidance = flux_guidance,
+                        lora_resolved = lora_resolved,
                         cancel = cancel,
                     )
                 if cancel.is_set():
@@ -808,6 +840,7 @@ class SdCppDiffusionBackend:
         batch_size: int,
         cfg_scale: Optional[float],
         flux_guidance: Optional[float],
+        lora_resolved: list,
         cancel: threading.Event,
     ) -> tuple[list, list[int]]:
         """Generate via the resident sd-server (no model reload).
@@ -818,10 +851,19 @@ class SdCppDiffusionBackend:
         signed-int64 range (the request model / diffusers accept larger seeds), and each
         chunk is submitted at base+offset so the per-image seeds stay reproducible. Each
         chunk gets a timeout proportional to its image count so a slow CPU batch is not
-        cancelled partway through on one fixed deadline."""
+        cancelled partway through on one fixed deadline.
+
+        LoRA on the server goes through the structured ``lora`` request field, NOT prompt
+        tags (the sdcpp API intentionally ignores ``<lora:>`` in the prompt). Selected
+        adapters are staged into the server's ``--lora-model-dir`` scratch dir, which the
+        server rescans per request, and referenced by their staged filename."""
         import io
+        import os
+        import shutil
 
         from PIL import Image
+
+        from core.inference import diffusion_lora
 
         assert state.server is not None
         total = max(1, int(batch_size))
@@ -830,40 +872,60 @@ class SdCppDiffusionBackend:
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
         seeds: list[int] = []
-        for offset in range(0, total, _MAX_SERVER_BATCH):
-            if cancel.is_set():
-                raise SdCppCancelled("sd-server generation was cancelled.")
-            count = min(_MAX_SERVER_BATCH, total - offset)
-            chunk_seed = (base_seed + offset) & ((1 << 63) - 1)
-            payload = build_img_gen_request(
-                prompt = prompt,
-                negative_prompt = negative_prompt or None,
-                width = int(width),
-                height = int(height),
-                steps = int(steps),
-                seed = chunk_seed,
-                batch_count = count,
-                sample_method = state.sampling_method,
-                flow_shift = state.flow_shift,
-                cfg_scale = cfg_scale,
-                distilled_guidance = flux_guidance,
-            )
-            blobs = state.server.img_gen(
-                payload,
-                on_step = self._on_log,
-                cancel_event = cancel,
-                total_timeout = _SERVER_PER_IMAGE_TIMEOUT_S * count,
-            )
-            # All-or-nothing per chunk, like the one-shot path: if the server returns fewer
-            # blobs than requested (e.g. one image in the batch failed to encode), fail
-            # rather than silently dropping images from the user's requested batch.
-            if not cancel.is_set() and len(blobs) != count:
-                raise RuntimeError(
-                    f"sd-server returned {len(blobs)} of {count} requested images in the batch."
+        # Stage selected LoRAs into a per-request subdir of the server's lora-model-dir so a
+        # previous request's adapters can't leak into this one; reference them by the path
+        # relative to that dir (what the server's recursive scan resolves against). The
+        # subdir is removed after the batch. supports_lora already gated the family upstream.
+        lora_payload: Optional[list[dict]] = None
+        lora_stage: Optional[Path] = None
+        if lora_resolved:
+            server_lora_dir = state.server.lora_dir
+            if server_lora_dir:
+                lora_stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
+                materialized = diffusion_lora.materialize_native_dir(lora_resolved, lora_stage)
+                lora_payload = [
+                    {"path": f"{lora_stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
+                    for m in materialized
+                ]
+        try:
+            for offset in range(0, total, _MAX_SERVER_BATCH):
+                if cancel.is_set():
+                    raise SdCppCancelled("sd-server generation was cancelled.")
+                count = min(_MAX_SERVER_BATCH, total - offset)
+                chunk_seed = (base_seed + offset) & ((1 << 63) - 1)
+                payload = build_img_gen_request(
+                    prompt = prompt,
+                    negative_prompt = negative_prompt or None,
+                    width = int(width),
+                    height = int(height),
+                    steps = int(steps),
+                    seed = chunk_seed,
+                    batch_count = count,
+                    sample_method = state.sampling_method,
+                    flow_shift = state.flow_shift,
+                    cfg_scale = cfg_scale,
+                    distilled_guidance = flux_guidance,
+                    lora = lora_payload,
                 )
-            images.extend(Image.open(io.BytesIO(b)).convert("RGB") for b in blobs)
-            # sd.cpp advances the seed per image within a job, so report chunk_seed+i.
-            seeds.extend((chunk_seed + i) & ((1 << 63) - 1) for i in range(len(blobs)))
+                blobs = state.server.img_gen(
+                    payload,
+                    on_step = self._on_log,
+                    cancel_event = cancel,
+                    total_timeout = _SERVER_PER_IMAGE_TIMEOUT_S * count,
+                )
+                # All-or-nothing per chunk, like the one-shot path: if the server returns fewer
+                # blobs than requested (e.g. one image in the batch failed to encode), fail
+                # rather than silently dropping images from the user's requested batch.
+                if not cancel.is_set() and len(blobs) != count:
+                    raise RuntimeError(
+                        f"sd-server returned {len(blobs)} of {count} requested images in the batch."
+                    )
+                images.extend(Image.open(io.BytesIO(b)).convert("RGB") for b in blobs)
+                # sd.cpp advances the seed per image within a job, so report chunk_seed+i.
+                seeds.extend((chunk_seed + i) & ((1 << 63) - 1) for i in range(len(blobs)))
+        finally:
+            if lora_stage is not None:
+                shutil.rmtree(lora_stage, ignore_errors = True)
         return images, seeds
 
     def _generate_oneshot(
@@ -879,12 +941,20 @@ class SdCppDiffusionBackend:
         batch_size: int,
         cfg_scale: Optional[float],
         flux_guidance: Optional[float],
+        lora_resolved: list,
         cancel: threading.Event,
     ) -> tuple[list, list[int]]:
-        """Fallback path: re-run one-shot sd-cli per image (reloads the model each time)."""
+        """Fallback path: re-run one-shot sd-cli per image (reloads the model each time).
+
+        LoRA on the one-shot path uses sd-cli's own mechanism: materialize the selected
+        adapters into a ``--lora-model-dir`` and inject matching ``<lora:ALIAS:w>`` tags
+        into the prompt (sd-cli parses and strips them). supports_lora already gated the
+        family upstream, so a non-empty ``lora_resolved`` is safe to apply here."""
         import tempfile
 
         from PIL import Image
+
+        from core.inference import diffusion_lora
 
         engine = self._resolve_engine()
         extra_args: list[str] = []
@@ -896,6 +966,17 @@ class SdCppDiffusionBackend:
         images = []
         seeds: list[int] = []
         with tempfile.TemporaryDirectory(prefix = "sdcpp_gen_") as tmpdir:
+            # Materialize selected LoRAs into a managed dir sd-cli can scan, and inject
+            # matching <lora:ALIAS:w> tags into the prompt (deduped against any the user
+            # typed). Empty -> prompt/dir unchanged.
+            eff_prompt = prompt
+            lora_dir: Optional[str] = None
+            if lora_resolved:
+                materialized = diffusion_lora.materialize_native_dir(
+                    lora_resolved, Path(tmpdir) / "loras"
+                )
+                eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
+                lora_dir = str(Path(tmpdir) / "loras")
             for index in range(max(1, int(batch_size))):
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -906,7 +987,7 @@ class SdCppDiffusionBackend:
                 seed_i = (seed + index) & ((1 << 63) - 1)
                 out_path = str(Path(tmpdir) / f"img_{index}.png")
                 params = SdCppGenParams(
-                    prompt = prompt,
+                    prompt = eff_prompt,
                     negative_prompt = negative_prompt or None,
                     width = int(width),
                     height = int(height),
@@ -916,6 +997,8 @@ class SdCppDiffusionBackend:
                     seed = seed_i,
                     sampling_method = state.sampling_method,
                     batch_count = 1,
+                    lora_dir = lora_dir,
+                    lora_apply_mode = "auto" if lora_dir else None,
                 )
                 engine.generate(
                     state.files,
@@ -1024,8 +1107,11 @@ class SdCppDiffusionBackend:
                 "transformer_cache": None,
                 "engine": "sd_cpp",
                 "native_mode": None,
+                "supports_lora": False,
                 "workflows": [],
             }
+        from core.inference import diffusion_lora
+
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -1048,6 +1134,12 @@ class SdCppDiffusionBackend:
             "attention_backend": None,
             "transformer_cache": None,
             "engine": "sd_cpp",
+            "supports_lora": diffusion_lora.supports_lora(
+                engine = "sd_cpp",
+                family = state.family.name,
+                model_kind = "gguf",
+                transformer_quant = None,
+            ),
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
             # The native engine supports plain text-to-image only (generate() rejects

@@ -92,6 +92,7 @@ class _FakeServer:
         self.payloads = []
         self.timeouts = []
         self.alive = True
+        self.lora_dir = None  # set by a test to the server's --lora-model-dir scratch dir
 
     def is_alive(self):
         return self.alive and not self.stopped
@@ -668,3 +669,86 @@ def test_run_load_redacts_paths_in_progress_error(monkeypatch):
         with npl._REDACTION_LOCK:
             if secret_root in npl._NATIVE_PATH_REDACTIONS:
                 npl._NATIVE_PATH_REDACTIONS.remove(secret_root)
+
+
+# ── LoRA (native engine) ────────────────────────────────────────────────────────
+
+
+def _fake_materialize(resolved, dest):
+    """Stand-in for diffusion_lora.materialize_native_dir: write a stub file per adapter
+    into ``dest`` and return the resolved list pointing at the written paths (mirroring the
+    real helper's contract without touching the Hub / real weights)."""
+    from pathlib import Path as _P
+
+    from core.inference import diffusion_lora as dl
+
+    dest.mkdir(parents = True, exist_ok = True)
+    out = []
+    for r in resolved:
+        p = _P(dest) / f"{r.alias}.safetensors"
+        p.write_bytes(b"stub")
+        out.append(dl.ResolvedLora(r.id, r.alias, str(p), r.fmt, r.weight))
+    return out
+
+
+def _patch_lora(monkeypatch, resolved, supported = True):
+    from core.inference import diffusion_lora as dl
+
+    monkeypatch.setattr(dl, "supports_lora", lambda **k: supported)
+    monkeypatch.setattr(dl, "resolve_specs", lambda specs, **k: list(resolved))
+    monkeypatch.setattr(dl, "materialize_native_dir", _fake_materialize)
+
+
+def test_generate_oneshot_applies_loras_via_prompt_tags(monkeypatch):
+    # One-shot sd-cli LoRA: adapters materialized into a --lora-model-dir and selected with
+    # <lora:ALIAS:w> tags injected into the prompt (the real inject_prompt_tags runs here).
+    from core.inference import diffusion_lora as dl
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)  # mode = "oneshot"
+    _patch_lora(monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.8)])
+    b.generate(prompt = "a fox", steps = 4, seed = 1, loras = [("id1", 0.8)])
+    _, params, _, _ = eng.calls[0]
+    assert params.lora_dir is not None and params.lora_apply_mode == "auto"
+    assert "<lora:myalias:0.8>" in params.prompt
+
+
+def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tmp_path):
+    # Server-mode LoRA rides the structured `lora` request field (the sdcpp API ignores
+    # <lora:> prompt tags): adapters staged into the server's --lora-model-dir, referenced
+    # by their path relative to it + the validated multiplier.
+    from pathlib import Path as _P
+
+    from core.inference import diffusion_lora as dl
+
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    servers[0].lora_dir = str(tmp_path)
+    _patch_lora(monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.7)])
+    b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    payload = servers[0].payloads[0]
+    assert "lora" in payload and len(payload["lora"]) == 1
+    assert payload["lora"][0]["multiplier"] == 0.7
+    assert payload["lora"][0]["path"].endswith("myalias.safetensors")
+    assert "<lora:" not in payload["prompt"]  # no prompt-tag mechanism on the server
+    # The per-request stage subdir under the server's lora dir is removed after the batch.
+    assert not list(_P(tmp_path).glob("gen_*"))
+
+
+def test_generate_rejects_loras_on_unsupported_family(monkeypatch):
+    b = _loaded_backend(engine = _FakeEngine())
+    _patch_lora(monkeypatch, [], supported = False)
+    with pytest.raises(ValueError, match = "LoRA is not supported"):
+        b.generate(prompt = "x", steps = 4, seed = 1, loras = [("id1", 1.0)])
+
+
+def test_generate_zero_weight_loras_are_noop(monkeypatch):
+    # weight-0 rows are dropped BEFORE the support gate, so a request carrying only disabled
+    # adapters stays a no-op even on a family where native LoRA is unsupported.
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    _patch_lora(monkeypatch, [], supported = False)  # would raise if the gate were reached
+    b.generate(prompt = "x", steps = 4, seed = 1, loras = [("id1", 0.0)])
+    _, params, _, _ = eng.calls[0]
+    assert params.lora_dir is None  # nothing applied
