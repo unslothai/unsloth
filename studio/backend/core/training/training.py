@@ -10,6 +10,8 @@ orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, 
 exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
+from __future__ import annotations
+
 import json as _json
 import math
 import multiprocessing as mp
@@ -24,7 +26,7 @@ import traceback
 import structlog
 from datetime import datetime, timezone
 from loggers import get_logger
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Tuple, Any, Callable, TYPE_CHECKING
 
@@ -122,6 +124,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     """Build the normalized worker config shared by Studio and the CLI adapter."""
     config = {
         "model_name": values["model_name"],
+        "project_name": values.get("project_name"),
         "training_type": values.get("training_type", "LoRA/QLoRA"),
         "hf_token": values.get("hf_token", ""),
         "load_in_4bit": values.get("load_in_4bit", True),
@@ -713,7 +716,8 @@ class _MLXTrainerAdapter:
             pump_thread.join(timeout = 5.0)
         if pump_thread is None or not pump_thread.is_alive():
             self._drain_events()
-        return self.training_progress
+        with self._lock:
+            return replace(self.training_progress)
 
 
 def create_mlx_trainer_adapter(*args, **kwargs):

@@ -341,6 +341,7 @@ def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch)
         dataset = dataset,
         eval_dataset = eval_dataset,
         output_dir = output_dir,
+        project_name = "Sales Assistant",
         max_steps = 1,
         learning_rate = 3e-4,
     )
@@ -350,7 +351,10 @@ def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch)
     config = captured["config"]
     assert progress.is_completed
     assert progress.output_dir == str(output_dir.resolve())
+    progress.status_message = "mutated"
+    assert trainer.get_training_progress().status_message == "done"
     assert config["model_name"] == "mlx-community/Qwen3-0.6B-4bit"
+    assert config["project_name"] == "Sales Assistant"
     assert config["hf_dataset"] == "org/dataset"
     assert config["training_type"] == "Full Finetuning"
     assert config["load_in_4bit"] is False
