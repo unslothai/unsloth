@@ -211,7 +211,8 @@ def _installed_torch_is_windows_rocm() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return probe.returncode == 0 and (probe.stdout or "").strip() == "yes"
+lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+return probe.returncode == 0 and bool(lines and lines[-1] == "yes")
 
 
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
