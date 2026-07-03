@@ -992,9 +992,13 @@ class InferenceBackend:
         # opener here, everything the model thinks renders as answer text on the
         # safetensors path (#6815). enable_thinking=False prompts end with an *empty*
         # `<think>\n\n</think>` block, not the bare opener, so they are unaffected.
-        if formatted_prompt.rstrip().endswith("<think>"):
-            yield "<think>"
-        yield from self.generate_stream(
+        # This generator yields *cumulative* snapshots (consumers diff each value
+        # against the previous one), so the synthetic opener must remain part of
+        # every subsequent snapshot rather than be emitted once on its own.
+        think_prefix = "<think>" if formatted_prompt.rstrip().endswith("<think>") else ""
+        if think_prefix:
+            yield think_prefix
+        for cumulative in self.generate_stream(
             formatted_prompt,
             temperature,
             top_p,
@@ -1004,7 +1008,8 @@ class InferenceBackend:
             repetition_penalty,
             cancel_event = cancel_event,
             _adapter_state = _adapter_state,
-        )
+        ):
+            yield think_prefix + cumulative
 
     def _generate_vision_response(
         self,
