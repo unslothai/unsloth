@@ -415,12 +415,15 @@ export function DiffusionTrainPanel({
   // than resetting in an effect) means a fresh run never inherits a stale "Stopping..." state.
   const stopRequested = running && stopRequestedLocal;
 
-  // Whether there is a run to show live (running or a not-yet-dismissed completed run).
-  // When false, the progress card + charts still render but grayed, as a preview.
+  // Whether there is a run to show live: running, or ANY terminal run (completed /
+  // stopped / error) the user has not dismissed yet. Dismissing must cover every
+  // terminal status, or "Train another" after a stop (and any error) would trap the
+  // run view with no way back to the settings.
+  const terminalStatuses = ["completed", "stopped", "error"];
   const hasRun = Boolean(
     status &&
       status.status !== "idle" &&
-      !(status.status === "completed" && status.job_id === dismissedJobId),
+      !(terminalStatuses.includes(status.status) && status.job_id === dismissedJobId),
   );
 
   // Notify the parent exactly once per run that produced an adapter (full completion or
@@ -1226,6 +1229,22 @@ export function DiffusionTrainPanel({
                   {stopRequested ? "Stopping..." : "Stop training"}
                 </Button>
               )}
+              {/* Terminal runs WITHOUT an adapter card (error, or a stop that discarded
+                  the run) still need a way back to the settings. */}
+              {!running &&
+                status &&
+                terminalStatuses.includes(status.status) &&
+                !completed &&
+                !stoppedWithAdapter && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="w-full"
+                    onClick={() => setDismissedJobId(status.job_id)}
+                  >
+                    Back to settings
+                  </Button>
+                )}
             </div>
 
             {(completed || stoppedWithAdapter) && (
