@@ -10599,9 +10599,7 @@ async def _openai_passthrough_stream(
         )
         send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
 
-        async def _aclose_send_task(
-            task: Optional[asyncio.Task[Optional[httpx.Response]]]
-        ) -> None:
+        async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
             if task is None:
                 return
             if not task.done():
@@ -10618,9 +10616,7 @@ async def _openai_passthrough_stream(
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 send_task = asyncio.create_task(
-                    _send_stream_with_preheader_cancel(
-                        client, req, cancel_event, request = request
-                    )
+                    _send_stream_with_preheader_cancel(client, req, cancel_event, request = request)
                 )
                 done, _ = await asyncio.wait(
                     {send_task},
@@ -10774,9 +10770,7 @@ async def _openai_passthrough_stream(
                     )
                     return
 
-                cancel_watcher = asyncio.create_task(
-                    _await_cancel_then_close(cancel_event, resp)
-                )
+                cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
