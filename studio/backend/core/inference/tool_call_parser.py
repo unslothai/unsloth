@@ -285,7 +285,10 @@ _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 # ``_GEMMA_BARE_TC_RE`` so the streaming buffer holds ``call : web_search`` (not just
 # the exact ``call:`` spelling) instead of leaking it as visible text.
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
-_GEMMA_KEY_RE = re.compile(r"\s*([\w\.\-]+)\s*:")
+# Keys must start with a letter/underscore so a comma followed by a time or
+# ratio inside a value (``query:meet at 10:00, 11:00``) is not misread as a new
+# ``11:``-style key, matching the wrapped path's _GEMMA_NEXT_KEY_RE.
+_GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
 def _balanced_bracket_end(text: str, start: int) -> int | None:

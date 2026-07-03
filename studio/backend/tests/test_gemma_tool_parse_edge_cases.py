@@ -68,6 +68,17 @@ def test_bare_value_with_timestamps_after_comma_is_kept():
     assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow", "priority": "high"}
 
 
+def test_wrapperless_bare_value_with_timestamps_after_comma_is_kept():
+    # The wrapper-less Gemma form (no <|tool_call> markers) goes through the
+    # _gemma_parse_stripped_body scanner and its _GEMMA_KEY_RE. A comma followed
+    # by a time/ratio is value text, not a new key, so the whole query must be
+    # preserved as one argument -- matching the wrapped path above.
+    calls = parse_tool_calls_from_text("call:web_search{query:meet at 10:00, 11:00 tomorrow}")
+    assert len(calls) == 1, calls
+    assert calls[0]["function"]["name"] == "web_search"
+    assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow"}
+
+
 def test_marker_inside_json_argument_is_not_a_second_call():
     # A python call whose `code` argument contains a Gemma marker string. The
     # marker is data and must not execute as a second `terminal` call.
