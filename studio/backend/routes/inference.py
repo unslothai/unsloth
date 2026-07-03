@@ -10593,7 +10593,12 @@ async def _openai_passthrough_stream(
         if not task.done():
             task.cancel()
         try:
-            await task
+            task_resp = await task
+            if task_resp is not None:
+                try:
+                    await task_resp.aclose()
+                except Exception:
+                    pass
         except (asyncio.CancelledError, Exception):
             pass
 

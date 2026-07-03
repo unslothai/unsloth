@@ -2307,6 +2307,77 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_stream_unstarted_cleanup_closes_completed_send_response(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+            returned = asyncio.Event()
+            cancel_id = "unstarted-completed-send-cleanup"
+
+            class Stream(httpx.AsyncByteStream):
+                async def __aiter__(self):
+                    if False:
+                        yield b""
+
+            stream = Stream()
+            upstream_response = httpx.Response(200, stream = stream)
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                returned.set()
+                return upstream_response
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                cancel_id = cancel_id,
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
+
+            gate.set()
+            await asyncio.wait_for(returned.wait(), timeout = 0.2)
+            await asyncio.sleep(0)
+            await response._unstarted_cleanup()
+            assert upstream_response.is_closed
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+
+        asyncio.run(_run())
+
     def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
