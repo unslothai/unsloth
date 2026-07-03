@@ -7,7 +7,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 THREAD_TSX = REPO / "studio/frontend/src/components/assistant-ui/thread.tsx"
-DETAILS_TSX = REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
+DETAILS_TSX = (
+    REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
+)
 REASONING_TSX = REPO / "studio/frontend/src/components/assistant-ui/reasoning.tsx"
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
 CHAT_PREFS_TS = REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
@@ -69,9 +71,7 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     assert "toolCalls: Array.from(" in src
     assert "!isExternalRequest && supportsTools && toolsEnabled" in src
     assert "!isExternalRequest && supportsTools && codeToolsEnabled" in src
-    assert re.search(
-        r"selectedModelSummary\?\.name\s*\|\|\s*responseModelId", src
-    )
+    assert re.search(r"selectedModelSummary\?\.name\s*\|\|\s*responseModelId", src)
     assert "providerName" in src
     assert "cancelId" in src
     metadata_block = src[
