@@ -140,7 +140,6 @@ def train_precision_modes() -> tuple[list[str], str]:
     recommended = "nf4"
     try:
         import torch
-
         if torch.cuda.is_available():
             modes += ["bf16", "int8"]
             major, minor = torch.cuda.get_device_capability()

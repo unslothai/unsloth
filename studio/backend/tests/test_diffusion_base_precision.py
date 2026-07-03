@@ -172,7 +172,6 @@ def test_train_precision_modes_no_cuda(monkeypatch):
     # Patch the torch module attribute the function imports so it observes a CPU-only box:
     # no CUDA -> the nf4-only floor with nf4 recommended, and it never raises.
     import torch
-
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert train_precision_modes() == (["nf4"], "nf4")
 

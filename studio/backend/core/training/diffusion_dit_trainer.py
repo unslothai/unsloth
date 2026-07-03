@@ -267,7 +267,6 @@ def _apply_fp8_training(transformer, on_event) -> bool:
     LoRA modules. Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
         from torchao.float8 import Float8LinearConfig, convert_to_float8_training
-
         convert_to_float8_training(
             transformer,
             module_filter_fn = _fp8_module_filter,
@@ -827,7 +826,12 @@ def _sample_cached_latents(cache, idxs, variant_rng, device):
     return lat_a + lat_b * torch.randn_like(lat_a)
 
 
-def _should_compile(cfg, base_is_bnb, device, base_precision = "nf4") -> bool:
+def _should_compile(
+    cfg,
+    base_is_bnb,
+    device,
+    base_precision = "nf4",
+) -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
@@ -844,7 +848,12 @@ def _should_compile(cfg, base_is_bnb, device, base_precision = "nf4") -> bool:
 
 
 def _maybe_compile_transformer(
-    transformer, cfg, base_is_bnb, device, on_event, base_precision = "nf4"
+    transformer,
+    cfg,
+    base_is_bnb,
+    device,
+    on_event,
+    base_precision = "nf4",
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after
     the LoRA is attached. Never fatal: a wrap failure falls back to eager with a warning
