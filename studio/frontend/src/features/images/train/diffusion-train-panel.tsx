@@ -396,6 +396,12 @@ export function DiffusionTrainPanel({
   const running = Boolean(status?.active) || status?.status === "running";
   const completed =
     status?.status === "completed" && status.job_id !== dismissedJobId;
+  // "Stop and save" ends the run as "stopped" WITH a saved partial adapter; it must get
+  // the same ready-to-deploy card as a full run (only a no-save stop has nothing to show).
+  const stoppedWithAdapter =
+    status?.status === "stopped" &&
+    Boolean(status?.lora_path) &&
+    status.job_id !== dismissedJobId;
   const pct =
     status && status.total_steps > 0
       ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
@@ -413,16 +419,20 @@ export function DiffusionTrainPanel({
       !(status.status === "completed" && status.job_id === dismissedJobId),
   );
 
-  // Notify the parent exactly once per completed run so it rescans the LoRA picker.
+  // Notify the parent exactly once per run that produced an adapter (full completion or
+  // stop-and-save) so it rescans the LoRA picker.
   const notifiedComplete = useRef(false);
   useEffect(() => {
-    if (status?.status === "completed" && !notifiedComplete.current) {
+    const producedAdapter =
+      status?.status === "completed" ||
+      (status?.status === "stopped" && Boolean(status?.lora_path));
+    if (producedAdapter && !notifiedComplete.current) {
       notifiedComplete.current = true;
       onTrainingComplete?.();
     } else if (status?.status === "running" && notifiedComplete.current) {
       notifiedComplete.current = false;
     }
-  }, [status?.status, onTrainingComplete]);
+  }, [status?.status, status?.lora_path, onTrainingComplete]);
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
@@ -1095,12 +1105,16 @@ export function DiffusionTrainPanel({
           </div>
         )}
 
-        {completed && (
+        {(completed || stoppedWithAdapter) && (
           <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
-            <span className="text-sm font-semibold">Adapter ready</span>
+            <span className="text-sm font-semibold">
+              {completed ? "Adapter ready" : "Partial adapter saved"}
+            </span>
             <p className="text-[11px] text-muted-foreground">
-              Trained{status?.family ? ` (${status.family})` : ""} and added to the LoRA
-              picker.
+              {completed
+                ? "Trained"
+                : "Stopped early; the adapter as of the last finished step was saved"}
+              {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
               {status?.lora_path && (
                 <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
               )}
