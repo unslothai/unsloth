@@ -174,3 +174,21 @@ def test_audio_input_generation_bails_when_unload_pending(monkeypatch):
     # Lock released so the pending unload can proceed.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
+
+
+def test_audio_response_bails_when_unload_pending(monkeypatch):
+    # TTS (generate_audio_response) is blocking, so it RAISES rather than starting on the
+    # outgoing model mid-switch; it takes _gen_lock and must release it either way.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send audio generate mid-switch")
+    )
+    o._unload_pending = True
+
+    with pytest.raises(RuntimeError, match = "unload"):
+        o.generate_audio_response("hello")
+
+    # Lock released so the pending unload can proceed.
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()

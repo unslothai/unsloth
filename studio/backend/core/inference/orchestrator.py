@@ -1200,52 +1200,60 @@ class InferenceOrchestrator:
         if not self.active_model_name:
             raise RuntimeError("No active model")
 
-        request_id = str(uuid.uuid4())
+        # Serialize under _gen_lock (sole resp_queue reader) and refuse to start on the
+        # outgoing model once an unload is pending, matching the text (generate_chat_response)
+        # and audio-input (_generate_audio_input_inner) paths. Without this a concurrent
+        # /audio/generate could run TTS on the model being switched out.
+        with self._gen_lock:
+            if self._unload_pending:
+                raise RuntimeError("model is being unloaded")
 
-        cmd = {
-            "type": "generate_audio",
-            "request_id": request_id,
-            "text": text,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "min_p": min_p,
-            "max_new_tokens": max_new_tokens,
-            "repetition_penalty": repetition_penalty,
-        }
-        if use_adapter is not None:
-            cmd["use_adapter"] = use_adapter
+            request_id = str(uuid.uuid4())
 
-        self._send_cmd(cmd)
+            cmd = {
+                "type": "generate_audio",
+                "request_id": request_id,
+                "text": text,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "min_p": min_p,
+                "max_new_tokens": max_new_tokens,
+                "repetition_penalty": repetition_penalty,
+            }
+            if use_adapter is not None:
+                cmd["use_adapter"] = use_adapter
 
-        # Wait for audio_done or audio_error
-        deadline = time.monotonic() + 120.0
-        while time.monotonic() < deadline:
-            remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 1.0))
+            self._send_cmd(cmd)
 
-            if resp is None:
-                if not self._ensure_subprocess_alive():
-                    raise RuntimeError(self._subprocess_crash_message("audio generation"))
-                continue
+            # Wait for audio_done or audio_error
+            deadline = time.monotonic() + 120.0
+            while time.monotonic() < deadline:
+                remaining = max(0.1, deadline - time.monotonic())
+                resp = self._read_resp(timeout = min(remaining, 1.0))
 
-            rtype = resp.get("type", "")
+                if resp is None:
+                    if not self._ensure_subprocess_alive():
+                        raise RuntimeError(self._subprocess_crash_message("audio generation"))
+                    continue
 
-            if rtype == "audio_done":
-                wav_bytes = base64.b64decode(resp["wav_base64"])
-                sample_rate = resp["sample_rate"]
-                return wav_bytes, sample_rate
+                rtype = resp.get("type", "")
 
-            if rtype == "audio_error":
-                raise RuntimeError(resp.get("error", "Audio generation failed"))
+                if rtype == "audio_done":
+                    wav_bytes = base64.b64decode(resp["wav_base64"])
+                    sample_rate = resp["sample_rate"]
+                    return wav_bytes, sample_rate
 
-            if rtype == "error":
-                raise RuntimeError(resp.get("error", "Unknown error"))
+                if rtype == "audio_error":
+                    raise RuntimeError(resp.get("error", "Audio generation failed"))
 
-            if rtype == "status":
-                continue
+                if rtype == "error":
+                    raise RuntimeError(resp.get("error", "Unknown error"))
 
-        raise RuntimeError("Timeout waiting for audio generation (120s)")
+                if rtype == "status":
+                    continue
+
+            raise RuntimeError("Timeout waiting for audio generation (120s)")
 
     def generate_whisper_response(
         self,
