@@ -9011,6 +9011,7 @@ async def anthropic_messages(
                 message_id,
                 model_name,
                 disable_parallel_tool_use = _disable_parallel,
+                openai_tools = openai_tools,
             )
         )
 
@@ -9063,6 +9064,11 @@ async def _anthropic_tool_stream(
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
+
+    # Gate the display strip on the declared tools, like the GGUF/safetensors
+    # paths: an inactive-name NAME[ARGS]{...} in a final answer is prose, not a
+    # call, so it must survive in the delivered text.
+    _display_names = _display_tool_name_gate(openai_tools)
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
@@ -9123,7 +9129,9 @@ async def _anthropic_tool_stream(
                 if etype == "content":
                     event = dict(event)
                     event["text"] = _strip_tool_xml_for_display(
-                        event["text"], auto_heal_tool_calls = True
+                        event["text"],
+                        auto_heal_tool_calls = True,
+                        enabled_tool_names = _display_names,
                     )
                 # disable_parallel_tool_use: keep only the first tool_use block,
                 # dropping every later tool_start and its paired tool_end (robust
@@ -9282,6 +9290,7 @@ async def _anthropic_tool_non_streaming(
     message_id,
     model_name,
     disable_parallel_tool_use = False,
+    openai_tools = None,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -9300,6 +9309,10 @@ async def _anthropic_tool_non_streaming(
     usage = {}
     prev_text = ""
     captured_finish_reason = None
+    # Gate the display strip on the declared tools, like the GGUF/safetensors
+    # paths: an inactive-name NAME[ARGS]{...} in a final answer is prose, not a
+    # call, so it must survive in the delivered text.
+    _display_names = _display_tool_name_gate(openai_tools)
     # Pending client tool_use; cleared by tool_end (server execution) or
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
@@ -9311,7 +9324,9 @@ async def _anthropic_tool_non_streaming(
         if etype == "content":
             # Strip leaked tool-call XML (protected helper: preserves <think>
             # rehearsal and balanced [TOOL_CALLS] trailing prose).
-            clean = _strip_tool_xml_for_display(event["text"], auto_heal_tool_calls = True)
+            clean = _strip_tool_xml_for_display(
+                event["text"], auto_heal_tool_calls = True, enabled_tool_names = _display_names
+            )
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
