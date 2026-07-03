@@ -2034,7 +2034,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_passthrough_stream_preheader_delayed_context_error_keeps_error_envelope(self, monkeypatch):
+    def test_passthrough_stream_preheader_delayed_context_error_keeps_error_envelope(
+        self, monkeypatch
+    ):
         async def _run():
             import routes.inference as inf_mod
 
