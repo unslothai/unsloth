@@ -699,14 +699,18 @@ class InferenceOrchestrator:
                 return
         logger.warning("Timed out draining mailbox after cancel")
 
-    def _wait_dispatcher_idle(self) -> None:
+    def _wait_dispatcher_idle(self) -> bool:
         """Wait for all dispatched requests to complete, then stop dispatcher.
 
-        Called by _generate_inner before the _gen_lock path so the dispatcher
-        thread isn't competing for resp_queue reads.
+        Returns True if the dispatcher was stopped (all mailboxes drained, or no
+        dispatcher was running), and False if it was left running because compare
+        requests were still active after _DISPATCH_IDLE_TIMEOUT.
+
+        Called before the _gen_lock path so the dispatcher thread isn't competing
+        for resp_queue reads.
         """
         if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
-            return
+            return True
 
         # Wait for all mailboxes to be emptied (dispatched requests complete)
         deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
@@ -727,8 +731,9 @@ class InferenceOrchestrator:
                 "leaving dispatcher running for compare requests",
                 len(self._mailboxes),
             )
-        else:
-            self._stop_dispatcher()
+            return False
+        self._stop_dispatcher()
+        return True
 
     # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend
@@ -905,7 +910,23 @@ class InferenceOrchestrator:
             try:
                 # Stop the compare-mode dispatcher so it can't consume the
                 # "unloaded" reply off the shared resp_queue before we read it.
-                self._wait_dispatcher_idle()
+                # A dispatched (compare-mode) generation bypasses _gen_lock, so a
+                # wedged one slips past the acquire guard above; if the dispatcher
+                # is still active after the idle wait it still owns resp_queue (it
+                # would drop the request_id-less "unloaded" reply) and the queued
+                # unload sits behind the stuck generate, hanging _wait_response for
+                # its full timeout. Mirror the wedged locked-generation path: tear
+                # the subprocess down to free the GPU; the next load spawns fresh.
+                if not self._wait_dispatcher_idle():
+                    logger.warning(
+                        "Unload: compare-mode dispatcher still active after idle "
+                        "wait; shutting the inference subprocess down to free the model"
+                    )
+                    self._shutdown_subprocess(timeout = 5)
+                    self.models.pop(model_name, None)
+                    if self.active_model_name == model_name:
+                        self.active_model_name = None
+                    return True
                 # Drop stale tokens so they can't be read as the unload reply.
                 self._drain_queue()
                 self._send_cmd(

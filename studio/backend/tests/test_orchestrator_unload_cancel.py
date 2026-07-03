@@ -5,6 +5,7 @@ The sequential subprocess used to queue ``unload`` behind a running ``generate``
 hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker checks
 each token) and takes ``_gen_lock`` before the unload round-trip.
 """
+
 import threading
 import time
 
@@ -98,13 +99,58 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
     assert o.active_model_name is None
 
 
+def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
+    # A wedged compare-mode generation bypasses _gen_lock, so the acquire guard
+    # does not catch it and _wait_dispatcher_idle leaves the dispatcher running.
+    # Proceeding to _send_cmd/_wait_response would then hang on resp_queue (the
+    # dispatcher drops the request_id-less "unloaded" reply). Unload must instead
+    # tear the subprocess down, like the wedged locked-generation path.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.2)
+
+    # A live dispatcher whose mailbox never drains == a wedged compare-mode gen.
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {"req-1": object()}
+
+    class _AliveThread:
+        def is_alive(self):
+            return True
+
+    o._dispatcher_thread = _AliveThread()
+
+    shutdown = []
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(o, "_drain_queue", lambda: [])
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send unload with a wedged dispatcher")
+    )
+    monkeypatch.setattr(
+        o,
+        "_wait_response",
+        lambda t, timeout = 300.0: pytest.fail(
+            "must not wait on resp_queue with a wedged dispatcher"
+        ),
+    )
+
+    # _gen_lock is free (compare mode never took it), so the acquire guard passes.
+    ok = o.unload_model("m")
+
+    assert ok is True
+    assert shutdown, "should tear the subprocess down to free the GPU"
+    assert o.active_model_name is None
+    assert "m" not in o.models
+
+
 def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     # After a wedged-worker teardown a fresh load swaps _proc/_resp_queue; the
     # still-live generation thread must detect the swap and bail, not re-block on
     # the new queue while holding _gen_lock.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(o, "_subprocess_crash_message", lambda ctx: "inference subprocess restarted")
+    monkeypatch.setattr(
+        o, "_subprocess_crash_message", lambda ctx: "inference subprocess restarted"
+    )
 
     def read_one(timeout):
         o._proc = object()  # simulate the reload swapping the subprocess
@@ -153,7 +199,9 @@ def test_dispatched_generation_bails_when_unload_pending(monkeypatch):
     monkeypatch.setattr(
         o, "_start_dispatcher", lambda: pytest.fail("must not start a generation mid-switch")
     )
-    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send generate mid-switch"))
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate mid-switch")
+    )
     o._unload_pending = True
 
     out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
@@ -165,7 +213,9 @@ def test_audio_input_generation_bails_when_unload_pending(monkeypatch):
     # The audio path takes _gen_lock but must also skip the outgoing model mid-switch.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send generate mid-switch"))
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate mid-switch")
+    )
     o._unload_pending = True
 
     out = list(o._generate_audio_input_inner(audio_array = [0.0, 0.1]))
