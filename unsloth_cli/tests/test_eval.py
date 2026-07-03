@@ -1205,3 +1205,122 @@ def test_eval_hf_token_sets_env(fake_eval_env, tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert os.environ.get("HF_TOKEN") == "hf_secret"
+
+
+def test_resolve_tasks_dataset_before_group_still_avoids_child_names(tmp_path):
+    # argument order must not decide the generated task's name
+    (tmp_path / "suite.yaml").write_text(
+        yaml.safe_dump({"group": "suite", "task": ["qa", {"task": "qa_inline"}]})
+    )
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    tmp_dir = tmp_path / "gen"
+
+    names, _ = evalmod.resolve_tasks(
+        f"{tmp_path / 'qa.jsonl'},{tmp_path / 'suite.yaml'}", "question", "answer", tmp_dir
+    )
+
+    assert names == ["qa_2", "suite"]
+    assert (tmp_dir / "generated" / "qa_2.yaml").exists()
+
+
+def test_resolve_tasks_rejects_builtin_child_shadowed_by_sibling(tmp_path):
+    (tmp_path / "suite.yaml").write_text(yaml.safe_dump({"group": "suite", "task": ["gsm8k"]}))
+    (tmp_path / "gsm8k.yaml").write_text(
+        yaml.safe_dump({"task": "gsm8k", "dataset_path": "json"})
+    )
+    with pytest.raises(ValueError, match = "depends on the lm-eval version"):
+        evalmod.resolve_tasks(
+            str(tmp_path / "suite.yaml"),
+            "question",
+            "answer",
+            tmp_path / "gen",
+            reserved = frozenset({"gsm8k"}),
+        )
+
+
+def test_resolve_tasks_allows_group_of_builtins_without_siblings(tmp_path):
+    # a suite that aggregates registered tasks is legitimate lm-eval usage
+    (tmp_path / "suite.yaml").write_text(
+        yaml.safe_dump({"group": "suite", "task": ["gsm8k", "mmlu"]})
+    )
+
+    names, _ = evalmod.resolve_tasks(
+        str(tmp_path / "suite.yaml"),
+        "question",
+        "answer",
+        tmp_path / "gen",
+        reserved = frozenset({"gsm8k", "mmlu"}),
+    )
+
+    assert names == ["suite"]
+
+
+def test_resolve_tasks_rejects_include_order_dependent_name(tmp_path):
+    # lm-eval versions disagree on include precedence, so a name that changes
+    # with the merge order must be rejected
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump({"task": "name_a"}))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump({"task": "name_b"}))
+    child = tmp_path / "child.yaml"
+    child.write_text(yaml.safe_dump({"include": ["a.yaml", "b.yaml"], "dataset_path": "json"}))
+
+    with pytest.raises(ValueError, match = "include order"):
+        evalmod.resolve_tasks(str(child), "question", "answer", tmp_path / "gen")
+
+
+def test_resolve_tasks_accepts_local_name_over_include_conflict(tmp_path):
+    # a top-level task: settles the name on every lm-eval version
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump({"task": "name_a"}))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump({"task": "name_b"}))
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        yaml.safe_dump({"include": ["a.yaml", "b.yaml"], "task": "mine", "dataset_path": "json"})
+    )
+
+    names, _ = evalmod.resolve_tasks(str(child), "question", "answer", tmp_path / "gen")
+
+    assert names == ["mine"]
+
+
+def test_load_task_spec_resolves_includes_against_parent_dir(tmp_path, monkeypatch):
+    # lm-eval resolves relative includes against the including file, never cwd
+    task_dir = tmp_path / "tasks"
+    decoy_dir = tmp_path / "decoy"
+    task_dir.mkdir()
+    decoy_dir.mkdir()
+    (task_dir / "base.yaml").write_text(yaml.safe_dump({"task": "right"}))
+    (decoy_dir / "base.yaml").write_text(yaml.safe_dump({"task": "wrong"}))
+    child = task_dir / "child.yaml"
+    child.write_text(yaml.safe_dump({"include": "base.yaml", "dataset_path": "json"}))
+    monkeypatch.chdir(decoy_dir)
+
+    spec = evalmod._load_task_spec(child)
+
+    assert spec["task"] == "right"
+
+
+def test_json_default_preserves_numeric_scalars():
+    class _FakeNumpyScalar:
+        def tolist(self):
+            return 3
+
+    dumped = json.dumps({"n": _FakeNumpyScalar(), "s": {1, 2}}, default = evalmod._json_default)
+
+    parsed = json.loads(dumped)
+    assert parsed["n"] == 3
+    assert isinstance(parsed["s"], str)
+
+
+def test_resolve_tasks_rejects_builtin_child_shadowed_in_subdirectory(tmp_path):
+    # lm-eval indexes include paths recursively, so a nested sibling shadows too
+    (tmp_path / "suite.yaml").write_text(yaml.safe_dump({"group": "suite", "task": ["gsm8k"]}))
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    (nested / "gsm8k.yaml").write_text(yaml.safe_dump({"task": "gsm8k", "dataset_path": "json"}))
+    with pytest.raises(ValueError, match = "depends on the lm-eval version"):
+        evalmod.resolve_tasks(
+            str(tmp_path / "suite.yaml"),
+            "question",
+            "answer",
+            tmp_path / "gen",
+            reserved = frozenset({"gsm8k"}),
+        )

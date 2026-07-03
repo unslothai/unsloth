@@ -171,29 +171,50 @@ _TaskYamlLoader.add_multi_constructor(
 )
 
 
-def _load_task_spec(path: Path, depth: int = 0) -> dict:
+def _load_task_spec(path: Path, depth: int = 0, first_include_wins: bool = False) -> dict:
     # the task/group name may live in an included base config, which lm-eval
     # resolves during indexing — mirror that (child keys override the base);
-    # depth-limited in case of include cycles
+    # depth-limited in case of include cycles. Current lm-eval merges include
+    # lists in listed order (later wins); some older releases merged in
+    # reverse, so callers compare both orders and reject specs whose name
+    # depends on it.
     spec = yaml.load(path.read_text(encoding = "utf-8"), Loader = _TaskYamlLoader) or {}
     includes = spec.get("include") if isinstance(spec, dict) else None
-    if not includes or depth >= 3:
+    if not includes or depth >= 8:
         return spec
     if isinstance(includes, str):
         includes = [includes]
+    ordered = list(reversed(includes)) if first_include_wins else list(includes)
     merged: dict = {}
-    for include in includes:
+    for include in ordered:
+        # lm-eval resolves relative includes against the including file's
+        # directory, never the current working directory
         include_path = Path(include)
-        if not include_path.is_file():
+        if not include_path.is_absolute():
             include_path = path.parent / include
         try:
-            base = _load_task_spec(include_path, depth + 1)
+            base = _load_task_spec(include_path, depth + 1, first_include_wins)
         except (OSError, yaml.YAMLError):
             continue
         if isinstance(base, dict):
             merged.update(base)
     merged.update(spec)
     return merged
+
+
+def _sibling_defines_task(directory: Path, group_file: Path, child: str) -> bool:
+    # rglob: lm-eval indexes include paths recursively, so a child yaml in a
+    # subdirectory shadows just the same
+    for sibling in sorted(directory.rglob("*.yaml")):
+        if sibling == group_file:
+            continue
+        try:
+            spec = _load_task_spec(sibling)
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(spec, dict) and isinstance(spec.get("task"), str) and spec["task"] == child:
+            return True
+    return False
 
 
 def _doc_column(key: str) -> str:
@@ -244,7 +265,9 @@ def make_jsonl_task(
         "doc_to_text": _doc_column(input_key),
         "doc_to_target": _doc_column(target_key),
         "generation_kwargs": {"until": ["\n"]},
-        # strip surrounding whitespace so " 2" matches gold "2"
+        # strip surrounding whitespace so " 2" matches gold "2": lm-eval's
+        # regex filter runs re.findall, which with one capture group yields
+        # the group's text; group_select indexes those matches, not groups
         "filter_list": [
             {
                 "name": "strip",
@@ -271,9 +294,13 @@ def resolve_tasks(
     tmp_dir: Path,
     reserved: frozenset = frozenset(),
 ) -> Tuple[List[str], List[str]]:
-    names: List[str] = []
     include_paths: List[str] = []
     sibling_names: set = set()
+    yaml_names: set = set()
+    # (kind, value) in argument order; datasets are generated in a second
+    # pass so every yaml/group/child name is known first — the names a
+    # generated task gets must not depend on argument order
+    entries: List[Tuple[str, object]] = []
 
     def _add_include(directory: str) -> None:
         if directory not in include_paths:
@@ -296,16 +323,50 @@ def resolve_tasks(
                 raise ValueError(f"Invalid YAML in custom task file '{entry}': {e}") from e
             if not isinstance(spec, dict):
                 raise ValueError(f"Custom task file '{entry}' must define a YAML mapping.")
+            if "include" in spec:
+                # lm-eval versions disagree on include precedence (older ones
+                # merged last-to-first), so a name that changes with the merge
+                # order cannot be trusted on either side
+                alt = _load_task_spec(path, first_include_wins = True) or {}
+                if isinstance(alt, dict) and (spec.get("task"), spec.get("group")) != (
+                    alt.get("task"),
+                    alt.get("group"),
+                ):
+                    raise ValueError(
+                        f"Custom task file '{entry}' gets its task/group name from its "
+                        "include: files, and the winner depends on the lm-eval version's "
+                        "include order. Set 'task:' (or 'group:') in the top-level file."
+                    )
             name = spec.get("task")
             if isinstance(name, list):
                 # a group file (group: suite, task: [a, b]) is registered
                 # under its group name; its child task names are taken too,
                 # so later dataset entries must not generate a clashing task
                 for child in name:
+                    child_name = None
                     if isinstance(child, str):
-                        sibling_names.add(child)
+                        child_name = child
                     elif isinstance(child, dict) and child.get("task"):
-                        sibling_names.add(str(child["task"]))
+                        child_name = str(child["task"])
+                    if not child_name:
+                        continue
+                    sibling_names.add(child_name)
+                    # a string child that names a registered task AND a sibling
+                    # yaml is ambiguous: which one runs depends on the lm-eval
+                    # version's registry precedence
+                    if (
+                        isinstance(child, str)
+                        and child_name in reserved
+                        and _sibling_defines_task(
+                            path.resolve().parent, path.resolve(), child_name
+                        )
+                    ):
+                        raise ValueError(
+                            f"Custom task file '{entry}' lists child task '{child_name}', "
+                            "which is both a registered lm-eval task and defined by a "
+                            "sibling YAML in the same directory — which one runs depends "
+                            "on the lm-eval version. Rename the sibling task."
+                        )
                 name = spec.get("group")
                 if not name:
                     raise ValueError(
@@ -320,7 +381,7 @@ def resolve_tasks(
                     "registered lm-eval task — the registered one would silently win. "
                     "Rename the task in the YAML."
                 )
-            if name in names:
+            if name in yaml_names:
                 raise ValueError(f"Duplicate task name '{name}' in --tasks.")
             if "include" in spec or isinstance(spec.get("task"), list) or "!function" in text:
                 # include-bearing, group and !function configs reference
@@ -343,34 +404,58 @@ def resolve_tasks(
                 custom_dir.mkdir(parents = True, exist_ok = True)
                 shutil.copy2(path, custom_dir / f"{name}.yaml")
                 _add_include(str(custom_dir.resolve()))
-            names.append(name)
+            yaml_names.add(name)
+            entries.append(("yaml", name))
 
         elif suffix in {".jsonl", ".json", ".csv"}:
             path = Path(entry)
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
+            entries.append(("dataset", path))
+
+        else:
+            entries.append(("plain", entry))
+
+    names: List[str] = []
+    for kind, value in entries:
+        if kind == "dataset":
             gen_dir = Path(tmp_dir) / "generated"
-            # names picked so far count as taken too (foo.yaml + foo.jsonl),
-            # as do child tasks declared by a group yaml
+            # every yaml task, group child and earlier name counts as taken
             names.append(
                 make_jsonl_task(
-                    path,
+                    value,
                     input_key,
                     target_key,
                     gen_dir,
-                    reserved | frozenset(names) | frozenset(sibling_names),
+                    reserved | frozenset(names) | yaml_names | frozenset(sibling_names),
                 )
             )
             _add_include(str(gen_dir.resolve()))
-
         else:
-            if entry in names:
-                raise ValueError(f"Duplicate task '{entry}' in --tasks.")
-            names.append(entry)
+            if value in names:
+                message = (
+                    f"Duplicate task name '{value}' in --tasks."
+                    if kind == "yaml"
+                    else f"Duplicate task '{value}' in --tasks."
+                )
+                raise ValueError(message)
+            names.append(value)
 
     if not names:
         raise ValueError("No tasks provided. Pass --tasks with at least one task.")
     return names, include_paths
+
+
+def _json_default(value):
+    # numpy/torch scalars and arrays serialise as numbers/lists, not strings,
+    # so results.json agrees numerically with the in-memory results
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return tolist()
+        except Exception:
+            pass
+    return str(value)
 
 
 def _render_results(results: dict) -> None:
@@ -713,5 +798,7 @@ def evaluate(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
-    results_path.write_text(json.dumps(results, indent = 2, default = str), encoding = "utf-8")
+    results_path.write_text(
+        json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8"
+    )
     typer.echo(f"Saved results to: {results_path}")
