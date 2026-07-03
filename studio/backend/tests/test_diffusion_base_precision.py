@@ -105,9 +105,13 @@ def test_pick_auto_precision_policy_table():
     assert p(False, "cuda", 140, 23.8, (8, 0), True) == "bf16"
     assert p(False, "cuda", 140, 23.8, (10, 0), False) == "bf16"
 
-    # Middle band (25 > 23.8 * 0.55 * 1.5 = 19.6, but not > 23.8 * 1.5 = 35.7) -> int8.
-    assert p(False, "cuda", 25, 23.8, (10, 0), True) == "int8"
-    # Too little free VRAM for even int8 -> nf4.
+    # Middle band (30 > 23.8 * 1.15 = 27.4, but not > 23.8 * 1.5 = 35.7) -> int8.
+    assert p(False, "cuda", 30, 23.8, (10, 0), True) == "int8"
+    # int8 still materialises the full bf16 transformer before quantize_ shrinks it, so
+    # free VRAM below the dense-load transient (25 < 27.4) must fall back to nf4 even
+    # though the QUANTIZED weights would have fit.
+    assert p(False, "cuda", 25, 23.8, (10, 0), True) == "nf4"
+    # Too little free VRAM for any dense load -> nf4.
     assert p(False, "cuda", 10, 23.8, (10, 0), True) == "nf4"
 
 
@@ -118,8 +122,22 @@ def test_resolve_base_precision_passes_explicit_through():
     spec = dit._SPECS["flux.1"]
     cfg = _cfg(base_precision = "bf16")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "bf16"
-    # Device is irrelevant for an explicit mode: still bf16 on cpu.
-    assert dit._resolve_base_precision(cfg, spec, "cpu") == "bf16"
+
+    # The dense modes are CUDA-only: an explicit request on a GPU-less host fails fast
+    # (before any model load) instead of silently proceeding; /info never advertised it.
+    with pytest.raises(ValueError, match = "CUDA"):
+        dit._resolve_base_precision(cfg, spec, "cpu")
+    # nf4 stays a passthrough on any device (the bnb load path owns its own errors).
+    assert dit._resolve_base_precision(_cfg(base_precision = "nf4"), spec, "cpu") == "nf4"
+
+
+def test_resolve_auto_requires_bf16_compute():
+    # auto may resolve to bf16/int8 which train in bf16 compute, so a non-bf16
+    # mixed_precision pins auto to the nf4 floor BEFORE any GPU probe (pure, no CUDA
+    # needed here) -- mirroring the normalized() rule for explicit dense modes.
+    spec = dit._SPECS["flux.1"]
+    cfg = _cfg(base_precision = "auto", mixed_precision = "fp16")
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
 
 
 # ── _fp8_module_filter ────────────────────────────────────────────────────────
@@ -154,7 +172,6 @@ def test_train_precision_modes_no_cuda(monkeypatch):
     # Patch the torch module attribute the function imports so it observes a CPU-only box:
     # no CUDA -> the nf4-only floor with nf4 recommended, and it never raises.
     import torch
-
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert train_precision_modes() == (["nf4"], "nf4")
 

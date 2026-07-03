@@ -82,9 +82,7 @@ def test_plan_cache_variants_deterministic_and_deduped():
 # ── per-family collate fns ────────────────────────────────────────────────────
 def test_flux_collate_shapes():
     # FLUX embeds are fixed length: 3 entries batch by a plain cat; text_ids are shared.
-    entries = [
-        (torch.randn(1, 512, 32), torch.randn(1, 16), torch.randn(512, 3)) for _ in range(3)
-    ]
+    entries = [(torch.randn(1, 512, 32), torch.randn(1, 16), torch.randn(512, 3)) for _ in range(3)]
     pe, pooled, text_ids = _flux_collate(entries, "cpu", torch.float32)
     assert pe.shape == (3, 512, 32)
     assert pooled.shape == (3, 16)
@@ -242,9 +240,7 @@ def test_service_stop_save_flag():
 # ── preparing / warning events + stopped completion messages ──────────────────
 def test_apply_event_preparing_and_warning():
     svc = DiffusionTrainingService()
-    svc._apply_event(
-        {"type": "preparing", "stage": "cache_latents", "done": 4, "total": 8}
-    )
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 4, "total": 8})
     st = svc.status()
     assert st["status"] == "running"
     assert st["in_model_load"] is True
@@ -335,3 +331,30 @@ def test_perf_flags_cpu_roundtrip():
     snap = _apply_perf_flags(_cfg(), "cpu")
     assert isinstance(snap, dict)
     _restore_perf_flags(snap)  # no exception
+
+
+def test_perf_flags_tf32_off_clears_flags():
+    # enable_tf32=False is the strict-fp32 A/B mode: it must actively clear the TF32 flags
+    # (cudnn TF32 defaults ON in torch) rather than inherit ambient state, and restore must
+    # put the ambient values back. The flag attributes are plain Python state, present and
+    # settable on CPU-only torch builds, so this runs without a GPU.
+    import torch
+
+    before = (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+        torch.get_float32_matmul_precision(),
+    )
+    snap = _apply_perf_flags(_cfg(enable_tf32 = False), "cuda")
+    try:
+        assert torch.backends.cuda.matmul.allow_tf32 is False
+        assert torch.backends.cudnn.allow_tf32 is False
+        assert torch.get_float32_matmul_precision() == "highest"
+    finally:
+        _restore_perf_flags(snap)
+    after = (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+        torch.get_float32_matmul_precision(),
+    )
+    assert after == before

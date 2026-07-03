@@ -201,7 +201,7 @@ def _build_sdxl_latent_cache(
     total = len(image_paths)
     for i, path in enumerate(image_paths):
         variants = []
-        for (u_left, u_top, flip) in plan[i]:
+        for u_left, u_top, flip in plan[i]:
             tensor, time_ids = _load_image_tensor_planned(
                 path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
             )
@@ -390,7 +390,13 @@ def run_diffusion_lora_training(
         latent_cache = None
         if use_cache:
             latent_cache = _build_sdxl_latent_cache(
-                vae, vae_scale, [p for p, _ in pairs], cfg, device, weight_dtype, on_event,
+                vae,
+                vae_scale,
+                [p for p, _ in pairs],
+                cfg,
+                device,
+                weight_dtype,
+                on_event,
                 _check_stop,
             )
             if latent_cache is None:  # stopped during the cache build; nothing trained yet

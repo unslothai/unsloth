@@ -267,7 +267,6 @@ def _apply_fp8_training(transformer, on_event) -> bool:
     LoRA modules. Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
         from torchao.float8 import Float8LinearConfig, convert_to_float8_training
-
         convert_to_float8_training(
             transformer,
             module_filter_fn = _fp8_module_filter,
@@ -285,25 +284,41 @@ def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp
     free VRAM at decision time. bf16 + regional compile is the measured speed winner
     (2.3-2.6x over nf4 on B200); fp8 stays an explicit opt-in because torchao float8's
     dynamic-scaling overhead made it SLOWER than compiled bf16 at LoRA-training shapes on
-    the same hardware. ``capability``/``has_fp8`` remain parameters so the policy can be
-    revisited per GPU generation without changing callers."""
+    the same hardware. int8 must still materialise the full bf16 transformer before
+    ``quantize_`` shrinks it module-by-module, so its band requires the dense-load
+    transient (1.15x dense) to fit -- what int8 buys in that band is steady-state
+    headroom for activations and the latent cache, not load-time memory.
+    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
+    generation without changing callers."""
     _ = capability, has_fp8
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
-    headroom = 1.5
-    if free_gb > dense_gb * headroom:
+    if free_gb > dense_gb * 1.5:
         return "bf16"
-    if free_gb > dense_gb * 0.55 * headroom:
+    if free_gb > dense_gb * 1.15:
         return "int8"
     return "nf4"
 
 
 def _resolve_base_precision(cfg, spec, device) -> str:
     """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads);
-    explicit modes pass through (normalized() already validated them)."""
+    explicit modes pass through (normalized() already validated them against the repo and
+    compute dtype) but are re-checked against the live device here: the dense modes are
+    CUDA-only, and /info never advertises them on a host without a GPU, so an explicit
+    request from a stale or direct client fails fast instead of loading a full dense
+    transformer onto the CPU."""
     mode = (cfg.base_precision or "nf4").strip().lower()
     if mode != "auto":
+        if mode in ("bf16", "int8", "fp8") and device != "cuda":
+            raise ValueError(
+                f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
+                f"Use base_precision='nf4' or 'auto'."
+            )
         return mode
+    # auto may only resolve to the dense modes when the run uses bf16 compute, mirroring
+    # the normalized() rule for explicit dense modes; otherwise stay on the nf4 floor.
+    if getattr(cfg, "mixed_precision", "bf16") != "bf16":
+        return "nf4"
     prequant = repo_is_prequantized(cfg.base_model)
     free_gb = None
     capability = None
@@ -367,7 +382,12 @@ def _flux_encode_latent_stats(vae, pixel_values):
     return (dist.mean - vae.config.shift_factor) * scale, dist.std * scale
 
 
-def _flux_collate(entries, device, weight_dtype, pad_to = None):
+def _flux_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
     import torch
 
     # FLUX embeds are fixed-length (encode_prompt pads to max_sequence_length), so a plain
@@ -490,7 +510,12 @@ def _qwen_encode_latent_stats(vae, pixel_values):
     return (dist.mean - mean) / std, dist.std / std
 
 
-def _qwen_collate(entries, device, weight_dtype, pad_to = None):
+def _qwen_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
     import torch
     import torch.nn.functional as F
 
@@ -591,7 +616,12 @@ def _zimage_encode_latent_stats(vae, pixel_values):
     return _zimage_encode_latents(vae, pixel_values), None
 
 
-def _zimage_collate(entries, device, weight_dtype, pad_to = None):
+def _zimage_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
     caps = [e[0].to(device = device, dtype = weight_dtype) for e in entries]
     return (caps,)
 
@@ -759,7 +789,7 @@ def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_ev
     total = len(image_paths)
     for i, path in enumerate(image_paths):
         variants = []
-        for (u_left, u_top, flip) in plan[i]:
+        for u_left, u_top, flip in plan[i]:
             px = (
                 _load_pixel_tensor_planned(
                     path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
@@ -796,7 +826,12 @@ def _sample_cached_latents(cache, idxs, variant_rng, device):
     return lat_a + lat_b * torch.randn_like(lat_a)
 
 
-def _should_compile(cfg, base_is_bnb, device, base_precision = "nf4") -> bool:
+def _should_compile(
+    cfg,
+    base_is_bnb,
+    device,
+    base_precision = "nf4",
+) -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
@@ -813,7 +848,12 @@ def _should_compile(cfg, base_is_bnb, device, base_precision = "nf4") -> bool:
 
 
 def _maybe_compile_transformer(
-    transformer, cfg, base_is_bnb, device, on_event, base_precision = "nf4"
+    transformer,
+    cfg,
+    base_is_bnb,
+    device,
+    on_event,
+    base_precision = "nf4",
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after
     the LoRA is attached. Never fatal: a wrap failure falls back to eager with a warning
@@ -831,7 +871,9 @@ def _maybe_compile_transformer(
 
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):
-        _emit(on_event, "warning", message = "torch.compile unavailable for this model; running eager.")
+        _emit(
+            on_event, "warning", message = "torch.compile unavailable for this model; running eager."
+        )
         return False
     try:
         dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
@@ -919,7 +961,14 @@ def run_dit_lora_training(
     perf_snap = _apply_perf_flags(cfg, device)
     try:
         return _train_dit(
-            cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_stop,
+            cfg,
+            spec,
+            pairs,
+            rng,
+            device,
+            weight_dtype,
+            on_event,
+            _check_stop,
             lambda: save_on_stop,
         )
     finally:
@@ -968,8 +1017,12 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         )
         if latent_cache is None:  # stopped during the cache build; nothing trained yet
             _emit(
-                on_event, "complete", output_dir = str(out_dir), lora_path = None,
-                stopped = True, steps_run = 0,
+                on_event,
+                "complete",
+                output_dir = str(out_dir),
+                lora_path = None,
+                stopped = True,
+                steps_run = 0,
             )
             return str(out_dir)
         try:
@@ -1090,7 +1143,9 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             noisy = (1.0 - sigmas) * latents + sigmas * noise
 
             embeds = spec.collate(
-                [caption_embeds[captions[i]] for i in idxs], device, weight_dtype,
+                [caption_embeds[captions[i]] for i in idxs],
+                device,
+                weight_dtype,
                 pad_to = qwen_pad_to,
             )
             with autocast:
@@ -1165,6 +1220,7 @@ def _make_optimizer(params, lr):
     regression for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this
     build/device lacks the fused kernel)."""
     import torch
+
     try:
         import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(params, lr = lr)
