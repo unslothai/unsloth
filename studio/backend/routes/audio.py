@@ -53,8 +53,14 @@ def _get_whisper_pipeline(model_id: str):
     _asr_module.is_torchcodec_available = lambda: False
 
     device = 0 if torch.cuda.is_available() else -1
+    # fp16 on GPU: about 2x faster and half the VRAM vs the default fp32, and
+    # Whisper inference is numerically fine in half precision. CPU stays fp32.
+    dtype = torch.float16 if device == 0 else torch.float32
     _whisper_pipeline = pipeline(
-        "automatic-speech-recognition", model = model_id, device = device
+        "automatic-speech-recognition",
+        model = model_id,
+        device = device,
+        torch_dtype = dtype,
     )
     _whisper_pipeline_model = model_id
     return _whisper_pipeline
@@ -79,7 +85,6 @@ async def create_speech(
     from routes.inference import (
         get_llama_cpp_backend,
         get_qwen_tts_backend,
-        get_speecht5_backend,
         get_voice_llama_backend,
     )
     from core.inference import get_inference_backend
@@ -88,17 +93,14 @@ async def create_speech(
     if not text:
         raise HTTPException(status_code = 400, detail = "input must not be empty.")
 
-    # Priority: in-process voice slots (Qwen3-TTS, SpeechT5) → GGUF voice slot
+    # Priority: in-process voice slot (Qwen3-TTS) → GGUF voice slot
     # → main llama slot → transformers backend
     qwen_tts_backend = get_qwen_tts_backend()
-    speecht5_backend = get_speecht5_backend()
     voice_backend = get_voice_llama_backend()
     llama_backend = get_llama_cpp_backend()
 
     if qwen_tts_backend.is_loaded:
         gen = lambda: qwen_tts_backend.generate_audio_response(text = text)
-    elif speecht5_backend.is_loaded:
-        gen = lambda: speecht5_backend.generate_audio_response(text = text)
     elif voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
         gen = lambda: voice_backend.generate_audio_response(
             text = text,
@@ -186,3 +188,37 @@ async def transcribe(
         raise HTTPException(status_code = 500, detail = str(e))
 
     return TranscriptionResponse(text = text.strip())
+
+
+class WarmupRequest(BaseModel):
+    model: Optional[str] = None
+
+
+@router.post("/warmup")
+async def warmup(
+    payload: Optional[WarmupRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Pre-build and exercise the Whisper pipeline on a short silent clip.
+
+    Whisper always processes a fixed 30-second (padded) mel window, so warming on
+    any clip tunes the exact conv shapes every later utterance uses. On ROCm that
+    moves MIOpen's one-time kernel autotune off the critical path (before the user
+    speaks) instead of freezing the first real transcription. Call it when voice
+    mode starts with the Whisper STT engine; idempotent and cheap once warmed.
+    """
+    import numpy as np
+
+    model = ((payload.model if payload else None) or DEFAULT_WHISPER_MODEL).strip()
+
+    def run() -> None:
+        pipe = _get_whisper_pipeline(model)
+        pipe(np.zeros(WHISPER_SAMPLE_RATE, dtype = np.float32))
+
+    try:
+        await asyncio.to_thread(run)
+    except Exception as e:
+        logger.warning("Whisper warmup failed: %s", e)
+        return {"status": "warmup_failed", "detail": str(e)}
+    return {"status": "warmed", "model": model}

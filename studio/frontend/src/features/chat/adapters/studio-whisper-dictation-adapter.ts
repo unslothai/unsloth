@@ -29,11 +29,14 @@ const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
 // noise fall under this and are dropped -- this is what stops Whisper being fed
 // junk (and hallucinating repeated tokens) during barge-in / idle listening.
 const MIN_SPEECH_MS = 350;
-// Sustained voiced audio that triggers a real-time barge-in (cut the TTS) while
-// the model is speaking, without waiting for end-of-utterance + transcription.
-// Slightly below MIN_SPEECH_MS so the interrupt lands fast; the utterance still
-// has to clear MIN_SPEECH_MS to actually be transcribed and sent.
-const BARGE_IN_MS = 250;
+// Real-time barge-in (cut the TTS while the model speaks). Deliberately strict so
+// it takes an actual "stop" from the user, not a stray sound: the audio must be
+// LOUD (BARGE_IN_RMS, well above the plain voiced floor) AND sustained
+// CONTINUOUSLY for BARGE_IN_MS. Both gates keep quiet speaker-bleed / room noise
+// during playback from self-interrupting. The utterance still has to clear
+// MIN_SPEECH_MS to actually be transcribed and sent.
+const BARGE_IN_MS = 500;
+const BARGE_IN_RMS = 0.045;
 // Silence trimmed around the voiced span before sending to Whisper (Whisper
 // hallucinates on long leading/trailing silence). Keep a little context.
 const SILENCE_PAD_MS = 200;
@@ -127,6 +130,8 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
     // measure voiced duration and to trim silence before transcription.
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
+    // Run of continuous LOUD frames (>= BARGE_IN_RMS); resets on any quiet frame.
+    let bargeVoicedMs = 0;
     let bargedIn = false;
     let sampleRate = 16000;
     let heardSpeech = false;
@@ -163,6 +168,9 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
     };
 
     const teardown = () => {
+      // Mic is closing: no longer hearing the user, so drop the orb's salmon
+      // "hearing you" state (the utterance ended or was cancelled).
+      useChatRuntimeStore.getState().setVoiceHearing(false);
       if (processor) {
         processor.onaudioprocess = null;
         processor.disconnect();
@@ -283,6 +291,10 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
         console.error("Whisper dictation error:", error);
         toast.error("Whisper transcription failed.");
         finish("error");
+        // Keep the voice loop alive: a transcribe failure (transient backend
+        // hiccup, etc.) shouldn't leave the mic dead so it never hears you again.
+        // Re-arm so the next utterance still gets a shot.
+        setTimeout(() => requestVoiceResume(), 0);
       }
     };
 
@@ -322,23 +334,33 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           const rms = Math.sqrt(sumSquares / input.length);
           const now = performance.now();
 
+          const frameMs = (input.length / sampleRate) * 1000;
           const voiced = rms >= SILENCE_RMS;
           chunkVoiced.push(voiced);
           if (voiced) {
-            voicedMs += (input.length / sampleRate) * 1000;
+            voicedMs += frameMs;
             lastVoiceAt = now;
             if (!heardSpeech) {
               heardSpeech = true;
+              // Light the orb's salmon "hearing you" state the instant the mic
+              // picks up real voice -- immediate proof the mic is capturing you.
+              useChatRuntimeStore.getState().setVoiceHearing(true);
               for (const cb of speechStartCallbacks) cb();
             }
-            // Real-time barge-in: as soon as speech is sustained past the
-            // threshold, cut the TTS immediately (once). The VoiceEngine handler
-            // no-ops unless the model is actually speaking, so this is safe to
-            // fire during normal listening too.
-            if (!bargedIn && voicedMs >= BARGE_IN_MS) {
+          }
+          // Real-time barge-in: needs LOUD audio (>= BARGE_IN_RMS) sustained
+          // CONTINUOUSLY for BARGE_IN_MS -- one quiet frame resets the run, so
+          // intermittent speaker-bleed / noise during TTS can't accumulate into a
+          // self-interrupt. The VoiceEngine handler no-ops unless the model is
+          // actually speaking, so firing during normal listening is harmless.
+          if (rms >= BARGE_IN_RMS) {
+            bargeVoicedMs += frameMs;
+            if (!bargedIn && bargeVoicedMs >= BARGE_IN_MS) {
               bargedIn = true;
               requestVoiceBargeIn();
             }
+          } else {
+            bargeVoicedMs = 0;
           }
 
           const sinceVoice = now - lastVoiceAt;

@@ -163,6 +163,28 @@ elif sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.e
     except Exception:
         pass
 
+# ── AMD ROCm: cut MIOpen first-call latency (Whisper + transformers TTS) ─────
+# MIOpen autotunes conv kernels the first time it sees each tensor shape; on
+# Windows ROCm that search can take tens of seconds and is exactly what makes
+# the first transcription/synthesis feel frozen. FIND_MODE=2 (FAST) skips the
+# exhaustive search for an immediate heuristic pick, and a persistent user-db +
+# kernel-cache dir keeps tuned kernels across restarts, so the cost is paid once
+# ever instead of once per process. Must be set before torch/MIOpen loads. No-op
+# off ROCm (MIOpen isn't loaded); gated so non-AMD hosts get no stray cache dir.
+if os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH") or os.path.isdir("/opt/rocm"):
+    os.environ.setdefault("MIOPEN_FIND_MODE", "2")
+    _studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.path.join(
+        os.path.expanduser("~"), ".unsloth", "studio"
+    )
+    _miopen_cache = os.path.join(_studio_home, "miopen")
+    try:
+        os.makedirs(_miopen_cache, exist_ok = True)
+        os.environ.setdefault("MIOPEN_USER_DB_PATH", _miopen_cache)
+        os.environ.setdefault("MIOPEN_CUSTOM_CACHE_DIR", _miopen_cache)
+    except OSError:
+        pass
+    del _studio_home, _miopen_cache
+
 # Put backend dir on sys.path so _platform_compat is importable when main.py
 # is launched directly (e.g. `uvicorn main:app`).
 _backend_dir = str(_Path(__file__).parent)

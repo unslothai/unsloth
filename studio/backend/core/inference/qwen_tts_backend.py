@@ -85,8 +85,8 @@ def _checkpoint_kind(repo_id: str) -> str:
 
 
 class QwenTTSVoiceBackend:
-    """In-process Qwen3-TTS voice slot. Interface mirrors SpeechT5VoiceBackend /
-    LlamaCppBackend's audio surface so the audio routes treat them uniformly."""
+    """In-process Qwen3-TTS voice slot. Interface mirrors LlamaCppBackend's audio
+    surface so the audio routes treat them uniformly."""
 
     def __init__(self) -> None:
         self._model = None

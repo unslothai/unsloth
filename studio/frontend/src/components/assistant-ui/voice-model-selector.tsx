@@ -10,7 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, CloudIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MicVocalIcon } from "lucide-react";
+import { Speech } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
@@ -30,6 +30,10 @@ interface VoiceModelSelectorProps {
   /** When true, the loaded chat model is a speech-LLM (Orpheus etc.) that speaks
    *  with its own voice, so the TTS voice section is disabled. STT stays active. */
   voiceOwnedByModel?: boolean;
+  /** True only when the backend voice slot is actually loaded with this voice
+   *  (from /voice/status), so the speak icon goes green. A mere selection is not
+   *  enough -- it persists but doesn't load the slot until voice mode starts. */
+  loaded?: boolean;
   className?: string;
 }
 
@@ -38,7 +42,7 @@ const BROWSER_VOICE_LABEL = "Browser voice";
 
 // How many sentence chunks a GGUF voice slot synthesizes at once (llama-server
 // --parallel N). If a GGUF voice is loaded, changing it hot-reloads that slot so
-// backend and UI stay in sync. In-process voices (Qwen3-TTS, SpeechT5) ignore it.
+// backend and UI stay in sync. In-process voices (Qwen3-TTS) ignore it.
 const ParallelVoicesPicker: FC<{
   reloadVoiceId: string | null;
   onReload: (id: string) => void;
@@ -90,6 +94,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   loading = false,
   disabled = false,
   voiceOwnedByModel = false,
+  loaded = false,
   className,
 }) => {
   const [open, setOpen] = useState(false);
@@ -101,21 +106,28 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
 
   const selectedVoiceVariant = useChatRuntimeStore((s) => s.selectedVoiceVariant);
   const selectedModel = value ? models.find((m) => m.id === value) : null;
-  const displayName = selectedModel
-    ? selectedModel.isGguf && selectedVoiceVariant
-      ? `${selectedModel.name} · ${selectedVoiceVariant}`
-      : selectedModel.name
-    : BROWSER_VOICE_LABEL;
 
   // The picker is non-interactive when there's no chat model to answer (disabled)
   // OR the chat model is a speech-LLM that speaks with its own voice
   // (voiceOwnedByModel) -- in both cases it greys out and can't be opened.
   const inactive = disabled || voiceOwnedByModel;
-  const triggerLabel = disabled
+  // Green only when a voice is truly loaded: the backend slot is up with this
+  // voice, or the chat model speaks with its own voice. A persisted selection
+  // alone (slot not yet loaded, e.g. right after a reload) stays grey.
+  const ready = voiceOwnedByModel || loaded;
+  // Match the chat-model trigger: bold name + a muted "GGUF · <quant>" suffix,
+  // rather than appending the quant in the same weight as the name.
+  const nameText = disabled
     ? "Select model first"
     : voiceOwnedByModel
       ? "Model's own voice"
-      : displayName;
+      : selectedModel
+        ? selectedModel.name
+        : BROWSER_VOICE_LABEL;
+  const metaText =
+    !inactive && selectedModel?.isGguf && selectedVoiceVariant
+      ? `GGUF · ${selectedVoiceVariant}`
+      : null;
 
   const handleSelect = (id: string | null, variant: string | null = null) => {
     setOpen(false);
@@ -154,12 +166,24 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
           }
         >
           {loading && !voiceOwnedByModel ? (
-            <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
+            <Spinner className="size-3.5 shrink-0 text-amber-500" />
           ) : (
-            <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <Speech
+              className={cn(
+                "size-3.5 shrink-0",
+                ready ? "text-emerald-500" : "text-muted-foreground",
+              )}
+            />
           )}
-          <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
-            {triggerLabel}
+          <span className="flex min-w-0 items-baseline">
+            <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+              {nameText}
+            </span>
+            {metaText && (
+              <span className="ml-2 shrink-0 text-xs leading-none text-muted-foreground">
+                {metaText}
+              </span>
+            )}
           </span>
           {/* Chevron only when the picker can actually open. */}
           {!inactive && (
@@ -195,7 +219,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             value === null && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
           )}
         >
-          <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <Speech className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate">{BROWSER_VOICE_LABEL}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             <HugeiconsIcon

@@ -733,15 +733,49 @@ type ChatRuntimeStore = {
   /** True while the voice slot (TTS) is loading, so the orb can show a loading
    *  (lilac) state instead of appearing ready to listen. Not persisted. */
   voiceSlotLoading: boolean;
+  /** True only when the backend voice slot is actually loaded with the selected
+   *  voice (synced from /voice/status), so the top-bar speak icon goes green.
+   *  Distinct from a mere selection, which persists but doesn't load the slot.
+   *  Not persisted. */
+  voiceSlotLoaded: boolean;
   /** True while backend Whisper STT is transcribing an utterance, so the orb
    *  shows a processing state instead of appearing idle. Not persisted. */
   voiceTranscribing: boolean;
+  /** True once the selected STT engine is ready to transcribe: the browser
+   *  engine is always ready; Whisper flips true after a successful warmup, so
+   *  the top-bar listen icon can go green (loaded) instead of grey. Not
+   *  persisted; reset when the Whisper model changes. */
+  sttReady: boolean;
+  /** True only while the Whisper warmup request is in flight, so the listen icon
+   *  shows amber (loading) rather than grey (idle) during the ~30s first-call
+   *  MIOpen tune. Cleared on success or failure. Not persisted. */
+  sttWarming: boolean;
+  /** True while the mic is actively hearing your voice (VAD above the floor), so
+   *  the orb shows a distinct "hearing you" color -- immediate feedback that your
+   *  speech is being captured. Set on speech-start, cleared when the utterance
+   *  ends. Not persisted. */
+  voiceHearing: boolean;
   /** Derived orb state written by VoiceToggle; consumed by VoiceOrb.
-   *  "synthesizing" = TTS is generating audio but nothing is playing yet. */
-  voiceOrbState: "listening" | "thinking" | "synthesizing" | "speaking" | null;
+   *  "synthesizing" = TTS is generating audio but nothing is playing yet.
+   *  "hearing" = the mic is picking up your voice right now. */
+  voiceOrbState:
+    | "listening"
+    | "thinking"
+    | "synthesizing"
+    | "speaking"
+    | "hearing"
+    | "loading"
+    | null;
   /** When voice mode is active, whether the full-screen orb is minimized so the
    *  chat is visible while speech-to-speech keeps running. Not persisted. */
   voiceOrbCollapsed: boolean;
+  /** Reloads the backend voice slot if a voice is selected but the slot is
+   *  unloaded (after a remount, auth bounce, or backend relaunch). Set by
+   *  ChatPage; called by the TTS player to self-heal a 400 (slot gone). Resolves
+   *  true once a matching slot is loaded. Null until ChatPage mounts. Not
+   *  persisted. */
+  ensureVoiceSlotLoaded: (() => Promise<boolean>) | null;
+  setEnsureVoiceSlotLoaded: (fn: (() => Promise<boolean>) | null) => void;
   hydratePersistedSettings: () => Promise<void>;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
   setSelectedVoiceModelId: (id: string | null) => void;
@@ -751,9 +785,20 @@ type ChatRuntimeStore = {
   setVoiceParallelN: (n: number) => void;
   setSelectedVoiceVariant: (variant: string | null) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
+  setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
+  setSttReady: (ready: boolean) => void;
+  setSttWarming: (warming: boolean) => void;
+  setVoiceHearing: (hearing: boolean) => void;
   setVoiceOrbState: (
-    state: "listening" | "thinking" | "synthesizing" | "speaking" | null,
+    state:
+      | "listening"
+      | "thinking"
+      | "synthesizing"
+      | "speaking"
+      | "hearing"
+      | "loading"
+      | null,
   ) => void;
   setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelLoading: (loading: boolean) => void;
@@ -1178,9 +1223,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   voiceParallelN: Math.min(4, Math.max(1, Number(loadString(CHAT_VOICE_PARALLEL_KEY, "1")) || 1)),
   selectedVoiceVariant: loadString(CHAT_VOICE_VARIANT_KEY, "") || null,
   voiceSlotLoading: false,
+  voiceSlotLoaded: false,
   voiceTranscribing: false,
+  sttReady: false,
+  sttWarming: false,
+  voiceHearing: false,
   voiceOrbState: null,
   voiceOrbCollapsed: false,
+  ensureVoiceSlotLoaded: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1220,10 +1270,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setVoiceMode: (voiceMode) =>
     // Leaving voice mode always resets the minimized/collapsed orb view so the
-    // next session starts expanded.
-    set(voiceMode === "off" ? { voiceMode, voiceOrbCollapsed: false } : { voiceMode }),
+    // next session starts expanded, and clears any lingering "hearing" state.
+    set(
+      voiceMode === "off"
+        ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false }
+        : { voiceMode },
+    ),
+  setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
   setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
+  setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),
   setSelectedVoiceModelId: (selectedVoiceModelId) =>
     set(() => {
       saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");
@@ -1232,12 +1288,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSttEngine: (sttEngine) =>
     set(() => {
       saveString(CHAT_STT_ENGINE_KEY, sttEngine);
-      return { sttEngine };
+      // Switching to Whisper isn't "ready" until it warms up; browser is always
+      // ready and the consumer treats it as such regardless of this flag.
+      return { sttEngine, sttReady: sttEngine === "browser", sttWarming: false };
     }),
   setSelectedSttModelId: (selectedSttModelId) =>
     set(() => {
       saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId ?? "");
-      return { selectedSttModelId };
+      // A different Whisper model needs its own warmup before it's ready again.
+      return { selectedSttModelId, sttReady: false, sttWarming: false };
     }),
   setSelectedMicDeviceId: (selectedMicDeviceId) =>
     set(() => {
@@ -1256,7 +1315,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { selectedVoiceVariant };
     }),
   setVoiceSlotLoading: (voiceSlotLoading) => set({ voiceSlotLoading }),
+  setVoiceSlotLoaded: (voiceSlotLoaded) => set({ voiceSlotLoaded }),
   setVoiceTranscribing: (voiceTranscribing) => set({ voiceTranscribing }),
+  setSttReady: (sttReady) => set({ sttReady }),
+  setSttWarming: (sttWarming) => set({ sttWarming }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),

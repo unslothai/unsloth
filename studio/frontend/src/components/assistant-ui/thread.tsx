@@ -2689,6 +2689,11 @@ const VoiceEngine: FC = () => {
   // adapter self-terminates on its own VAD and calls requestVoiceSubmit instead.
   const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
   const isWhisperStt = sttEngine === "whisper";
+  // Ref mirror so the run-lifecycle effect can gate on the STT engine without
+  // adding it to the dep array (that would re-fire the run-start branch mid-
+  // generation and restart TTS from scratch).
+  const isWhisperSttRef = useRef(isWhisperStt);
+  isWhisperSttRef.current = isWhisperStt;
 
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
@@ -2701,16 +2706,23 @@ const VoiceEngine: FC = () => {
     const RETRY_MS = 50;
 
     const clickDictate = () => {
+      const fresh = auiRef.current.composer();
+      // Already listening (e.g. the mic was armed during TTS for barge-in): do
+      // NOT restart it. Calling startDictation() on a live session tears the
+      // current mic down -- that's what broke the continuous loop (turn 1 heard
+      // you, turn 2 went deaf). The old button-click was a no-op here because the
+      // Dictate button isn't rendered while dictating; mirror that no-op.
+      if (fresh.getState().dictation) return;
       // Proactively clear any stale text on a FRESH handle before re-arming, in
       // case the deferred post-send clear hadn't landed before this re-arm got
       // here. Without it, turn 2's dictation appends onto turn 1's leftover text.
-      const fresh = auiRef.current.composer();
       if (fresh.getState().text) {
         fresh.setText("");
       }
-      document
-        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-        ?.click();
+      // Start dictation via the composer runtime, NOT by clicking the Dictate
+      // button: in voice mode that button is hidden/replaced by the orb, so a
+      // DOM query returns null and the mic never opens (silent green orb).
+      fresh.startDictation();
     };
 
     const attempt = (n: number) => {
@@ -2808,11 +2820,19 @@ const VoiceEngine: FC = () => {
   const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
   const voiceTranscribing = useChatRuntimeStore((s) => s.voiceTranscribing);
+  const sttWarming = useChatRuntimeStore((s) => s.sttWarming);
+  const voiceHearing = useChatRuntimeStore((s) => s.voiceHearing);
   useEffect(() => {
     if (voiceMode !== "active")     { setVoiceOrbState(null); return; }
-    // Voice slot still loading (can take a while) -> lilac so it's clearly not
-    // ready to listen yet.
-    if (voiceSlotLoading)           { setVoiceOrbState("synthesizing"); return; }
+    // Voice slot OR Whisper STT still loading -> grey-blue "loading" (not the
+    // lilac "generating speech"), so the orb clearly isn't a ready green while a
+    // model warms up (~35s on ROCm). Fixes both "it just sits green" and the
+    // lilac collision between loading and TTS synthesis.
+    if (voiceSlotLoading || sttWarming) { setVoiceOrbState("loading"); return; }
+    // Mic is picking up your voice right now -> salmon "hearing you". Placed
+    // above the speaking checks so talking over the model (barge-in) also reads
+    // as hearing, and above thinking so it shows the instant you start.
+    if (voiceHearing)               { setVoiceOrbState("hearing"); return; }
     // Transcribing your speech, or the LLM writing its reply -> amber (working),
     // so the orb isn't sitting green while Whisper churns.
     if (voiceTranscribing || isThreadRunning) { setVoiceOrbState("thinking"); return; }
@@ -2820,7 +2840,7 @@ const VoiceEngine: FC = () => {
     if (isSpeaking && !isPlaying)   { setVoiceOrbState("synthesizing"); return; }
     if (isSpeaking)                 { setVoiceOrbState("speaking"); return; }
     setVoiceOrbState("listening");
-  }, [voiceMode, voiceSlotLoading, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
+  }, [voiceMode, voiceSlotLoading, sttWarming, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
 
   // Helper: transition to "active" and start the mic.
   const activateLoop = useCallback(() => {
@@ -2828,18 +2848,14 @@ const VoiceEngine: FC = () => {
     voiceModeRef.current = "active";
     setVoiceModeState("active");
     if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
-      document
-        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-        ?.click();
+      auiRef.current.composer().startDictation();
     }
   }, []);
 
   // On remount: restore "active" only — "configuring" stays as-is (no mic).
   useEffect(() => {
     if (_voiceMode !== "active" || isThreadRunning) return;
-    document
-      .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-      ?.click();
+    auiRef.current.composer().startDictation();
   }, []); // mount only
 
   // Watch the store: when it transitions from "configuring" → "active"
@@ -2873,6 +2889,14 @@ const VoiceEngine: FC = () => {
         streamPollRef.current = setInterval(() => {
           feedTextRef.current(latestAssistantText());
         }, 150);
+        // Keep the mic armed DURING generation (not only during TTS) so barge-in
+        // can listen while the model is thinking. Whisper's real-time VAD needs a
+        // live session to hear a barge; a finalized utterance then supersedes the
+        // in-flight run via submitTranscript (which cancels it). resumeListen is
+        // idempotent and waits for the just-finalized session to clear first.
+        // Whisper only: browser STT's silence timer would send a second,
+        // concurrent run mid-generation.
+        if (isWhisperSttRef.current) resumeListen();
       }
       return;
     }
@@ -2907,9 +2931,7 @@ const VoiceEngine: FC = () => {
         if (n < 6) setTimeout(() => armDuringTts(n + 1), 60);
         return;
       }
-      document
-        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-        ?.click();
+      auiRef.current.composer().startDictation();
     };
     armDuringTts(0);
   }, [isThreadRunning, resumeListen, latestAssistantText]);
@@ -3954,8 +3976,9 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   // While voice mode is engaged, the mini orb is the mic control; hide the raw
-  // Dictate / Stop-dictation buttons (the loop drives them internally). They stay
-  // in the DOM (display:none) so the voice loop's programmatic click still works.
+  // Dictate / Stop-dictation buttons (the loop drives dictation internally via
+  // the composer runtime's startDictation()/stopDictation(), not by clicking
+  // these). Kept mounted (display:none) only so composer state stays consistent.
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">

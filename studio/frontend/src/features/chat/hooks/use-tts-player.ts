@@ -27,6 +27,17 @@ export function splitIntoSentences(text: string): string[] {
 
 // For streaming: while the LLM is still writing, only fully-terminated sentences
 // are safe to synthesize; the trailing chunk is the sentence in progress.
+// Emoji / pictographs / symbol chars a TTS model can't pronounce -- it otherwise
+// voices their raw codepoints as gibberish. Stripped for speech only; the on-
+// screen chat text keeps them. Covers emoji, regional-indicator flags, keycaps,
+// variation selectors and the zero-width joiner.
+const SPEECH_STRIP_RE =
+  /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
+
+export function stripForSpeech(text: string): string {
+  return text.replace(SPEECH_STRIP_RE, "").replace(/\s+/g, " ").trim();
+}
+
 export function splitStreaming(text: string): {
   complete: string[];
   partial: string;
@@ -175,9 +186,40 @@ export function useTtsPlayer(
     });
   }, []);
 
+  // POST one sentence to /api/audio/speech and return the audio blob. If the
+  // backend voice slot is gone (400 -- unloaded by a ChatPage remount, an auth
+  // bounce, or a studio relaunch), reload it once via the store hook and retry,
+  // so TTS heals itself instead of silently 400ing for the rest of the session.
+  const requestSpeechBlob = useCallback(
+    async (input: string): Promise<Blob | null> => {
+      const doFetch = () =>
+        authFetch("/api/audio/speech", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input, voice: "default" }),
+        });
+      try {
+        let r = await doFetch();
+        if (r.ok) return await r.blob();
+        if (r.status === 400) {
+          const reload = useChatRuntimeStore.getState().ensureVoiceSlotLoaded;
+          if (reload && (await reload())) {
+            r = await doFetch();
+            if (r.ok) return await r.blob();
+          }
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
+
   const speak = useCallback(
     async (text: string) => {
       stop();
+      text = stripForSpeech(text);
       if (!text) return;
       // stop() above bumped the counter; this is now our request's id.
       const reqId = requestIdRef.current;
@@ -191,13 +233,7 @@ export function useTtsPlayer(
         setIsSpeaking(true);
 
         const synth = (sentence: string): Promise<Blob | null> =>
-          authFetch("/api/audio/speech", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ input: sentence, voice: "default" }),
-          })
-            .then((response) => (response.ok ? response.blob() : null))
-            .catch(() => null);
+          requestSpeechBlob(sentence);
 
         // Bounded-concurrency pipeline: keep up to N sentences synthesizing at
         // once (voiceParallelN), play them back strictly in order. N=1 is the old
@@ -265,20 +301,22 @@ export function useTtsPlayer(
         for (const utterance of utterances) window.speechSynthesis.speak(utterance);
       }
     },
-    [isTtsModel, stop, playBlob],
+    [isTtsModel, stop, playBlob, requestSpeechBlob],
   );
 
   // ── Streaming TTS ───────────────────────────────────────────────
   // POST one sentence to /api/audio/speech; null on failure.
-  const synthOne = useCallback((sentence: string): Promise<Blob | null> => {
-    return authFetch("/api/audio/speech", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: sentence, voice: "default" }),
-    })
-      .then((r) => (r.ok ? r.blob() : null))
-      .catch(() => null);
-  }, []);
+  const synthOne = useCallback(
+    (sentence: string): Promise<Blob | null> => {
+      // Strip emoji here -- the single synth chokepoint for streaming, hit by both
+      // feedText and the endStream flush -- so no path can send unpronounceable
+      // glyphs. An emoji-only chunk has nothing to say, so skip it.
+      const clean = stripForSpeech(sentence);
+      if (!clean) return Promise.resolve(null);
+      return requestSpeechBlob(clean);
+    },
+    [requestSpeechBlob],
+  );
 
   // Start a streaming session. Sentences fed via feedText are synthesized as they
   // arrive and played strictly in order, so the first sentence plays without

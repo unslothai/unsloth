@@ -35,6 +35,7 @@ import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   DOWNLOAD_KIND,
   downloadManager,
+  subscribeJobListeners,
 } from "@/features/hub/download-manager";
 import {
   type NativeIntent,
@@ -220,7 +221,7 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 // so both the render-time greying and the voice-slot ensure-load effect can share
 // one definition.
 const SPEECH_LLM_CHECKPOINT_RE =
-  /(?:orpheus|csm|spark|bark|parler|musicgen|kokoro|text-to-speech|[-_]tts)/i;
+  /(?:orpheus|csm|spark|bark|parler|musicgen|text-to-speech|[-_]tts)/i;
 function isSpeechLLMCheckpoint(checkpoint: string | null | undefined): boolean {
   return SPEECH_LLM_CHECKPOINT_RE.test(checkpoint ?? "");
 }
@@ -1306,6 +1307,7 @@ export function ChatPage({
   );
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
   const setVoiceSlotLoading = useChatRuntimeStore((s) => s.setVoiceSlotLoading);
+  const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
   const [cachedQwenTtsModels, setCachedQwenTtsModels] = useState<LoraModelOption[]>([]);
   const [cachedWhisperModels, setCachedWhisperModels] = useState<LoraModelOption[]>([]);
@@ -1313,6 +1315,9 @@ export function ChatPage({
   const [cachedSizes, setCachedSizes] = useState<Record<string, number>>({});
   const cachedGgufsFetchedRef = useRef(false);
   const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
+  const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
+  const sttReady = useChatRuntimeStore((s) => s.sttReady);
+  const sttWarming = useChatRuntimeStore((s) => s.sttWarming);
   const setSelectedSttModelId = useChatRuntimeStore(
     (s) => s.setSelectedSttModelId,
   );
@@ -1346,45 +1351,94 @@ export function ChatPage({
         return;
       }
 
-      // Download-confirmation gate: skip if the repo is already in the local
-      // cache list (fast path). Otherwise ask gguf-variants for the default
-      // variant's size and whether it's already downloaded.
-      const isCached = cachedGgufs.some((g) => g.id === id);
-      if (!isCached) {
-        try {
-          const vr = await authFetch(
-            `/api/models/gguf-variants?repo_id=${encodeURIComponent(id)}`,
-          );
-          if (vr.ok) {
-            const vdata = (await vr.json()) as {
-              default_variant?: string;
-              variants?: { quant: string; size_bytes: number; downloaded: boolean }[];
-            };
-            const defaultVariant =
-              vdata.variants?.find((v) => v.quant === vdata.default_variant) ??
-              vdata.variants?.[0];
-            const HUNDRED_MB = 100 * 1024 * 1024;
-            if (
-              defaultVariant &&
-              !defaultVariant.downloaded &&
-              defaultVariant.size_bytes > HUNDRED_MB
-            ) {
-              const sizeMb = Math.round(defaultVariant.size_bytes / (1024 * 1024));
-              const modelName = id.includes("/") ? (id.split("/")[1] ?? id) : id;
-              const confirmed = window.confirm(
-                `Download ${modelName} (~${sizeMb} MB)? This downloads from HuggingFace.`,
-              );
-              if (!confirmed) {
-                // Roll back to the prior voice instead of dropping to Browser
-                // voice; any already-loaded voice slot stays intact and the
-                // selector keeps matching what /api/audio/speech will use.
-                setSelectedVoiceModelId(previousId);
-                return;
-              }
-            }
+      // The specific quant the user picked from the expander (not the repo
+      // default), so an undownloaded non-default quant is handled correctly.
+      const variant = useChatRuntimeStore.getState().selectedVoiceVariant;
+
+      // Is that exact quant already on disk? A repo can be partially cached
+      // (some quants present, others not), so ask gguf-variants for the picked
+      // one rather than doing a repo-level "is it cached" check.
+      let needsDownload = false;
+      let expectedBytes = 0;
+      try {
+        const vr = await authFetch(
+          `/api/models/gguf-variants?repo_id=${encodeURIComponent(id)}`,
+        );
+        if (vr.ok) {
+          const vdata = (await vr.json()) as {
+            default_variant?: string;
+            variants?: {
+              quant: string;
+              size_bytes: number;
+              downloaded: boolean;
+            }[];
+          };
+          const picked =
+            vdata.variants?.find((v) => v.quant === variant) ??
+            vdata.variants?.find((v) => v.quant === vdata.default_variant) ??
+            vdata.variants?.[0];
+          if (picked && !picked.downloaded) {
+            needsDownload = true;
+            expectedBytes = picked.size_bytes;
           }
-        } catch {
-          // gguf-variants unavailable (e.g. local LoRA path) — proceed silently
+        }
+      } catch {
+        // gguf-variants unavailable (e.g. a local path or non-GGUF voice) —
+        // treat it as on-disk and let the load path deal with it.
+      }
+
+      // Not on disk: pull it through the same download manager the main model
+      // dropdown uses, so it shows the global progress card and only loads the
+      // voice slot once the file is complete. Letting /voice/load fetch it via
+      // llama-server -hf instead would run a multi-GB transfer inside the
+      // server's startup health-check window and time out with no progress.
+      if (needsDownload) {
+        const ok = await new Promise<boolean>((resolve) => {
+          const unsub = subscribeJobListeners(DOWNLOAD_KIND.MODEL, id, {
+            onComplete: (completedVariant) => {
+              // Listeners are repo-scoped; ignore a sibling quant finishing.
+              if (variant && completedVariant && completedVariant !== variant)
+                return;
+              unsub();
+              resolve(true);
+            },
+            onCancelled: () => {
+              unsub();
+              resolve(false);
+            },
+            onError: () => {
+              unsub();
+              resolve(false);
+            },
+          });
+          void downloadManager
+            .requestStart({
+              kind: DOWNLOAD_KIND.MODEL,
+              repoId: id,
+              variant: variant ?? null,
+              expectedBytes,
+            })
+            .then((outcome) => {
+              // "started" -> a listener above settles when the transfer ends.
+              // Any other outcome never fires a listener, so settle here.
+              if (outcome === "started") return;
+              unsub();
+              resolve(false);
+              if (outcome === "conflict") {
+                toast.info("Resume this download from the Hub", {
+                  description:
+                    "An earlier partial download used a different transport. Open the Hub tab to resume it.",
+                });
+              } else if (outcome !== "busy") {
+                toast.error("Couldn't start the voice download");
+              }
+            });
+        });
+        if (!ok) {
+          // Roll back to the prior voice; any loaded slot stays intact and the
+          // selector keeps matching what /api/audio/speech will use.
+          setSelectedVoiceModelId(previousId);
+          return;
         }
       }
 
@@ -1415,8 +1469,61 @@ export function ChatPage({
         setVoiceSlotLoading(false);
       }
     },
-    [setSelectedVoiceModelId, cachedGgufs],
+    [setSelectedVoiceModelId, setVoiceSlotLoading],
   );
+
+  // Reload the backend voice slot if a voice is selected but the slot is gone
+  // (unloaded by a remount, auth bounce, or studio relaunch). Registered in the
+  // store so the TTS player can call it to self-heal a /api/audio/speech 400
+  // instead of going silent. De-duped via a ref so a burst of parallel synth
+  // 400s triggers a single reload, not a stampede.
+  const voiceReloadInflightRef = useRef<Promise<boolean> | null>(null);
+  const ensureVoiceSlotLoaded = useCallback(async (): Promise<boolean> => {
+    const store = useChatRuntimeStore.getState();
+    const id = store.selectedVoiceModelId;
+    // Browser voice / nothing selected: there's no separate slot to load.
+    if (!id) return false;
+    // Speech-LLM chat models speak with their own voice; no separate slot.
+    if (isSpeechLLMCheckpoint(store.params.checkpoint)) return false;
+    if (voiceReloadInflightRef.current) return voiceReloadInflightRef.current;
+    const run = (async () => {
+      try {
+        // Already loaded with the selected voice? Nothing to do.
+        const st = await authFetch("/api/inference/voice/status");
+        const data = st.ok
+          ? ((await st.json()) as { loaded?: boolean; model?: string | null })
+          : null;
+        const loaded = data?.loaded ? (data.model ?? null) : null;
+        if (loaded && loaded.toLowerCase() === id.toLowerCase()) return true;
+        setVoiceSlotLoading(true);
+        const res = await authFetch("/api/inference/voice/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model_path: id,
+            parallel: useChatRuntimeStore.getState().voiceParallelN,
+            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
+          }),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      } finally {
+        setVoiceSlotLoading(false);
+        voiceReloadInflightRef.current = null;
+      }
+    })();
+    voiceReloadInflightRef.current = run;
+    return run;
+  }, [setVoiceSlotLoading]);
+
+  // Expose the reloader to the store so the TTS player (a different component
+  // tree) can call it to self-heal. Cleared on unmount.
+  useEffect(() => {
+    const register = useChatRuntimeStore.getState().setEnsureVoiceSlotLoaded;
+    register(ensureVoiceSlotLoaded);
+    return () => register(null);
+  }, [ensureVoiceSlotLoaded]);
 
   // Unload the voice slot whenever voice mode turns off.
   useEffect(() => {
@@ -1481,6 +1588,66 @@ export function ChatPage({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
+
+  // Warm the Whisper STT pipeline as soon as voice mode is ENGAGED (configuring),
+  // not when the loop actually starts -- so its ~35s first-call MIOpen tune on
+  // ROCm overlaps the user opening the ball / getting ready, instead of freezing
+  // their first utterance. Only for the Whisper engine (browser needs no warmup);
+  // guarded so it fires once, not again on the configuring->active transition.
+  useEffect(() => {
+    if (voiceMode === "off") return;
+    const store = useChatRuntimeStore.getState();
+    if (store.sttEngine !== "whisper") return;
+    if (store.sttReady || store.sttWarming) return; // already warm / warming
+    const model = store.selectedSttModelId;
+    // Amber (loading) while the ~35s first-call MIOpen tune runs, not grey.
+    store.setSttWarming(true);
+    void authFetch("/api/audio/warmup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: model ?? undefined }),
+    })
+      .then((res) => {
+        // Whisper is now loaded + kernel-tuned: flip the listen icon green.
+        if (res.ok) useChatRuntimeStore.getState().setSttReady(true);
+      })
+      .catch(() => {
+        // Best-effort: a failure just means the first transcription is slower.
+      })
+      .finally(() => {
+        useChatRuntimeStore.getState().setSttWarming(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode, selectedSttModelId]);
+
+  // Keep the top-bar speak icon honest: green only when the backend voice slot
+  // is actually loaded with the selected voice. A selection persists across
+  // reloads but the slot doesn't, so sync from /voice/status whenever the
+  // selection, voice mode, or load state changes instead of trusting the
+  // selection alone (which would show green for an unloaded slot after a reload).
+  useEffect(() => {
+    const setLoaded = useChatRuntimeStore.getState().setVoiceSlotLoaded;
+    if (voiceMode === "off" || !selectedVoiceModelId) {
+      setLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    void authFetch("/api/inference/voice/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { loaded?: boolean; model?: string | null } | null) => {
+        if (cancelled) return;
+        const id = selectedVoiceModelId;
+        setLoaded(
+          !!data?.loaded &&
+            !!id &&
+            (data.model ?? "").toLowerCase() === id.toLowerCase(),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [voiceMode, selectedVoiceModelId, voiceSlotLoading]);
 
   // Navigating away from Chat while voice mode is still active unmounts this
   // component without flipping voiceMode to "off", so the effect above never
@@ -2814,6 +2981,8 @@ export function ChatPage({
                 value={selectedSttModelId}
                 onValueChange={setSelectedSttModelId}
                 disabled={!hasActiveModel}
+                ready={sttEngine === "browser" || sttReady}
+                loading={sttWarming}
                 className="!h-[34px]"
               />
             )}
@@ -2825,6 +2994,7 @@ export function ChatPage({
                 loading={voiceSlotLoading}
                 disabled={!hasActiveModel}
                 voiceOwnedByModel={chatModelIsSpeechLLM}
+                loaded={voiceSlotLoaded}
                 className="!h-[34px]"
               />
             )}

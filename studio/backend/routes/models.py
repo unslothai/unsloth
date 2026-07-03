@@ -3140,8 +3140,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
 @router.get("/cached-models")
 async def list_cached_models(current_subject: str = Depends(get_current_subject)):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
-    # .pth covers repos like hexgrad/Kokoro-82M that ship raw torch checkpoints
-    # instead of safetensors/.bin.
+    # .pth covers repos that ship raw torch checkpoints instead of safetensors/.bin.
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pth")
 
     try:

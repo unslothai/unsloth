@@ -161,7 +161,7 @@ export function detectCapabilities(
   }
   if (
     hasAny(AUDIO_TAGS) ||
-    /audio|whisper|speech|tts|stt|asr|parler|sesame|bark|wav2vec|hubert|musicgen|speecht5|vocos|encodec|clap|ultravox|kyutai|moshi/.test(
+    /audio|whisper|speech|tts|stt|asr|parler|sesame|bark|wav2vec|hubert|musicgen|vocos|encodec|clap|ultravox|kyutai|moshi/.test(
       lowerId,
     )
   ) {

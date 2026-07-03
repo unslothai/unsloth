@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, CloudIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MicIcon } from "lucide-react";
+import { MicIcon, MicVocalIcon } from "lucide-react";
 import { useEffect, useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
@@ -26,6 +26,12 @@ interface SttModelSelectorProps {
   /** When true (no main chat model loaded), grey out and block the selector:
    *  listening is pointless with no brain to generate replies. */
   disabled?: boolean;
+  /** True when the STT engine is loaded and ready (browser always; Whisper after
+   *  warmup), so the listen icon goes green instead of grey. */
+  ready?: boolean;
+  /** True while Whisper is warming up, so the listen icon shows amber (loading)
+   *  rather than grey (idle). Takes precedence over `ready`. */
+  loading?: boolean;
   className?: string;
 }
 
@@ -145,6 +151,8 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
   value,
   onValueChange,
   disabled = false,
+  ready = false,
+  loading = false,
   className,
 }) => {
   const [open, setOpen] = useState(false);
@@ -178,7 +186,16 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
           )}
           aria-label={disabled ? "Select a chat model first" : "Select listening engine"}
         >
-          <MicIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <MicVocalIcon
+            className={cn(
+              "size-3.5 shrink-0",
+              loading
+                ? "text-amber-500"
+                : ready && !disabled
+                  ? "text-emerald-500"
+                  : "text-muted-foreground",
+            )}
+          />
           <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
             {disabled ? "Select model first" : displayName}
           </span>
@@ -210,7 +227,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
             value === null && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
           )}
         >
-          <MicIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate">{BROWSER_ENGINE_LABEL}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             <HugeiconsIcon
