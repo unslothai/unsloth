@@ -10946,7 +10946,9 @@ async def _openai_passthrough_stream(
             last_chunk_id = completion_id
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
-            healer = StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
+            healer = (
+                StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
+            )
             healed_call_index = 0
 
             def _synthetic_finish_line() -> str:

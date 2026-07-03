@@ -127,9 +127,7 @@ def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
 
 
 def _coerce_promoted_arguments(
-    raw_args: Any,
-    tool_name: str,
-    tool_schemas: Optional[dict],
+    raw_args: Any, tool_name: str, tool_schemas: Optional[dict]
 ) -> Optional[dict]:
     if isinstance(raw_args, Mapping):
         return dict(raw_args)
@@ -145,6 +143,7 @@ def _coerce_promoted_arguments(
             return {key: raw_args} if key else None
     coerced = coerce_tool_arguments(raw_args, heal = True, tool_name = tool_name)
     return coerced.arguments
+
 
 def _promote(
     calls: list,
@@ -217,9 +216,7 @@ def heal_openai_message(
     calls = []
     promoted_spans = []
     for call, span in zip(parsed, spans):
-        promoted = _promote(
-            [call], allowed_tools, id_offset = len(calls), tool_schemas = tool_schemas
-        )
+        promoted = _promote([call], allowed_tools, id_offset = len(calls), tool_schemas = tool_schemas)
         if promoted:
             calls.append(promoted[0])
             promoted_spans.append(span)
@@ -261,7 +258,11 @@ class StreamToolCallHealer:
     text verbatim.
     """
 
-    def __init__(self, allowed_tools: set, tools: Optional[list] = None) -> None:
+    def __init__(
+        self,
+        allowed_tools: set,
+        tools: Optional[list] = None,
+    ) -> None:
         self._allowed = set(allowed_tools)
 
         self._tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None

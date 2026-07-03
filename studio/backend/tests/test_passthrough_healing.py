@@ -527,7 +527,6 @@ class TestOpenaiNonStreamingRoute:
 
         asyncio.run(_run())
 
-
     def test_bare_string_uses_client_schema_key(self, monkeypatch):
         async def _run():
             content = '<tool_call>{"name":"Bash","arguments":"echo hi"}</tool_call>'
