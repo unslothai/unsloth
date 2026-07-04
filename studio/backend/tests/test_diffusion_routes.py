@@ -659,6 +659,17 @@ def test_in_progress_returns_409_after_validation_passes(client, monkeypatch):
     backend = _FakeBackend()
     backend.begin_load = _busy
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    # Pin the resolved device to cuda: the route only takes the arbiter for non-CPU
+    # loads, so on a CPU-only host the ownership assert below would never hold.
+    import types as _types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(
+        devmod,
+        "resolve_diffusion_device_target",
+        lambda: _types.SimpleNamespace(device = "cuda"),
+    )
     resp = client.post(
         "/api/inference/images/load",
         json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
