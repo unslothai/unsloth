@@ -236,6 +236,7 @@ def _patch_capability(monkeypatch, capability):
     import torch
 
     import core.training.diffusion_train_common as dtc
+
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     monkeypatch.setattr(dtc, "has_functional_torchao", lambda: True)
