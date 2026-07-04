@@ -691,7 +691,11 @@ def _fake_materialize(resolved, dest):
     return out
 
 
-def _patch_lora(monkeypatch, resolved, supported = True):
+def _patch_lora(
+    monkeypatch,
+    resolved,
+    supported = True,
+):
     from core.inference import diffusion_lora as dl
 
     monkeypatch.setattr(dl, "supports_lora", lambda **k: supported)
@@ -706,7 +710,9 @@ def test_generate_oneshot_applies_loras_via_prompt_tags(monkeypatch):
 
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)  # mode = "oneshot"
-    _patch_lora(monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.8)])
+    _patch_lora(
+        monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.8)]
+    )
     b.generate(prompt = "a fox", steps = 4, seed = 1, loras = [("id1", 0.8)])
     _, params, _, _ = eng.calls[0]
     assert params.lora_dir is not None and params.lora_apply_mode == "auto"
@@ -725,7 +731,9 @@ def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tm
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
     servers[0].lora_dir = str(tmp_path)
-    _patch_lora(monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.7)])
+    _patch_lora(
+        monkeypatch, [dl.ResolvedLora("id1", "myalias", "/x/a.safetensors", "safetensors", 0.7)]
+    )
     b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
     payload = servers[0].payloads[0]
     assert "lora" in payload and len(payload["lora"]) == 1
