@@ -11980,7 +11980,6 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
     Hardware-independent (served from the pure auto-policy tables, no GPU probing), so it
     is cheap and safe to fetch before anything is loaded."""
     from core.inference.diffusion_inference_info import family_inference_infos
-
     return DiffusionInferenceInfoResponse(families = family_inference_infos())
 
 

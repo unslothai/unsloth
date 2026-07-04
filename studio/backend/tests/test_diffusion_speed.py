@@ -357,7 +357,12 @@ def test_apply_tolerates_missing_optims(monkeypatch):
 # ── fp16 accumulation (consumer fp16-GEMM fast path) ──────────────────────────
 
 
-def _stub_torch_fp16_accum(monkeypatch, *, consumer = True, with_flag = True):
+def _stub_torch_fp16_accum(
+    monkeypatch,
+    *,
+    consumer = True,
+    with_flag = True,
+):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.channels_last = "channels_last"
@@ -427,9 +432,7 @@ def test_fp16_accum_respects_family_deny_list(monkeypatch):
     _stub_gguf_accel(monkeypatch)
     monkeypatch.setattr(ds_mod, "_FP16_ACCUM_DENY", frozenset({"fragile-family"}))
     fam = types.SimpleNamespace(supports_torch_compile = True, name = "fragile-family")
-    applied = apply_speed_optims(
-        _Pipe(), _target(), is_gguf = True, family = fam, speed_mode = "default"
-    )
+    applied = apply_speed_optims(_Pipe(), _target(), is_gguf = True, family = fam, speed_mode = "default")
     assert applied["fp16_accum"] is False
 
 
