@@ -38,4 +38,4 @@ __all__ = [
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
-_ = (rag_router,)
+_ = (rag_router, video_router)
