@@ -489,6 +489,20 @@ def parse_tool_calls_from_text(
         )
         if calls:
             return calls
+        # Disabled/example name: the leading object is ordinary content, so
+        # the literals quoted inside it are data too. Drop the object and
+        # parse only the tail -- a real call AFTER the object still parses,
+        # while nothing inside it can be promoted by the passes below.
+        i = 0
+        while i < len(content) and content[i] in " \t\n\r":
+            i += 1
+        end = _balanced_brace_end(content, i)  # guard guarantees a balanced object
+        return parse_tool_calls_from_text(
+            content[end + 1 :],
+            id_offset = id_offset,
+            allow_incomplete = allow_incomplete,
+            enabled_tool_names = enabled_tool_names,
+        )
 
     # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
     # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
