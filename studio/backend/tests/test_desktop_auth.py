@@ -439,6 +439,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
+        "video_router": APIRouter(),
     }.items():
         setattr(routes_module, name, router)
     routes_module.settings = settings_module
