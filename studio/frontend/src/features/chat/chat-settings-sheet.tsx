@@ -668,6 +668,15 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  const maxTokensMax =
+    !pendingIsGguf && isExternalModel
+      ? getExternalMaxOutputTokens(
+          externalProviderType,
+          externalSelection?.modelId,
+        )
+      : isGguf && baseContext
+        ? baseContext
+        : Math.max(64, params.maxSeqLength);
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -1373,24 +1382,17 @@ export function ChatSettingsPanel({
                   ? getExternalMinOutputTokens(externalProviderType)
                   : 64
               }
-              max={
-                // A staged GGUF caps to its own context even over an active
-                // external model (the staged model is what will load).
-                !pendingIsGguf && isExternalModel
-                  ? getExternalMaxOutputTokens(
-                      externalProviderType,
-                      externalSelection?.modelId,
-                    )
-                  : isGguf && baseContext
-                    ? baseContext
-                    : 32768
-              }
+              max={maxTokensMax}
               step={64}
               onChange={set("maxTokens")}
               displayValue={
                 isGguf && baseContext && params.maxTokens >= baseContext
                   ? "Max"
-                  : undefined
+                  : !isExternalModel &&
+                      !isGguf &&
+                      params.maxTokens >= maxTokensMax
+                    ? "Max"
+                    : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
