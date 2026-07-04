@@ -22,6 +22,7 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
+    resolve_prefix_seg_info,
     SDPA,
 )
 from .gemma import (
@@ -168,6 +169,12 @@ def Gemma2Attention_fast_forward(
             },
         )
 
+        # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO
+        # logprob forward. resolve_prefix_seg_info hardens the misuse case (KV cache /
+        # padding mask -> raise). None => byte-identical default. gemma2 is sliding-window;
+        # the layout builder falls back for it whenever the longest segment exceeds the
+        # window, so this only engages when the whole packed stream fits the local window.
+        _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,
             q_len = q_len,
@@ -179,6 +186,7 @@ def Gemma2Attention_fast_forward(
             attention_mask = attention_mask,
             causal_mask = causal_mask,
             sliding_window = sliding_window,
+            prefix_seg_info = _pg_seg,
         )
 
         A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)

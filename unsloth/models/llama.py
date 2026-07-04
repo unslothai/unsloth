@@ -39,6 +39,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     SDPA,
     select_attention_backend,
+    resolve_prefix_seg_info,
 )
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
@@ -738,6 +739,11 @@ def LlamaAttention_fast_forward(
         flash_dense_kwargs = {"causal": True},
         flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True},
     )
+    # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO logprob
+    # forward (same route as packed_seq_lengths). resolve_prefix_seg_info hardens the
+    # misuse case (KV cache / padding mask -> raise). None => byte-identical default.
+    # This reuse of LlamaAttention_fast_forward also carries the branch to qwen2 & gemma.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -748,6 +754,7 @@ def LlamaAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = config, context = context, Q = Q, K = K, V = V)
@@ -897,7 +904,7 @@ def LlamaModel_fast_forward(
     # Fix out of bounds tokenization unless we were given packed metadata
     allow_overlength = getattr(self, "_unsloth_allow_packed_overlength", False) or (
         "packed_seq_lengths" in kwargs
-    )
+    ) or ("prefix_seg_info" in kwargs and kwargs["prefix_seg_info"] is not None)
     if hasattr(self, "max_seq_length") and not allow_overlength:
         if seq_length > self.max_seq_length:
             shape = input_ids.shape if input_ids is not None else inputs_embeds.shape

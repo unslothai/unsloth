@@ -23,6 +23,7 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
+    resolve_prefix_seg_info,
     SDPA,
 )
 from .llama import (
@@ -159,6 +160,10 @@ def GraniteAttention_fast_forward(
         },
     )
 
+    # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO logprob
+    # forward. resolve_prefix_seg_info hardens the misuse case (KV cache / padding mask ->
+    # raise). None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -169,6 +174,7 @@ def GraniteAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
