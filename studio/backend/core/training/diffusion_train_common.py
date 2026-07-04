@@ -335,9 +335,7 @@ class DiffusionLoraConfig:
             raise ValueError("compile_transformer must be one of off / on / auto")
         base_precision = str(self.base_precision or "nf4").strip().lower()
         if base_precision not in ("nf4", "bf16", "int8", "fp8", "mxfp8", "auto"):
-            raise ValueError(
-                "base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto"
-            )
+            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto")
         # base_precision is a DiT-only lever (the transformer load precision); SDXL uses its
         # own mixed_precision path and ignores base_precision entirely, so the dense-mode
         # gates (prequant base / non-bf16 compute) apply only to the DiT families. The
