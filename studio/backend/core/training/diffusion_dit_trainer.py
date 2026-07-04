@@ -47,6 +47,7 @@ from core.training.diffusion_train_common import (
     _publish_to_lora_catalog,
     _restore_perf_flags,
     discover_image_caption_pairs,
+    has_functional_torchao,
     repo_is_prequantized,
 )
 
@@ -333,11 +334,12 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     free_gb = None
     capability = None
     has_fp8 = False
-    # int8 quantization has no runtime fallback, so gate the auto pick on torchao being
-    # importable (find_spec avoids the cost/side-effects of an actual import).
-    import importlib.util
-
-    has_torchao = importlib.util.find_spec("torchao") is not None
+    # int8 quantization has no runtime fallback, so gate the auto pick on a FUNCTIONAL
+    # torchao: a plain find_spec("torchao") is satisfied by the Windows-ROCm import stub,
+    # whose quantize_ is a no-op that would leave the transformer dense while compile is
+    # disabled as if it were int8. has_functional_torchao imports the exact symbols
+    # _int8_quantize_base uses and rejects the stub.
+    has_torchao = has_functional_torchao()
     if device == "cuda":
         try:
             import torch
