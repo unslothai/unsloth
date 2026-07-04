@@ -425,7 +425,9 @@ class DiffusionBackend:
             target = self._resolve_device_target(fam)
             if not dense_transformer_supported(target):
                 return False
-            scheme = select_transformer_quant_scheme(target, mode)
+            scheme = select_transformer_quant_scheme(
+                target, mode, family = getattr(fam, "name", None)
+            )
             if scheme is None:
                 return False
             source = resolve_prequant_source(
@@ -1310,7 +1312,7 @@ class DiffusionBackend:
         BEFORE the loader compiles the repeated block, so the order stays quantize ->
         compile -> placement."""
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        scheme = select_transformer_quant_scheme(target, mode)
+        scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
         if scheme is None:
             # Bail BEFORE the (multi-GB) dense download: an explicit unsupported scheme
             # (e.g. fp8 on Ampere, nvfp4 off Blackwell) would otherwise materialise the
@@ -1349,7 +1351,14 @@ class DiffusionBackend:
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
         pipe = self._assemble_pipe(pipeline_cls, base, transformer, dtype, hf_token, device)
-        scheme = quantize_transformer(pipe, target, mode = mode, fast_accum = fast_accum, logger = logger)
+        scheme = quantize_transformer(
+            pipe,
+            target,
+            mode = mode,
+            family = getattr(fam, "name", None),
+            fast_accum = fast_accum,
+            logger = logger,
+        )
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         return pipe, scheme
