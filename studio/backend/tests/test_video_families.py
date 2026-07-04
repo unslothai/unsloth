@@ -150,6 +150,7 @@ def test_supported_names():
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
+        "hunyuanvideo-1.5",
     )
 
 
@@ -200,3 +201,25 @@ def test_family_size_table_present():
     # that would let auto planning under-reserve by ~50 GB.
     assert text_encoder_gb > transformer_gb > 20.0
     assert companions_gb > 0.0
+
+
+def test_hv15_detection_and_flags():
+    fam = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
+    assert fam is not None and fam.name == "hunyuanvideo-1.5"
+    # CFG lives on the guider component (no guidance kwarg in __call__), and the
+    # HV15 VAE compresses 16x spatial / 4x temporal.
+    assert fam.guidance_via_guider is True
+    assert fam.frame_step == 4 and fam.resolution_multiple == 16
+    assert fam.has_audio is False
+    assert detect_video_family("x/y", override = "hv15") is fam
+    # The incompatible HunyuanVideo 1.0 repos must NOT be claimed: their
+    # model_index pins HunyuanVideoPipeline, which this family cannot load.
+    assert detect_video_family("hunyuanvideo-community/HunyuanVideo") is None
+
+
+def test_hv15_generation_defaults():
+    # The community repacks ship a guider with guidance_scale 6.0 and the
+    # pipeline's own 50-step schedule.
+    assert default_video_generation_params(
+        None, "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
+    ) == (50, 6.0)

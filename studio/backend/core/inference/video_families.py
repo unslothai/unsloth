@@ -50,6 +50,12 @@ class VideoFamily:
     transformer2_class: Optional[str] = None
     is_moe: bool = False
     cfg2_kwarg: Optional[str] = None
+    # HunyuanVideo-1.5 style guidance: the pipeline __call__ takes NO guidance
+    # kwarg at all; CFG lives on a ``guider`` component (ClassifierFreeGuidance)
+    # whose ``guidance_scale`` is a plain attribute set per request. When True,
+    # generate() writes the scale onto ``pipe.guider`` instead of passing
+    # ``cfg_kwarg`` (which the pipeline would reject as an unexpected argument).
+    guidance_via_guider: bool = False
     # Generation defaults + shape constraints. ``frame_step`` is the temporal
     # compression: a valid frame count is k * frame_step + 1 (the +1 is the
     # anchor frame), so requests are snapped BEFORE latents are allocated.
@@ -190,6 +196,46 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (114.3, 11.4, 0.5),
         gguf_repo = "QuantStack/Wan2.2-T2V-A14B-GGUF",
     ),
+    # HunyuanVideo-1.5 (diffusers >= 0.39): an 8.3B video DiT with a Qwen2.5-VL
+    # text encoder plus a ByT5 glyph encoder. Three quirks, all verified against
+    # the installed pipeline source (pipeline_hunyuan_video1_5.py):
+    #   1. __call__ takes NO guidance kwarg; CFG lives on the ``guider`` component
+    #      (ClassifierFreeGuidance; the 480p t2v repo ships guidance_scale = 6.0),
+    #      hence guidance_via_guider.
+    #   2. __call__ has NO callback_on_step_end; generate() falls back to the
+    #      scheduler.step progress wrapper automatically (capability-detected).
+    #   3. The tencent/HunyuanVideo-1.5 repo is the ORIGINAL layout (config.json,
+    #      no model_index.json); only the hunyuanvideo-community Diffusers repacks
+    #      load through HunyuanVideo15Pipeline, so those are the trusted repos.
+    # The transformer declares _repeated_blocks and inherits CacheMixin, so the
+    # regional compile profile and First-Block-Cache both apply.
+    VideoFamily(
+        name = "hunyuanvideo-1.5",
+        pipeline_class = "HunyuanVideo15Pipeline",
+        transformer_class = "HunyuanVideo15Transformer3DModel",
+        base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0
+        # repos (HunyuanVideoPipeline), which this family cannot load.
+        aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
+        has_audio = False,
+        guidance_via_guider = True,
+        default_steps = 50,
+        default_guidance = 6.0,
+        # 121 frames at 24 fps is ~5s, the pipeline's own num_frames default.
+        default_num_frames = 121,
+        default_fps = 24,
+        # The HV15 VAE compresses 16x spatial / 4x temporal (vae config:
+        # spatial_compression_ratio 16, temporal_compression_ratio 4) with a
+        # patch-1 transformer, so sizes snap to /16 and frames to 4k+1.
+        frame_step = 4,
+        resolution_multiple = 16,
+        # 480p-class presets (the base repo is the 480p t2v variant): landscape,
+        # vertical, square.
+        resolution_presets = ((832, 480), (480, 832), (624, 624)),
+        # Disk shards are fp32 for the DiT (32.0 GB -> 16.6 bf16-resident) and the
+        # VAE (4.7 -> 2.4); the Qwen2.5-VL TE is stored bf16 (14.0) plus ByT5 0.8.
+        bf16_components_gb = (16.6, 14.8, 2.4),
+    ),
 )
 
 
@@ -262,6 +308,9 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # and the base repo. A future distilled Wan GGUF is caught by the "distilled"
     # row above (listed first), exactly as the LTX-2.3 distilled checkpoints are.
     ("wan", 50, 5.0),
+    # HunyuanVideo-1.5 runs the pipeline's 50 steps with the guider's shipped
+    # CFG 6.0 (guider_config.json in the community Diffusers repacks).
+    ("hunyuanvideo", 50, 6.0),
 )
 
 

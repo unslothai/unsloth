@@ -72,6 +72,9 @@ const PIPELINE_MODELS: Record<string, PipelineSpec> = {
   // these to the Wan-AI base repos (see _TRUSTED_NON_GGUF_VIDEO_REPOS).
   "Wan-AI/Wan2.2-TI2V-5B-Diffusers": { kind: "pipeline" },
   "Wan-AI/Wan2.2-T2V-A14B-Diffusers": { kind: "pipeline" },
+  // HunyuanVideo-1.5 community Diffusers repack (tencent's own repo is the original
+  // non-diffusers layout and cannot load as a pipeline).
+  "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": { kind: "pipeline" },
 };
 
 // A curated GGUF picker entry: isGguf true expands its .gguf files in the quant expander
@@ -106,6 +109,11 @@ const VIDEO_MODELS: ModelOption[] = [
     "Wan 2.2 T2V A14B (MoE)",
     "Text-to-video, dual-expert · Safetensors",
   ),
+  pipelineModel(
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+    "HunyuanVideo 1.5 (480p)",
+    "Text-to-video 480p · Safetensors",
+  ),
 ];
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most
@@ -120,6 +128,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // Wan2.2 pipelines default to 50 steps at CFG 5.0 (WanPipeline defaults, verified in
   // diffusers 0.39). The backend supplies the fps per family (24 for TI2V-5B, 16 for A14B).
   { match: "wan", steps: 50, guidance: 5 },
+  // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships
+  // (the backend writes it onto the guider component, there is no pipeline kwarg).
+  { match: "hunyuanvideo", steps: 50, guidance: 6 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {

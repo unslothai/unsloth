@@ -30,6 +30,7 @@ family's official base repos, or a local path the user explicitly picked.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import tempfile
@@ -100,6 +101,11 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # remote code, so allowed as full (pipeline-kind) loads like the LTX-2 bases.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
+        # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo is the
+        # original non-diffusers layout: config.json, no model_index.json, so it
+        # cannot load through HunyuanVideo15Pipeline at all).
+        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
+        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
     }
 )
 
@@ -127,6 +133,37 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
         pass
     rid = repo_id.strip().lower()
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_VIDEO_REPOS
+
+
+class _VideoGenerationCancelled(Exception):
+    """Unwinds a denoise loop that has no cooperative interrupt (no step callback);
+    generate() maps it to the VIDEO_CANCELLED_MSG sentinel the routes 409 on."""
+
+
+@contextlib.contextmanager
+def _scheduler_step_progress(pipe: Any, on_step: Any):
+    """Progress + cancellation for pipelines WITHOUT callback_on_step_end.
+
+    HunyuanVideo15Pipeline exposes no per-step callback, but every denoise step
+    makes exactly one ``scheduler.step`` call, so wrapping that method gives the
+    same per-step tick the callback path gets. ``on_step`` receives the 1-based
+    step count and may raise (_VideoGenerationCancelled) to abort the loop. The
+    original method is always restored, even when the pipeline raises.
+    """
+    scheduler = pipe.scheduler
+    original = scheduler.step
+    count = {"n": 0}
+
+    def _step(*args: Any, **kwargs: Any) -> Any:
+        count["n"] += 1
+        on_step(count["n"])
+        return original(*args, **kwargs)
+
+    scheduler.step = _step
+    try:
+        yield
+    finally:
+        scheduler.step = original
 
 
 def _ensure_mp4_encoder_available() -> None:
@@ -835,12 +872,19 @@ class VideoBackend:
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
                     "num_inference_steps": steps,
-                    fam.cfg_kwarg: guidance,
                     "width": width,
                     "height": height,
                     "num_frames": frames,
                     "generator": generator,
                 }
+                if fam.guidance_via_guider:
+                    # HunyuanVideo-1.5: __call__ has no guidance kwarg at all; the
+                    # CFG scale is a plain attribute on the pipeline's guider
+                    # component, set per request. Near-1 scales auto-disable CFG
+                    # inside the guider itself (_is_cfg_enabled's is_close check).
+                    pipe.guider.guidance_scale = float(guidance)
+                else:
+                    kwargs[fam.cfg_kwarg] = guidance
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
                 # LTX-2 takes frame_rate (it shapes the audio track length); other
@@ -869,23 +913,42 @@ class VideoBackend:
                     "started": started, "eta_seconds": None, "error": None,
                 }
 
-                def _on_step(p, step_index, timestep, callback_kwargs):
-                    if cancel.is_set():
-                        p._interrupt = True
-                        return callback_kwargs
-                    done = step_index + 1
+                def _tick(done: int) -> None:
                     elapsed = time.monotonic() - started
                     self._gen.update(
                         step = done,
                         eta_seconds = (elapsed / max(1, done)) * max(0, steps - done),
                     )
+
+                def _on_step(p, step_index, timestep, callback_kwargs):
+                    if cancel.is_set():
+                        p._interrupt = True
+                        return callback_kwargs
+                    _tick(step_index + 1)
                     return callback_kwargs
+
+                def _on_scheduler_step(done: int) -> None:
+                    # No cooperative _interrupt here: without a callback the pipeline
+                    # never checks it, so cancellation must unwind the denoise loop
+                    # via an exception (mapped to the cancelled sentinel below).
+                    if cancel.is_set():
+                        raise _VideoGenerationCancelled()
+                    _tick(done)
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                    progress_ctx = contextlib.nullcontext()
+                else:
+                    # HunyuanVideo-1.5 has no step callback; every scheduler.step
+                    # call is exactly one denoise step, so wrap it for progress +
+                    # cancel and restore it afterwards.
+                    progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
 
-                with torch.inference_mode():
-                    output = pipe(**kwargs)
+                try:
+                    with torch.inference_mode(), progress_ctx:
+                        output = pipe(**kwargs)
+                except _VideoGenerationCancelled:
+                    raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 

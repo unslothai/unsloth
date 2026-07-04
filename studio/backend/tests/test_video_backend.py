@@ -13,7 +13,7 @@ import types
 import pytest
 
 from core.inference.video import VideoBackend, get_video_backend, resolve_video_model_kind
-from core.inference.video_families import VIDEO_NOT_LOADED_MSG
+from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
 class _FakeDtype:
@@ -273,6 +273,82 @@ class _FakeWanPipelineSingle:
         return _FakeWanPipeMoE() if moe else _FakeWanPipeSingle()
 
 
+# ── HunyuanVideo-1.5 fakes: the __call__ signature has NO guidance kwarg and NO
+# callback_on_step_end (matching pipeline_hunyuan_video1_5.py in diffusers 0.39),
+# a guider object carries the CFG scale, and the denoise loop drives
+# scheduler.step -- so the guider write and the scheduler-wrap progress/cancel
+# paths actually exercise.
+
+
+class _FakeHV15Scheduler:
+    def __init__(self) -> None:
+        self.calls = 0
+        # Test hook fired from the ORIGINAL step (i.e. inside the wrapped call),
+        # letting a test cancel mid-denoise exactly as a user request would land.
+        self.on_step = None
+
+    def step(self, *args, **kwargs):
+        self.calls += 1
+        if self.on_step is not None:
+            self.on_step(self.calls)
+        return object()
+
+
+class _FakeHV15Pipe:
+    def __init__(self) -> None:
+        self.vae = _FakeWanVae()
+        self.transformer = _FakeWanDiT()
+        self.scheduler = _FakeHV15Scheduler()
+        self.guider = types.SimpleNamespace(guidance_scale = 6.0)
+        self.components = {"transformer": self.transformer, "vae": self.vae}
+        self.moved_to = None
+        self.last_kwargs = None
+
+    def to(self, device):
+        self.moved_to = device
+        return self
+
+    def enable_vae_tiling(self) -> None:
+        self.vae.tiled = True
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        height = None,
+        width = None,
+        num_frames = None,
+        num_inference_steps = None,
+        generator = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "num_inference_steps": num_inference_steps,
+            "width": width,
+            "height": height,
+            "num_frames": num_frames,
+            **kwargs,
+        }
+        for _ in range(int(num_inference_steps or 1)):
+            self.scheduler.step()
+        frames = [[object() for _ in range(int(num_frames or 1))]]
+        return types.SimpleNamespace(frames = frames, audio = None)
+
+
+class _FakeHV15Pipeline:
+    last: dict = {}
+    instance = None
+
+    @classmethod
+    def from_pretrained(cls, repo, **kwargs):
+        _FakeHV15Pipeline.last = {"repo": repo, **kwargs}
+        _FakeHV15Pipeline.instance = _FakeHV15Pipe()
+        return _FakeHV15Pipeline.instance
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     torch = types.ModuleType("torch")
@@ -291,6 +367,8 @@ def fake_runtime(monkeypatch):
     # Wan2.2: one pipeline class serves both families (it dispatches on the repo id).
     diffusers.WanPipeline = _FakeWanPipelineSingle
     diffusers.WanTransformer3DModel = _FakeTransformer
+    diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
+    diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
     diffusers.FirstBlockCacheConfig = lambda threshold = None: ("fbcache", threshold)
 
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -498,6 +576,50 @@ def test_generate_progress_and_cancel_idle(fake_runtime):
     backend = VideoBackend()
     assert backend.generate_progress() == {"active": False}
     assert backend.cancel_generate() is False
+
+
+def test_hv15_guider_and_scheduler_progress(fake_runtime):
+    # HunyuanVideo-1.5: no guidance kwarg (CFG set on the guider), no step
+    # callback (progress via the scheduler.step wrapper, restored afterwards).
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        model_kind = "pipeline",
+    )
+    assert status["family"] == "hunyuanvideo-1.5"
+    assert status["has_audio"] is False
+    assert status["defaults"]["frame_step"] == 4
+
+    pipe = _FakeHV15Pipeline.instance
+    result = backend.generate(
+        prompt = "a fox in the snow", steps = 4, guidance = 3.5, num_frames = 9, fps = 24
+    )
+    assert "guidance_scale" not in pipe.last_kwargs
+    assert "callback_on_step_end" not in pipe.last_kwargs
+    assert pipe.guider.guidance_scale == 3.5
+    # One wrapped tick per denoise step, then the original method back in place.
+    assert pipe.scheduler.calls == 4
+    assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
+    assert result["num_frames"] == 9 and result["has_audio"] is False
+
+
+def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        model_kind = "pipeline",
+    )
+    pipe = _FakeHV15Pipeline.instance
+    # Cancel lands during the FIRST real step; the next wrapped call must raise out
+    # of the denoise loop and generate() must surface the cancelled sentinel.
+    pipe.scheduler.on_step = (
+        lambda n: backend.cancel_generate() if n == 1 else None
+    )
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert pipe.scheduler.calls == 1
+    # The wrapper must restore scheduler.step even on the exception path.
+    assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
 
 
 def test_singleton():
