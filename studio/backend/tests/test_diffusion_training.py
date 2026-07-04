@@ -11,6 +11,7 @@ service, so wiring / validation / error mapping are covered without a GPU.
 
 from __future__ import annotations
 
+import json
 import queue as _queue
 import threading
 import time
@@ -532,6 +533,31 @@ def test_diffusion_info_lists_image_dataset_folders(client, dataset_roots):
     assert [d["name"] for d in body["datasets"]] == ["cat-photos"]
     assert body["datasets"][0]["image_count"] == 2
     assert body["datasets"][0]["caption_count"] == 1
+
+
+def test_diffusion_info_counts_metadata_captions(client, dataset_roots):
+    # A dataset captioned via metadata.jsonl must not report caption_count=0 (which the
+    # Train UI treats as uncaptioned); metadata rows count like sidecars, without
+    # double-counting an image that has both.
+    ds_root, _ = dataset_roots
+    folder = ds_root / "meta-captioned"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "b.png").write_bytes(b"x")
+    (folder / "c.png").write_bytes(b"x")
+    # a.png + b.png via metadata; a.png also has a sidecar (must count once); c.png none.
+    (folder / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "a.png", "text": "cap a"}) + "\n"
+        + json.dumps({"file_name": "b.png", "text": "cap b"}) + "\n",
+        encoding = "utf-8",
+    )
+    (folder / "a.txt").write_text("edited a", encoding = "utf-8")
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "meta-captioned")
+    assert summary["image_count"] == 3
+    assert summary["caption_count"] == 2
 
 
 def test_diffusion_dataset_upload_accumulates(client, dataset_roots):

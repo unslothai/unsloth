@@ -28,21 +28,33 @@ def _touch(p):
     p.write_bytes(b"")
 
 
-def test_discover_prefers_metadata_then_sidecar_then_instance(tmp_path):
+def test_discover_prefers_sidecar_then_metadata_then_instance(tmp_path):
     _touch(tmp_path / "a.png")
     _touch(tmp_path / "b.jpg")
     _touch(tmp_path / "c.webp")
-    # a.png captioned via metadata.jsonl
+    # a.png captioned via metadata.jsonl only
     (tmp_path / "metadata.jsonl").write_text(
         json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
     )
-    # b.jpg captioned via sidecar
+    # b.jpg captioned via sidecar only
     (tmp_path / "b.txt").write_text("from sidecar", encoding = "utf-8")
     # c.webp falls back to the instance prompt
     pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt = "from instance"))
     assert pairs[str(tmp_path / "a.png")] == "from metadata"
     assert pairs[str(tmp_path / "b.jpg")] == "from sidecar"
     assert pairs[str(tmp_path / "c.webp")] == "from instance"
+
+
+def test_discover_sidecar_overrides_metadata_row(tmp_path):
+    # A per-image sidecar is the user's explicit edit and must win over a metadata row
+    # for the same image (the labeling grid writes sidecars).
+    _touch(tmp_path / "a.png")
+    (tmp_path / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+    )
+    (tmp_path / "a.txt").write_text("edited sidecar", encoding = "utf-8")
+    pairs = dict(discover_image_caption_pairs(tmp_path))
+    assert pairs[str(tmp_path / "a.png")] == "edited sidecar"
 
 
 def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):

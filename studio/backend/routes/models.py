@@ -909,9 +909,10 @@ async def list_local_models(
 
     try:
         models = collect_local_models(models_root)
-        # Tag each GGUF with its task so the Images picker can filter to diffusion.
+        # Tag each model with its task so the Images picker can filter to diffusion
+        # (GGUF by architecture; local diffusers checkpoints by pipeline / family).
         models = [
-            m.model_copy(update = {"task": _local_model_task(m.path, m.model_format)}) for m in models
+            m.model_copy(update = {"task": _local_model_task(m)}) for m in models
         ]
 
         return LocalModelListResponse(
@@ -3229,24 +3230,55 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
     return None
 
 
-def _local_model_task(path: str, model_format: Optional[str]) -> Optional[str]:
-    """Same classification for a local model: read its GGUF architecture. The
-    path may be the .gguf file itself or a folder containing one."""
-    if model_format != "gguf":
+def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
+    """Classify a local model into an HF pipeline task so the Images picker can filter.
+
+    For a GGUF, read its architecture (the path may be the .gguf file itself or a folder
+    containing one). For a local non-GGUF image checkpoint (a diffusers pipeline dir or a
+    single-file safetensors), fall through to the diffusers detection so on-device image
+    models get the 'text-to-image' tag instead of being dropped as task=null; the load
+    path accepts these as a local pipeline."""
+    path = model.path
+    if model.model_format == "gguf":
+        try:
+            p = Path(path)
+            if p.suffix.lower() == ".gguf" and p.is_file():
+                return _arch_to_task(_gguf_architecture(str(p)))
+            for f in _iter_gguf_paths(p):
+                if _is_mmproj_filename(f.name):
+                    continue
+                task = _arch_to_task(_gguf_architecture(str(f)))
+                if task is not None:
+                    return task
+        except Exception:
+            pass
         return None
+    if _local_is_diffusers(model):
+        return "text-to-image"
+    return None
+
+
+def _local_is_diffusers(model: "LocalModelInfo") -> bool:
+    """True for a local diffusers image checkpoint, mirroring the cached-repo
+    ``_repo_is_diffusers`` heuristics: a full pipeline carries a top-level
+    ``model_index.json``, while single-file / safetensors image checkpoints ship none, so
+    fall back to the model id resolving to a known diffusion family (the same resolver the
+    Images backend loads from). Family detection uses the clean model id / name, not the
+    on-disk path, so a parent directory keyword can't spuriously match."""
     try:
-        p = Path(path)
-        if p.suffix.lower() == ".gguf" and p.is_file():
-            return _arch_to_task(_gguf_architecture(str(p)))
-        for f in _iter_gguf_paths(p):
-            if _is_mmproj_filename(f.name):
-                continue
-            task = _arch_to_task(_gguf_architecture(str(f)))
-            if task is not None:
-                return task
+        p = Path(model.path)
+        if p.is_dir() and (p / "model_index.json").is_file():
+            return True
     except Exception:
         pass
-    return None
+    try:
+        from core.inference.diffusion_families import detect_family
+        for needle in (model.model_id, model.display_name, model.id):
+            if needle and detect_family(needle) is not None:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 @router.get("/cached-gguf")
