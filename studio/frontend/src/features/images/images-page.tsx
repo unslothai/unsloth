@@ -1871,8 +1871,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
-          label="GGUF compute"
-          desc="Off runs the GGUF as-is. INT8/FP8/FP4 instead download the base model's bf16 transformer and quantise it directly onto low-precision tensor cores (the GGUF is not requantised): a faster step, at the cost of a larger download and more VRAM."
+          label="Dtype"
           hint="Optional speed-up for GGUF models. Off runs the GGUF as-is. FP8/INT8/FP4 instead load the FULL base model and quantise its transformer onto low-precision tensor cores: faster per step, but a larger download and more VRAM, and it falls back to the GGUF if it can't fit. Needs CUDA."
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
@@ -1888,7 +1887,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) : (
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-            GGUF compute
+            Dtype
           </span>
           <span className="text-xs text-muted-foreground/60">GGUF models only</span>
         </div>
@@ -2599,7 +2598,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 <p className="text-sm">
                   {status?.loaded
                     ? "Enter a prompt and hit Generate."
-                    : "Select a model quant to load, then generate."}
+                    : "Select a diffusion model to load"}
                 </p>
               </div>
             )}
