@@ -240,17 +240,21 @@ def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
 
     gguf = types.ModuleType("gguf")
     # GGUF headers store dims in GGML (reversed) order.
-    gguf.GGUFReader = _reader_for({
-        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 9),
-    })
+    gguf.GGUFReader = _reader_for(
+        {
+            "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 9),
+        }
+    )
     monkeypatch.setitem(sys.modules, "gguf", gguf)
     path = tmp_path / "ltx23.gguf"
     path.write_bytes(b"x")
     assert is_ltx23_checkpoint(path) is True
 
-    gguf.GGUFReader = _reader_for({
-        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
-    })
+    gguf.GGUFReader = _reader_for(
+        {
+            "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
+        }
+    )
     assert is_ltx23_checkpoint(path) is False
 
     def _boom(path):

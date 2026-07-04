@@ -290,7 +290,6 @@ class VideoBackend:
             # cache, so a cancelled pull costs nothing).
             if kwargs.get("gguf_filename") and not Path(kwargs["repo_id"]).expanduser().exists():
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
-
                 hf_hub_download_with_xet_fallback(
                     kwargs["repo_id"],
                     kwargs["gguf_filename"],
@@ -354,7 +353,6 @@ class VideoBackend:
             return 0
         try:
             from huggingface_hub import scan_cache_dir
-
             rid = repo_id.strip()
             for repo in scan_cache_dir().repos:
                 if repo.repo_id == rid:
@@ -436,9 +434,7 @@ class VideoBackend:
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         if kind == "pipeline":
-            model_dense_mib = (
-                int(sum(components) * mib_per_gb) if components is not None else None
-            )
+            model_dense_mib = int(sum(components) * mib_per_gb) if components is not None else None
             companion_mib = None
         else:
             checkpoint_path = self._resolve_checkpoint_path(repo_id, gguf_filename, hf_token)
@@ -502,12 +498,8 @@ class VideoBackend:
                     hf_token = hf_token,
                 )
             else:
-                transformer = transformer_cls.from_single_file(
-                    str(checkpoint_path), **sf_kwargs
-                )
-                pipe = pipeline_cls.from_pretrained(
-                    base, transformer = transformer, **pipe_kwargs
-                )
+                transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
+                pipe = pipeline_cls.from_pretrained(base, transformer = transformer, **pipe_kwargs)
 
         if _load_token is not None and _load_token != self._load_token:
             del pipe
@@ -534,9 +526,7 @@ class VideoBackend:
             speed_mode = effective_speed,
             offload_active = plan.offload_policy != "none",
         )
-        offload_policy, vae_tiling = apply_memory_plan(
-            pipe, plan, device = device, logger = logger
-        )
+        offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
         if not vae_tiling:
             # Decode of a whole clip is the video memory peak; tiling is near-free
             # in quality and keeps the decode bounded, so it is always on.
@@ -603,7 +593,11 @@ class VideoBackend:
             )
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s)",
-            repo_id, fam.name, kind, offload_policy, effective_speed,
+            repo_id,
+            fam.name,
+            kind,
+            offload_policy,
+            effective_speed,
         )
         return self.status()
 
@@ -621,9 +615,7 @@ class VideoBackend:
             return root
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        return Path(
-            hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token)
-        )
+        return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
 
     # ── generation ───────────────────────────────────────────────────────────
 
@@ -641,7 +633,6 @@ class VideoBackend:
         seed: Optional[int] = None,
     ) -> dict[str, Any]:
         import torch
-
         cancel = threading.Event()
         with self._generate_lock:
             with self._lock:
@@ -652,7 +643,8 @@ class VideoBackend:
             try:
                 fam = state.family
                 width, height = snap_video_size(
-                    fam, width or fam.resolution_presets[0][0],
+                    fam,
+                    width or fam.resolution_presets[0][0],
                     height or fam.resolution_presets[0][1],
                 )
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
@@ -688,8 +680,13 @@ class VideoBackend:
 
                 started = time.monotonic()
                 self._gen = {
-                    "active": True, "phase": "denoise", "step": 0, "total": steps,
-                    "started": started, "eta_seconds": None, "error": None,
+                    "active": True,
+                    "phase": "denoise",
+                    "step": 0,
+                    "total": steps,
+                    "started": started,
+                    "eta_seconds": None,
+                    "error": None,
                 }
 
                 def _on_step(p, step_index, timestep, callback_kwargs):

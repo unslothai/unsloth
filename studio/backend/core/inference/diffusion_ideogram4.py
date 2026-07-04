@@ -104,6 +104,7 @@ def _patch_create_causal_mask() -> None:
     pipe_mod.create_causal_mask = create_causal_mask_compat
     _CAUSAL_MASK_PATCHED = True
 
+
 # The fp8 attention is stored as a single fused ``qkv`` matrix with the Q, K and V
 # rows stacked in that order; each block is ``hidden_size`` rows tall. hidden_size =
 # attention_head_dim * num_attention_heads, read from the transformer config so a
@@ -207,7 +208,9 @@ def _text_encoder_shard_paths(repo_id: str, token: Optional[str]) -> list[str]:
         raise FileNotFoundError(f"no text_encoder safetensors under {sub}")
 
     try:
-        index_path = hf_hub_download(repo_id, "text_encoder/model.safetensors.index.json", token = token)
+        index_path = hf_hub_download(
+            repo_id, "text_encoder/model.safetensors.index.json", token = token
+        )
         weight_map = json.loads(Path(index_path).read_text())["weight_map"]
         shards = sorted(set(weight_map.values()))
     except Exception:  # noqa: BLE001 -- single-file text encoder has no index
@@ -243,7 +246,11 @@ def _text_encoder_is_fp8(repo_id: str, token: Optional[str]) -> bool:
     return False
 
 
-def load_ideogram4_text_encoder(repo_id: str, dtype, hf_token: Optional[str] = None):
+def load_ideogram4_text_encoder(
+    repo_id: str,
+    dtype,
+    hf_token: Optional[str] = None,
+):
     """The Qwen3-VL text encoder for ``repo_id``.
 
     The ``-fp8`` repo stores this encoder in the SAME float8-plus-per-channel-scale
@@ -302,7 +309,12 @@ def load_ideogram4_text_encoder(repo_id: str, dtype, hf_token: Optional[str] = N
     return model
 
 
-def load_ideogram4_transformer(repo_id: str, subfolder: str, dtype, hf_token: Optional[str] = None):
+def load_ideogram4_transformer(
+    repo_id: str,
+    subfolder: str,
+    dtype,
+    hf_token: Optional[str] = None,
+):
     """An ``Ideogram4Transformer2DModel`` for ``repo_id/subfolder`` (still on CPU).
 
     Reads the transformer config, and if the shards carry the vendor fp8 layout
@@ -356,7 +368,11 @@ def load_ideogram4_transformer(repo_id: str, subfolder: str, dtype, hf_token: Op
     return model
 
 
-def load_ideogram4_pipeline(repo_id: str, dtype, hf_token: Optional[str] = None):
+def load_ideogram4_pipeline(
+    repo_id: str,
+    dtype,
+    hf_token: Optional[str] = None,
+):
     """Assemble Ideogram4Pipeline from ``repo_id`` per-component (see module doc)."""
     import diffusers
 
