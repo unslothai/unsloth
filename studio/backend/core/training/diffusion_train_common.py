@@ -202,7 +202,10 @@ _FAMILY_VRAM_NOTES = {
     ),
     "qwen-image": "20B model, QLoRA (nf4) by default (~24 GB+). The heaviest option.",
     "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
-    "krea-2": "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only.",
+    "krea-2": (
+        "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only. Trains on the "
+        "undistilled Krea-2-Raw (Krea's guidance: train on Raw, run adapters on Turbo)."
+    ),
 }
 
 

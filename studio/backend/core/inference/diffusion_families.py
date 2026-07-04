@@ -294,9 +294,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "krea/Krea-2-Turbo",
         aliases = ("krea2",),
         # LoRA training via the DiT trainer (no prequant repo yet, so nf4 quantizes the
-        # 12B transformer on the fly under the default precision).
+        # 12B transformer on the fly under the default precision). Krea's release guidance
+        # is explicit: train LoRAs on the undistilled Raw checkpoint and apply them on
+        # Turbo for inference, so Raw is the default training base and Turbo stays the
+        # inference/base repo.
         trainable = True,
-        train_base_repos = ("krea/Krea-2-Turbo",),
+        train_base_repos = ("krea/Krea-2-Raw", "krea/Krea-2-Turbo"),
         # The checkpoint is exported bf16-only (the model card pins bfloat16); fp16 is
         # unvalidated upstream, so keep the fp16 fallback off like z-image.
         fp16_incompatible = True,

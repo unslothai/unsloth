@@ -113,6 +113,15 @@ def load_krea2_pipeline(
     """
     import diffusers
 
+    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below
+    # would die with a bare AttributeError mid-load, so fail first with the actionable fix.
+    if not hasattr(diffusers, "Krea2Pipeline"):
+        raise RuntimeError(
+            f"Krea 2 needs diffusers >= 0.39.0 (Krea2Pipeline); this environment has "
+            f"diffusers {getattr(diffusers, '__version__', 'unknown')}. "
+            f"Upgrade with: pip install -U diffusers"
+        )
+
     token = hf_token or None
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token)
     text_encoder = load_krea2_text_encoder(repo_id, dtype, hf_token = token)
