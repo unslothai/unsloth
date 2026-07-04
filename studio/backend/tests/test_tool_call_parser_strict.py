@@ -964,9 +964,7 @@ class TestGemmaUnquotedApostrophes:
         from core.inference.tool_call_parser import strip_tool_markup
 
         text = "call:web_search{query:what's the weather} Done."
-        stripped = strip_tool_markup(
-            text, final = True, enabled_tool_names = {"web_search"}
-        )
+        stripped = strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"})
         assert "call:web_search" not in stripped
         assert stripped.strip() == "Done."
 
