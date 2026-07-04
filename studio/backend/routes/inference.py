@@ -627,16 +627,31 @@ def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> st
     )
 
 
-def _sf_heal_events_to_sse(events, completion_id, created, model_name, state, parallel_tool_calls):
+def _sf_heal_events_to_sse(
+    events,
+    completion_id,
+    created,
+    model_name,
+    state,
+    parallel_tool_calls,
+    monitor_id = None,
+):
     """Serialize ``StreamToolCallHealer`` events into chat-stream SSE lines,
     reusing the shared chunk builders. ``state["idx"]`` tracks the healed
     tool-call index across ``feed``/``finalize`` calls; ``parallel_tool_calls is
-    False`` caps promotion to a single call (mirrors the GGUF passthrough)."""
+    False`` caps promotion to a single call (mirrors the GGUF passthrough).
+
+    When ``monitor_id`` is given, the monitor entry is fed from the SAME events
+    the client receives -- relayed text verbatim, promoted calls as the
+    ``[tool_calls] name(args)`` summary the non-streaming path records -- so
+    /api/monitor never shows healed-away markup (or capped-off calls) that were
+    not actually returned."""
     lines = []
     for kind, value in events:
         if kind == "text":
             if value:
                 lines.append(_chat_content_chunk(completion_id, created, model_name, value))
+                api_monitor.append_reply(monitor_id, value)
             continue
         if parallel_tool_calls is False and state["idx"] >= 1:
             continue
@@ -654,6 +669,12 @@ def _sf_heal_events_to_sse(events, completion_id, created, model_name, state, pa
                     }
                 ],
             )
+        )
+        _fn = value.get("function") or {}
+        api_monitor.append_reply(
+            monitor_id,
+            ("[tool_calls] " if state["idx"] == 0 else "; ")
+            + f"{_fn.get('name', '')}({_fn.get('arguments', '')})",
         )
         state["idx"] += 1
     return lines
@@ -6906,15 +6927,36 @@ async def openai_chat_completions(
         # OpenAI "developer" role and the fallback formatter drops it -- then
         # clear the separate prompt so the worker does not prepend a duplicate.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
-            _openai_messages_for_passthrough(payload), system_prompt
+            _flatten_content_parts_for_local_template(
+                _openai_messages_for_passthrough(payload)
+            ),
+            system_prompt,
         )
         gen_kwargs["system_prompt"] = ""
         # tool_choice="none" forces a final-answer turn: keep the tool-history
         # templating but do not advertise the tools, otherwise the model is
         # prompted to emit tool markup that heal_gate (correctly off for
-        # "none") then relays as ordinary content. Mirrors the GGUF passthrough,
-        # where llama-server receives and honors tool_choice itself.
-        gen_kwargs["tools"] = None if payload.tool_choice == "none" else payload.tools
+        # "none") then relays as ordinary content. A forced function narrows
+        # templating to that one schema, so the model is never prompted with
+        # tools the healer (correctly) refuses to promote. Both mirror the GGUF
+        # passthrough, where llama-server receives and honors tool_choice
+        # itself.
+        _sf_tc = payload.tool_choice
+        _sf_forced = None
+        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
+            _sf_forced = _sf_tc["function"].get("name")
+        if _sf_tc == "none":
+            gen_kwargs["tools"] = None
+        elif isinstance(_sf_forced, str):
+            gen_kwargs["tools"] = [
+                t
+                for t in payload.tools or []
+                if isinstance(t, dict)
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") == _sf_forced
+            ] or None
+        else:
+            gen_kwargs["tools"] = payload.tools
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
@@ -6994,8 +7036,12 @@ async def openai_chat_completions(
                     prev_text = cumulative
                     if not new_text:
                         continue
-                    api_monitor.append_reply(monitor_id, new_text)
                     if healer is None:
+                        # No healing: the monitor mirrors the verbatim relay.
+                        # With healing on, _sf_heal_events_to_sse records the
+                        # healed events instead, so the monitor never shows raw
+                        # markup the client did not receive.
+                        api_monitor.append_reply(monitor_id, new_text)
                         yield _chat_content_chunk(completion_id, created, model_name, new_text)
                     else:
                         for line in _sf_heal_events_to_sse(
@@ -7005,6 +7051,7 @@ async def openai_chat_completions(
                             model_name,
                             heal_state,
                             payload.parallel_tool_calls,
+                            monitor_id,
                         ):
                             yield line
 
@@ -7016,6 +7063,7 @@ async def openai_chat_completions(
                         model_name,
                         heal_state,
                         payload.parallel_tool_calls,
+                        monitor_id,
                     ):
                         yield line
 
@@ -10931,6 +10979,31 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     _splice_image_into_last_user(messages, image_part)
 
     return messages
+
+
+def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict]:
+    """Flatten OpenAI content-part lists to plain strings for the
+    safetensors/MLX client-tools passthrough.
+
+    Local text templates take string content; forwarding a part list (e.g. a
+    remote ``image_url`` the local backends cannot fetch --
+    ``_extract_content_parts`` only decodes ``data:`` URLs, so such requests
+    reach this path with ``image is None``) raises inside
+    ``apply_chat_template``. Mirror the flattening the plain non-GGUF path
+    performs: keep the text parts, drop the rest. The GGUF passthrough keeps
+    the original parts (llama-server accepts them)."""
+    out = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            msg = {**msg, "content": "\n".join(text_parts) if text_parts else ""}
+        out.append(msg)
+    return out
 
 
 def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:

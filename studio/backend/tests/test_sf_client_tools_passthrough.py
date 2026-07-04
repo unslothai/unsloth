@@ -576,3 +576,71 @@ def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
     replies = json.dumps(snap)
     assert "<tool_call>" not in replies
     assert "lookup" in replies
+
+
+def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
+    # The monitor mirrors what the client received: relayed prose verbatim,
+    # promoted calls as the [tool_calls] summary -- never the raw markup the
+    # healer consumed (parity with the non-streaming set_reply rewrite).
+    backend = _ScriptedBackend(
+        _fixed("Sure. ", 'Sure. <tool_call>{"name": "loo', "Sure. " + _CALL_XML)
+    )
+    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    response = asyncio.run(_run())
+    _collect_sse(response)
+    replies = json.dumps(monitor.snapshot(include_details = True))
+    assert "<tool_call>" not in replies
+    assert "Sure. " in replies
+    assert "[tool_calls] lookup(" in replies
+
+
+def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
+    # A forced function is the only schema rendered into the local template, so
+    # the model is never prompted with tools the healer refuses to promote
+    # (llama-server enforces tool_choice itself on the GGUF path).
+    backend = _ScriptedBackend(_fixed(_SEARCH_XML))
+    payload = _request(
+        tools = [LOOKUP_TOOL, SEARCH_TOOL],
+        stream = False,
+        tool_choice = {"type": "function", "function": {"name": "search"}},
+    )
+    body = _json_body(_call(payload, monkeypatch, backend))
+    templated = backend.calls[0]["tools"]
+    assert [t["function"]["name"] for t in templated] == ["search"]
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "search"
+
+
+def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
+    # Remote image URLs leave image=None (only data: URLs are decoded), so the
+    # request reaches this path with a content-part LIST. Local text templates
+    # take string content: keep the text parts, drop the image part, exactly
+    # like the plain non-GGUF path flattens in _extract_content_parts.
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    payload = _request(
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/cat.png"},
+                    },
+                ],
+            )
+        ],
+        tools = [LOOKUP_TOOL],
+        stream = False,
+    )
+    body = _json_body(_call(payload, monkeypatch, backend))
+    templated = backend.calls[0]["messages"]
+    assert all(isinstance(m.get("content"), str) for m in templated)
+    assert any(m["content"] == "what is this?" for m in templated)
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
