@@ -2,11 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -52,7 +47,6 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
-import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -97,11 +91,7 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import {
-  isPendingGguf,
-  pendingSelectionMatches,
-  useChatRuntimeStore,
-} from "./stores/chat-runtime-store";
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
@@ -463,20 +453,6 @@ interface ChatSettingsPanelProps {
    * Max Tokens floor in the slider.
    */
   externalProviderType?: string | null;
-  /** The in-flight load (id + GGUF variant + native path token), or null when
-   *  idle. Used to show a loading state for the staged pick only — not for an
-   *  unrelated load or a cancel's background unload. */
-  loadingModel?: {
-    id: string;
-    ggufVariant?: string | null;
-    nativePathToken?: string | null;
-  } | null;
-  /** Loads the staged `pendingSelection`. */
-  onLoadPendingModel?: () => void;
-  /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
-  stagedDownloadFraction?: number | null;
-  /** Cancels the in-flight staged download (paired with abandoning the stage). */
-  onCancelStagedDownload?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -489,10 +465,6 @@ export function ChatSettingsPanel({
   activeExternalProvider = null,
   onExternalProviderChange,
   externalProviderType = null,
-  loadingModel = null,
-  onLoadPendingModel,
-  stagedDownloadFraction,
-  onCancelStagedDownload,
 }: ChatSettingsPanelProps) {
   // Local models show every knob; providerCapabilities is only consulted when
   // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
@@ -507,38 +479,9 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
-  // "Loading" only when the in-flight load IS this staged pick (full id + GGUF
-  // variant + native token match), not an unrelated load or a cancel's
-  // background unload. The variant matters: a different quant of the same repo
-  // staged mid-load must not read as this one loading.
-  const stagedLoading =
-    loadingModel != null &&
-    pendingSelectionMatches(pendingSelection, {
-      id: loadingModel.id,
-      ggufVariant: loadingModel.ggufVariant,
-      nativePathToken: loadingModel.nativePathToken,
-    });
-  const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
-  // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
-  // set before the single load.
-  const pendingIsGguf = isPendingGguf(pendingSelection);
-  // Short, human-readable name for the staged pick (HF ids carry an org prefix;
-  // native picks are already a display label). Drives the "staged, not loaded"
-  // callout so it's obvious the selection hasn't loaded yet.
-  const stagedLabel = (() => {
-    const id = pendingSelection?.id ?? "";
-    const slash = id.lastIndexOf("/");
-    const base = slash >= 0 ? id.slice(slash + 1) : id;
-    return base || id;
-  })();
   const isLoadedGguf =
     useChatRuntimeStore((s) => s.activeGgufVariant) != null;
-  // While a pick is staged the sheet configures *that* model, so its GGUF-ness
-  // (not the currently loaded model's) decides whether the GGUF-only controls
-  // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
-  // context/KV/speculative controls.
-  const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
+  const isGguf = isLoadedGguf;
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
@@ -570,7 +513,6 @@ export function ChatSettingsPanel({
   }, [applyLlamaUpdate]);
   const loadedEffectiveContext = customContextLength ?? ggufContextLength;
   const showSpecFallback =
-    pendingSelection == null &&
     !isExternalModel &&
     isLoadedGguf &&
     specFallbackReason != null &&
@@ -578,14 +520,13 @@ export function ChatSettingsPanel({
       speculativeType === "mtp" ||
       speculativeType === "mtp+ngram");
   const showContextVramWarning =
-    pendingSelection == null &&
     !isExternalModel &&
     isLoadedGguf &&
     ggufMaxContextLength != null &&
     loadedEffectiveContext != null &&
     loadedEffectiveContext > ggufMaxContextLength;
   const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
-  const hasModelContent = pendingSelection != null || showLoadedDiagnostics;
+  const hasModelContent = showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
   );
@@ -596,13 +537,7 @@ export function ChatSettingsPanel({
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
-  // A staged (not-yet-loaded) GGUF carries its own header context length on
-  // pendingSelection, so the slider can use the staged model's real ceiling
-  // without reading the loaded model's `ggufContextLength`.
-  const stagedContextLength = pendingSelection?.contextLength ?? null;
-  const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
-  const stagedDownloading =
-    stagedDownloadFraction != null && stagedDownloadFraction < 1;
+  const baseContext = ggufContextLength;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -669,7 +604,7 @@ export function ChatSettingsPanel({
     ? parseExternalModelId(currentCheckpoint)
     : null;
   const maxTokensMax =
-    !pendingIsGguf && isExternalModel
+    isExternalModel
       ? getExternalMaxOutputTokens(
           externalProviderType,
           externalSelection?.modelId,
@@ -904,117 +839,45 @@ export function ChatSettingsPanel({
       >
       <div className="px-[18px] pt-3">
         {hasModelContent && (
-        <CollapsibleSection label="Model" defaultOpen={true} first>
-          <div className="flex flex-col gap-4 pt-1">
-            {pendingSelection && (
-              <Alert className="rounded-[14px] border-primary/30 bg-primary/5 px-3 py-2">
-                <AlertTitle className="text-[12px] font-medium">
-                  {stagedLoading
-                    ? `Loading ${stagedLabel}…`
-                    : stagedDownloading
-                      ? `Downloading ${stagedLabel}…`
-                      : `${stagedLabel} is staged, not loaded yet`}
-                </AlertTitle>
-                <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
-                  {stagedLoading
-                    ? "Applying your settings."
-                    : stagedDownloading
-                      ? "It'll load automatically when the download finishes."
-                      : "Choose Load model to load it."}
-                </AlertDescription>
-              </Alert>
-            )}
-            {pendingSelection ? (
-              <div className="flex flex-col gap-4">
-                {stagedDownloading && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Downloading…{" "}
-                    {Math.round((stagedDownloadFraction ?? 0) * 100)}%
+          <CollapsibleSection label="Model" defaultOpen={true} first>
+            <div className="flex flex-col gap-3 pt-1">
+              {showSpecFallback && (
+                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
+                  <p>
+                    {specFallbackReason === "mla_mtp_disabled"
+                      ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
+                      : specFallbackReason === "runtime_error"
+                        ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                        : specFallbackReason === "drafter_not_found"
+                          ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                          : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
+                              llamaUpdateStatus?.update_available
+                                ? " Update llama.cpp to enable it."
+                                : ""
+                            }`}
                   </p>
-                )}
-                {stagedLoading ? (
-                  // Mid-load: nothing to load or abandon until it settles, so disable.
-                  <Button
-                    type="button"
-                    disabled
-                    size="sm"
-                    className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
-                  >
-                    <Spinner className="size-3.5" />
-                    Loading…
-                  </Button>
-                ) : (
-                  <div className="grid grid-cols-2 gap-3">
+                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
                     <Button
-                      type="button"
-                      onClick={() => onLoadPendingModel?.()}
-                      // Disabled while a different model is mid-load: selectModel
-                      // refuses a concurrent load, so the click could only toast.
-                      disabled={stagedDownloading || loadingModel != null}
                       size="sm"
-                      className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
+                      className="corner-squircle mt-2 h-7 text-[12px]"
+                      onClick={handleMtpUpdate}
+                      disabled={llamaUpdating}
+                      data-test-id="mtp-update-button"
                     >
-                      {loadingModel != null ? "Another model loading…" : "Load model"}
+                      {llamaUpdating ? "Updating..." : "Update llama.cpp"}
                     </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        // Cancel abandons the stage; if a download is mid-flight,
-                        // stop it too rather than leaving it running headless.
-                        if (stagedDownloading) onCancelStagedDownload?.();
-                        abandonStagedModel();
-                      }}
-                      className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                )}
-              </div>
-            ) : null}
-            {showLoadedDiagnostics && (
-              <div className="flex flex-col gap-3">
-                {showSpecFallback && (
-                  <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
-                    <p>
-                      {specFallbackReason === "mla_mtp_disabled"
-                        ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
-                        : specFallbackReason === "runtime_error"
-                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                          : specFallbackReason === "drafter_not_found"
-                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
-                            : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
-                                llamaUpdateStatus?.update_available
-                                  ? " Update llama.cpp to enable it."
-                                  : ""
-                              }`}
-                    </p>
-                    {mtpUpdatable && llamaUpdateStatus?.update_available && (
-                      <Button
-                        size="sm"
-                        className="corner-squircle mt-2 h-7 text-[12px]"
-                        onClick={handleMtpUpdate}
-                        disabled={llamaUpdating}
-                        data-test-id="mtp-update-button"
-                      >
-                        {llamaUpdating ? "Updating..." : "Update llama.cpp"}
-                      </Button>
-                    )}
-                  </div>
-                )}
-                {showContextVramWarning && (
-                  <p className="text-[11px] text-amber-500">
-                    Context length exceeds the estimated VRAM capacity (
-                    {ggufMaxContextLength?.toLocaleString()} tokens). The model
-                    may use system RAM.
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        </CollapsibleSection>
+                  )}
+                </div>
+              )}
+              {showContextVramWarning && (
+                <p className="text-[11px] text-amber-500">
+                  Context length exceeds the estimated VRAM capacity (
+                  {ggufMaxContextLength?.toLocaleString()} tokens). The model may
+                  use system RAM.
+                </p>
+              )}
+            </div>
+          </CollapsibleSection>
         )}
 
         <CollapsibleSection

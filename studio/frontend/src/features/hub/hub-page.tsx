@@ -1099,15 +1099,11 @@ export function ModelsPage() {
   const openNewChat = useCallback(() => {
     void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
   }, [navigate]);
-  const runSelectedModel = useCallback(
-    (opts: ModelLoadOptions, isDownloaded: boolean) => {
-      if (!selectedModel) return;
-      const runId = selectedModel.resource.runId;
-      // Detach any leftover staged pick first so its edited knobs (e.g. a custom
-      // context length) don't leak into this load -- mirrors the chat page's
-      // detachStaged(); keepDownload keeps any staged download running.
-      useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
-      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
+	  const runSelectedModel = useCallback(
+	    (opts: ModelLoadOptions, isDownloaded: boolean) => {
+	      if (!selectedModel) return;
+	      const runId = selectedModel.resource.runId;
+	      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
       const rememberedConfig = resolvedConfig.remembered
         ? resolvedConfig.config
         : null;

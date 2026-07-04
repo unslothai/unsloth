@@ -20,6 +20,7 @@ export {
 } from "./model-config/apply-per-model-config";
 export {
   DEFAULT_PER_MODEL_CONFIG,
+  normalizeMaxSeqLength,
   type PerModelConfig,
   deletePerModelConfig,
   deletePerModelConfigsForModel,

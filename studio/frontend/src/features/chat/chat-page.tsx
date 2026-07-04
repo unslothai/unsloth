@@ -6,6 +6,7 @@ import {
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
+  type ModelSelectorChangeMeta,
   ModelSelector,
 } from "@/features/model-picker/components/model-selector";
 import {
@@ -24,7 +25,6 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -86,7 +86,6 @@ import {
   type SidebarItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
-import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -121,10 +120,8 @@ import {
   hasGgufSource,
   isDownloadableHubRepo,
   loadOptionalBool,
-  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import type { PendingModelSelection } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
@@ -371,6 +368,7 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  config?: PerModelConfig;
 };
 
 function modelMatchesDeleted(
@@ -643,7 +641,7 @@ function GeneralCompareHeader({
   value: string;
   onValueChange: (
     id: string,
-    meta: { isLora: boolean; ggufVariant?: string },
+    meta: ModelSelectorChangeMeta,
   ) => void;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -802,6 +800,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  config: meta.config,
                 })
               }
               onFoldersChange={onFoldersChange}
@@ -829,6 +828,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  config: meta.config,
                 })
               }
               onFoldersChange={onFoldersChange}
@@ -1094,30 +1094,6 @@ export function ChatPage({
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
-  // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
-  // header context so the sheet can show the context slider before the load.
-  // autoLoad picks instead load the cached file as soon as the download ends;
-  // selectModel is defined below, so the load runs through a ref.
-  const autoLoadStagedRef = useRef<
-    ((pending: PendingModelSelection) => void) | null
-  >(null);
-  const stagedDownload = useStagedModelPreparation({
-    onAutoLoad: (pending) => autoLoadStagedRef.current?.(pending),
-  });
-  // Abandon a staged pick: the store action cancels its in-flight download and
-  // reverts the edited knobs, so nothing lingers after the user walks away.
-  const abandonStaged = useCallback(() => {
-    useChatRuntimeStore.getState().abandonStagedModel();
-  }, []);
-  // Detach a staged pick on navigation without cancelling its download: the
-  // transfer keeps running in the manager and lands in cache, like Hub.
-  const detachStaged = useCallback(() => {
-    useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
-  }, []);
-  // Tracks whether the chat page is still mounted, so a staged-load failure that
-  // resolves after the user left chat doesn't resurrect the abandoned pick.
-  const mountedRef = useRef(true);
-  useEffect(() => () => void (mountedRef.current = false), []);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
@@ -1298,34 +1274,6 @@ export function ChatPage({
     },
     [],
   );
-  // Load a cached autoLoad pick once its download finishes. The sheet was never
-  // opened, so on a load failure just drop the orphaned staged knobs. The knobs
-  // were already seeded on stage, so keepSpeculative only when a config was
-  // saved -- otherwise the standing speculative preference should win.
-  autoLoadStagedRef.current = (pending) => {
-    const rememberedConfig = rememberedConfigFor(pending);
-    if (rememberedConfig) {
-      applyPerModelConfigToRuntime(rememberedConfig);
-    }
-    void selectModel({
-      ...pending,
-      isDownloaded: true,
-      forceReload: true,
-      keepSpeculative: rememberedConfig != null,
-      throwOnError: true,
-    }).catch(() => {
-      const store = useChatRuntimeStore.getState();
-      // selectModel only clears pendingSelection on success, so a failed
-      // auto-load leaves our staged pick (and its edited load knobs) behind.
-      // Abandon it when it is still the active stage; otherwise just revert the
-      // settings if the stage was already cleared by something else.
-      if (pendingSelectionMatches(store.pendingSelection, pending)) {
-        store.abandonStagedModel();
-      } else if (!store.pendingSelection) {
-        store.resetModelSettingsToLoaded();
-      }
-    });
-  };
   const isExternalModel = useMemo(
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
@@ -1680,70 +1628,18 @@ export function ChatPage({
     closeArtifactSurface();
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
-  // Abandon a staged (not-yet-loaded) pick when the chat context actually
-  // changes — switching threads, leaving single view, or starting a new chat /
-  // project — so a stale Load button can't resurface in a different context.
-  // New Chat keeps activeThreadId null and only bumps the `new` search nonce, so
-  // the key includes the route identity, not just the thread. Mirrors the
-  // incognito reset pattern. (Route exit is handled in __root.tsx, which runs
-  // after this unmounts.) Clear only on a real change, never on mount: staging
-  // from the Hub sets pendingSelection then navigates here, and clearing on
-  // mount would wipe it. Comparing the previous context (rather than a first-run
-  // flag) is also safe under StrictMode's double-invoke and component remounts.
-  const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
-  const chatContextKeyRef = useLatestRef(chatContextKey);
-  const prevChatContextRef = useRef<string | null>(null);
-  useEffect(() => {
-    const prev = prevChatContextRef.current;
-    prevChatContextRef.current = chatContextKey;
-    if (prev === null || prev === chatContextKey) return;
-    detachStaged();
-  }, [chatContextKey, detachStaged]);
-
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      // An un-cached HF repo (GGUF variant or a full non-GGUF snapshot) downloads
-      // through the manager first (global indicator), then auto-loads. Everything
-      // else -- cached picks, local/native files, LoRA, external -- loads now.
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
-      if (
-        selection.loadImmediately ||
-        (!hasGgufSource(selection) && !wantManagerDownload) ||
-        (store.loadOnSelection && selection.isDownloaded)
-      ) {
-        // Detach any staged pick first so its edited knobs (e.g. a custom
-        // context length) don't leak into this immediate load -- resolveLoad
-        // reads customContextLength before checking the target is GGUF. Detach
-        // (not abandon) keeps its download running.
-        detachStaged();
-        const appliedConfig = selection.config ?? rememberedConfigFor(selection);
-        if (appliedConfig) {
-          applyPerModelConfigToRuntime(appliedConfig);
-        }
-        await selectModel(
-          appliedConfig ? { ...selection, keepSpeculative: true } : selection,
-        );
-        return;
-      }
-      // Loads can't queue behind each other, but a download is independent: if
-      // the pick needs downloading, start it in the manager so it runs alongside
-      // the load. Nothing to download (already on device) just waits.
       if (store.modelLoading) {
-        // Both an uncached non-GGUF snapshot (wantManagerDownload) and an
-        // uncached remote GGUF quant download through the manager, so either can
-        // run in the background while another model loads. wantManagerDownload
-        // excludes GGUF by design, so the GGUF case is checked separately.
         const wantBackgroundDownload =
           wantManagerDownload ||
           (selection.source === "hub" &&
             hasGgufSource(selection) &&
             !selection.isDownloaded);
-        // The model currently loading already downloads as part of its own load
-        // (the /load flow fetches before setting the checkpoint), so re-picking
-        // it must not kick off a second transfer against the same cache.
         const isLoadingThisPick =
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
@@ -1754,11 +1650,6 @@ export function ChatPage({
             description: "It's downloading as part of the load in progress.",
           });
         } else if (wantBackgroundDownload) {
-          // Only claim the download started once a job is actually created. A
-          // transport conflict records state that is only resolvable from the
-          // Hub download card, so point the user there instead of showing a
-          // success toast for a transfer that never began; "busy" and "error"
-          // already surface their own toasts.
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -1783,26 +1674,15 @@ export function ChatPage({
         }
         return;
       }
-      // Detach the prior staged pick (keeping its download) before rebinding, so
-      // a second pick downloads alongside the first instead of cancelling it.
-      detachStaged();
-      store.stageModel({
-        id: selection.id,
-        isLora: selection.isLora,
-        ggufVariant: selection.ggufVariant,
-        isDownloaded: selection.isDownloaded,
-        expectedBytes: selection.expectedBytes,
-        nativePathToken: selection.nativePathToken,
-        isGguf: selection.isGguf,
-        isHubRepo: wantManagerDownload || undefined,
-        autoLoad: store.loadOnSelection,
-      });
-      const stagedConfig = selection.config ?? rememberedConfigFor(selection);
-      if (stagedConfig) {
-        applyPerModelConfigToRuntime(stagedConfig);
+      const appliedConfig = selection.config ?? rememberedConfigFor(selection);
+      if (appliedConfig) {
+        applyPerModelConfigToRuntime(appliedConfig);
       }
+      await selectModel(
+        appliedConfig ? { ...selection, keepSpeculative: true } : selection,
+      );
     },
-    [detachStaged, selectModel, loadingModel, rememberedConfigFor],
+    [selectModel, loadingModel, rememberedConfigFor],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
@@ -1861,16 +1741,7 @@ export function ChatPage({
   const handleCheckpointChange = useCallback(
     (
       value: string,
-      meta?: {
-        source?: string;
-        isLora: boolean;
-        ggufVariant?: string;
-        isDownloaded?: boolean;
-        expectedBytes?: number;
-        isGguf?: boolean;
-        config?: PerModelConfig;
-        loadImmediately?: boolean;
-      },
+      meta?: ModelSelectorChangeMeta,
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
@@ -1896,9 +1767,6 @@ export function ChatPage({
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {
-        // Switching to an external model abandons any staged local pick: cancel
-        // its download too (setCheckpoint below only clears the pending + knobs).
-        abandonStaged();
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -2073,14 +1941,12 @@ export function ChatPage({
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
           config: meta?.config,
-          loadImmediately: meta?.loadImmediately,
           forceReload: isSameLoadedModel || undefined,
         };
         await stageOrLoad(selection);
       })();
     },
     [
-      abandonStaged,
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
@@ -2685,10 +2551,6 @@ export function ChatPage({
         open={active && settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
-          // Closing the sheet abandons a staged (not-yet-loaded) pick: cancel its
-          // download and revert the staged knobs so nothing lingers as a dirty
-          // edit (or a background download) on the loaded model.
-          if (!open) abandonStaged();
         }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
@@ -2703,50 +2565,6 @@ export function ChatPage({
           );
         }}
         externalProviderType={activeExternalProviderType}
-        loadingModel={loadingModel}
-        onLoadPendingModel={() => {
-          const pending = useChatRuntimeStore.getState().pendingSelection;
-          if (!pending) return;
-          const keyAtLoad = chatContextKey;
-          // forceReload: the staged model isn't loaded yet, so bypass the
-          // same-checkpoint dedupe. keepSpeculative: honor the speculative mode
-          // set on the sidebar.
-          void selectModel({
-            ...pending,
-            forceReload: true,
-            keepSpeculative: true,
-            throwOnError: true,
-          }).catch(() => {
-            // Recoverable failure (expired token, gated repo, OOM…): the pick is
-            // cleared only on success, so it normally stays staged with edited
-            // knobs intact — nothing to restore.
-            const store = useChatRuntimeStore.getState();
-            // Still staged (this pick, or a newer one queued meanwhile): leave it.
-            if (store.pendingSelection) return;
-            // Cleared mid-load (sheet closed / switched chats). Re-stage only if
-            // the staged-load is still wanted: same chat context, sheet still
-            // open, page still mounted.
-            const stillWanted =
-              mountedRef.current &&
-              store.settingsPanelOpen &&
-              chatContextKeyRef.current === keyAtLoad;
-            if (stillWanted) {
-              store.setPendingSelection(pending);
-            } else {
-              // Abandoned (closed the sheet / switched chats / left chat): drop
-              // the orphaned staged knob edits so they don't linger as dirty
-              // settings over the loaded model.
-              store.resetModelSettingsToLoaded();
-            }
-          });
-        }}
-        stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
-        onCancelStagedDownload={() =>
-          stagedDownload.cancelDownload(
-            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ??
-              null,
-          )
-        }
       />
     </div>
     </ChatActiveContext.Provider>

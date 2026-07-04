@@ -536,7 +536,6 @@ function ModelSelectorContent({
               onSelect(configTarget.id, {
                 ...configTarget.meta,
                 config,
-                loadImmediately: true,
               })
             }
             loadedConfig={

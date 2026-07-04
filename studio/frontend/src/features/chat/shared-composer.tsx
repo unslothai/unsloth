@@ -67,6 +67,10 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  normalizeMaxSeqLength,
+  type PerModelConfig,
+} from "@/features/model-picker";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -383,7 +387,23 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  config?: PerModelConfig;
 };
+
+function cleanCompareChatTemplate(
+  value: string | null | undefined,
+): string | null {
+  return value?.trim() ? value : null;
+}
+
+function resolveCompareSpecDraftNMax(
+  speculativeType: string | null,
+  value: number | null,
+): number | null {
+  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
+    ? value
+    : null;
+}
 
 // Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
@@ -916,13 +936,14 @@ export function SharedComposer({
       const store = useChatRuntimeStore.getState();
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
-        ? chatTemplateOverride
-        : null;
+      const fallbackChatTemplateOverride = cleanCompareChatTemplate(
+        store.chatTemplateOverride,
+      );
+      const fallbackTensorParallel = store.tensorParallel;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
+      let loadedFromConfig = false;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -934,21 +955,38 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        const config = sel.config ?? null;
+        const effectiveMaxSeqLength =
+          config?.customContextLength ??
+          normalizeMaxSeqLength(config?.maxSeqLength) ??
+          maxSeqLength;
+        const effectiveChatTemplateOverride = config
+          ? cleanCompareChatTemplate(config.chatTemplateOverride)
+          : fallbackChatTemplateOverride;
+        const effectiveSpeculativeType =
+          config?.speculativeType ?? specSettings.speculativeType;
+        const effectiveSpecDraftNMax = config
+          ? resolveCompareSpecDraftNMax(
+              effectiveSpeculativeType,
+              config.specDraftNMax,
+            )
+          : specSettings.specDraftNMax;
+        const effectiveTensorParallel = config
+          ? config.tensorParallel
+          : fallbackTensorParallel;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        // Already loaded (gate passed at first load): skip a redundant reload that would
-        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
-        if (isAlreadyActive) {
+        if (isAlreadyActive && !config && !loadedFromConfig) {
           return "ready";
         }
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: effectiveMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -977,19 +1015,19 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: effectiveMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
-          speculative_type: specSettings.speculativeType,
-          spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism toggle on compare loads too.
-          tensor_parallel: currentStore.tensorParallel,
+          cache_type_kv: config?.kvCacheDtype ?? null,
+          speculative_type: effectiveSpeculativeType,
+          spec_draft_n_max: effectiveSpecDraftNMax,
+          tensor_parallel: effectiveTensorParallel,
         });
-        saveSpeculativeType(specSettings.speculativeType);
+        saveSpeculativeType(effectiveSpeculativeType);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1004,11 +1042,17 @@ export function SharedComposer({
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          kvCacheDtype: resp.cache_type_kv ?? null,
+          loadedKvCacheDtype: resp.cache_type_kv ?? null,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          defaultChatTemplate: resp.chat_template ?? null,
+          chatTemplateOverride: effectiveChatTemplateOverride,
+          loadedChatTemplateOverride: effectiveChatTemplateOverride,
           loadedIsMultimodal: isMultimodalResponse(resp),
           ...resolveLoadedSpeculativeSettings(resp),
         });
+        loadedFromConfig = config != null;
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
         // state (e.g. a GGUF whose mmproj arrived after the snapshot).
