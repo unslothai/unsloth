@@ -983,7 +983,9 @@ def _session_config(agent: str, launch: bool):
     else:
         # Never wipe this dir: a previously printed recipe may still be running
         # an agent whose sessions/state live here, and every config writer
-        # merges idempotently into an existing home anyway.
+        # merges idempotently into an existing home anyway. Writers must also
+        # reset any state a previous run's flags left behind (--yolo especially),
+        # since files here outlive the invocation that wrote them.
         path = _agents_config_root() / agent
         path.mkdir(parents = True, exist_ok = True, mode = 0o700)
         yield path
@@ -1043,6 +1045,32 @@ def write_openclaw_config(
             {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
         )
         typer.echo(f"Updated {approvals}")
+    else:
+        # The no-launch config dir is reused across runs, so a previous --yolo run may
+        # have left auto-approval state behind. A run without --yolo must restore
+        # prompting: strip both the exec policy and the approvals defaults.
+        tools = config.get("tools")
+        if isinstance(tools, dict):
+            exec_policy = tools.get("exec")
+            if isinstance(exec_policy, dict):
+                for field in ("host", "security", "ask"):
+                    exec_policy.pop(field, None)
+                if not exec_policy:
+                    del tools["exec"]
+            if not tools:
+                del config["tools"]
+        approvals = path.parent / "exec-approvals.json"
+        if approvals.exists():
+            state = _read_json_object(approvals) or {}
+            had_defaults = state.pop("defaults", None) is not None
+            if set(state) <= {"version"}:
+                # Nothing left but our own yolo payload (or unreadable): remove it.
+                approvals.unlink()
+                typer.echo(f"Removed {approvals}")
+            elif had_defaults:
+                # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
+                _write_private_json(approvals, state)
+                typer.echo(f"Updated {approvals}")
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -1091,6 +1119,10 @@ def write_opencode_config(
         # OpenCode has no --yolo flag; auto-approve is the config `permission` block
         # (singular). Allow the prompting tools so tool calls don't block on the TUI.
         config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    else:
+        # The no-launch config is reused across runs; drop a permission block left by
+        # a previous --yolo run so this session prompts again.
+        config.pop("permission", None)
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")

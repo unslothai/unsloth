@@ -1719,6 +1719,78 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
     }
 
 
+def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp_path):
+    # The no-launch config dir is reused across runs, so a --yolo run persists its
+    # auto-approve settings; a later run without --yolo must strip them, not leave
+    # tool execution silently pre-approved.
+    yolo = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
+    assert yolo.exit_code == 0, yolo.output
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    assert "permission" in json.loads(config_path.read_text())
+    plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert plain.exit_code == 0, plain.output
+    config = json.loads(config_path.read_text())
+    assert "permission" not in config
+    # The session provider survives the cleanup.
+    assert "unsloth" in config["provider"]
+
+
+def test_no_launch_rerun_clears_stale_openclaw_yolo_state(fake_studio, tmp_path):
+    yolo = CliRunner().invoke(start.start_app, ["openclaw", "--yolo", "--no-launch"])
+    assert yolo.exit_code == 0, yolo.output
+    state = tmp_path / "agents" / "openclaw"
+    assert (state / "exec-approvals.json").exists()
+    plain = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert plain.exit_code == 0, plain.output
+    config = json.loads((state / "openclaw.json").read_text())
+    assert "exec" not in config.get("tools", {})
+    assert not (state / "exec-approvals.json").exists()
+    # The session provider survives the cleanup.
+    assert "unsloth" in config["models"]["providers"]
+
+
+def test_write_openclaw_config_yolo_then_plain_unit(tmp_path):
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert "tools" not in config
+    assert not (path.parent / "exec-approvals.json").exists()
+
+
+def test_write_opencode_config_yolo_then_plain_unit(tmp_path):
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert "permission" not in config
+
+
+def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
+    # OpenClaw records its own entries in exec-approvals.json (OPENCLAW_STATE_DIR is
+    # this dir); the non-yolo reset drops only the yolo defaults, not those.
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    approvals = path.parent / "exec-approvals.json"
+    state = json.loads(approvals.read_text())
+    state["agents"] = {"main": {"allowlist": ["git status"]}}
+    approvals.write_text(json.dumps(state))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    remaining = json.loads(approvals.read_text())
+    assert "defaults" not in remaining
+    assert remaining["agents"] == {"main": {"allowlist": ["git status"]}}
+
+
+def test_openclaw_non_yolo_preserves_foreign_exec_keys(tmp_path):
+    # Only the keys the yolo path writes are reset; anything else under tools.exec
+    # is left alone.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"timeout": 30, "ask": "off"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"timeout": 30}
+
+
 def test_yolo_command_flags_unmapped_agent_is_empty():
     # Config-based agents (and any typo) must yield no flag, not a KeyError.
     assert start._yolo_command_flags("opencode", True) == []
