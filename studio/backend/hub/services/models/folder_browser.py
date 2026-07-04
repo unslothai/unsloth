@@ -27,6 +27,7 @@ from hub.utils.paths import (
     studio_root,
     well_known_model_dirs,
 )
+from utils.paths.external_media import linux_run_media_mount_roots
 from hub.services.models.common import _safe_is_dir
 from hub.services.models.local_inventory import _resolve_hf_cache_dir
 
@@ -175,6 +176,8 @@ def _build_browse_allowlist() -> list[Path]:
             candidates.append(resolved)
 
     _add(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         _add(hf_default_cache_dir())
@@ -346,6 +349,11 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 )
             current = resolved_child
 
+        if contains_sensitive_path_component(str(current)):
+            raise HTTPException(
+                status_code = 403,
+                detail = "Credential or configuration directories are not browseable.",
+            )
         if not current.is_dir():
             raise HTTPException(
                 status_code = 400,
@@ -485,6 +493,8 @@ def browse_folders_response(
 
     # Home first as the safe fallback.
     _add_sug(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add_sug(p)
     # The HF cache root in use (honors HF_HOME / HF_HUB_CACHE), then the default.
     try:
         _add_sug(_resolve_hf_cache_dir())

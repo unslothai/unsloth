@@ -1147,7 +1147,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device
+    from utils.hardware import get_device, export_capability
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
@@ -1220,6 +1220,8 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
         },
         "gpu": gpu_info,
         "ml_packages": ml_packages,
+        # Export capability + torch-aware reason. See /api/system/hardware.
+        **export_capability(),
     }
 
 
@@ -1242,11 +1244,13 @@ def get_hardware_info(
     method auto-selection. Sync def (not async): hardware/detail probes can
     shell out, and FastAPI runs sync endpoints in a threadpool.
     """
-    from utils.hardware import get_gpu_summary, get_package_versions
+    from utils.hardware import get_gpu_summary, get_package_versions, export_capability
 
     body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
+        # Export capability + torch-aware reason; the Export UI grays out with the message.
+        **export_capability(),
     }
     if include_details:
         from utils.llama_cpp_update import get_installed_llama_version
