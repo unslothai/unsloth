@@ -30,7 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-_MIB_PER_GB = 1000.0 ** 3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
+_MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
 # Steady-state size of a torchao-quantised transformer relative to its bf16 weights:
 # int8 / fp8 store one byte per param plus per-row scales (~0.52x) with a little slack
@@ -161,7 +161,6 @@ def resolve_dense_quant_candidate(
     prequant_available = False
     try:
         from .diffusion_prequant import resolve_prequant_source
-
         prequant_available = (
             resolve_prequant_source(fam, scheme, path_override = prequant_path) is not None
         )

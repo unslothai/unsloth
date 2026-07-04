@@ -90,23 +90,25 @@ def test_estimate_unknown_family_or_scheme_returns_none():
 
 
 # ── candidate resolution (selector + prequant probe stubbed) ─────────────────
-def _patch_selector(monkeypatch, *, supported = True, scheme = "int8", prequant = None):
+def _patch_selector(
+    monkeypatch,
+    *,
+    supported = True,
+    scheme = "int8",
+    prequant = None,
+):
     import core.inference.diffusion_transformer_quant as tq
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, req: scheme)
     import core.inference.diffusion_prequant as pq
 
-    monkeypatch.setattr(
-        pq, "resolve_prequant_source", lambda fam, s, path_override = None: prequant
-    )
+    monkeypatch.setattr(pq, "resolve_prequant_source", lambda fam, s, path_override = None: prequant)
 
 
 def test_candidate_resolves_for_a_supported_request(monkeypatch):
     _patch_selector(monkeypatch, scheme = "int8")
-    est = resolve_dense_quant_candidate(
-        fam = _fam("z-image"), target = object(), requested = "auto"
-    )
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
     assert isinstance(est, DenseQuantEstimate)
     assert est.scheme == "int8"
     assert est.transient_transformer_mib > est.steady_transformer_mib
@@ -115,44 +117,31 @@ def test_candidate_resolves_for_a_supported_request(monkeypatch):
 def test_candidate_none_when_request_is_off(monkeypatch):
     _patch_selector(monkeypatch)
     for off in (None, "", "none", "off"):
-        assert (
-            resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = off)
-            is None
-        )
+        assert resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = off) is None
 
 
 def test_candidate_none_when_device_unsupported(monkeypatch):
     _patch_selector(monkeypatch, supported = False)
-    assert (
-        resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = "auto")
-        is None
-    )
+    assert resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = "auto") is None
 
 
 def test_candidate_none_when_no_scheme_resolves(monkeypatch):
     _patch_selector(monkeypatch, scheme = None)
-    assert (
-        resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = "auto")
-        is None
-    )
+    assert resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = "auto") is None
 
 
 def test_candidate_none_for_an_unlisted_family(monkeypatch):
     # No size entry -> no basis to re-plan; the loader keeps today's resident-only gate.
     _patch_selector(monkeypatch)
     assert (
-        resolve_dense_quant_candidate(
-            fam = _fam("not-a-family"), target = object(), requested = "auto"
-        )
+        resolve_dense_quant_candidate(fam = _fam("not-a-family"), target = object(), requested = "auto")
         is None
     )
 
 
 def test_candidate_uses_prequant_transient_when_available(monkeypatch):
     _patch_selector(monkeypatch, prequant = object())
-    est = resolve_dense_quant_candidate(
-        fam = _fam("z-image"), target = object(), requested = "int8"
-    )
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "int8")
     assert est is not None and est.prequant is True
     assert est.transient_transformer_mib == est.steady_transformer_mib
 
