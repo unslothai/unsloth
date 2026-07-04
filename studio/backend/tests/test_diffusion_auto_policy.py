@@ -100,7 +100,9 @@ def _patch_selector(
     import core.inference.diffusion_transformer_quant as tq
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, req: scheme)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, req, family = None: scheme
+    )
     import core.inference.diffusion_prequant as pq
 
     monkeypatch.setattr(pq, "resolve_prequant_source", lambda fam, s, path_override = None: prequant)
