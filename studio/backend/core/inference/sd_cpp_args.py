@@ -120,10 +120,13 @@ class SdCppUpscaleParams:
 
 
 # Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed's
-# modes. off: nothing (default). default: --diffusion-fa (flash attention; upstream
-# reports it usually speeds CUDA and cuts attention memory, near-lossless). max: also
-# --diffusion-conv-direct (direct conv; helps some backends, but measured +45% on
-# CUDA here, so it stays opt-in/experimental, never auto-on for CUDA).
+# modes. off: nothing (default). default: --diffusion-fa (flash attention;
+# near-lossless attention speed/memory win) + --diffusion-conv-direct. Direct conv
+# is numerically exact (no quality tradeoff) and, on the CPU tier this engine
+# actually serves (Studio routes to sd.cpp only on no-GPU hosts), the A/B on the
+# master-741-484baa4 linux build measured z-image Q8_0 sampling 56.1s -> 51.3s
+# (~9%) with decode and peak RSS unchanged, so it belongs in the default profile
+# rather than opt-in. max keeps it too (the profiles stay a superset chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -140,9 +143,7 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
-    if mode == NATIVE_SPEED_DEFAULT:
-        return ["--diffusion-fa"]
-    if mode == NATIVE_SPEED_MAX:
+    if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
