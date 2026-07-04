@@ -314,6 +314,22 @@ def _mx_module_filter(mod, fqn: str) -> bool:
     return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
 
 
+def _mxfp8_training_config():
+    """The torchao MX training config across the prototype API's revisions: torchao 0.16
+    ships ``MXLinearConfig`` in ``prototype.mx_formats``; 0.17 removed it in favour of the
+    ``MXFP8TrainingOpConfig`` recipe API shared with MoE training. Both feed ``quantize_``.
+    Raises ImportError when neither API exists (mxfp8 then falls back to bf16)."""
+    try:
+        from torchao.prototype.mx_formats import MXLinearConfig
+        return MXLinearConfig.from_recipe_name("mxfp8_cublas")
+    except ImportError:
+        from torchao.prototype.moe_training.config import (
+            MXFP8TrainingOpConfig,
+            MXFP8TrainingRecipe,
+        )
+        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL)
+
+
 def _apply_mxfp8_training(transformer, on_event) -> bool:
     """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
     Blackwell-native block-scaled format; the swap is in place and the weights stay bf16
@@ -323,12 +339,11 @@ def _apply_mxfp8_training(transformer, on_event) -> bool:
     or batch), which is why it stays an explicit opt-in rather than an "auto" pick.
     Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
-        from torchao.prototype.mx_formats import MXLinearConfig
         from torchao.quantization import quantize_
 
         quantize_(
             transformer,
-            MXLinearConfig.from_recipe_name("mxfp8_cublas"),
+            _mxfp8_training_config(),
             filter_fn = _mx_module_filter,
         )
         return True

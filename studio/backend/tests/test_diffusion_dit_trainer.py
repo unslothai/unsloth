@@ -156,15 +156,49 @@ def test_should_compile_auto_mxfp8_on_cuda():
 
 
 def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
-    # An unavailable torchao MX path must never be fatal: force the import to raise, then
-    # assert the helper returns False and emits exactly one warning naming mxfp8.
+    # An unavailable torchao MX path must never be fatal: force both API revisions'
+    # imports to raise, then assert the helper returns False and emits exactly one
+    # warning naming mxfp8.
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
+    monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", None)
     events = []
     ok = _apply_mxfp8_training(object(), lambda e: events.append(e))
     assert ok is False
     warnings = [e for e in events if e["type"] == "warning"]
     assert len(warnings) == 1
     assert "mxfp8" in warnings[0]["message"]
+
+
+def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
+    # torchao 0.17 removed prototype.mx_formats.MXLinearConfig in favour of the
+    # MXFP8TrainingOpConfig recipe API; the config helper must fall back to it so the
+    # advertised mxfp8 mode keeps engaging on those installs instead of silently
+    # training dense bf16.
+    from types import SimpleNamespace
+
+    from core.training.diffusion_dit_trainer import _mxfp8_training_config
+
+    calls = {}
+
+    class _Recipe:
+        MXFP8_RCEIL = "mxfp8_rceil"
+
+    class _OpConfig:
+        @staticmethod
+        def from_recipe(recipe):
+            calls["recipe"] = recipe
+            return "cfg-0.17"
+
+    fake_config = SimpleNamespace(
+        MXFP8TrainingOpConfig = _OpConfig, MXFP8TrainingRecipe = _Recipe
+    )
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
+    monkeypatch.setitem(
+        sys.modules, "torchao.prototype.moe_training", SimpleNamespace(config = fake_config)
+    )
+    monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", fake_config)
+    assert _mxfp8_training_config() == "cfg-0.17"
+    assert calls["recipe"] == _Recipe.MXFP8_RCEIL
 
 
 def _patch_capability(monkeypatch, capability):
