@@ -752,8 +752,7 @@ class TestGemmaDottedArgumentKeys:
 
     def test_dotted_key_parses(self):
         text = (
-            '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, '
-            'query:<|"|>x<|"|>}<tool_call|>'
+            '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, query:<|"|>x<|"|>}<tool_call|>'
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
