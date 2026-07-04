@@ -1126,7 +1126,6 @@ class TestGemmaDottedArgumentKeys:
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"user.name": "bob", "query": "x"}
 
-
 class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
     """A leading wrapper-less Gemma call to an enabled tool owns the turn: a
     quoted foreign literal inside its argument (a query citing another tool
@@ -1141,6 +1140,17 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
         calls = parse_tool_calls_from_text(
             text, enabled_tool_names = {"web_search", "evil"}
         )
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_xml_leading_keeps_normal_order(self):
+        text = (
+            '<tool_call>{"name":"web_search","arguments":'
+            '{"query":"call:evil{x:1} example"}}</tool_call>'
+        )
+        calls = parse_tool_calls_from_text(
+            text, enabled_tool_names = {"web_search", "evil"}
+        )
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
 class TestLeadingMistralCallOwnsTheTurn:
@@ -1156,17 +1166,8 @@ class TestLeadingMistralCallOwnsTheTurn:
         calls = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
-    def test_xml_leading_keeps_normal_order(self):
+    def test_function_xml_leading_keeps_normal_order(self):
         text = (
-<<<<<<< HEAD
-            '<tool_call>{"name":"web_search","arguments":'
-            '{"query":"call:evil{x:1} example"}}</tool_call>'
-        )
-        calls = parse_tool_calls_from_text(
-            text, enabled_tool_names = {"web_search", "evil"}
-        )
-        assert [c["function"]["name"] for c in calls] == ["web_search"]
-=======
             "<function=web_search><parameter=query>x</parameter></function> "
             "[TOOL_CALLS]evil[ARGS]{}"
         )
@@ -1181,4 +1182,3 @@ class TestGemmaDottedKeyAfterBareValue:
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": "foo", "user.name": "bob"}
->>>>>>> origin/studio-tools-multi-format-v2
