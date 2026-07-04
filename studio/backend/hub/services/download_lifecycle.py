@@ -323,7 +323,16 @@ def _try_http_retry(
     variant = original_metadata.variant
     blob_hashes = original_metadata.blob_hashes
     progress_blob_hashes = original_metadata.progress_blob_hashes
-    completed_baseline_bytes = original_metadata.completed_baseline_bytes
+    completed_baseline_bytes = (
+        download_registry.completed_blob_bytes(
+            repo_type,
+            repo_id,
+            progress_blob_hashes,
+        )
+        if progress_blob_hashes
+        else 0
+    )
+    generation = registry.current_generation(key)
 
     claimed, _ = registry.claim(
         key,
@@ -334,6 +343,7 @@ def _try_http_retry(
         blob_hashes = blob_hashes,
         progress_blob_hashes = progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
+        generation = generation,
     )
     if not claimed:
         logger.debug("%s XET retry claim rejected for %s; another job took the slot", log_prefix, label)

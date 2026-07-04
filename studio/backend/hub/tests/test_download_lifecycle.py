@@ -77,6 +77,7 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
             frozenset({"mainhash"}),
             frozenset({"mainhash", "mmprojhash"}),
             12,
+            18,
         ),
         (
             "dataset",
@@ -86,10 +87,20 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
             frozenset(),
             frozenset(),
             0,
+            0,
         ),
     ]
 
-    for repo_type, repo_id, variant, expected_args, blob_hashes, progress_blob_hashes, baseline_bytes in cases:
+    for (
+        repo_type,
+        repo_id,
+        variant,
+        expected_args,
+        blob_hashes,
+        progress_blob_hashes,
+        baseline_bytes,
+        retry_baseline_bytes,
+    ) in cases:
         registry = download_registry.DownloadRegistry()
         key = (
             download_registry.normalize_job_key(f"{repo_id}::{variant}")
@@ -106,9 +117,15 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
             progress_blob_hashes = progress_blob_hashes,
             completed_baseline_bytes = baseline_bytes,
         )
+        original_generation = registry.current_generation(key)
         proc = _make_proc(1, b"xet failed")
         spawned = []
         retry_registers = []
+        baseline_calls = []
+
+        def fake_completed_blob_bytes(*args):
+            baseline_calls.append(args)
+            return retry_baseline_bytes
 
         def fake_spawn_worker(args, hf_token, *, use_xet, protected_blob_hashes = None):
             spawned.append((args, use_xet, protected_blob_hashes))
@@ -118,6 +135,7 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
             retry_registers.append(kwargs)
             return True
 
+        monkeypatch.setattr(download_registry, "completed_blob_bytes", fake_completed_blob_bytes)
         monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
         monkeypatch.setattr(download_lifecycle, "register_worker", fake_register_worker)
 
@@ -142,7 +160,11 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
         assert metadata.transport == download_registry.TRANSPORT_HTTP
         assert metadata.blob_hashes == blob_hashes
         assert metadata.progress_blob_hashes == progress_blob_hashes
-        assert metadata.completed_baseline_bytes == baseline_bytes
+        assert metadata.completed_baseline_bytes == retry_baseline_bytes
+        assert registry.current_generation(key) == original_generation
+        assert baseline_calls == (
+            [("model", "Org/Model", progress_blob_hashes)] if progress_blob_hashes else []
+        )
         assert registry.get_job(key).state == "running"
 
 
