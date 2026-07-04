@@ -6935,9 +6935,7 @@ async def openai_chat_completions(
         # clear the separate prompt so the worker does not prepend a duplicate.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
             _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(
-                    _openai_messages_for_passthrough(payload)
-                )
+                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
             ),
             system_prompt,
         )
