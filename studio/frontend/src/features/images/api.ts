@@ -291,6 +291,7 @@ export interface DiffusionMetricHistory {
   steps: number[];
   loss: number[];
   lr: Array<number | null>;
+  grad_norm: Array<number | null>;
 }
 
 // A snapshot of the current diffusion training job (GET /api/train/diffusion/status).

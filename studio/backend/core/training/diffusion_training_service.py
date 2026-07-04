@@ -83,6 +83,7 @@ def _idle_state() -> dict[str, Any]:
         "loss": None,
         "avg_loss": None,
         "learning_rate": None,
+        "grad_norm": None,
         "num_images": None,
         "in_model_load": False,
         "output_dir": None,
@@ -98,16 +99,19 @@ def _idle_state() -> dict[str, Any]:
         "metric_steps": [],
         "metric_loss": [],
         "metric_lr": [],
+        "metric_grad_norm": [],
     }
 
 
-def _append_metric(state: dict[str, Any], step: Any, loss: Any, lr: Any) -> None:
-    """Append one (step, loss, lr) point to the bounded history arrays on ``state``.
+def _append_metric(state: dict[str, Any], step: Any, loss: Any, lr: Any, grad_norm: Any = None) -> None:
+    """Append one (step, loss, lr, grad_norm) point to the bounded history arrays on
+    ``state``.
 
     Only records finite, positive-step points (mirrors the LLM trainer, which logs history
     only for step > 0 with a real loss). When the arrays hit ``_METRIC_CAP`` they are
     decimated in place (keep every other point) so appends stay bounded without losing the
-    curve's shape. lr may be None (kept as None so the LR series can be sparse)."""
+    curve's shape. lr / grad_norm may be None (kept as None so those series can be
+    sparse while staying index-aligned with ``steps``)."""
     try:
         istep = int(step)
     except (TypeError, ValueError):
@@ -117,20 +121,29 @@ def _append_metric(state: dict[str, Any], step: Any, loss: Any, lr: Any) -> None
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite (NaN/Inf): skip, keep the curve JSON-safe
         return
-    # lr may be None (sparse LR series) or non-finite; a non-finite lr is nulled, not dropped,
-    # so a bad lr point never taints the (loss-driven) history.
+    # lr / grad_norm may be None (sparse series) or non-finite; a non-finite value is
+    # nulled, not dropped, so a bad point never taints the (loss-driven) history.
     flr = _finite_or_none(lr)
+    fgn = _finite_or_none(grad_norm)
     steps = state["metric_steps"]
     losses = state["metric_loss"]
     lrs = state["metric_lr"]
+    gns = state["metric_grad_norm"]
     if len(steps) >= _METRIC_CAP:
         state["metric_steps"] = steps[::2]
         state["metric_loss"] = losses[::2]
         state["metric_lr"] = lrs[::2]
-        steps, losses, lrs = state["metric_steps"], state["metric_loss"], state["metric_lr"]
+        state["metric_grad_norm"] = gns[::2]
+        steps, losses, lrs, gns = (
+            state["metric_steps"],
+            state["metric_loss"],
+            state["metric_lr"],
+            state["metric_grad_norm"],
+        )
     steps.append(istep)
     losses.append(floss)
     lrs.append(flr)
+    gns.append(fgn)
 
 
 class DiffusionTrainingService:
@@ -329,6 +342,9 @@ class DiffusionTrainingService:
                     if "learning_rate" in ev
                     else s["learning_rate"]
                 )
+                grad_norm = (
+                    _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
+                )
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
@@ -336,6 +352,7 @@ class DiffusionTrainingService:
                     loss = loss,
                     avg_loss = avg_loss,
                     learning_rate = learning_rate,
+                    grad_norm = grad_norm,
                     message = "Training...",
                 )
                 # Fold optional perf fields (emitted by the trainers) so the UI can show
@@ -344,8 +361,14 @@ class DiffusionTrainingService:
                     s["samples_per_second"] = ev.get("samples_per_second")
                 if ev.get("peak_memory_gb") is not None:
                     s["peak_memory_gb"] = ev.get("peak_memory_gb")
-                # Retain a bounded (step, loss, lr) history for the live loss chart.
-                _append_metric(s, ev.get("step"), ev.get("loss"), ev.get("learning_rate"))
+                # Retain a bounded (step, loss, lr, grad_norm) history for the live charts.
+                _append_metric(
+                    s,
+                    ev.get("step"),
+                    ev.get("loss"),
+                    ev.get("learning_rate"),
+                    ev.get("grad_norm"),
+                )
             elif etype == "complete":
                 # Reset in_model_load: a stop during model load emits complete without a
                 # preceding model_load_completed, which would otherwise leave a stale

@@ -9,6 +9,8 @@ import type { TrainingSeriesPoint } from "@/features/training";
 // which are meaningless for diffusion LoRA training and showed as an empty card and an
 // "Evaluation not configured" placeholder. This is a diffusion-only two-card layout.
 // eslint-disable-next-line no-restricted-imports
+import { GradNormChartCard } from "@/features/studio/sections/charts/grad-norm-chart-card";
+// eslint-disable-next-line no-restricted-imports
 import { LearningRateChartCard } from "@/features/studio/sections/charts/learning-rate-chart-card";
 // eslint-disable-next-line no-restricted-imports
 import { TrainingLossChartCard } from "@/features/studio/sections/charts/training-loss-chart-card";
@@ -43,14 +45,17 @@ function fullStepDomain(steps: number[]): [number, number] {
   return [min, max];
 }
 
-// A diffusion-only metrics view: just Training Loss and Learning Rate, side by side, with a
-// note under the loss card explaining why per-step loss looks noisy.
+// A diffusion-only metrics view: Training Loss and Learning Rate side by side, plus Grad
+// Norm (the pre-clip total gradient norm; spikes flag instability that raw loss noise
+// hides), with a note under the loss card explaining why per-step loss looks noisy.
 export function DiffusionCharts({
   lossHistory,
   lrHistory,
+  gradNormHistory = [],
 }: {
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
+  gradNormHistory?: TrainingSeriesPoint[];
 }): ReactElement | null {
   const lossItems = useMemo(() => toLossItems(lossHistory), [lossHistory]);
   const smoothed = useMemo(
@@ -82,12 +87,24 @@ export function DiffusionCharts({
     [lrHistory],
   );
 
+  const gradNormData = useMemo(
+    () =>
+      compressSeries(
+        gradNormHistory
+          .filter((p) => Number.isFinite(p.value))
+          .map((p) => ({ step: p.step, gradNorm: p.value, displayGradNorm: p.value })),
+        MAX_RENDER_POINTS,
+      ),
+    [gradNormHistory],
+  );
+
   const steps = useMemo(() => {
     const set = new Set<number>();
     for (const p of lossData) set.add(p.step);
     for (const p of lrData) set.add(p.step);
+    for (const p of gradNormData) set.add(p.step);
     return Array.from(set).sort((a, b) => a - b);
-  }, [lossData, lrData]);
+  }, [lossData, lrData, gradNormData]);
 
   const stepDomain = useMemo(() => fullStepDomain(steps), [steps]);
   const xAxisTicks = useMemo(
@@ -102,6 +119,10 @@ export function DiffusionCharts({
   const lrDomain = useMemo(
     () => buildYDomain(lrData.map((p) => p.displayLr)),
     [lrData],
+  );
+  const gradNormDomain = useMemo(
+    () => buildYDomain(gradNormData.map((p) => p.displayGradNorm)),
+    [gradNormData],
   );
 
   const avgRaw =
@@ -138,6 +159,15 @@ export function DiffusionCharts({
         xAxisTicks={xAxisTicks}
         scale="linear"
       />
+      {gradNormData.length > 0 && (
+        <GradNormChartCard
+          data={gradNormData}
+          domain={gradNormDomain}
+          visibleStepDomain={stepDomain}
+          xAxisTicks={xAxisTicks}
+          scale="linear"
+        />
+      )}
     </div>
   );
 }

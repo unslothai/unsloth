@@ -359,6 +359,13 @@ export function DiffusionTrainPanel({
       .map((step, i) => ({ step, value: h.lr[i] }))
       .filter((p): p is TrainingSeriesPoint => p.value != null);
   }, [status?.metric_history]);
+  const gradNormHistory: TrainingSeriesPoint[] = useMemo(() => {
+    const h = status?.metric_history;
+    if (!h) return [];
+    return h.steps
+      .map((step, i) => ({ step, value: h.grad_norm?.[i] ?? null }))
+      .filter((p): p is TrainingSeriesPoint => p.value != null);
+  }, [status?.metric_history]);
 
   const onUpload = useCallback(async () => {
     const files = Array.from(fileInputRef.current?.files ?? []);
@@ -784,7 +791,17 @@ export function DiffusionTrainPanel({
           <>
             <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold capitalize">{status.status}</span>
+                {/* A finished run should be unmistakable at a glance, so completed swaps
+                    the plain status word for a celebratory line in the success color. */}
+                <span
+                  className={
+                    status.status === "completed"
+                      ? "text-sm font-semibold text-emerald-600 dark:text-emerald-400"
+                      : "text-sm font-semibold capitalize"
+                  }
+                >
+                  {status.status === "completed" ? "Training complete \u{1F389}" : status.status}
+                </span>
                 <span className="text-xs text-muted-foreground">
                   {status.total_steps > 0 ? `${status.step}/${status.total_steps} steps` : ""}
                 </span>
@@ -821,7 +838,11 @@ export function DiffusionTrainPanel({
               )}
             </div>
 
-            <DiffusionCharts lossHistory={lossHistory} lrHistory={lrHistory} />
+            <DiffusionCharts
+              lossHistory={lossHistory}
+              lrHistory={lrHistory}
+              gradNormHistory={gradNormHistory}
+            />
 
             {completed && (
               <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
