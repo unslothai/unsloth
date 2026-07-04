@@ -428,7 +428,12 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
             break
         disabled = enabled_tool_names is not None and m.group(1) not in enabled_tool_names
         brace = m.end() - 1  # _GEMMA_BARE_TC_RE consumes through the opening ``{``
-        _value, next_index, closed = _gemma_parse_mapping(text, brace)
+        # Same boundary scanner as _parse_gemma_tool_calls: the strip span must
+        # cover exactly what the parser consumed, or a quoted ``}`` in a code
+        # argument leaves the call's tail visible after the strip.
+        end = _gemma_body_brace_end(text, brace)
+        closed = end is not None
+        next_index = (end + 1) if closed else len(text)
         if not closed:
             # Unclosed (truncated / still-streaming) call. Drop a real (enabled) call
             # to EOS so the raw markup does not leak; keep a disabled/example name as
@@ -485,18 +490,43 @@ def _glm_value_close(text: str, vs: int) -> int:
     ``vs``: the first one whose next non-space token is ``<arg_key>``, ``</tool_call>``
     or end-of-text. A literal ``</arg_value>`` inside the value (e.g.
     ``print("</arg_value>")``) is followed by ordinary text and skipped; a literal
-    ``</tool_call>`` inside the value does not end it. Returns -1 if unclosed."""
+    ``</tool_call>`` inside the value does not end it.
+
+    The next-token test alone cannot tell a real close from the full pair
+    ``</arg_value></tool_call>`` embedded mid-value (code documenting the GLM
+    format: ``print("</arg_value></tool_call>")``), so a candidate is also
+    required to sit at balanced quote state: an embedded pair lives inside a
+    string literal, whose open quote is still unclosed at that point. When no
+    candidate balances (e.g. an apostrophe in prose), the first token-valid
+    candidate wins as before. Returns -1 if unclosed."""
     n = len(text)
     search = vs
+    first_candidate = -1
+    quote = ""
+    qpos = vs  # quote-state cursor; advanced incrementally to each candidate
     while True:
         ve = text.find(_GLM_ARG_VAL_CLOSE, search)
         if ve < 0:
-            return -1
+            return first_candidate
         j = ve + len(_GLM_ARG_VAL_CLOSE)
         while j < n and text[j] in " \t\r\n":
             j += 1
         if j >= n or text.startswith(_GLM_ARG_KEY_OPEN, j) or text.startswith(_GLM_TC_CLOSE, j):
-            return ve
+            while qpos < ve:
+                ch = text[qpos]
+                if quote:
+                    if ch == "\\" and qpos + 1 < ve:
+                        qpos += 2
+                        continue
+                    if ch == quote:
+                        quote = ""
+                elif ch in "\"'":
+                    quote = ch
+                qpos += 1
+            if not quote:
+                return ve
+            if first_candidate < 0:
+                first_candidate = ve
         search = ve + len(_GLM_ARG_VAL_CLOSE)
 
 
@@ -1445,8 +1475,12 @@ def _parse_gemma_tool_calls(
     # strict (Auto-Heal off) and nested-marker handling -- is owned by the
     # shared tool_healing parser, which runs before this fallback. Only the
     # wrapper-less ``call:NAME{...}`` stream (special tokens stripped) is left
-    # for us, so defer anything still carrying the wrapper or ``<|"|>`` markers.
-    if "<|tool_call>" in content or _GEMMA_STR_BEGIN in content:
+    # for us, so defer content carrying an actual wrapped opener or ``<|"|>``
+    # markers. The wrapper LITERAL alone is not enough: a wrapper-less call
+    # whose argument merely mentions ``<|tool_call>`` (a query about Gemma's
+    # own syntax) has nothing tool_healing can parse, and deferring it would
+    # lose the call entirely.
+    if _GEMMA_TC_RE.search(content) or _GEMMA_STR_BEGIN in content:
         return out
     # Manual cursor (not ``finditer``): after consuming a ``call:NAME{...}`` we must
     # resume scanning AFTER its balanced body, otherwise a nested ``call:OTHER{...}``
@@ -1459,7 +1493,7 @@ def _parse_gemma_tool_calls(
             break
         name = m.group(1)
         body_start = m.end() - 1
-        end = _balanced_brace_end(content, body_start)
+        end = _gemma_body_brace_end(content, body_start)
         # Resume past this call's balanced body (or just past the token when the body
         # is unbalanced/truncated) so its arguments are never rescanned for calls.
         cursor = (end + 1) if end is not None else m.end()
@@ -1510,6 +1544,40 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
                 depth -= 1
                 if depth == 0:
                     return i
+        i += 1
+    return None
+
+
+def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
+    """Index of the ``}`` closing the wrapper-less Gemma body at ``brace_pos``.
+
+    Unlike ``_balanced_brace_end`` (JSON), values here are raw after
+    ``skip_special_tokens``, so single-quoted strings hide braces exactly like
+    double-quoted ones (``code:print('}')``). Mirror the quote rules of
+    ``_gemma_parse_stripped_body`` so the boundary always agrees with the body
+    parser and a quoted ``}`` can never truncate the executed arguments."""
+    if brace_pos >= len(text) or text[brace_pos] != "{":
+        return None
+    depth = 0
+    quote = ""
+    i = brace_pos
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
         i += 1
     return None
 

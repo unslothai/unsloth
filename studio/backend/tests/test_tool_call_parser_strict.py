@@ -780,3 +780,91 @@ class TestHealerSignalAlignment:
         text_out = "".join(v for k, v in events if k == "text")
         assert "[TOOL_CALLS]" in text_out  # streamed through, not buffered
         assert not list(healer.finalize()) or all(k == "text" for k, _v in healer.finalize())
+
+
+class TestGemmaWrapperlessLiteralMarkers:
+    """Wrapper-less Gemma calls whose ARGUMENTS mention Gemma's own markup.
+
+    The tool_healing deferral must key on an actual wrapped opener
+    (``<|tool_call>call:...``), not the wrapper literal anywhere in content:
+    a query about the marker has nothing tool_healing can parse, and deferring
+    it loses the call entirely (not executed AND stripped from display)."""
+
+    def test_marker_literal_in_argument_still_parses(self):
+        text = 'call:web_search{query:"what does <|tool_call> mean"}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "what does <|tool_call> mean"
+
+    def test_real_wrapped_call_still_deferred_to_tool_healing(self):
+        from core.inference.tool_call_parser import _parse_gemma_tool_calls
+
+        # An actual wrapped opener present: the Gemma fallback must keep
+        # deferring to the shared tool_healing parser that owns that form.
+        text = '<|tool_call>call:web_search{query:<|"|>cats<|"|>}<tool_call|>'
+        assert _parse_gemma_tool_calls(text, id_offset = 0) == []
+
+    def test_single_quoted_brace_does_not_truncate_code(self):
+        text = "call:python{code:print('}')}"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "print('}')"
+
+    def test_single_quoted_brace_strip_span_covers_whole_call(self):
+        from core.inference.tool_call_parser import strip_tool_markup
+
+        text = "call:python{code:print('}')} Done." 
+        stripped = strip_tool_markup(
+            text, final = True, enabled_tool_names = {"python"}
+        )
+        assert "call:python" not in stripped
+        assert "')}" not in stripped
+        assert stripped.strip() == "Done."
+
+
+class TestGlmEmbeddedClosePair:
+    """A GLM value whose string literal embeds the full close-tag pair
+    ``</arg_value></tool_call>`` (code documenting the GLM format) must not be
+    truncated at the embedded pair: a structural close sits at balanced quote
+    state, an embedded one is inside an open string literal."""
+
+    def test_embedded_pair_inside_quoted_value_not_structural(self):
+        text = (
+            "<tool_call>python\n"
+            "<arg_key>code</arg_key>\n"
+            '<arg_value>print("</arg_value></tool_call>")\nx = 1</arg_value>\n'
+            "</tool_call>"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == 'print("</arg_value></tool_call>")\nx = 1'
+
+    def test_strip_covers_the_full_call(self):
+        from core.inference.tool_call_parser import strip_tool_markup
+
+        text = (
+            "<tool_call>python\n"
+            "<arg_key>code</arg_key>\n"
+            '<arg_value>print("</arg_value></tool_call>")\nx = 1</arg_value>\n'
+            "</tool_call> Done."
+        )
+        stripped = strip_tool_markup(text, final = True)
+        assert "arg_value" not in stripped
+        assert stripped.strip() == "Done."
+
+    def test_unbalanced_apostrophe_falls_back_to_first_candidate(self):
+        # Prose-like value with an apostrophe: no candidate reaches balanced
+        # quote state, so the first token-valid close wins (prior behavior).
+        text = (
+            "<tool_call>web_search\n"
+            "<arg_key>query</arg_key>\n"
+            "<arg_value>it's fine</arg_value>\n"
+            "</tool_call>"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "it's fine"
