@@ -1267,6 +1267,7 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
         steps = snap.pop("metric_steps", []),
         loss = snap.pop("metric_loss", []),
         lr = snap.pop("metric_lr", []),
+        grad_norm = snap.pop("metric_grad_norm", []),
     )
     return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
 
@@ -1503,7 +1504,15 @@ def _image_record(
                 caption = None
             break
     if caption is None:
+        # Basename first, then the relative path as written in the jsonl (as_posix so a
+        # Windows backslash path still matches forward-slash keys) -- the same lookup
+        # order discover_image_caption_pairs uses.
         meta = meta_captions.get(image_path.name)
+        if meta is None:
+            try:
+                meta = meta_captions.get(image_path.relative_to(folder).as_posix())
+            except ValueError:
+                meta = None
         if meta is not None:
             caption = meta
             source = "metadata"
