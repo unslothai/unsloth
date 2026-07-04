@@ -503,16 +503,21 @@ def _glm_value_close(
     ``</arg_value></tool_call>`` embedded mid-value (code documenting the GLM
     format: ``print("</arg_value></tool_call>")``), so a candidate is also
     required to sit at balanced quote state: an embedded pair lives inside a
-    string literal, whose open quote is still unclosed at that point. When no
-    candidate balances (e.g. an apostrophe in prose), the first token-valid
-    candidate wins as before -- except in ``strict`` mode (Auto-Heal off),
-    which refuses the in-quote fallback: a truncated value whose only close
-    candidates sit inside a string literal must reject the call instead of
-    executing truncated arguments. Returns -1 if unclosed."""
+    string literal, whose open quote is still unclosed at that point. Quote
+    openers are contextual, mirroring the Gemma scanners: a single quote
+    opens only after punctuation context (an apostrophe in ``what's the
+    weather`` is prose), a double quote also at the start of a word. When no
+    candidate balances, the first token-valid candidate wins as before --
+    except in ``strict`` mode (Auto-Heal off), which refuses the in-quote
+    fallback: a truncated value whose only close candidates sit inside a
+    string literal must reject the call instead of executing truncated
+    arguments. Returns -1 if unclosed."""
     n = len(text)
     search = vs
     first_candidate = -1
     quote = ""
+    prev = ":"
+    prev_raw = ":"
     qpos = vs  # quote-state cursor; advanced incrementally to each candidate
     while True:
         ve = text.find(_GLM_ARG_VAL_CLOSE, search)
@@ -530,8 +535,13 @@ def _glm_value_close(
                         continue
                     if ch == quote:
                         quote = ""
-                elif ch in "\"'":
+                elif ch in "\"'" and (
+                    prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())
+                ):
                     quote = ch
+                if not ch.isspace():
+                    prev = ch
+                prev_raw = ch
                 qpos += 1
             if not quote:
                 return ve
@@ -814,8 +824,23 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     n = len(content)
     while i < n and content[i] in " \t\n\r":
         i += 1
-    if i >= n or content[i] != "{":
+    if i >= n or content[i] not in "{[":
         return False
+    if content[i] == "[":
+        # A leading ARRAY is never a call: it qualifies only as a structured
+        # JSON answer, whose quoted literals are data.
+        end = _balanced_bracket_end(content, i)
+        if end is None:
+            return False
+        try:
+            json.loads(content[i : end + 1])
+        except ValueError:
+            return False
+        first_xml = _first_foreign_tool_signal(content)
+        trig = content.find(_MISTRAL_TRIGGER)
+        if trig >= 0 and (first_xml is None or trig < first_xml):
+            first_xml = trig
+        return first_xml is not None and i < first_xml < end
     end = _balanced_brace_end(content, i)
     if end is None:
         return False
@@ -870,6 +895,37 @@ def _signal_inside_leading_wrapperless_gemma(
         return m.end() - 1 < first <= end
 
 
+def _disabled_gemma_call_end_containing_signal(
+    content: str, enabled_tool_names: Optional[set]
+) -> int | None:
+    """End offset (exclusive) of the earliest DISABLED wrapper-less Gemma call
+    whose balanced body contains the first foreign signal, else None.
+
+    A disabled/example name is prose by design, so a tool literal quoted in
+    its argument is data: the caller drops the span for parsing and recurses
+    on the tail (sibling of the nameless-JSON guard). An ENABLED call before
+    the signal defers to the enabled-call guard instead."""
+    if enabled_tool_names is None:
+        return None
+    first = _first_foreign_tool_signal(content)
+    if first is None:
+        return None
+    cursor = 0
+    while True:
+        m = _GEMMA_BARE_TC_RE.search(content, cursor)
+        if m is None or m.start() > first:
+            return None
+        if m.group(1) in enabled_tool_names:
+            return None
+        end = _gemma_body_brace_end(content, m.end() - 1)
+        if end is None:
+            cursor = m.end()
+            continue
+        if m.end() - 1 < first <= end:
+            return end + 1
+        cursor = end + 1
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -921,7 +977,8 @@ def parse_tool_calls_from_text(
         i = 0
         while i < len(content) and content[i] in " \t\n\r":
             i += 1
-        end = _balanced_brace_end(content, i)  # guard guarantees a balanced object
+        # The guard guarantees a balanced leading value (object or array).
+        end = (_balanced_brace_end if content[i] == "{" else _balanced_bracket_end)(content, i)
         return parse_tool_calls_from_text(
             content[end + 1 :],
             id_offset = id_offset,
@@ -941,6 +998,18 @@ def parse_tool_calls_from_text(
         )
         if calls:
             return calls
+
+    # A DISABLED wrapper-less Gemma call is prose by design, so a tool
+    # literal quoted inside it is data too: drop the span and parse the tail
+    # (a real call after the example still parses).
+    _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
+    if _prose_end is not None:
+        return parse_tool_calls_from_text(
+            content[_prose_end:],
+            id_offset = id_offset,
+            allow_incomplete = allow_incomplete,
+            enabled_tool_names = enabled_tool_names,
+        )
 
     # DeepSeek / Kimi use unique (often full-width) markers that do not collide
     # with the shared formats, so try them first -- unless a Qwen/Hermes

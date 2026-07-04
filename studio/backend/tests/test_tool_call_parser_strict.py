@@ -1351,3 +1351,45 @@ class TestGemmaGuardCoversPreambles:
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestGlmStrictAcceptsApostrophes:
+    def test_apostrophe_value_parses_in_strict_mode(self):
+        text = (
+            "<tool_call>web_search\n<arg_key>query</arg_key>\n"
+            "<arg_value>what's the weather</arg_value>\n</tool_call>"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"query": "what's the weather"}
+
+
+class TestDisabledGemmaCallLiteralsAreData:
+    def test_literal_inside_disabled_call_not_promoted(self):
+        text = 'call:foo{query:"<function=python><parameter=code>x</parameter></function>"}'
+        assert (
+            parse_tool_calls_from_text(
+                text, enabled_tool_names = {"python", "web_search"}
+            )
+            == []
+        )
+
+    def test_real_call_after_disabled_example_still_parses(self):
+        text = (
+            'call:foo{query:"<function=python><parameter=code>x</parameter></function>"}'
+            " call:web_search{query:hi}"
+        )
+        calls = parse_tool_calls_from_text(
+            text, enabled_tool_names = {"python", "web_search"}
+        )
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestLeadingJsonArrayAnswerIsData:
+    def test_kimi_marker_inside_json_array_answer_not_promoted(self):
+        text = (
+            '[{"answer": "<|tool_call_begin|>functions.web_search:0'
+            '<|tool_call_argument_begin|>{}<|tool_call_end|>"}]'
+        )
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
