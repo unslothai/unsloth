@@ -743,3 +743,19 @@ class TestGemmaWrappedWhitespace:
     def test_strict_mode_still_requires_the_closing_tag(self):
         text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}'
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+
+class TestGemmaDottedArgumentKeys:
+    """Gemma emits dotted argument keys (user.name:...) for namespaced
+    schemas; the key-quoting scanner must accept dots like the parser's
+    key/name charset, or json.loads fails and the whole call is lost."""
+
+    def test_dotted_key_parses(self):
+        text = (
+            '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, '
+            'query:<|"|>x<|"|>}<tool_call|>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"user.name": "bob", "query": "x"}
