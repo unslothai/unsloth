@@ -226,7 +226,9 @@ def dense_transformer_supported(target: Any) -> bool:
 
 
 def select_transformer_quant_scheme(
-    target: Any, requested: Optional[str], family: Optional[str] = None
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
 ) -> Optional[str]:
     """The concrete scheme to apply, or None to fall back to GGUF.
 

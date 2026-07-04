@@ -433,7 +433,9 @@ def test_fp8_config_uses_per_row_granularity():
 
 
 def test_quantize_transformer_applies_and_marks(monkeypatch):
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
     seen: dict = {}
 
     def _mk(scheme, fast_accum = None):
@@ -458,13 +460,17 @@ def test_quantize_transformer_applies_and_marks(monkeypatch):
 
 
 def test_quantize_transformer_none_when_unsupported(monkeypatch):
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode, family = None: None)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+    )
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert quantize_transformer(pipe, _target(), mode = "auto") is None
 
 
 def test_quantize_transformer_tolerates_failure(monkeypatch):
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_INT8)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_INT8
+    )
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: "cfg")
     tqz = types.ModuleType("torchao.quantization")
 
@@ -492,10 +498,7 @@ def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
-    assert (
-        select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit")
-        == TQ_INT8
-    )
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit") == TQ_INT8
 
 
 def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
@@ -525,14 +528,18 @@ def test_quantize_transformer_threads_family(monkeypatch):
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     called = {}
     tqz = types.ModuleType("torchao.quantization")
-    def _quantize(module, config, filter_fn = None):
+
+    def _quantize(
+        module,
+        config,
+        filter_fn = None,
+    ):
         called["scheme"] = True
+
     tqz.quantize_ = _quantize
     tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8-cfg"
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
     tqz.PerRow = lambda: "per-row"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
-    assert (
-        quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
-    )
+    assert quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
     assert called == {}
