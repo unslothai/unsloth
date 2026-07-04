@@ -4787,9 +4787,7 @@ def _unsloth_save_torchao(
             trust_remote_code = model_trust,
             **dtype_kw,
         )
-        staged_tokenizer = auto_processor.from_pretrained(
-            staging, trust_remote_code = tok_trust
-        )
+        staged_tokenizer = auto_processor.from_pretrained(staging, trust_remote_code = tok_trust)
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
         staged_tokenizer.save_pretrained(out_dir)

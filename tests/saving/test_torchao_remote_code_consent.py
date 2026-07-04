@@ -14,18 +14,19 @@ import ast
 from pathlib import Path
 
 _SAVE_PY = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
-_SRC = _SAVE_PY.read_text(encoding="utf-8")
+_SRC = _SAVE_PY.read_text(encoding = "utf-8")
 
 
 def _load_helper():
     """Exec just `_loaded_via_remote_code` from save.py (no torch import) and return it."""
     tree = ast.parse(_SRC)
     fn = next(
-        n for n in tree.body
+        n
+        for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "_loaded_via_remote_code"
     )
     ns = {}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(_SAVE_PY), "exec"), ns)
+    exec(compile(ast.Module(body = [fn], type_ignores = []), str(_SAVE_PY), "exec"), ns)
     return ns["_loaded_via_remote_code"]
 
 
@@ -58,28 +59,32 @@ def test_auto_map_in_config_alone_does_not_grant_trust():
     # The core bypass: a built-in-loadable model whose config merely declares auto_map must NOT
     # be treated as remote-code-loaded (that is exactly what enabled the consent-gate bypass).
     cfg = type("Cfg", (), {"auto_map": {"AutoModelForCausalLM": "modeling_x.Model"}})()
-    assert _loaded_via_remote_code(_obj("transformers.models.llama.modeling_llama", config=cfg)) is False
+    assert (
+        _loaded_via_remote_code(_obj("transformers.models.llama.modeling_llama", config = cfg))
+        is False
+    )
 
 
 def test_peft_base_model_is_unwrapped():
     base = _obj("transformers_modules.acme.modeling_x")
-    peft = _obj("peft.peft_model", get_base_model=lambda: base)
+    peft = _obj("peft.peft_model", get_base_model = lambda: base)
     assert _loaded_via_remote_code(peft) is True
 
 
 def test_wrapper_model_attr_is_walked():
     inner = _obj("transformers_modules.acme.modeling_x")
-    wrapper = _obj("peft.peft_model", model=inner)
+    wrapper = _obj("peft.peft_model", model = inner)
     assert _loaded_via_remote_code(wrapper) is True
 
 
 def test_wrapper_over_builtin_stays_false():
     inner = _obj("transformers.models.llama.modeling_llama")
-    wrapper = _obj("peft.peft_model", model=inner)
+    wrapper = _obj("peft.peft_model", model = inner)
     assert _loaded_via_remote_code(wrapper) is False
 
 
 # -- call-site assertions: the auto_map-derived trust is gone from every export path -----------
+
 
 def test_torchao_export_derives_trust_from_load_decision():
     assert "model_trust = _loaded_via_remote_code(model)" in _SRC
@@ -91,6 +96,9 @@ def test_torchao_export_derives_trust_from_load_decision():
 
 
 def test_compressed_and_gguf_lora_paths_drop_auto_map_trust():
-    assert "trust_remote_code = _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)" in _SRC
+    assert (
+        "trust_remote_code = _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)"
+        in _SRC
+    )
     # No path derives a trust decision straight from config auto_map anymore.
     assert 'bool(getattr(model.config, "auto_map", None))' not in _SRC
