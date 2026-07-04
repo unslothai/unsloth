@@ -250,6 +250,30 @@ def _balanced_bracket_end(src: str, start: int) -> int:
     return -1
 
 
+def _array_item_ends(text: str, body_start: int, body_end: int) -> list:
+    """Absolute exclusive end offset of each top-level element of the JSON array
+    between ``body_start`` (at or before its ``[``) and ``body_end`` (exclusive).
+    Used to tile a multi-call [TOOL_CALLS] array across its calls' spans."""
+    decoder = json.JSONDecoder()
+    ends: list[int] = []
+    i = text.find("[", body_start)
+    if i < 0:
+        return ends
+    i += 1
+    while i < body_end:
+        while i < body_end and text[i] in " \t\r\n,":
+            i += 1
+        if i >= body_end or text[i] == "]":
+            break
+        try:
+            _obj, rel = decoder.raw_decode(text[i:body_end])
+        except (json.JSONDecodeError, ValueError):
+            break
+        i += rel
+        ends.append(i)
+    return ends
+
+
 def _iter_bracket_spans(
     text: str,
     start: int = 0,
@@ -768,11 +792,24 @@ def parse_tool_calls_from_text(
                 payload = json.loads(content[m.end() : end])
             except (json.JSONDecodeError, ValueError):
                 continue
+            # Extend the region over an immediately-following v11 closer so
+            # with_spans consumers strip it too instead of leaking a stray
+            # ``[/TOOL_CALLS]`` after the promoted call.
+            closer = re.match(r"\s*\[/TOOL_CALLS\]", content[end:])
+            region_end = end + closer.end() if closer else end
             if kind == "array":
                 if not isinstance(payload, list):
                     continue
-                first_span_in_region = True
-                for item in payload:
+                # Tile the region across the call-producing items: each call's
+                # span covers its own JSON object plus the separator/bracket
+                # bytes before it, and the last call's span runs to the region
+                # end, so every byte belongs to exactly one span. A with_spans
+                # consumer that filters promotions then keeps a skipped call's
+                # bytes visible while stripping promoted markup exactly once.
+                item_ends = _array_item_ends(content, m.end(), end)
+                tile_start = start
+                last_span_idx = -1
+                for item_idx, item in enumerate(payload):
                     if not isinstance(item, dict) or "name" not in item:
                         continue
                     args = item.get("arguments", {})
@@ -792,10 +829,15 @@ def parse_tool_calls_from_text(
                             },
                         }
                     )
-                    # One markup region yields many calls: the first carries the
-                    # whole span, the rest zero-width so the strip removes it once.
-                    call_spans.append((start, end) if first_span_in_region else (end, end))
-                    first_span_in_region = False
+                    item_end = (
+                        item_ends[item_idx] if item_idx < len(item_ends) else region_end
+                    )
+                    last_span_idx = len(call_spans)
+                    call_spans.append((tile_start, item_end))
+                    tile_start = item_end
+                if last_span_idx >= 0:
+                    tile_start, _tile_end = call_spans[last_span_idx]
+                    call_spans[last_span_idx] = (tile_start, region_end)
             else:
                 if not isinstance(payload, dict):
                     continue
@@ -809,7 +851,7 @@ def parse_tool_calls_from_text(
                         },
                     }
                 )
-                call_spans.append((start, end))
+                call_spans.append((start, region_end))
 
     if with_spans:
         return tool_calls, call_spans

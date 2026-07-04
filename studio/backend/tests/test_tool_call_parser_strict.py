@@ -233,3 +233,66 @@ class TestEnabledToolNameGate:
             "foo",
             "web_search",
         ]
+
+
+class TestBracketCallSpans:
+    """with_spans tiling for Mistral bracket calls: promoted markup strips
+    exactly once, filtered calls' bytes stay visible, closers strip too."""
+
+    def test_mixed_array_filtered_first_keeps_its_bytes_only(self):
+        from core.inference.passthrough_healing import heal_openai_message_events
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        content = (
+            '[TOOL_CALLS][{"name":"bad","arguments":{"x":1}},'
+            '{"name":"lookup","arguments":{"q":"cats"}}]'
+        )
+        events = heal_openai_message_events(
+            {"role": "assistant", "content": content}, {"lookup"}, tools
+        )
+        kinds = [k for k, _v in events]
+        assert kinds == ["text", "tool_call"]
+        text = events[0][1]
+        assert '"bad"' in text
+        # The promoted call's markup must not survive in the text event.
+        assert '"lookup"' not in text
+
+    def test_mixed_array_filtered_second_stays_visible(self):
+        from core.inference.passthrough_healing import heal_openai_message_events
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        content = (
+            '[TOOL_CALLS][{"name":"lookup","arguments":{"q":"cats"}},'
+            '{"name":"bad","arguments":{"x":1}}]'
+        )
+        events = heal_openai_message_events(
+            {"role": "assistant", "content": content}, {"lookup"}, tools
+        )
+        assert events[0][0] == "tool_call"
+        trailing = "".join(v for k, v in events if k == "text")
+        assert '"bad"' in trailing
+
+    def test_v11_closer_inside_span(self):
+        from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+        text = '[TOOL_CALLS]web_search[ARGS]{"query":"cats"}[/TOOL_CALLS] after'
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert call["function"]["name"] == "web_search"
+        (span,) = spans
+        assert text[span[0] : span[1]].endswith("[/TOOL_CALLS]")
+        assert text[span[1] :] == " after"
+
+    def test_fully_promoted_array_strips_whole_region(self):
+        from core.inference.passthrough_healing import heal_openai_message_events
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        content = (
+            '[TOOL_CALLS][{"name":"lookup","arguments":{"q":"a"}},'
+            '{"name":"lookup","arguments":{"q":"b"}}] after'
+        )
+        events = heal_openai_message_events(
+            {"role": "assistant", "content": content}, {"lookup"}, tools
+        )
+        assert [k for k, _v in events] == ["tool_call", "tool_call", "text"]
+        assert events[2][1] == " after"
