@@ -1119,8 +1119,7 @@ class TestGemmaDottedArgumentKeys:
 
     def test_dotted_key_parses(self):
         text = (
-            '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, '
-            'query:<|"|>x<|"|>}<tool_call|>'
+            '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, query:<|"|>x<|"|>}<tool_call|>'
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
@@ -1142,10 +1141,24 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
         calls = parse_tool_calls_from_text(
             text, enabled_tool_names = {"web_search", "evil"}
         )
+
+
+class TestLeadingMistralCallOwnsTheTurn:
+    """A LEADING parseable Mistral call wins in document order: literal XML in
+    trailing prose after the call must not be promoted over it by the earlier
+    shared XML pass. XML leading keeps the normal order."""
+
+    def test_leading_mistral_wins_over_trailing_xml_literal(self):
+        text = (
+            '[TOOL_CALLS]web_search[ARGS]{"query":"cats"} '
+            "Note: <function=evil><parameter=x>1</parameter></function>"
+        )
+        calls = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_xml_leading_keeps_normal_order(self):
         text = (
+<<<<<<< HEAD
             '<tool_call>{"name":"web_search","arguments":'
             '{"query":"call:evil{x:1} example"}}</tool_call>'
         )
@@ -1153,3 +1166,19 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
             text, enabled_tool_names = {"web_search", "evil"}
         )
         assert [c["function"]["name"] for c in calls] == ["web_search"]
+=======
+            "<function=web_search><parameter=query>x</parameter></function> "
+            "[TOOL_CALLS]evil[ARGS]{}"
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestGemmaDottedKeyAfterBareValue:
+    def test_dotted_key_after_bare_value_is_a_boundary(self):
+        text = "<|tool_call>call:web_search{query:foo,user.name:bob}<tool_call|>"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"query": "foo", "user.name": "bob"}
+>>>>>>> origin/studio-tools-multi-format-v2

@@ -48,7 +48,10 @@ _FUNC_CLOSE_TAG = "</function>"
 # must be identifier-shaped (start with a letter or underscore); a comma
 # followed by digits-then-colon is value text such as a timestamp or ratio
 # (`meet at 10:00, 11:00 tomorrow`), not a new key.
-_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
+# Dots to match the key-quoting scanner: a dotted key after a bare value
+# (query:foo,user.name:bob) must end the value at the comma, not be
+# swallowed into it.
+_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
 
 def _balanced_brace_end(

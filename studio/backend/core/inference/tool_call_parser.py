@@ -741,6 +741,15 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     trig = content.find(_MISTRAL_TRIGGER)
     if trig < 0:
         return False
+    lead = 0
+    n = len(content)
+    while lead < n and content[lead] in " \t\n\r":
+        lead += 1
+    # A LEADING parseable Mistral call owns the turn outright (first-match in
+    # document order): literal XML in trailing prose after the call must not
+    # be promoted over it by the earlier shared XML pass.
+    if trig == lead and _mistral_region_end(content, trig) is not None:
+        return True
     first_xml = _first_foreign_tool_signal(content)
     if first_xml is None or first_xml < trig:
         return False
