@@ -1182,8 +1182,9 @@ def install_llama_cpp_make_non_blocking():
     # Force make clean
     try:
         check = subprocess.run(["make", "clean", "-C", "llama.cpp"]).returncode
-    except FileNotFoundError:
-        check = 1  # make not installed; fall through to cmake path
+    except FileNotFoundError as e:
+        logger.warning(f"make clean failed with FileNotFoundError: {e}")
+        check = -1  # make not installed; fall through to cmake path
     IS_CMAKE = False
     if check == 0:
         # Uses old MAKE
@@ -1205,7 +1206,8 @@ def install_llama_cpp_make_non_blocking():
             cmake_args += CURL_FLAG.split()
         try:
             check = subprocess.run(cmake_args).returncode
-        except FileNotFoundError:
+        except FileNotFoundError as e:
+            logger.warning(f"cmake not found: {e}")
             raise RuntimeError(
                 "*** Unsloth: cmake not found. Please install cmake to compile llama.cpp."
             )
