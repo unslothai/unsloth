@@ -52,6 +52,7 @@ def _unloaded_status():
         "speed_optims": [],
         "attention_backend": None,
         "transformer_cache": None,
+        "transformer_quant": None,
         "has_audio": False,
         "defaults": None,
         "resolved": None,
@@ -70,6 +71,7 @@ class _FakeBackend:
         gguf_filename = None,
         family_override = None,
         model_kind = None,
+        transformer_quant = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
@@ -242,6 +244,41 @@ def test_load_threads_options_through_to_backend(client):
     assert kwargs.get("attention_backend") == "cudnn"
     assert kwargs.get("transformer_cache") == "fbcache"
     assert kwargs.get("transformer_cache_threshold") == 0.1
+
+
+def test_load_threads_transformer_quant_and_guidance_2(client):
+    # The new load-time transformer_quant field reaches the backend, and the new
+    # per-generation guidance_2 field reaches generate() (dual-DiT MoE second guidance).
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 200
+    kwargs = video_module.get_video_backend().last_load_kwargs
+    assert kwargs.get("transformer_quant") == "fp8"
+
+    gen = client.post(
+        "/api/inference/video/generate",
+        json = {"prompt": "a sloth", "guidance": 5.0, "guidance_2": 3.0},
+    )
+    assert gen.status_code == 200
+
+
+def test_load_rejects_bad_transformer_quant_422(client):
+    # transformer_quant is a Literal, so an unknown scheme is a 422 at request validation.
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "transformer_quant": "bogus",
+        },
+    )
+    assert resp.status_code == 422
 
 
 def test_load_progress_route(client):

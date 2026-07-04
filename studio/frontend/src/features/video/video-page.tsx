@@ -67,6 +67,11 @@ import {
 type PipelineSpec = { kind: "pipeline"; filename?: string };
 const PIPELINE_MODELS: Record<string, PipelineSpec> = {
   "Lightricks/LTX-2": { kind: "pipeline" },
+  // Wan2.2 diffusers base repos (no GGUF variant yet): loaded as full pipelines. TI2V-5B
+  // is a single-DiT 720p-class model; T2V-A14B is the dual-expert MoE. The backend gates
+  // these to the Wan-AI base repos (see _TRUSTED_NON_GGUF_VIDEO_REPOS).
+  "Wan-AI/Wan2.2-TI2V-5B-Diffusers": { kind: "pipeline" },
+  "Wan-AI/Wan2.2-T2V-A14B-Diffusers": { kind: "pipeline" },
 };
 
 // A curated GGUF picker entry: isGguf true expands its .gguf files in the quant expander
@@ -91,6 +96,16 @@ const pipelineModel = (id: string, name: string, description: string): ModelOpti
 const VIDEO_MODELS: ModelOption[] = [
   ggufModel("unsloth/LTX-2.3-GGUF", "LTX 2.3 distilled"),
   pipelineModel("Lightricks/LTX-2", "LTX 2 (base, bf16)", "Text-to-video with audio · Safetensors"),
+  pipelineModel(
+    "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+    "Wan 2.2 TI2V 5B",
+    "Text-to-video 720p · Safetensors",
+  ),
+  pipelineModel(
+    "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+    "Wan 2.2 T2V A14B (MoE)",
+    "Text-to-video, dual-expert · Safetensors",
+  ),
 ];
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most
@@ -102,6 +117,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
+  // Wan2.2 pipelines default to 50 steps at CFG 5.0 (WanPipeline defaults, verified in
+  // diffusers 0.39). The backend supplies the fps per family (24 for TI2V-5B, 16 for A14B).
+  { match: "wan", steps: 50, guidance: 5 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {

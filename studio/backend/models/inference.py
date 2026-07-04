@@ -2328,6 +2328,19 @@ class VideoLoadRequest(BaseModel):
         description = "FBCache residual threshold (higher = skips more steps = faster, lower "
         "quality). null auto-picks the family default.",
     )
+    transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
+        Field(
+            None,
+            description = "Quantise the dense DiT(s) on a full-pipeline load. On a diffusers "
+            "pipeline load the dense bf16 transformer(s) are torchao-quantised in place onto "
+            "the low-precision tensor cores (data-center fp8, consumer/Ampere int8), which is "
+            "faster than running dense bf16. For a dual-expert MoE family (Wan2.2-A14B) BOTH "
+            "experts are quantised with the same scheme. null/none/off keeps the DiT(s) at "
+            "their loaded precision; an explicit scheme forces it. Needs CUDA + bf16; ignored "
+            "on gguf/single_file loads (they carry their own precision). Mirrors the image "
+            "backend's transformer_quant field.",
+        )
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -2367,6 +2380,15 @@ class VideoGenerateRequest(BaseModel):
     )
     guidance: Optional[float] = Field(
         None, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale (default per model)"
+    )
+    guidance_2: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "Low-noise-stage guidance scale for a dual-expert MoE family (Wan2.2-A14B): "
+        "the guidance the second transformer uses on the low-noise denoise steps. null lets the "
+        "pipeline default it to the main guidance. Ignored by single-DiT families (their pipeline "
+        "signature has no second guidance kwarg).",
     )
     # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript
     # rounds integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then
@@ -2473,6 +2495,12 @@ class VideoStatusResponse(BaseModel):
         "_native_cudnn), or null for the default SDPA",
     )
     transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "
+        "mxfp8 | null (null = the DiT(s) run at their loaded bf16 precision). For a dual-expert "
+        "MoE family both experts share the reported scheme.",
+    )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
     )
