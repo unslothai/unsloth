@@ -223,6 +223,37 @@ def _normalize_torchao_method(save_method):
     return TORCHAO_EXPORT_SCHEMES.get(key)
 
 
+def _loaded_via_remote_code(obj):
+    """True if `obj`'s class comes from downloaded custom code (an auto_map module).
+
+    Transformers loads auto_map code into the ``transformers_modules`` package, so a
+    ``transformers_modules`` class proves the original load actually ran that remote code
+    (which the caller's / Studio's consent gate scans at load time). Export paths derive their
+    reload trust_remote_code from this - the already approved load decision - instead of from a
+    checkpoint's static ``auto_map``: a model that loads with built-in classes must not have its
+    unvetted remote code run when it is re-read during quantization export. Walks PEFT / wrapper
+    layers so a LoRA over a custom-code base is still detected.
+    """
+    seen = set()
+    node = obj
+    for _ in range(4):
+        if node is None or id(node) in seen:
+            break
+        seen.add(id(node))
+        if type(node).__module__.startswith("transformers_modules"):
+            return True
+        nxt = None
+        if hasattr(node, "get_base_model"):
+            try:
+                nxt = node.get_base_model()
+            except Exception:
+                nxt = None
+        if nxt is None or nxt is node:
+            nxt = getattr(node, "base_model", None) or getattr(node, "model", None)
+        node = nxt
+    return False
+
+
 def _normalize_compressed_method(save_method):
     """Return (scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed
     export, else None (so normal lora / merged_16bit / merged_4bit handling proceeds).
@@ -3532,7 +3563,9 @@ def _unsloth_save_lora_gguf(
             cmd += ["--base", base_model_id]
         else:
             cmd += ["--base-model-id", base_model_id]
-        if bool(getattr(model.config, "auto_map", None)):
+        # Only pass --trust-remote-code when the loaded model actually came from custom code (the
+        # approved load decision), not merely because its config carries an auto_map entry.
+        if _loaded_via_remote_code(model):
             cmd.append("--trust-remote-code")
 
         # Expose the token to the converter so it can fetch a gated/private base config from the Hub.
@@ -4387,8 +4420,8 @@ def _unsloth_save_compressed_tensors(
         )
         unsloth_generic_save(**merge_args)
 
-        # 4) Detect VLM + trust_remote_code from the in-memory model config. A vision/multimodal
-        #    model exposes a vision_config or an explicitly vision-named architecture; a bare
+        # 4) Detect VLM from the in-memory model config. A vision/multimodal model exposes a
+        #    vision_config or an explicitly vision-named architecture; a bare
         #    *ForConditionalGeneration also matches text seq2seq models (T5/BART/Whisper), so it
         #    is not treated as a VLM on its own.
         is_vlm = False
@@ -4402,9 +4435,10 @@ def _unsloth_save_compressed_tensors(
                 "Unsloth: FP8/FP4 compressed export for vision / multimodal models is "
                 "experimental; vision-tower layers may be affected."
             )
-        trust_remote_code = (
-            bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
-        )
+        # trust_remote_code must reflect the approved load decision (whether the model / tokenizer
+        # was actually loaded from custom code), not the config's static auto_map, so a
+        # built-in-loadable model carrying auto_map cannot run unvetted code in the subprocess.
+        trust_remote_code = _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)
 
         # 5) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
         #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; Dataset -> temp.
@@ -4679,35 +4713,19 @@ def _unsloth_save_torchao(
         )
         unsloth_generic_save(**merge_args)
 
-        # 2) Detect VLM + trust_remote_code so the right auto class reloads the staged checkpoint.
-        #    A bare *ForConditionalGeneration also matches text seq2seq (T5/BART/Whisper), so key off
-        #    vision_config / a vision-named architecture only, like the compressed path.
+        # 2) Detect VLM + reload class. A bare *ForConditionalGeneration also matches text seq2seq
+        #    (T5/BART/Whisper), so key off vision_config / a vision-named architecture only.
         is_vlm = False
-        trust_remote_code = False
         if hasattr(model, "config"):
             archs = getattr(model.config, "architectures", None) or []
             is_vlm = hasattr(model.config, "vision_config") or any(
                 x.endswith("ForVisionText2Text") for x in archs
             )
-            trust_remote_code = bool(getattr(model.config, "auto_map", None))
-        # Custom code can be declared only in the tokenizer/processor config, so also honor an
-        # auto_map in any staged config (the original load already had the user's consent).
-        if not trust_remote_code:
-            for _cfg in (
-                "config.json",
-                "tokenizer_config.json",
-                "processor_config.json",
-                "preprocessor_config.json",
-            ):
-                try:
-                    _p = os.path.join(staging, _cfg)
-                    if os.path.exists(_p):
-                        with open(_p, "r", encoding = "utf-8") as _f:
-                            if "auto_map" in json.load(_f):
-                                trust_remote_code = True
-                                break
-                except Exception:
-                    pass
+        # trust_remote_code must reflect the approved load decision - whether the in-memory model /
+        # tokenizer was itself loaded from custom code - not the staged config's auto_map, which an
+        # attacker can set on a built-in-loadable model to run unvetted code past the consent gate.
+        model_trust = _loaded_via_remote_code(model)
+        tok_trust = _loaded_via_remote_code(tokenizer)
         # Reload with the class that matches the checkpoint: an image-text VLM class (with a
         # fallback for older Transformers that lack AutoModelForImageTextToText); the model's own
         # architecture class for encoder-decoder seq2seq (T5/BART/Whisper are not causal LMs, and
@@ -4766,11 +4784,11 @@ def _unsloth_save_torchao(
             staging,
             device_map = "auto",
             quantization_config = TorchAoConfig(quant_type = quant_type),
-            trust_remote_code = trust_remote_code,
+            trust_remote_code = model_trust,
             **dtype_kw,
         )
         staged_tokenizer = auto_processor.from_pretrained(
-            staging, trust_remote_code = trust_remote_code
+            staging, trust_remote_code = tok_trust
         )
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
