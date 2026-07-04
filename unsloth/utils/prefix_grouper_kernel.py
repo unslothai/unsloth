@@ -65,9 +65,7 @@ from torch.nn.attention.flex_attention import (
 # is exhausted and the kernel silently falls back / reuses a mismatched specialisation
 # -> WRONG (non-bit-exact) results. Raise the limits so every shape gets a correct
 # kernel. (Production should additionally bucket sequence lengths to bound recompiles.)
-torch._dynamo.config.recompile_limit = max(
-    getattr(torch._dynamo.config, "recompile_limit", 8), 256
-)
+torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
 torch._dynamo.config.accumulated_recompile_limit = max(
     getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
 )
@@ -77,8 +75,8 @@ torch._dynamo.config.accumulated_recompile_limit = max(
 # Compiled kernels. FlexAttention needs torch.compile to fuse the sparse mask
 # into a single kernel; create_block_mask is likewise compiled for speed.
 # ---------------------------------------------------------------------------
-_flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
-_create_block_mask_compiled = torch.compile(create_block_mask, dynamic=False)
+_flex_attention_compiled = torch.compile(flex_attention, dynamic = False)
+_create_block_mask_compiled = torch.compile(create_block_mask, dynamic = False)
 
 # FlexAttention kernel_options (block sizes), selected by Q dtype.
 #
@@ -164,9 +162,13 @@ def _pad_labels(group_of_kv, is_prefix, suffix_of_kv, device):
     if T_pad == T:
         return group_of_kv, is_prefix, suffix_of_kv, T, T_pad
     pad = T_pad - T
-    group_of_kv = torch.cat([group_of_kv, torch.full((pad,), _PAD_GROUP, dtype=torch.long, device=device)])
-    is_prefix = torch.cat([is_prefix, torch.zeros(pad, dtype=torch.bool, device=device)])
-    suffix_of_kv = torch.cat([suffix_of_kv, torch.full((pad,), _PAD_GROUP, dtype=torch.long, device=device)])
+    group_of_kv = torch.cat(
+        [group_of_kv, torch.full((pad,), _PAD_GROUP, dtype = torch.long, device = device)]
+    )
+    is_prefix = torch.cat([is_prefix, torch.zeros(pad, dtype = torch.bool, device = device)])
+    suffix_of_kv = torch.cat(
+        [suffix_of_kv, torch.full((pad,), _PAD_GROUP, dtype = torch.long, device = device)]
+    )
     return group_of_kv, is_prefix, suffix_of_kv, T, T_pad
 
 
@@ -178,10 +180,10 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
     T = int(layout.flat_ids.shape[1])
     P = int(layout.P)
 
-    group_of_kv = torch.zeros(T, dtype=torch.long, device=device)  # single group -> 0
-    is_prefix = torch.zeros(T, dtype=torch.bool, device=device)
+    group_of_kv = torch.zeros(T, dtype = torch.long, device = device)  # single group -> 0
+    is_prefix = torch.zeros(T, dtype = torch.bool, device = device)
     is_prefix[:P] = True
-    suffix_of_kv = torch.full((T,), -1, dtype=torch.long, device=device)
+    suffix_of_kv = torch.full((T,), -1, dtype = torch.long, device = device)
     for i, (s, e) in enumerate(layout.suffix_slices):
         suffix_of_kv[s:e] = i
 
@@ -190,18 +192,17 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
     )
     sig = ("single", T_pad, P, tuple((s, e) for (s, e) in layout.suffix_slices))
     return PrefixSegInfo(
-        group_of_kv=group_of_kv,
-        is_prefix=is_prefix,
-        suffix_of_kv=suffix_of_kv,
-        signature=sig,
-        T=T,
-        T_pad=T_pad,
+        group_of_kv = group_of_kv,
+        is_prefix = is_prefix,
+        suffix_of_kv = suffix_of_kv,
+        signature = sig,
+        T = T,
+        T_pad = T_pad,
     )
 
 
 def build_seg_info_multigroup(
-    group_specs: List[Tuple[int, List[int]]],
-    device: torch.device,
+    group_specs: List[Tuple[int, List[int]]], device: torch.device
 ) -> Tuple[PrefixSegInfo, List[dict]]:
     """Build PrefixSegInfo for several shared-prefix groups packed block-diagonally.
 
@@ -226,16 +227,16 @@ def build_seg_info_multigroup(
     sig_parts = []
     for gid, (P, R_list) in enumerate(group_specs):
         # prefix
-        group_of_list.append(torch.full((P,), gid, dtype=torch.long, device=device))
-        is_prefix_list.append(torch.ones(P, dtype=torch.bool, device=device))
-        suffix_of_list.append(torch.full((P,), -1, dtype=torch.long, device=device))
+        group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
+        is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
+        suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
         prefix_last_index = base + P - 1
         suffix_slices = []
         cursor = base + P
         for r in R_list:
-            group_of_list.append(torch.full((r,), gid, dtype=torch.long, device=device))
-            is_prefix_list.append(torch.zeros(r, dtype=torch.bool, device=device))
-            suffix_of_list.append(torch.full((r,), suffix_counter, dtype=torch.long, device=device))
+            group_of_list.append(torch.full((r,), gid, dtype = torch.long, device = device))
+            is_prefix_list.append(torch.zeros(r, dtype = torch.bool, device = device))
+            suffix_of_list.append(torch.full((r,), suffix_counter, dtype = torch.long, device = device))
             suffix_slices.append((cursor, cursor + r))
             cursor += r
             suffix_counter += 1
@@ -258,12 +259,12 @@ def build_seg_info_multigroup(
     )
     sig = ("multi", T_pad, tuple(sig_parts))
     seg = PrefixSegInfo(
-        group_of_kv=group_of_kv,
-        is_prefix=is_prefix,
-        suffix_of_kv=suffix_of_kv,
-        signature=sig,
-        T=T,
-        T_pad=T_pad,
+        group_of_kv = group_of_kv,
+        is_prefix = is_prefix,
+        suffix_of_kv = suffix_of_kv,
+        signature = sig,
+        T = T,
+        T_pad = T_pad,
     )
     return seg, group_meta
 
@@ -299,15 +300,17 @@ def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
         kv_is_prefix = is_prefix[kv_idx]
         causal = kv_idx <= q_idx
         same_suffix = (suffix_of_kv[kv_idx] == suffix_of_kv[q_idx]) & (~is_prefix[q_idx])
-        keep = same_group & (
-            (kv_is_prefix & causal) | (same_suffix & causal)
-        )
+        keep = same_group & ((kv_is_prefix & causal) | (same_suffix & causal))
         return keep
 
     return mask_mod
 
 
-def get_block_mask(seg: PrefixSegInfo, device: torch.device, compile_mask: bool = True) -> BlockMask:
+def get_block_mask(
+    seg: PrefixSegInfo,
+    device: torch.device,
+    compile_mask: bool = True,
+) -> BlockMask:
     """Return a cached BlockMask for the segment signature (built once, reused).
 
     CRITICAL: the block mask is cached and shared across BOTH the no-grad old/ref logprob
@@ -327,11 +330,11 @@ def get_block_mask(seg: PrefixSegInfo, device: torch.device, compile_mask: bool 
     with torch.inference_mode(False):
         bm = builder(
             mask_mod,
-            B=1,
-            H=None,
-            Q_LEN=seg.T_pad,
-            KV_LEN=seg.T_pad,
-            device=device,
+            B = 1,
+            H = None,
+            Q_LEN = seg.T_pad,
+            KV_LEN = seg.T_pad,
+            device = device,
         )
     _BLOCK_MASK_CACHE[key] = bm
     return bm
@@ -346,9 +349,8 @@ def _pad_qkv_seq(x: torch.Tensor, T_pad: int) -> torch.Tensor:
     T = x.shape[2]
     if T_pad == T:
         return x
-    pad = torch.zeros(x.shape[0], x.shape[1], T_pad - T, x.shape[3],
-                      device=x.device, dtype=x.dtype)
-    return torch.cat([x, pad], dim=2)
+    pad = torch.zeros(x.shape[0], x.shape[1], T_pad - T, x.shape[3], device = x.device, dtype = x.dtype)
+    return torch.cat([x, pad], dim = 2)
 
 
 def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
@@ -358,13 +360,23 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
     vp = _pad_qkv_seq(v, T_pad)
     if compiled:
         out = _flex_attention_compiled(
-            qp, kp, vp, block_mask=block_mask, enable_gqa=enable_gqa, scale=scale,
-            kernel_options=_kernel_options_for_dtype(qp.dtype),
+            qp,
+            kp,
+            vp,
+            block_mask = block_mask,
+            enable_gqa = enable_gqa,
+            scale = scale,
+            kernel_options = _kernel_options_for_dtype(qp.dtype),
         )
     else:
         # eager path (fp64 parity): no kernel_options, dense score materialisation.
         out = flex_attention(
-            qp, kp, vp, block_mask=block_mask, enable_gqa=enable_gqa, scale=scale,
+            qp,
+            kp,
+            vp,
+            block_mask = block_mask,
+            enable_gqa = enable_gqa,
+            scale = scale,
         )
     return out[:, :, :T, :]
 
@@ -412,7 +424,7 @@ def flex_shared_prefix_attention(
     assert T == prefix_seg_info.T, f"Q length {T} != seg.T {prefix_seg_info.T}"
 
     if block_mask is None:
-        block_mask = get_block_mask(prefix_seg_info, device, compile_mask=compiled)
+        block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
 
     out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
     # back to [1, T, n_heads, D]

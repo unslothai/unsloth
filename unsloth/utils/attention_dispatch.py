@@ -150,12 +150,16 @@ def run_attention(
     # UNSLOTH_GRPO_PREFIX_GROUPER is on and grouping succeeded), so default is byte-identical.
     if context.prefix_seg_info is not None:
         from ..utils.prefix_grouper_kernel import flex_shared_prefix_attention
+
         scale = None
         if config.flash_varlen_kwargs:
             scale = config.flash_varlen_kwargs.get("softmax_scale")
         A = flex_shared_prefix_attention(
-            Q.transpose(1, 2), K.transpose(1, 2), V.transpose(1, 2),
-            context.prefix_seg_info, scale=scale,
+            Q.transpose(1, 2),
+            K.transpose(1, 2),
+            V.transpose(1, 2),
+            context.prefix_seg_info,
+            scale = scale,
         )
         return A  # [1, T, n_heads, head_dim]
 

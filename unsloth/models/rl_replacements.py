@@ -1391,12 +1391,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # yet verified, the full-row packed path below runs exactly as before.
             _pg_result = None
             _pg_use = False
-            _pg_skip_pk = False   # once a shape is PG-verified, skip the full-row forward
+            _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_num_gen = getattr(self, "num_generations", None)
             # Cheap env check FIRST so the default-off path never imports or runs any PG code
             # (truly byte-identical when the gate is unset).
             _pg_engage = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "0").lower() not in (
-                "0", "false", "no", "off",
+                "0",
+                "false",
+                "no",
+                "off",
             )
             if _pg_engage:
                 try:
@@ -1421,15 +1424,22 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 try:
                     _pg_pad = self.processing_class.pad_token_id
                     _pg_layout = _pg_build_layout(
-                        input_ids, logits_to_keep, _pg_pad, _pg_num_gen,
+                        input_ids,
+                        logits_to_keep,
+                        _pg_pad,
+                        _pg_num_gen,
                         left_pad_tokens_per_prompt,
                     )
-                    _pg_unsafe = getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None)
+                    _pg_unsafe = getattr(
+                        unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
+                    )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
                     if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
                         _pg_sig = _pg_layout.signature
-                        _pg_verified = getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None)
+                        _pg_verified = getattr(
+                            unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                        )
                         if _pg_verified is None:
                             _pg_verified = set()
                         _pg_chunks = max(1, total_rows * multiplier)
@@ -1442,18 +1452,27 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     use_cache = False,
                                 ).logits
                                 _pg_result = _pg_layout.extract_logps(
-                                    _pg_hidden, lm_head, chunked_hidden_states_selective_log_softmax,
-                                    _pg_chunks, logit_scale_multiply, logit_scale_divide,
-                                    logit_softcapping, temperature,
+                                    _pg_hidden,
+                                    lm_head,
+                                    chunked_hidden_states_selective_log_softmax,
+                                    _pg_chunks,
+                                    logit_scale_multiply,
+                                    logit_scale_divide,
+                                    logit_softcapping,
+                                    temperature,
                                 )
                         device_synchronize()
                         # override scatter width to the loss window [B, logits_to_keep+max_left_pad]
                         _pg_W = logits_to_keep + max_left_pad
                         if _pg_result.shape[1] != _pg_W:
-                            _pg_result = _pg_result[:, -_pg_W:] if _pg_result.shape[1] > _pg_W else _pg_result
+                            _pg_result = (
+                                _pg_result[:, -_pg_W:]
+                                if _pg_result.shape[1] > _pg_W
+                                else _pg_result
+                            )
                         if (not _pg_verify_on()) or _pg_sig in _pg_verified:
                             _pg_use = True
-                            _pg_skip_pk = True   # trusted shape -> no full-row forward needed
+                            _pg_skip_pk = True  # trusted shape -> no full-row forward needed
                 except Exception as _pg_err:
                     _pg_hidden = None
                     _pg_result = None
@@ -1463,7 +1482,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         torch.cuda.empty_cache()
                     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
                     if UNSLOTH_ENABLE_LOGGING:
-                        print(f"[Unsloth] GRPO PrefixGrouper (no-grad) disabled (fell back to packed): {_pg_err!r}", flush = True)
+                        print(
+                            f"[Unsloth] GRPO PrefixGrouper (no-grad) disabled (fell back to packed): {_pg_err!r}",
+                            flush = True,
+                        )
 
             # ---- Sequence packing (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
             # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] loop: the exact
@@ -1692,7 +1714,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     try:
                         _pg_W2 = logits_to_keep + max_left_pad
                         _pg_cm = create_completion_attention_mask(
-                            input_ids[:, -_pg_W2:], left_pad_tokens_per_prompt, max_left_pad,
+                            input_ids[:, -_pg_W2:],
+                            left_pad_tokens_per_prompt,
+                            max_left_pad,
                             self.processing_class.pad_token_id,
                         ).float()
                         _pg_a = _pg_result[:, -_pg_W2:].float()
@@ -1705,14 +1729,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 flush = True,
                             )
                         if _pg_diff < _pg_tol_ok():
-                            _pg_v = getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None)
+                            _pg_v = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                            )
                             if _pg_v is None:
                                 _pg_v = set()
                             _pg_v.add(_pg_layout.signature)
                             unwrapped_model._unsloth_prefix_grouper_nograd_verified = _pg_v
                             _pg_use = True
                         else:
-                            _pg_u = getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None)
+                            _pg_u = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
+                            )
                             if _pg_u is None:
                                 _pg_u = set()
                             if _pg_diff >= _PG_TOL_KILL:

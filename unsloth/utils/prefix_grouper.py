@@ -45,6 +45,7 @@ Env:
   UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY=1     first-step self-verify (default ON)
   UNSLOTH_GRPO_PREFIX_GROUPER_TOL=0.7      self-verify PASS band (nats)
 """
+
 from __future__ import annotations
 
 import os
@@ -65,10 +66,7 @@ def env_on(name: str, default: str = "0") -> bool:
 
 def prefix_grouper_enabled() -> bool:
     """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery)."""
-    return (
-        env_on("UNSLOTH_GRPO_SEQ_PACKING", "1")
-        and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "0")
-    )
+    return env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "0")
 
 
 def verify_on() -> bool:
@@ -93,37 +91,51 @@ TOL_KILL = 1.5
 class GroupLayout:
     """Everything the GRPO forward needs to run + extract the shared-prefix path."""
 
-    flat_ids: torch.Tensor          # [1, T]  (T == seg.T)
-    position_ids: torch.Tensor      # [1, T]
+    flat_ids: torch.Tensor  # [1, T]  (T == seg.T)
+    position_ids: torch.Tensor  # [1, T]
     prefix_seg_info: PrefixSegInfo
     # per completion target token, aligned 1:1:
-    tgt_rows: torch.Tensor          # [N] original row index
-    tgt_cols: torch.Tensor          # [N] original padded column in that row
-    tgt_pred: torch.Tensor          # [N] flat predicting index (into the T stream)
-    tgt_flat: torch.Tensor          # [N] flat index of the target token itself (into T)
+    tgt_rows: torch.Tensor  # [N] original row index
+    tgt_cols: torch.Tensor  # [N] original padded column in that row
+    tgt_pred: torch.Tensor  # [N] flat predicting index (into the T stream)
+    tgt_flat: torch.Tensor  # [N] flat index of the target token itself (into T)
     total_rows: int
-    L: int                          # original padded seq length (input_ids.shape[1])
-    W: int                          # logits_to_keep + max_left_pad (scatter width)
+    L: int  # original padded seq length (input_ids.shape[1])
+    W: int  # logits_to_keep + max_left_pad (scatter width)
     tok_r: float
     signature: Tuple
 
-    def extract_logps(self, hidden, lm_head, chunked_fn, chunks,
-                      logit_scale_multiply, logit_scale_divide, logit_softcapping,
-                      temperature) -> torch.Tensor:
+    def extract_logps(
+        self,
+        hidden,
+        lm_head,
+        chunked_fn,
+        chunks,
+        logit_scale_multiply,
+        logit_scale_divide,
+        logit_softcapping,
+        temperature,
+    ) -> torch.Tensor:
         """hidden: [1, T, Hdim] (pre-lm_head hidden states, UNSLOTH_RETURN_HIDDEN_STATES=1).
         Returns [total_rows, W] float32, byte-compatible with the packed path result."""
         device = hidden.device
-        pred_h = hidden[0, self.tgt_pred, :].unsqueeze(0)        # [1, N, Hdim]
-        tgt_ids = self.flat_ids[0, self.tgt_flat].unsqueeze(0)   # [1, N]
+        pred_h = hidden[0, self.tgt_pred, :].unsqueeze(0)  # [1, N, Hdim]
+        tgt_ids = self.flat_ids[0, self.tgt_flat].unsqueeze(0)  # [1, N]
         sel = chunked_fn(
-            pred_h, lm_head, tgt_ids, chunks,
-            logit_scale_multiply, logit_scale_divide, logit_softcapping, temperature,
-        )[0]                                                     # [N] logprobs
+            pred_h,
+            lm_head,
+            tgt_ids,
+            chunks,
+            logit_scale_multiply,
+            logit_scale_divide,
+            logit_softcapping,
+            temperature,
+        )[0]  # [N] logprobs
         dest = self.tgt_rows * self.L + self.tgt_cols
         result = (
-            torch.zeros(self.total_rows * self.L, dtype=torch.float32, device=device)
+            torch.zeros(self.total_rows * self.L, dtype = torch.float32, device = device)
             .index_put((dest,), sel.to(torch.float32))
-            .view(self.total_rows, self.L)[:, -self.W:]
+            .view(self.total_rows, self.L)[:, -self.W :]
         )
         return result
 
@@ -146,9 +158,9 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
     groups = []
     for g0 in range(0, total_rows, G):
         rows = list(range(g0, g0 + G))
-        prompt_cols_per_row = []   # real cols < cstart
+        prompt_cols_per_row = []  # real cols < cstart
         prompt_toks_per_row = []
-        comp_cols_per_row = []     # real cols >= cstart  (the completion region packed scatters)
+        comp_cols_per_row = []  # real cols >= cstart  (the completion region packed scatters)
         for r in rows:
             cs = cstart_cpu[r]
             rc = real_cols_cpu[r]
@@ -171,13 +183,16 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
         R_list = [len(c) for c in comp_cols_per_row]
         if sum(R_list) == 0:
             return None
-        groups.append(dict(
-            rows=rows, P=P,
-            prefix_cols=prompt_cols_per_row[0],   # shared prompt real columns (row0)
-            prefix_row=rows[0],
-            R_list=R_list,
-            suf_cols=comp_cols_per_row,           # per-row completion-region real columns
-        ))
+        groups.append(
+            dict(
+                rows = rows,
+                P = P,
+                prefix_cols = prompt_cols_per_row[0],  # shared prompt real columns (row0)
+                prefix_row = rows[0],
+                R_list = R_list,
+                suf_cols = comp_cols_per_row,  # per-row completion-region real columns
+            )
+        )
     return groups
 
 
@@ -187,13 +202,20 @@ def _tok_r(groups) -> float:
     for gm in groups:
         P = gm["P"]
         Rs = gm["R_list"]
-        tok_full += sum(P + r for r in Rs)   # G*P + sumR
-        tok_sp += P + sum(Rs)                # P + sumR
+        tok_full += sum(P + r for r in Rs)  # G*P + sumR
+        tok_sp += P + sum(Rs)  # P + sumR
     return (tok_full / tok_sp) if tok_sp else 1.0
 
 
-def build_group_layout(input_ids, logits_to_keep, pad_id, num_generations,
-                       left_pad_tokens_per_prompt, *, apply_tokr_gate=True):
+def build_group_layout(
+    input_ids,
+    logits_to_keep,
+    pad_id,
+    num_generations,
+    left_pad_tokens_per_prompt,
+    *,
+    apply_tokr_gate = True,
+):
     """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
 
     input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
@@ -237,8 +259,8 @@ def build_group_layout(input_ids, logits_to_keep, pad_id, num_generations,
         rows = gm["rows"]
         P = gm["P"]
         r0 = gm["prefix_row"]
-        prefix_cols = gm["prefix_cols"]     # ORIGINAL real prompt columns (len P) of row0
-        plast = meta["prefix_last_index"]   # base + P - 1
+        prefix_cols = gm["prefix_cols"]  # ORIGINAL real prompt columns (len P) of row0
+        plast = meta["prefix_last_index"]  # base + P - 1
         # prefix once: gather the group's first P shared real prompt tokens from row0.
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
@@ -248,7 +270,7 @@ def build_group_layout(input_ids, logits_to_keep, pad_id, num_generations,
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
-            s, e = meta["suffix_slices"][i]   # flat offsets [s, e)
+            s, e = meta["suffix_slices"][i]  # flat offsets [s, e)
             flat_src_rows.extend([r] * r_i)
             flat_src_cols.extend(cols)
             pos_list.extend(range(P, P + r_i))
@@ -257,16 +279,16 @@ def build_group_layout(input_ids, logits_to_keep, pad_id, num_generations,
                 # j>=1 from the preceding suffix token.
                 pred = plast if j == 0 else (s + j - 1)
                 tgt_rows.append(r)
-                tgt_cols.append(cols[j])       # ORIGINAL padded column in row r
+                tgt_cols.append(cols[j])  # ORIGINAL padded column in row r
                 tgt_pred.append(pred)
-                tgt_flat.append(s + j)         # flat index of the target token itself
+                tgt_flat.append(s + j)  # flat index of the target token itself
 
     T = len(flat_src_rows)
     assert T == seg.T, f"flat stream len {T} != seg.T {seg.T}"
-    fr = torch.tensor(flat_src_rows, device=device, dtype=torch.long)
-    fc = torch.tensor(flat_src_cols, device=device, dtype=torch.long)
-    flat_ids = input_ids[fr, fc].unsqueeze(0)                    # [1, T] (grad-safe gather)
-    position_ids = torch.tensor(pos_list, device=device, dtype=torch.long).unsqueeze(0)
+    fr = torch.tensor(flat_src_rows, device = device, dtype = torch.long)
+    fc = torch.tensor(flat_src_cols, device = device, dtype = torch.long)
+    flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
+    position_ids = torch.tensor(pos_list, device = device, dtype = torch.long).unsqueeze(0)
 
     max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
     W = logits_to_keep + max_left_pad
@@ -282,18 +304,18 @@ def build_group_layout(input_ids, logits_to_keep, pad_id, num_generations,
     sig = (len(groups), grp_sizes)
 
     return GroupLayout(
-        flat_ids=flat_ids,
-        position_ids=position_ids,
-        prefix_seg_info=seg,
-        tgt_rows=torch.tensor(tgt_rows, device=device, dtype=torch.long),
-        tgt_cols=torch.tensor(tgt_cols, device=device, dtype=torch.long),
-        tgt_pred=torch.tensor(tgt_pred, device=device, dtype=torch.long),
-        tgt_flat=torch.tensor(tgt_flat, device=device, dtype=torch.long),
-        total_rows=total_rows,
-        L=L,
-        W=W,
-        tok_r=tok_r,
-        signature=sig,
+        flat_ids = flat_ids,
+        position_ids = position_ids,
+        prefix_seg_info = seg,
+        tgt_rows = torch.tensor(tgt_rows, device = device, dtype = torch.long),
+        tgt_cols = torch.tensor(tgt_cols, device = device, dtype = torch.long),
+        tgt_pred = torch.tensor(tgt_pred, device = device, dtype = torch.long),
+        tgt_flat = torch.tensor(tgt_flat, device = device, dtype = torch.long),
+        total_rows = total_rows,
+        L = L,
+        W = W,
+        tok_r = tok_r,
+        signature = sig,
     )
 
 
