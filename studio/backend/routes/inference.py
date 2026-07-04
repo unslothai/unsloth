@@ -1080,6 +1080,7 @@ from models.inference import (
     DiffusionGenerateResponse,
     DiffusionGenerateProgressResponse,
     DiffusionStatusResponse,
+    DiffusionInferenceInfoResponse,
     DiffusionLoadProgressResponse,
     GalleryImage,
     GalleryListResponse,
@@ -11970,6 +11971,17 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import active_status
     return DiffusionStatusResponse(**active_status())
+
+
+@studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)
+async def diffusion_inference_info(current_subject: str = Depends(get_current_subject)):
+    """Static per-family footprint summary for the Advanced Dtype tradeoff.
+
+    Hardware-independent (served from the pure auto-policy tables, no GPU probing), so it
+    is cheap and safe to fetch before anything is loaded."""
+    from core.inference.diffusion_inference_info import family_inference_infos
+
+    return DiffusionInferenceInfoResponse(families = family_inference_infos())
 
 
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)

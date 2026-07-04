@@ -722,3 +722,46 @@ def test_gpu_native_load_takes_arbiter(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert acquired == [gpu_arbiter.DIFFUSION]
+
+
+def test_images_info_lists_every_family(client):
+    # The pure info endpoint is hardware-independent (no load required): it returns one
+    # entry per auto-policy family, each with the quant estimates the UI shows.
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB
+
+    resp = client.get("/api/inference/images/info")
+    assert resp.status_code == 200
+    families = resp.json()["families"]
+    assert {f["family"] for f in families} == set(_FAMILY_BF16_GB)
+    sample = families[0]
+    est = sample["estimated_resident_gb"]
+    # Quantised estimates undercut bf16, and nvfp4 undercuts int8 (matches the pure helper).
+    assert est["int8"] < est["bf16"]
+    assert est["nvfp4"] < est["int8"]
+
+
+def test_status_passes_through_resolved(client, monkeypatch):
+    # The additive `resolved` provenance record round-trips through the status route so the
+    # frontend can render the "Auto: X" badges.
+    backend = diffusion_module.get_diffusion_backend()
+    resolved = {
+        "speed_mode": {"value": "eager", "source": "auto", "reason": "per-kind default"},
+        "transformer_quant": {"value": "int8", "source": "explicit", "reason": "requested"},
+        "cpu_offload": {"value": False, "source": "auto", "reason": "from the memory plan"},
+        "transformer_cache": {"value": None, "source": "auto", "reason": "few-step model"},
+    }
+    monkeypatch.setattr(
+        backend, "status", lambda: {**_unloaded_status(), "loaded": True, "resolved": resolved}
+    )
+    body = client.get("/api/inference/images/status").json()
+    assert body["resolved"] == resolved
+    assert body["resolved"]["speed_mode"]["source"] == "auto"
+    # The cpu_offload value stays a real boolean (not coerced to a string).
+    assert body["resolved"]["cpu_offload"]["value"] is False
+
+
+def test_status_resolved_defaults_to_null(client):
+    # A backend status without a `resolved` key leaves the additive field null (older
+    # backends and the unloaded state).
+    body = client.get("/api/inference/images/status").json()
+    assert body["resolved"] is None
