@@ -68,18 +68,27 @@ export function LiveTrainingView(): ReactElement {
       setActiveRunDetail(null);
       return;
     }
+    const jobId = runtime.jobId;
     const controller = new AbortController();
     let active = true;
-    void getTrainingRun(runtime.jobId, controller.signal)
-      .then((detail) => {
-        if (!active || controller.signal.aborted) return;
-        setActiveRunDetail(detail);
-      })
-      .catch(() => {
-        // fetch failure is non-fatal; ProgressSection falls back to store values
-      });
+    let retryTimer: number | null = null;
+    const loadActiveRunDetail = () => {
+      void getTrainingRun(jobId, controller.signal)
+        .then((detail) => {
+          if (!active || controller.signal.aborted) return;
+          setActiveRunDetail(detail);
+        })
+        .catch(() => {
+          if (!active || controller.signal.aborted) return;
+          retryTimer = window.setTimeout(loadActiveRunDetail, 1000);
+        });
+    };
+    loadActiveRunDetail();
     return () => {
       active = false;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
       controller.abort();
     };
   }, [runtime.jobId]);
