@@ -1366,7 +1366,6 @@ class TestHealerSignalAlignment:
 
     def test_heal_signals_are_promotable_formats_only(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
-
         assert set(_HEAL_SIGNALS) == {
             "<tool_call>",
             "<|tool_call>",
@@ -1392,10 +1391,7 @@ class TestHealerSignalAlignment:
 
     def test_bracket_tool_calls_still_promote_in_stream(self):
         healer = StreamToolCallHealer({"web_search"})
-        events = (
-            healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}')
-            + healer.finalize()
-        )
+        events = healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}') + healer.finalize()
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed
