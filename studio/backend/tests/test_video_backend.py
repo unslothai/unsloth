@@ -227,6 +227,106 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     assert call["guidance_scale"] == 1.0
 
 
+def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
+    # diffusers maps every LTX-2 single file to the 2.0 config; a 2.3 checkpoint
+    # (9-row modulation tables in the header) must be detected so the loader
+    # routes to the full 2.3 assembly. A 2.0 header must not, and an unreadable
+    # header must fall back to the stock path (False), never raise.
+    from core.inference.video_ltx2 import is_ltx23_checkpoint
+
+    def _reader_for(shapes):
+        tensors = [types.SimpleNamespace(name = n, shape = s) for n, s in shapes.items()]
+        return lambda path: types.SimpleNamespace(tensors = tensors)
+
+    gguf = types.ModuleType("gguf")
+    # GGUF headers store dims in GGML (reversed) order.
+    gguf.GGUFReader = _reader_for({
+        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 9),
+    })
+    monkeypatch.setitem(sys.modules, "gguf", gguf)
+    path = tmp_path / "ltx23.gguf"
+    path.write_bytes(b"x")
+    assert is_ltx23_checkpoint(path) is True
+
+    gguf.GGUFReader = _reader_for({
+        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
+    })
+    assert is_ltx23_checkpoint(path) is False
+
+    def _boom(path):
+        raise RuntimeError("bad magic")
+
+    gguf.GGUFReader = _boom
+    assert is_ltx23_checkpoint(path) is False
+
+
+def test_is_ltx23_checkpoint_safetensors(monkeypatch, tmp_path):
+    from core.inference.video_ltx2 import is_ltx23_checkpoint
+
+    class _FakeSlice:
+        def __init__(self, shape):
+            self._shape = shape
+
+        def get_shape(self):
+            return self._shape
+
+    class _FakeSafe:
+        def __init__(self, shapes):
+            self._shapes = shapes
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def keys(self):
+            return list(self._shapes)
+
+        def get_slice(self, name):
+            return _FakeSlice(self._shapes[name])
+
+    shapes = {
+        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (9, 4096),
+    }
+    safetensors = types.ModuleType("safetensors")
+    safetensors.safe_open = lambda path, framework = None: _FakeSafe(shapes)
+    monkeypatch.setitem(sys.modules, "safetensors", safetensors)
+    path = tmp_path / "ltx23.safetensors"
+    path.write_bytes(b"x")
+    assert is_ltx23_checkpoint(path) is True
+
+
+def test_ltx23_split_and_variant(tmp_path):
+    # Pure functions: combined-checkpoint partitioning and companion-set choice.
+    from core.inference.video_ltx2 import _split_checkpoint, checkpoint_variant
+
+    state = {
+        "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight": 1,
+        "model.diffusion_model.video_embeddings_connector.learnable_registers": 2,
+        "model.diffusion_model.prompt_adaln_single.linear.weight": 3,
+        "text_embedding_projection.video_aggregate_embed.weight": 4,
+        "vae.decoder.conv_in.weight": 5,
+        "audio_vae.encoder.conv_in.weight": 6,
+        "vocoder.bwe_generator.conv_pre.weight": 7,
+    }
+    groups = _split_checkpoint(state)
+    assert set(groups["dit"]) == {
+        "transformer_blocks.0.attn1.to_q.weight",
+        "prompt_adaln_single.linear.weight",
+    }
+    assert set(groups["connectors"]) == {
+        "video_embeddings_connector.learnable_registers",
+        "text_embedding_projection.video_aggregate_embed.weight",
+    }
+    assert groups["vae"] == {"decoder.conv_in.weight": 5}
+    assert groups["audio_vae"] == {"encoder.conv_in.weight": 6}
+    assert groups["vocoder"] == {"bwe_generator.conv_pre.weight": 7}
+
+    assert checkpoint_variant("x/ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf") == "distilled"
+    assert checkpoint_variant("x/ltx-2.3-22b-dev-Q8_0.gguf") == "dev"
+
+
 def test_generate_without_load_raises(fake_runtime):
     backend = VideoBackend()
     with pytest.raises(RuntimeError, match = VIDEO_NOT_LOADED_MSG):

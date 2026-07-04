@@ -488,8 +488,26 @@ class VideoBackend:
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
-            transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
-            pipe = pipeline_cls.from_pretrained(base, transformer = transformer, **pipe_kwargs)
+            from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
+
+            if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
+                # 2.3 checkpoints need the full assembly: new transformer config
+                # flags, key renames the stock converter lacks, and the 2.3
+                # connectors/VAEs/vocoder the 2.0 base repo does not carry.
+                pipe = load_ltx23_pipeline(
+                    checkpoint_path,
+                    base_repo = base,
+                    torch_dtype = dtype,
+                    is_gguf = kind == "gguf",
+                    hf_token = hf_token,
+                )
+            else:
+                transformer = transformer_cls.from_single_file(
+                    str(checkpoint_path), **sf_kwargs
+                )
+                pipe = pipeline_cls.from_pretrained(
+                    base, transformer = transformer, **pipe_kwargs
+                )
 
         if _load_token is not None and _load_token != self._load_token:
             del pipe
