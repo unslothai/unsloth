@@ -506,6 +506,17 @@ def load_ltx23_pipeline(checkpoint_path: Path | str, *, base_repo: str, torch_dt
     groups = _split_checkpoint(state)
     del state
 
+    # The Lightricks fp8 single files store SCALED float8 weights (per-tensor
+    # .weight_scale/.input_scale companions). Casting those without applying the
+    # scales silently corrupts every quantized layer, so refuse loudly. GGUF
+    # Q8_0 offers comparable fidelity at similar size through the supported path.
+    if any(k.endswith((".weight_scale", ".input_scale")) for k in groups["dit"]):
+        raise ValueError(
+            "This LTX checkpoint stores scaled fp8 weights, which this loader does "
+            "not dequantize yet. Use the GGUF quants from unsloth/LTX-2.3-GGUF "
+            "instead (Q8_0 for the highest fidelity) or the official bf16 checkpoint."
+        )
+
     transformer = load_ltx23_transformer(
         groups["dit"], base_repo = base_repo, torch_dtype = torch_dtype,
         is_gguf = is_gguf, hf_token = hf_token,
