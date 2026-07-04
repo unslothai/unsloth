@@ -714,9 +714,7 @@ class TestMistralLiteralInsideLeadingJson:
 
     def test_outer_json_call_wins_over_mistral_literal(self):
         text = '{"name": "python", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
-        calls = parse_tool_calls_from_text(
-            text, enabled_tool_names = {"python", "web_search"}
-        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"})
         assert [c["function"]["name"] for c in calls] == ["python"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "[TOOL_CALLS]web_search{}"
