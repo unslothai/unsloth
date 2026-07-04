@@ -486,17 +486,27 @@ def run_dit_lora_training(
     should_stop: Optional[StopCb] = None,
 ) -> str:
     """Train a flow-matching DiT LoRA (FLUX.1-dev / Qwen-Image / Z-Image) and export it."""
+    cfg = config.normalized()
+    spec = _SPECS.get(cfg.resolved_family)
+    if spec is None:
+        raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
+
+    # DiT families train in bf16 (Z-Image/Qwen require it; FLUX prefers it). A caller that
+    # explicitly asks for fp16 on a bf16-only family is refused rather than silently
+    # upgraded, so the choice is never misrepresented. Validation runs before the heavy
+    # imports so a host without diffusers still sees the real error.
+    if cfg.mixed_precision == "fp16" and spec.force_bf16:
+        raise ValueError(
+            f"{spec.family} LoRA training requires bf16: fp16 overflows its fp32 RoPE / "
+            f"embedder internals. Set mixed precision to bf16."
+        )
+
     import torch
     import torch.nn.functional as F
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.training_utils import cast_training_params
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
-
-    cfg = config.normalized()
-    spec = _SPECS.get(cfg.resolved_family)
-    if spec is None:
-        raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
 
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
@@ -513,15 +523,6 @@ def run_dit_lora_training(
         if isinstance(sig, dict) and sig.get("save") is False:
             save_on_stop = False
         return True
-
-    # DiT families train in bf16 (Z-Image/Qwen require it; FLUX prefers it). A caller that
-    # explicitly asks for fp16 on a bf16-only family is refused rather than silently
-    # upgraded, so the choice is never misrepresented.
-    if cfg.mixed_precision == "fp16" and spec.force_bf16:
-        raise ValueError(
-            f"{spec.family} LoRA training requires bf16: fp16 overflows its fp32 RoPE / "
-            f"embedder internals. Set mixed precision to bf16."
-        )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, which is
@@ -639,8 +640,11 @@ def run_dit_lora_training(
             (loss / cfg.gradient_accumulation_steps).backward()
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
 
+        grad_norm: Optional[float] = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm)
+            # clip_grad_norm_ returns the PRE-clip total norm: the signal the grad-norm
+            # chart wants (spikes stay visible even when clipping flattens the update).
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         optimizer.step()
 
         running_loss += step_loss
@@ -661,6 +665,7 @@ def run_dit_lora_training(
                 loss = round(step_loss, 5),
                 avg_loss = round(running_loss / done, 5),
                 learning_rate = cfg.learning_rate,
+                grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
                 samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,
             )

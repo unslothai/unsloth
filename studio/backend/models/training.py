@@ -734,12 +734,14 @@ class DiffusionTrainingStartResponse(BaseModel):
 
 
 class DiffusionMetricHistory(BaseModel):
-    """Paired step-indexed history arrays for the live training charts. ``lr`` entries may
-    be null so a sparse learning-rate series still aligns with ``steps`` by index."""
+    """Paired step-indexed history arrays for the live training charts. ``lr`` and
+    ``grad_norm`` entries may be null so those sparse series still align with ``steps``
+    by index."""
 
     steps: List[int] = Field(default_factory = list)
     loss: List[float] = Field(default_factory = list)
     lr: List[Optional[float]] = Field(default_factory = list)
+    grad_norm: List[Optional[float]] = Field(default_factory = list)
 
 
 class DiffusionTrainingStatusResponse(BaseModel):
@@ -754,6 +756,9 @@ class DiffusionTrainingStatusResponse(BaseModel):
     loss: Optional[float] = None
     avg_loss: Optional[float] = None
     learning_rate: Optional[float] = None
+    # Pre-clip gradient norm from the trainer's progress events (None when clipping is
+    # disabled), feeding the grad-norm chart.
+    grad_norm: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
     output_dir: Optional[str] = None
