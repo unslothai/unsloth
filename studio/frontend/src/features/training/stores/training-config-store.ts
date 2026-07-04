@@ -1029,9 +1029,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             useHfTokenStore.getState().setToken(legacyToken);
           }
           delete s.hfToken;
-          s.contextLengthManuallySet =
-            typeof s.contextLength === "number" &&
-            s.contextLength !== DEFAULT_HYPERPARAMS.contextLength;
+          s.contextLengthManuallySet = false;
         }
         return s as unknown as TrainingConfigStore;
       },
