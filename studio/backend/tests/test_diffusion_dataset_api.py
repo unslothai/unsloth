@@ -64,8 +64,10 @@ def test_list_images_caption_precedence(client, ds_root):
     # a.png -> sidecar (an explicit edit beats the metadata row), b.png -> metadata-only,
     # c.png -> none.
     (folder / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n"
-        + json.dumps({"file_name": "b.png", "text": "from metadata"}) + "\n",
+        json.dumps({"file_name": "a.png", "text": "from metadata"})
+        + "\n"
+        + json.dumps({"file_name": "b.png", "text": "from metadata"})
+        + "\n",
         encoding = "utf-8",
     )
     (folder / "a.txt").write_text("edited sidecar", encoding = "utf-8")
