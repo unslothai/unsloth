@@ -18,6 +18,7 @@ runs a scripted target on a thread.
 from __future__ import annotations
 
 import json
+import math
 import multiprocessing as mp
 import re
 import threading
@@ -32,6 +33,21 @@ _CTX = mp.get_context("spawn")
 
 # Terminal event types after which the pump stops.
 _TERMINAL = ("complete", "error")
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    """Coerce a numeric progress field to a finite float, or None. A divergent run (or a
+    grad clip that returns inf) can push loss / grad_norm to NaN or +/-Infinity, and those
+    are invalid in strict JSON -- FastAPI's encoder would emit the JS-only NaN/Infinity
+    tokens that break a strict client parse. Nulling them here (the single service ingestion
+    point both trainers feed) keeps every status snapshot and persisted record JSON-safe."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -157,21 +173,14 @@ def _append_metric(
         return
     if istep <= 0 or loss is None:
         return
-    try:
-        floss = float(loss)
-    except (TypeError, ValueError):
+    floss = _finite_or_none(loss)
+    if floss is None:  # non-numeric or non-finite (NaN/Inf): skip, keep the curve JSON-safe
         return
-    if floss != floss:  # NaN guard
-        return
-
-    def _opt_float(v: Any) -> Optional[float]:
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    flr = _opt_float(lr)
-    fgn = _opt_float(grad_norm)
+    # lr / grad_norm may be None (sparse series) or non-finite; non-finite values are
+    # nulled, not dropped, so a bad point never taints the (loss-driven) history while the
+    # arrays stay index-aligned with steps.
+    flr = _finite_or_none(lr)
+    fgn = _finite_or_none(grad_norm)
     steps = state["metric_steps"]
     losses = state["metric_loss"]
     lrs = state["metric_lr"]
@@ -431,14 +440,25 @@ class DiffusionTrainingService:
                 # training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
             elif etype == "progress":
+                # Null any non-finite float (NaN/Inf from a divergent step or an inf grad
+                # norm) so the JSON status stays strict-parseable; a missing key keeps the
+                # last value, a present-but-non-finite one becomes None.
+                loss = _finite_or_none(ev["loss"]) if "loss" in ev else s["loss"]
+                avg_loss = _finite_or_none(ev["avg_loss"]) if "avg_loss" in ev else s["avg_loss"]
+                learning_rate = (
+                    _finite_or_none(ev["learning_rate"])
+                    if "learning_rate" in ev
+                    else s["learning_rate"]
+                )
+                grad_norm = _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
                     total_steps = ev.get("total_steps", s["total_steps"]),
-                    loss = ev.get("loss", s["loss"]),
-                    avg_loss = ev.get("avg_loss", s["avg_loss"]),
-                    learning_rate = ev.get("learning_rate", s["learning_rate"]),
-                    grad_norm = ev.get("grad_norm", s["grad_norm"]),
+                    loss = loss,
+                    avg_loss = avg_loss,
+                    learning_rate = learning_rate,
+                    grad_norm = grad_norm,
                     message = "Training...",
                 )
                 # Fold optional perf fields (emitted by the trainers) so the UI can show

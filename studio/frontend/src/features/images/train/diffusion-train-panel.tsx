@@ -92,6 +92,21 @@ const FAMILY_PRESETS: FamilyPreset[] = [
 
 const CUSTOM_BASE = "__custom__";
 const UPLOAD_DATASET = "__upload__";
+// The dense DiT base precisions: they load a dense (bf16) base and quantise/cast it, so the
+// backend rejects them for an already-quantised bnb-4bit repo. "nf4"/"auto" stay valid.
+const DENSE_PRECISIONS = new Set(["bf16", "int8", "fp8", "mxfp8"]);
+// Mirror the backend's repo_is_prequantized heuristic: a repo whose name marks a
+// bitsandbytes 4-bit build already ships a quantised transformer and cannot serve the dense
+// base precisions. Kept in sync with diffusion_train_common.repo_is_prequantized.
+function repoIsPrequantized(baseModel: string): boolean {
+  const name = baseModel.toLowerCase();
+  return (
+    name.includes("bnb-4bit") ||
+    name.includes("-4bit") ||
+    name.includes("int4") ||
+    name.includes("nf4")
+  );
+}
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
 const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
@@ -377,6 +392,16 @@ export function DiffusionTrainPanel({
     }
   }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
 
+  // mixed_precision is an SDXL-only lever (its UI control is hidden for DiT families). A
+  // dense DiT base precision (bf16/int8/fp8) requires bf16 compute, and every DiT family
+  // trains in bf16, so reset precision to bf16 when the family changes to a DiT. Without
+  // this, an fp16/no value left over from SDXL rides along in the DiT start payload and the
+  // backend rejects it (dense modes need mixed_precision=bf16). Kept in its own effect so it
+  // does not re-trigger the base/settings reseed above.
+  useEffect(() => {
+    if (isDiT) setPrecision("bf16");
+  }, [isDiT]);
+
   // The base actually used everywhere (request, deploy, select value). baseChoice can
   // briefly hold another family's repo between a family switch and the reseed effect
   // (or if that effect is skipped); a raw <select value> would then DISPLAY the first
@@ -386,6 +411,22 @@ export function DiffusionTrainPanel({
     baseChoice === CUSTOM_BASE || (family?.base_repos ?? []).includes(baseChoice)
       ? baseChoice
       : family?.base_repos[0] ?? CUSTOM_BASE;
+
+  // The resolved base repo/path the request will carry, and whether it looks prequantized
+  // (bnb-4bit etc.). The dense base precisions are invalid for such a repo, so we gate them.
+  const resolvedBase = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
+  const basePrequantized = isDiT && repoIsPrequantized(resolvedBase);
+
+  // A prequantized base cannot serve the dense precisions; auto-flip a dense selection back
+  // to "auto" (which resolves to nf4 for such a repo) so the run does not fail at the backend
+  // validator. Reuses the precisionDirty ref so a later family change still re-seeds from the
+  // recommendation. The dense options are also disabled in the select below.
+  useEffect(() => {
+    if (basePrequantized && DENSE_PRECISIONS.has(basePrecision)) {
+      precisionDirty.current = false;
+      setBasePrecision("auto");
+    }
+  }, [basePrequantized, basePrecision]);
 
   const poll = useCallback(async () => {
     try {
@@ -436,7 +477,11 @@ export function DiffusionTrainPanel({
   );
 
   // Notify the parent exactly once per run that produced an adapter (full completion or
-  // stop-and-save) so it rescans the LoRA picker.
+  // stop-and-save) so it rescans the LoRA picker. The flag is re-armed both here (when a
+  // new run is observed as "running") and in onStart (the moment a start is requested), so
+  // a second run still notifies even if the poll never catches the intermediate "running"
+  // state; onStart also guards the double-fire when the poll re-observes the same terminal
+  // status before the new run has begun.
   const notifiedComplete = useRef(false);
   useEffect(() => {
     const producedAdapter =
@@ -580,6 +625,10 @@ export function DiffusionTrainPanel({
     // read-time clamp (running && stopRequestedLocal) re-arms the moment the new run goes
     // active, rendering a permanently disabled "Stopping..." button.
     setStopRequestedLocal(false);
+    // Re-arm the completion notification for this run. Resetting here (not only when the
+    // poll later sees "running") means a second run still notifies even if its "running"
+    // phase is never observed, and prevents the prior run's terminal status re-firing it.
+    notifiedComplete.current = false;
     // A history view must not shadow the new live run.
     setViewRun(null);
     try {
@@ -824,7 +873,11 @@ export function DiffusionTrainPanel({
               aria-label="Base precision"
             >
               {precisionModes.map((m) => (
-                <option key={m} value={m}>
+                <option
+                  key={m}
+                  value={m}
+                  disabled={basePrequantized && DENSE_PRECISIONS.has(m)}
+                >
                   {precisionLabel(m)}
                 </option>
               ))}
@@ -833,6 +886,13 @@ export function DiffusionTrainPanel({
               How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
               bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
               mode.
+              {basePrequantized && (
+                <>
+                  {" "}
+                  This base is already 4-bit quantised, so only nf4/auto apply; pick a dense
+                  (bf16) base repo for the other modes.
+                </>
+              )}
             </p>
           </div>
         ) : (
