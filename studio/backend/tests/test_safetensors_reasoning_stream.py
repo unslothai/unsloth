@@ -3,15 +3,9 @@
 
 """Safetensors/MLX reasoning-block parity with GGUF.
 
-enable_thinking templates (Qwen3/Qwen3.5/GLM) prefill an unclosed ``<think>`` in
-the generation prompt, so the model emits only the closing ``</think>`` then the
-answer. The safetensors chat stream must split that leading text into
-``reasoning_content`` deltas (so the UI renders the collapsible thinking block),
-exactly like the GGUF path, on both the plain stream and the tool loop, resetting
-per tool-loop turn and appending ONLY the visible text to the monitor reply.
-
-This replays a faithful copy of the ``sf_tool_stream`` reasoning loop from
-studio/backend/routes/inference.py against synthetic tool-loop events.
+enable_thinking templates prefill an unclosed ``<think>``, so the stream must split the leading
+text into ``reasoning_content`` deltas (per turn, monitor gets visible text only). Replays a copy
+of ``sf_tool_stream``'s reasoning loop from routes/inference.py against synthetic events.
 """
 
 from __future__ import annotations
@@ -25,19 +19,14 @@ if _BACKEND_DIR not in sys.path:
 
 from routes.inference import (
     _ResponsesReasoningExtractor,
+    _sf_reasoning_prefill_mode,
     _strip_tool_xml_for_display,
 )
 
 
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
-    """Mirror routes.inference.sf_tool_stream's reasoning loop.
-
-    Diff each cumulative ``content`` snapshot against ``prev_text``; feed the
-    delta through the extractor; collect reasoning vs visible deltas. Reset the
-    (prefilled) extractor and cursor on ``tool_start`` and empty ``status`` --
-    flushing first -- so each assistant turn splits independently. The monitor
-    reply receives only visible text.
-    """
+    """Mirror sf_tool_stream's reasoning loop: diff each cumulative snapshot, feed the delta through
+    the extractor, and reset (flushing first) on ``tool_start`` / empty ``status`` so turns split independently."""
     prev_text = ""
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = True, reasoning_prefilled = prefilled
@@ -161,3 +150,38 @@ def test_s5_thinking_off_no_reasoning_deltas():
     assert out["reasoning"] == ""
     assert out["visible"] == "Just the plain answer, no thinking."
     assert out["monitor"] == "Just the plain answer, no thinking."
+
+
+_THINK_TPL = "...{% if enable_thinking %}<think>{% endif %}...</think>..."
+
+
+def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
+    # GLM-5.2-style enable_thinking_effort: a request with reasoning_effort="none" (and
+    # enable_thinking omitted) disables thinking exactly like enable_thinking=False, so
+    # prefilled mode must be OFF. Otherwise the model emits no </think> and a plain
+    # answer is swallowed whole into reasoning_content, leaving the visible response
+    # empty (the exact bug: prefilled=True below eats the whole answer).
+    feats = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
+    assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "none") is False
+    # Thinking on (effort level or default) still prefills.
+    assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "high") is True
+    assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, None) is True
+    # An explicit enable_thinking=False also disables (unchanged).
+    assert _sf_reasoning_prefill_mode(feats, False, _THINK_TPL, "high") is False
+    # reasoning_always_on wins regardless of reasoning_effort.
+    always = {**feats, "reasoning_always_on": True}
+    assert _sf_reasoning_prefill_mode(always, None, _THINK_TPL, "none") is True
+    # Plain enable_thinking models (Qwen) have no "none" sentinel; unaffected.
+    plain = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
+    assert _sf_reasoning_prefill_mode(plain, None, _THINK_TPL, "none") is True
+
+    # End-to-end: with the corrected prefilled=False, a plain no-</think> answer is
+    # emitted as visible content rather than swallowed into the thinking drawer.
+    events = [{"type": "content", "text": "The capital of France is Paris."}]
+    out = _replay_sf_reasoning_stream(events, prefilled = False)
+    assert out["visible"] == "The capital of France is Paris."
+    assert out["reasoning"] == ""
+    # The buggy prefilled=True path is what swallowed the whole answer (guard the delta).
+    swallowed = _replay_sf_reasoning_stream(events, prefilled = True)
+    assert swallowed["visible"] == ""
+    assert swallowed["reasoning"] == "The capital of France is Paris."

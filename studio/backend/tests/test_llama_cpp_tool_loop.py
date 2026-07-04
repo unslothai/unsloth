@@ -1040,9 +1040,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     """No-tool re-prompt attempts should not concatenate into the UI."""
 
-    # One initial response plus one stream per re-prompt attempt. The cap is
-    # shared with the safetensors backend, so derive the count from it rather
-    # than hard-coding it.
+    # One initial response plus one stream per re-prompt; derive the count from the shared cap.
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
     streams += [
         [_sse({"content": "Understood. I will use render_html now."}), _done()]
@@ -1209,10 +1207,8 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
 
 
 def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch):
-    # A textual Mistral ``[TOOL_CALLS]`` call sharing a chunk with visible preface
-    # exercises the DRAINING streaming flush. The flush must use the shared parser
-    # patterns (which know ``[TOOL_CALLS]``); the legacy tool_healing set did not,
-    # so the marker (and args) leaked to OpenAI streaming clients.
+    # Textual Mistral ``[TOOL_CALLS]`` inline with visible preface: the DRAINING flush must use the
+    # shared parser patterns (which know ``[TOOL_CALLS]``); the legacy set leaked the marker to clients.
     streams = [
         [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
         [_sse({"content": "done"}), _done()],
@@ -2312,11 +2308,8 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     tool-call budget. A model that makes a valid tool call every turn must stop after
     ``max_tool_iterations`` executed rounds, then get the final-answer nudge -- not run
     ``max_tool_iterations + _MAX_REPROMPTS`` tool rounds."""
-    # Far more valid tool-call streams than the budget. If the reserved re-prompt slots
-    # leaked into the tool budget (the bug), the loop would execute up to
-    # ``max_tool_iterations + _MAX_REPROMPTS`` (2 + 3 = 5) rounds; honouring the budget
-    # stops after 2. The third request is the tool-less final-answer pass (it consumes a
-    # tool-call stream, which it ignores since no tools are offered on the final pass).
+    # More tool-call streams than the budget: if re-prompt slots leaked into the budget (the bug) the
+    # loop would run 2+3=5 rounds; honouring it stops after 2, then a tool-less final-answer pass.
     streams = [
         _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
     ]

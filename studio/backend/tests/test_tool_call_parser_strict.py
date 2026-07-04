@@ -71,6 +71,28 @@ class TestFunctionStyleTrailingText:
         call = _only(text)
         assert call == {"name": "python", "arguments": {"code": 'print("</function>")'}}
 
+    def test_closed_function_with_trailing_prose_heal_path(self):
+        # Regression: the heal / finalize path (allow_incomplete=True) used to fold
+        # </parameter></function> and the trailing prose into the argument and drop
+        # the prose from visible content. It must now match the strict path -- keep a
+        # clean argument and leave the trailing prose outside the call span.
+        text = "<function=web_search><parameter=query>cats</parameter></function> trailing words"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        fn = calls[0]["function"]
+        assert fn["name"] == "web_search"
+        assert json.loads(fn["arguments"]) == {"query": "cats"}
+        # The trailing prose sits outside the removed span, so it stays visible.
+        from core.tool_healing import (
+            parse_tool_calls_from_text as _parse_with_spans,
+        )
+
+        _calls, spans = _parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        out = text
+        for s, e in sorted(spans, reverse = True):
+            out = out[:s] + out[e:]
+        assert out == " trailing words"
+
     def test_incomplete_function_without_close_is_still_rejected(self):
         text = "<function=web_search><parameter=query>weather london"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
@@ -211,6 +233,43 @@ class TestHealingPathUnaffected:
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
 
+    def test_closed_function_call_keeps_trailing_prose_out_of_arguments(self):
+        # allow_incomplete exists for truncated output; a call that DID close
+        # must parse identically to strict mode, leaving prose after
+        # </function> out of the last parameter and out of the removal span.
+        from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+        text = "<function=web_search><parameter=query>cats</parameter></function> trailing"
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert json.loads(call["function"]["arguments"]) == {"query": "cats"}
+        (span,) = spans
+        assert text[span[0] : span[1]] == (
+            "<function=web_search><parameter=query>cats</parameter></function>"
+        )
+
+    def test_wrapperless_fallback_calls_carry_spans(self):
+        # The wrapperless function-XML fallback must report spans too, so
+        # with_spans consumers (passthrough healing) strip exactly the promoted
+        # markup: through </function> when closed, to the scanned end when healed.
+        from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+        closed = "before <function=web_search><parameter=query>cats</parameter></function> after"
+        calls, spans = parse_with_spans(closed, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert json.loads(call["function"]["arguments"]) == {"query": "cats"}
+        (span,) = spans
+        assert closed[span[0] : span[1]] == (
+            "<function=web_search><parameter=query>cats</parameter></function>"
+        )
+
+        healed = "x <function=web_search><parameter=query>dogs"
+        calls, spans = parse_with_spans(healed, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert json.loads(call["function"]["arguments"]) == {"query": "dogs"}
+        (span,) = spans
+        assert healed[span[0] : span[1]] == "<function=web_search><parameter=query>dogs"
+
 
 class TestGlmStrict:
     def test_closed_glm_call_is_accepted(self):
@@ -257,9 +316,7 @@ class TestKimiStrict:
 
 
 class TestParserLinearity:
-    """The Llama-3 ``.call`` kwargs and Mistral-array healing paths must stay
-    linear: both formerly ran a regex per offset and blew up (tens of seconds)
-    on a long truncated body reachable from the agentic loop."""
+    """Llama-3 ``.call`` kwargs and Mistral-array healing must stay linear (a regex-per-offset blew up on long truncated bodies)."""
 
     def test_llama3_unterminated_call_arg_is_linear(self):
         import time
@@ -322,9 +379,7 @@ class TestParserLinearity:
         }
 
     def test_llama3_call_scientific_notation_args_parse(self):
-        # The numeric kwarg regex matched only the mantissa, so scientific notation
-        # was truncated to its leading digits (1e-3 -> 1) and the call executed with
-        # the wrong value. Exponent and decimal forms must decode as float.
+        # Scientific notation must decode as float (the old regex truncated 1e-3 -> 1).
         text = "<|python_tag|>calc.call(x=1e-3, y=-2E+4, z=0.5e2, n=42)"
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
@@ -353,10 +408,8 @@ class TestLlamaBuiltinChainAndNesting:
         assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
 
     def test_nested_python_tag_in_json_string_arg_is_not_a_call(self):
-        # The custom JSON form carries a code arg that literally contains a
-        # <|python_tag|>...call(...) string. The real call is the outer "python",
-        # not the nested "os" -- the built-in scan must stay anchored to the first
-        # tag and let the JSON parser win.
+        # A code arg literally containing a <|python_tag|>...call(...) string: the real call is the
+        # outer "python", not the nested "os" -- the scan stays anchored to the first tag.
         text = (
             '<|python_tag|>{"name":"python","parameters":'
             '{"code":"<|python_tag|>os.call(\'rm -rf /\')"}}'
@@ -532,9 +585,8 @@ def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
 def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
     from core.inference.tool_call_parser import strip_tool_markup
 
-    # The parser uses the LAST </function>; the strip must too, so a literal
-    # </function> inside a parameter value does not truncate the strip and leak the
-    # tail. Separate calls must still be stripped independently.
+    # The strip uses the LAST </function> (like the parser) so a literal </function> in a value doesn't
+    # truncate it; separate calls still strip independently.
     text = '<function=python><parameter=code>print("</function>")</parameter></function> done'
     assert strip_tool_markup(text, final = True) == "done"
     two = (
@@ -547,10 +599,8 @@ def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
 def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
     from core.inference.tool_call_parser import parse_tool_calls_from_text, strip_tool_markup
 
-    # A literal ``<function=x>`` OPENER inside a parameter value is data, not a new
-    # call (the parser ignores it via _inside_open_parameter). The strip must do the
-    # same: a regex negative-lookahead stopped at the nested opener and the
-    # unclosed-tail arm then ate the trailing prose. Scan-based strip keeps " done".
+    # A literal ``<function=x>`` opener inside a parameter value is data, not a call: the scan-based
+    # strip keeps " done" (the old negative-lookahead regex ate the trailing prose).
     text = '<function=python><parameter=code>print("<function=x>")</parameter></function> done'
     assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
     assert strip_tool_markup(text, final = True) == "done"
@@ -559,12 +609,41 @@ def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
     assert strip_tool_markup(open_text, final = False) == open_text
 
 
+def test_final_strip_removes_magistral_think_reasoning():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # Magistral emits reasoning as ``[THINK]...[/THINK]`` (bracket form, not the
+    # ``<think>`` the reasoning channel renders). At end-of-turn it must be dropped
+    # so it does not leak as raw content into the display / conversation history.
+    text = "[THINK]The user greeted me, I should say hi.[/THINK]Hello! How can I help?"
+    assert strip_tool_markup(text, final = True) == "Hello! How can I help?"
+    # A ``[TOOL_CALLS]`` living inside the reasoning goes with it.
+    with_call = '[THINK]Maybe I should search.[/THINK][TOOL_CALLS]search{"q":"x"}'
+    assert strip_tool_markup(with_call, final = True) == ""
+
+
+def test_streaming_strip_keeps_magistral_think_buffered():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # Mid-stream (final=False) the reasoning block is left intact; only the
+    # end-of-turn pass removes it.
+    text = "[THINK]still thinking"
+    assert strip_tool_markup(text, final = False) == text
+
+
+def test_final_strip_leaves_non_magistral_bracket_text_untouched():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # Only a LEADING ``[THINK]`` block is reasoning; unrelated bracketed prose stays.
+    text = "See [THINK about it] later"
+    assert strip_tool_markup(text, final = True) == "See [THINK about it] later"
+
+
 def test_strip_leading_bare_json_call_ignores_nested_name():
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
-    # A nested ``"name"`` equal to an enabled tool must NOT gate the strip: the object
-    # is an ordinary JSON answer, not a call. Both truncated and complete forms are
-    # kept verbatim. Only a TOP-LEVEL enabled name is treated as a real call.
+    # A nested ``"name"`` must NOT gate the strip (only a TOP-LEVEL enabled name is a call); the
+    # ordinary JSON answer is kept verbatim, truncated or complete.
     nested_trunc = '{"result":{"name":"web_search","age":'
     nested_full = '{"result":{"name":"web_search","age":1}}'
     assert strip_leading_bare_json_call(nested_trunc, {"web_search"}) == nested_trunc

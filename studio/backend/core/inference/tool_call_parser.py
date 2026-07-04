@@ -22,20 +22,16 @@ safetensors + MLX agentic loop sees the same call shape llama-server gives GGUF:
 Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 """
 
-# This module is dependency-light by design (external llama-server wrappers import
-# it standalone) and the package targets ``python >=3.9``. ``from __future__ import
-# annotations`` makes the PEP 604 ``X | None`` return annotations lazy strings so a
-# 3.9 import does not raise ``TypeError: unsupported operand type(s) for |``.
+# Dependency-light (external servers import it standalone); `from __future__ import
+# annotations` keeps PEP 604 `X | None` annotations lazy so python 3.9 import works.
 from __future__ import annotations
 
 import json
 import re
 from typing import Any, Optional
 
-# Qwen/Hermes, Qwen3.5 XML, and Gemma 4 are parsed by the shared
-# ``core.tool_healing`` helper (also imported by external servers), which carries
-# the strict/Auto-Heal (``allow_incomplete``) contract. This module adds the rest:
-# Llama-3 ``<|python_tag|>``, Mistral ``[TOOL_CALLS]``, Llama-3.2 bare JSON.
+# Qwen/Hermes, Qwen3.5 XML and Gemma 4 go through the shared `core.tool_healing`
+# (strict/Auto-Heal contract); this module adds Llama-3, Mistral and bare JSON.
 from core import tool_healing as _tool_healing
 
 
@@ -74,12 +70,10 @@ _DEEPSEEK_OPEN_RE_SRC = r"<｜(?:" + _DEEPSEEK_OPEN_ALT + r")｜>"
 # ``^[a-zA-Z0-9_-]{1,64}$`` so hyphenated MCP names parse like built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    # Extend to the call's REAL ``</function>`` (the last one before the next
-    # ``<function=`` opener or end), so a literal ``</function>`` inside a
-    # parameter value -- e.g. ``print("</function>")`` -- does not truncate the
-    # strip and leak the tail. Mirrors the parser's rfind-based close detection.
-    # The negative lookahead keeps the match within one call so separate calls are
-    # stripped independently (greedy ``.*`` would merge them).
+    # Extend to the call's REAL ``</function>`` (last one before the next
+    # ``<function=`` or end) so a literal ``</function>`` inside a value doesn't
+    # truncate the strip; the lookahead keeps each call separate (greedy ``.*``
+    # would merge them).
     re.compile(
         r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>'
         r'(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*'
@@ -165,18 +159,16 @@ RAG_SEARCH_CAP_NUDGE = (
 
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Qwen3.5 ``<function=name>...`` AND the attribute form
-# ``<function name="name">...`` (MiniCPM-5, MiniMax-M2). Name class ``[\w\.\-]+``
-# (hyphenated MCP / dotted names) lands in group(1) or group(2).
+# Qwen3.5 ``<function=name>`` and the attribute form ``<function name="name">``
+# (MiniCPM-5, MiniMax-M2); name class ``[\w.\-]+`` lands in group(1) or group(2).
 _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
 # Body ends at ``</tool_call>`` (Hermes) or ``</function>`` (Qwen3.5 / MiniCPM-5)
-# so it stops at the close even when prose follows; without ``</function>``,
-# trailing prose leaked into the last parameter value.
+# so it stops at the close even when prose follows (else prose leaked into args).
 _TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Trailing class is horizontal whitespace only (``[^\S\n]*``, not ``\s*``) so the
-# wrapping newline + value's first-line indentation survive; ``_trim_param_value``
-# then trims one wrapping newline, preserving code indentation (SGLang qwen3_coder).
+# Horizontal whitespace only (``[^\S\n]*``, not ``\s*``) so the wrapping newline +
+# first-line indentation survive; ``_trim_param_value`` trims one newline, preserving
+# code indentation (SGLang qwen3_coder).
 _TC_PARAM_START_RE = re.compile(
     r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>[^\S\n]*'
 )
@@ -187,20 +179,16 @@ _LLAMA3_PYTHON_TAG = "<|python_tag|>"
 _LLAMA3_PY_CALL_RE = re.compile(
     r"<\|python_tag\|>\s*([\w\.\-]+)\s*\.\s*call\s*\(",
 )
-# ``NAME.call(`` anchored at a given offset (the char after ``<|python_tag|>``), and
-# the ``; NAME.call(`` separator that chains additional built-in calls in one
-# emission. Matching from a fixed offset (not a free scan) is what keeps a literal
-# ``<|python_tag|>x.call(...)`` inside a JSON string argument from being parsed.
+# Anchored at a fixed offset (char after ``<|python_tag|>``) plus the ``; NAME.call(``
+# chain separator; fixed-offset (not a free scan) ignores ``.call(`` inside JSON args.
 _LLAMA3_PY_CALL_HEAD_RE = re.compile(r"\s*([\w\.\-]+)\s*\.\s*call\s*\(")
 _LLAMA3_CALL_CHAIN_RE = re.compile(r"\s*;\s*([\w\.\-]+)\s*\.\s*call\s*\(")
-# Llama-3 ``.call(k=v, ...)`` kwarg tokens. Scanned by hand below (not finditer)
-# to stay linear on a truncated/unterminated body; finditer retries every offset
-# of a long word run / unterminated quote (quadratic ReDoS).
+# Llama-3 ``.call(k=v)`` kwarg tokens, hand-scanned below (not finditer) to stay
+# linear on a truncated body; finditer retries every offset of a long run (ReDoS).
 _LLAMA3_KEY_RE = re.compile(r"\w+")
 _LLAMA3_WS_RE = re.compile(r"\s*")
-# Accept integers, decimals (1.5, 1., .5) and scientific notation (1e-3, -2E+4).
-# The trailing ``(?![\w.])`` stops a partial match that would truncate a token like
-# ``1.2.3`` into ``1.2`` (which would then mis-parse the remainder).
+# ints, decimals (1.5, 1., .5) and sci notation; trailing ``(?![\w.])`` stops a token
+# like ``1.2.3`` being truncated to ``1.2`` (which would mis-parse the remainder).
 _LLAMA3_NUM_RE = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])")
 _LLAMA3_LIT_RE = re.compile(r"true|false|null")
 
@@ -317,8 +305,7 @@ def _balanced_bracket_end(text: str, start: int) -> int | None:
 
 
 def _skip_mistral_call_id(text: str, pos: int) -> int:
-    """Skip an optional ``[CALL_ID]<id>`` segment (Mistral Small 3.2); returns the
-    next token pos (``[ARGS]`` / ``{``), or ``pos`` unchanged when absent."""
+    """Skip an optional ``[CALL_ID]<id>`` (Mistral Small 3.2); return the next token pos."""
     n = len(text)
     i = pos
     while i < n and text[i] in " \t\n\r":
@@ -337,10 +324,8 @@ def _skip_mistral_call_id(text: str, pos: int) -> int:
 
 
 def _strip_mistral_reasoning(content: str) -> str:
-    """Drop a leading Magistral ``[THINK]...[/THINK]`` block so a ``[TOOL_CALLS]``
-    inside the chain-of-thought is not taken as a real call (llama.cpp parses
-    reasoning separately; see test-chat.cpp). Only the leading block is removed; an
-    unclosed ``[THINK]`` (still streaming) drops everything from it onward."""
+    """Drop a leading Magistral ``[THINK]...[/THINK]`` so a ``[TOOL_CALLS]`` inside
+    reasoning is not taken as a real call; an unclosed ``[THINK]`` drops from it on."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -382,9 +367,8 @@ def _strip_mistral_closed_calls(text: str) -> str:
             if text.startswith("</s>", cursor):
                 cursor += len("</s>")
             continue
-        # Single-object shape: ``[TOOL_CALLS] { json }`` (no name, no array). The
-        # parser accepts this, so the display strip must remove it too -- otherwise
-        # the raw object leaks while the name/array shapes are stripped (asymmetry).
+        # Single-object shape ``[TOOL_CALLS] { json }`` (no name/array): the parser
+        # accepts it, so the display strip must remove it too (else it leaks).
         if i < n and text[i] == "{":
             end = _balanced_brace_end(text, i)
             if end is None:
@@ -464,18 +448,11 @@ _FUNC_CLOSE_TAG_RE = re.compile(r"</function>")
 
 
 def _strip_function_xml_calls(text: str, *, final: bool) -> str:
-    """Strip ``<function=NAME>...</function>`` (and the ``<function name="NAME">``
-    attribute form) calls, mirroring the parser instead of a regex.
-
-    A function opener that sits INSIDE another call's open ``<parameter>`` value is
-    literal data -- e.g. ``print("<function=x>")`` -- not a new call, so it must not
-    split the strip or truncate the trailing text. The regex arms used a negative
-    lookahead that stopped at any nested opener and then the unclosed-tail arm ate
-    everything to EOF (dropping real assistant prose after the call). This scan skips
-    openers found inside an open parameter (same ``_inside_open_parameter`` guard the
-    parser uses) and closes each call at its REAL ``</function>``. ``final`` also
-    removes a trailing unclosed call to EOF; otherwise an unclosed call is left
-    buffered (still streaming)."""
+    """Strip ``<function=NAME>...</function>`` (and ``<function name="NAME">``) calls
+    by mirroring the parser, not a regex: a ``<function=...>`` inside an open
+    ``<parameter>`` value is literal data, not a new call, and each call closes at its
+    REAL (last) ``</function>``. ``final`` also drops a trailing unclosed call to EOF;
+    otherwise it stays buffered (still streaming)."""
     starts = [
         m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
     ]
@@ -594,6 +571,12 @@ def strip_tool_markup(
     ``final=True`` also drops trailing unclosed runs and trims. ``enabled_tool_names``
     gates the markerless Gemma ``call:NAME{...}`` strip so a disabled/example name in
     prose is kept (mirrors the parser gate); ``None`` strips every closed call."""
+    if final:
+        # End-of-turn only: drop a leading Magistral ``[THINK]...[/THINK]`` block.
+        # Its bracket form is not the ``<think>`` the reasoning channel renders, so
+        # without this the raw reasoning leaks into the safetensors display/history
+        # (GGUF/llama.cpp routes it natively). Streaming (final=False) is untouched.
+        text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
     if final:
         text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
@@ -672,8 +655,7 @@ def parse_tool_calls_from_text(
     allow_incomplete: bool = True,
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
-    """Return OpenAI-format tool calls, trying each format and returning at the
-    first match so we never double-count.
+    """Return OpenAI-format tool calls, first-match wins so calls are never double-counted.
 
     ``allow_incomplete=True`` (default) heals truncated calls (missing close tag /
     unclosed parameter); ``False`` accepts only well-formed closed calls (trailing
@@ -1130,15 +1112,9 @@ def _parse_llama3_bare_json(
     allow_incomplete: bool = True,
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
-    """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}`` without
-    ``<|python_tag|>``. Strict (starts with ``{`` after sentinel strip; ``name``
-    non-empty; ``parameters``/``arguments`` a dict) so prose and echoes don't fire.
-
-    ``enabled_tool_names`` (when given) gates on the parsed name: a markerless
-    object is only a tool call when its ``name`` is an enabled tool. Without this an
-    ordinary JSON answer like ``{"name":"Alice","parameters":{"age":30}}`` is
-    misread as a call to a disabled tool and dropped from the visible response.
-    ``None`` keeps the name-agnostic behaviour (unrestricted mode / direct callers)."""
+    """Llama-3.2 ``custom_tools`` bare ``{"name":.., "parameters":{..}}`` (no ``<|python_tag|>``),
+    strict so prose/echoes don't fire. ``enabled_tool_names`` gates on the parsed name so an
+    ordinary JSON answer isn't misread as a call to a disabled tool; ``None`` is name-agnostic."""
     out: list[dict] = []
     stripped = strip_llama3_leading_sentinels(content)
     if not stripped.startswith("{"):
@@ -1474,16 +1450,10 @@ _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
 
 def _top_level_bare_json_name(probe: str) -> Optional[str]:
-    """Return the TOP-LEVEL call-name string value of a bare-JSON object, else None.
+    """TOP-LEVEL ``"name"`` (or ``"function"`` alias, name wins) of a bare-JSON object, else None.
 
-    The name key is ``"name"`` or its ``"function"`` alias (the parser reads
-    ``obj.get("name") or obj.get("function")``); ``"name"`` takes precedence when both
-    are present. Walks only the object's top-level keys, skipping nested objects /
-    arrays, so a nested ``"name"`` -- e.g. ``{"result":{"name":"web_search",...}}`` --
-    is never mistaken for the call name (a plain JSON answer must not be gated as a
-    call just because a nested field matches a tool). Tolerates a truncated tail: if a
-    top-level value is cut off before a top-level name is reached, returns None so the
-    caller keeps the text rather than dropping it."""
+    Skips nested objects/arrays so a nested ``"name"`` isn't mistaken for the call name; a
+    truncated tail returns None so the caller keeps the text."""
     if not probe.startswith("{"):
         return None
     decoder = json.JSONDecoder()
@@ -1555,19 +1525,10 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Remove a leading (optionally sentinel-prefixed) bare-JSON tool call
-    ``{"name":..,"parameters":..}`` from ``text``.
-
-    ``strip_tool_markup`` only knows XML/bracket markup, so the Llama-3.2
-    ``custom_tools`` bare-JSON form survives it and would otherwise leak into the
-    visible stream or the next-turn assistant content. Returns ``text`` unchanged
-    when it is not such a call (no leading ``{`` or no ``"name"`` key), so a plain
-    JSON answer survives. A truncated call (no closing brace) collapses to ``""``;
-    a complete one is dropped and any trailing prose is kept.
-
-    ``enabled_tool_names`` gates the strip the same way the parser gates parsing: a
-    markerless object whose ``name`` is not an enabled tool is an ordinary JSON
-    answer and must be kept, not suppressed. ``None`` keeps the prior behaviour."""
+    """Remove a leading (optionally sentinel-prefixed) Llama-3.2 bare-JSON call that
+    ``strip_tool_markup`` (XML/bracket only) misses. Non-call text is returned unchanged;
+    a truncated call collapses to ``""``. ``enabled_tool_names`` gates the strip like the
+    parser: a name not in it stays as an ordinary JSON answer (``None`` keeps prior behaviour)."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
         return text

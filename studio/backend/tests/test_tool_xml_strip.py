@@ -98,9 +98,8 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
 
 
 def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
-    # _TOOL_XML_RE has no [TOOL_CALLS] arm; the display helper must delegate to
-    # _strip_tool_xml so the Mistral balanced-brace strip runs (a non-greedy
-    # \{.*?\} would truncate the nested JSON at the first }).
+    # _TOOL_XML_RE has no [TOOL_CALLS] arm, so the helper delegates to _strip_tool_xml for the Mistral
+    # balanced-brace strip (a non-greedy \{.*?\} would truncate nested JSON).
     text = 'ok [TOOL_CALLS]web_search{"filters":{"date":"2024"},"query":"cats"} tail'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
@@ -136,9 +135,8 @@ def test_strips_function_only_well_formed():
 
 
 def test_strips_function_attribute_form():
-    # MiniCPM-5 / MiniMax-M2 emit the attribute form ``<function name="...">``;
-    # the parser handles it (_parse_function_xml) but it previously leaked past
-    # the route strip into the UI. A dotted/hyphenated name must also strip.
+    # Attribute form ``<function name="...">`` (MiniCPM-5 / MiniMax-M2) must strip from the route too
+    # (it previously leaked into the UI); a dotted/hyphenated name also strips.
     text = (
         'Sure.\n<function name="get_weather">\n'
         "<parameter=city>\nSydney\n</parameter>\n</function>\nDone."
@@ -405,6 +403,7 @@ def test_strips_bare_kimi_call_without_section_wrapper():
 # ── Llama-3 <|python_tag|> arm bounds on REAL sentinels only ──────
 
 
+# Llama-3 <|python_tag|> arm bounds on REAL sentinels only
 def test_python_tag_strip_consumes_literal_sentinel_in_arg():
     # A <|python_tag|> tool call whose JSON argument carries a literal <|...|>
     # token (here <|cite|>) must be stripped whole. The old `<(?!\|)` arm stopped
@@ -476,9 +475,8 @@ def test_route_strip_removes_param_alias_close_tag():
 
 
 def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
-    # A literal <function=...></function> inside a parameter value must not truncate
-    # the strip: the route now runs the parser's guarded function-XML scan
-    # (_inside_open_parameter) before the regex, matching the core strip.
+    # A literal <function=...></function> in a value must not truncate the strip: the route runs the
+    # parser's guarded function-XML scan before the regex, matching the core strip.
     text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
 

@@ -21,7 +21,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.inference.tool_call_parser import (
+    _gemma_parse_value,
+    parse_tool_calls_from_text,
+)
 
 
 def _args(call: dict) -> dict:
@@ -46,9 +49,7 @@ def test_normal_multi_key_arguments_still_split():
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
-    # An empty bare value (``{query:}``) must serialise as ``""`` so json.loads
-    # sees ``{"query":""}``; emitting bare ``{"query":}`` is invalid JSON and
-    # silently dropped the whole call.
+    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
     calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}
@@ -222,3 +223,45 @@ def test_gemma_parse_array_advances_on_stray_brace():
     items, end, closed = _gemma_parse_array("[a,}]", 0)
     assert end == 5 and closed is True  # consumed through the closing ']'
     assert items[0] == "a"
+
+
+def test_gemma_parse_value_always_advances_on_stray_delimiter():
+    # A stray delimiter (`,`, `}`, `]`) at the primitive position consumes no
+    # characters. The parser must still advance the index by at least one, or a
+    # caller that loops on the returned index spins forever at 100% CPU (DoS).
+    for delim in (",", "}", "]"):
+        text = delim + "rest"
+        value, nxt, _explicit = _gemma_parse_value(text, 0)
+        assert nxt > 0, (delim, value, nxt)
+
+
+def test_malformed_gemma_array_does_not_hang():
+    # ``[},]`` puts a stray ``}`` at the primitive position inside a list body.
+    # On the buggy parser this hangs the server; guard with a wall-clock timeout
+    # so the regression fails loudly instead of blocking CI forever.
+    import threading
+
+    result: dict = {}
+
+    def _run():
+        result["calls"] = parse_tool_calls_from_text("<|tool_call>call:f{a:[},]}<tool_call|>")
+
+    t = threading.Thread(target = _run, daemon = True)
+    t.start()
+    t.join(timeout = 10.0)
+    assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed array input"
+
+
+def test_malformed_gemma_mapping_value_does_not_hang():
+    # A stray ``}`` where a mapping value is expected must also terminate.
+    import threading
+
+    result: dict = {}
+
+    def _run():
+        result["calls"] = parse_tool_calls_from_text("<|tool_call>call:f{a:}},b:1}<tool_call|>")
+
+    t = threading.Thread(target = _run, daemon = True)
+    t.start()
+    t.join(timeout = 10.0)
+    assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"

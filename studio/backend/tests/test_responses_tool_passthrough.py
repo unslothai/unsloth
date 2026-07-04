@@ -1990,13 +1990,8 @@ class TestTranslatedMessagesValidate:
             ChatMessage(**m.model_dump(exclude_none = True))
 
 
-# =====================================================================
-# reasoning_prefilled mode -- Qwen3/GLM enable_thinking templates prefill an
-# unclosed <think> in the prompt, so generation begins inside the think block
-# and emits only the closing </think>. The extractor must start in reasoning.
-# =====================================================================
-
-
+# reasoning_prefilled mode: Qwen3/GLM enable_thinking templates prefill an unclosed <think>, so
+# generation begins inside the think block and emits only the closing </think>; the extractor starts in reasoning.
 class TestReasoningPrefilledExtractor:
     def test_prefilled_single_feed_splits_lone_close(self):
         # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
@@ -2113,3 +2108,177 @@ class TestReasoningPrefilledExtractor:
         )
         assert reasoning == ""
         assert visible == "just an answer"
+
+
+# =====================================================================
+# Streaming passthrough healing — text-form calls promoted in order
+# =====================================================================
+
+
+class TestResponsesStreamHealing:
+    """Route-level healing on the /v1/responses stream: text-form tool calls
+    are promoted through the same per-call item state machinery as structured
+    deltas, and healer events keep their order (text around a healed call must
+    not move relative to the function_call item)."""
+
+    _XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+    _TOOL = {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+
+    @staticmethod
+    def _ordered_events(lines):
+        events = []
+        for line in lines:
+            if not line.startswith("event: "):
+                continue
+            name, _, rest = line.partition("\n")
+            payload = json.loads(rest.split("data: ", 1)[1].strip())
+            events.append((name[len("event: ") :], payload))
+        return events
+
+    def _run_stream(self, monkeypatch, content, **payload_kwargs):
+        TestResponsesStreamAdapter._install_stream_mock(
+            monkeypatch, [{"choices": [{"delta": {"content": content}}]}]
+        )
+        payload = ResponsesRequest(input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+
+        return self._ordered_events(asyncio.run(run()))
+
+    def test_text_around_healed_call_keeps_order(self, monkeypatch):
+        events = self._run_stream(monkeypatch, f"before {self._XML} after.")
+        pos_before = pos_item = pos_after = None
+        for i, (name, payload) in enumerate(events):
+            if name == "response.output_text.delta":
+                if "before" in payload["delta"] and pos_before is None:
+                    pos_before = i
+                if "after" in payload["delta"]:
+                    pos_after = i
+            if (
+                name == "response.output_item.added"
+                and payload["item"]["type"] == "function_call"
+                and pos_item is None
+            ):
+                pos_item = i
+                assert payload["item"]["name"] == "lookup"
+        assert pos_before is not None and pos_item is not None and pos_after is not None
+        assert pos_before < pos_item < pos_after
+
+    def test_call_before_trailing_text_claims_lower_output_index(self, monkeypatch):
+        events = self._run_stream(monkeypatch, f"{self._XML} done.")
+        item_added = [
+            (name, payload) for name, payload in events if name == "response.output_item.added"
+        ]
+        # The call came first in the model output, so its item is added first
+        # and claims the lower output_index; the trailing text's message item
+        # follows.
+        assert [payload["item"]["type"] for _, payload in item_added] == [
+            "function_call",
+            "message",
+        ]
+        call_idx = item_added[0][1]["output_index"]
+        msg_idx = item_added[1][1]["output_index"]
+        assert call_idx < msg_idx
+        text = "".join(
+            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+        )
+        assert "done." in text
+        assert "<tool_call>" not in text
+
+    def test_tool_choice_none_streams_raw_text(self, monkeypatch):
+        events = self._run_stream(monkeypatch, self._XML, tool_choice = "none")
+        assert not any(
+            payload["item"]["type"] == "function_call"
+            for name, payload in events
+            if name == "response.output_item.added"
+        )
+        text = "".join(
+            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+        )
+        assert text == self._XML
+
+    def test_healed_call_splits_message_items(self, monkeypatch):
+        # Text on both sides of a healed call becomes TWO message items: the
+        # healed function_call closes the first, trailing text opens a fresh
+        # one with a later output index (native Responses stream shape).
+        events = self._run_stream(monkeypatch, f"before {self._XML} after.")
+        added = [
+            (payload["output_index"], payload["item"]["type"], payload["item"].get("id"))
+            for name, payload in events
+            if name == "response.output_item.added"
+        ]
+        assert [item_type for _, item_type, _ in added] == [
+            "message",
+            "function_call",
+            "message",
+        ]
+        assert [idx for idx, _, _ in added] == sorted(idx for idx, _, _ in added)
+        assert added[0][2] != added[2][2]  # distinct message item ids
+        # Text deltas attribute to their OWN message item.
+        deltas = [
+            (payload["item_id"], payload["delta"])
+            for name, payload in events
+            if name == "response.output_text.delta"
+        ]
+        assert [d for i, d in deltas if i == added[0][2]] == ["before "]
+        assert [d for i, d in deltas if i == added[2][2]] == [" after."]
+        # The completed snapshot lists all three items with per-item text.
+        completed = [payload for name, payload in events if name == "response.completed"]
+        output = completed[0]["response"]["output"]
+        assert [item["type"] for item in output] == ["message", "function_call", "message"]
+        assert output[0]["content"][0]["text"] == "before "
+        assert output[2]["content"][0]["text"] == " after."
+
+    def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
+        # parallel_tool_calls=false: a healed call consumed the single allowed
+        # slot; a later native structured call (index 0, so it survives
+        # _drop_parallel_tool_call_deltas) must not open a second
+        # function_call item.
+        TestResponsesStreamAdapter._install_stream_mock(
+            monkeypatch,
+            [
+                {"choices": [{"delta": {"content": self._XML}}]},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_up",
+                                        "function": {"name": "lookup", "arguments": "{}"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            ],
+        )
+        payload = ResponsesRequest(
+            input = "hi",
+            stream = True,
+            tools = [self._TOOL],
+            parallel_tool_calls = False,
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+
+        events = self._ordered_events(asyncio.run(run()))
+        calls = [
+            payload
+            for name, payload in events
+            if name == "response.output_item.added" and payload["item"]["type"] == "function_call"
+        ]
+        assert len(calls) == 1
+        assert calls[0]["item"]["name"] == "lookup"
