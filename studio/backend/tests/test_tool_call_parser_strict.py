@@ -1179,3 +1179,64 @@ class TestGemmaDottedKeyAfterBareValue:
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": "foo", "user.name": "bob"}
+
+
+class TestJsonAnswersAreDataForMarkerlessScans:
+    """A whole-content JSON value is a structured answer: a quoted example of
+    an enabled tool's syntax inside it must not execute the tool, and the
+    display strip must not mutilate the answer."""
+
+    def test_gemma_example_inside_json_answer_not_promoted(self):
+        text = '{"answer":"Gemma syntax is call:web_search{query:hi}"}'
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+    def test_gemma_example_inside_json_answer_not_stripped(self):
+        from core.inference.tool_call_parser import strip_tool_markup
+
+        text = '{"answer":"Gemma syntax is call:web_search{query:hi}"}'
+        assert (
+            strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"})
+            == text
+        )
+
+    def test_kimi_marker_inside_json_answer_not_promoted(self):
+        text = (
+            '{"answer":"<|tool_call_begin|>functions.web_search:0'
+            '<|tool_call_argument_begin|>{}<|tool_call_end|>"}'
+        )
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+
+class TestGemmaNestedQuotedLeaves:
+    def test_nested_object_and_array_values_are_unquoted(self):
+        text = 'call:f{loc:{city:"New York"},items:["a","b"],n:3}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"f"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"loc": {"city": "New York"}, "items": ["a", "b"], "n": 3}
+
+
+class TestEarliestEnvelopeWinsAcrossDeepSeekKimi:
+    """The DeepSeek/Kimi pre-pass dispatches by earliest envelope opener: a
+    leading real call wins over a trailing example of the sibling format in
+    either direction (document order, like the other leading guards)."""
+
+    _DS = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>evil\n"
+        '```json\n{"x": 1}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    _KIMI = (
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.web_search:0"
+        '<|tool_call_argument_begin|>{"query": "cats"}<|tool_call_end|>'
+        "<|tool_calls_section_end|>"
+    )
+
+    def test_leading_kimi_wins_over_trailing_deepseek_example(self):
+        text = self._KIMI + " For reference: " + self._DS
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_leading_deepseek_wins_over_trailing_kimi_example(self):
+        text = self._DS + " Kimi format: " + self._KIMI
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["evil"]

@@ -112,7 +112,13 @@ def render_native_template(
                 template_source,
                 exc,
             )
-            native_tpl = False
+            # A failed FETCH is not "no template": caching False here would
+            # pin the tool-dropping override prompt for the whole session
+            # even after the model record's hf_token is fixed or a transient
+            # Hub error clears. Leave the sentinel unset so the next call
+            # retries; only definitive loads (template or genuinely absent)
+            # are cached below.
+            return None
         model_info["native_chat_template"] = native_tpl
     if not native_tpl:
         return None

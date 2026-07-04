@@ -418,6 +418,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     ``_parse_gemma_tool_calls`` gates parsing: a disabled/example ``call:foo{...}`` in
     prose is kept visible instead of being deleted from the answer. ``None`` strips
     every closed call (unrestricted mode / direct callers)."""
+    if _whole_content_is_json_value(text):
+        return text
     n = len(text)
     out = []
     cursor = 0
@@ -913,10 +915,20 @@ def parse_tool_calls_from_text(
     # which case the marker is literal data inside the outer call's arguments and
     # the shared parser below must take the outer call.
     if not _marker_inside_leading_envelope(content):
-        for parser in (
-            _parse_deepseek_tool_calls,
-            _parse_kimi_tool_calls,
-        ):
+        # Dispatch by earliest envelope opener: a raw parseable DeepSeek
+        # example quoted inside a Kimi call's argument string (or vice versa)
+        # must not hijack the turn just because of a fixed parser order.
+        _ds = _DEEPSEEK_BEGIN_RE.search(content)
+        _ds_pos = _ds.start() if _ds else len(content)
+        _km_section = content.find(_KIMI_SECTION_BEGIN)
+        _km_bare = content.find(_KIMI_CALL_BEGIN)
+        _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
+        pre_pass = [
+            (_ds_pos, _parse_deepseek_tool_calls),
+            (_km_pos, _parse_kimi_tool_calls),
+        ]
+        pre_pass.sort(key = lambda pair: pair[0])
+        for _pos, parser in pre_pass:
             calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
             if calls:
                 return calls
@@ -1596,6 +1608,21 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
         )
 
 
+def _whole_content_is_json_value(text: str) -> bool:
+    """True when the entire content is one valid JSON value (a structured
+    answer, e.g. a response_format turn). Markerless scans must treat text
+    inside it as data: an answer documenting an enabled tool's syntax must
+    not execute that tool or have the example stripped from display."""
+    t = text.strip()
+    if t[:1] not in "{[":
+        return False
+    try:
+        json.loads(t)
+    except ValueError:
+        return False
+    return True
+
+
 def _parse_gemma_tool_calls(
     content: str,
     *,
@@ -1626,6 +1653,10 @@ def _parse_gemma_tool_calls(
     # own syntax) has nothing tool_healing can parse, and deferring it would
     # lose the call entirely.
     if _GEMMA_TC_RE.search(content) or _GEMMA_STR_BEGIN in content:
+        return out
+    # A whole-content JSON value is a structured ANSWER: a quoted example of
+    # an enabled tool's syntax inside it must not become a real call.
+    if _whole_content_is_json_value(content):
         return out
     # Manual cursor (not ``finditer``): after consuming a ``call:NAME{...}`` we must
     # resume scanning AFTER its balanced body, otherwise a nested ``call:OTHER{...}``
@@ -1940,6 +1971,24 @@ def _gemma_coerce_scalar(raw: str) -> Any:
     return raw
 
 
+def _gemma_strip_quoted_leaves(value: Any) -> Any:
+    """Recursively unquote quoted string leaves of a nested stripped-stream
+    value. The nested mapping/array parser keeps raw quote characters that the
+    top level coerces away, so ``{loc:{city:"New York"}}`` must not hand the
+    tool ``'"New York"'`` while a top-level ``city:"New York"`` hands it
+    ``'New York'``."""
+    if isinstance(value, str):
+        v = value.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            return v[1:-1]
+        return value
+    if isinstance(value, dict):
+        return {k: _gemma_strip_quoted_leaves(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_gemma_strip_quoted_leaves(v) for v in value]
+    return value
+
+
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
     """Parse a quote-less Gemma arg body ``key:value, key2:value2`` (the
     ``skip_special_tokens`` stream with ``<|"|>`` markers removed). Each value runs
@@ -1991,7 +2040,11 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             # and consumed all of it, so a truncated / malformed value falls back
             # to the raw string.
             parsed, end, closed = _gemma_parse_value(raw_val, 0)
-            out[key] = parsed if (closed and end == len(raw_val)) else _gemma_coerce_scalar(raw_val)
+            out[key] = (
+                _gemma_strip_quoted_leaves(parsed)
+                if (closed and end == len(raw_val))
+                else _gemma_coerce_scalar(raw_val)
+            )
         else:
             out[key] = _gemma_coerce_scalar(raw_val)
         if i < n and body[i] == ",":
