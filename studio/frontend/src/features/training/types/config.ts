@@ -43,6 +43,7 @@ export interface TrainingConfigState {
   uploadedEvalFile: string | null;
   epochs: number;
   contextLength: number;
+  contextLengthManuallySet: boolean;
   learningRate: number;
   embeddingLearningRate: number | null;
   optimizerType: string;
