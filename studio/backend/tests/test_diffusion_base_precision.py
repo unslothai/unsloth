@@ -32,6 +32,9 @@ from models.training import DiffusionTrainingStartRequest
 # family from their names alone, so normalized() runs without a network call.
 _FLUX_DENSE = "black-forest-labs/FLUX.1-dev"
 _Z_PREQUANT = "unsloth/Z-Image-Turbo-unsloth-bnb-4bit"
+# An SDXL base whose name LOOKS prequant (bnb-4bit): SDXL ignores base_precision, so the
+# dense-mode gates must not fire for it even with a dense mode + fp16 compute.
+_SDXL_PREQUANT_NAME = "some/sdxl-model-bnb-4bit"
 
 
 def _cfg(base_model = _FLUX_DENSE, **kw) -> DiffusionLoraConfig:
@@ -64,6 +67,32 @@ def test_base_precision_validation():
     # "auto" is ACCEPTED by normalized() even on a prequant base: the concrete mode is
     # resolved at runtime against the live GPU, not at config validation.
     assert _cfg(base_model = _Z_PREQUANT, base_precision = "auto").normalized().base_precision == "auto"
+
+
+def test_base_precision_gates_skip_sdxl():
+    # SDXL ignores base_precision, so the dense-mode gates (prequant base / non-bf16 compute)
+    # must not fire for it: a prequant-looking SDXL name with base_precision="bf16" does not
+    # raise, and the mode is still stored lowered.
+    norm = _cfg(base_model = _SDXL_PREQUANT_NAME, base_precision = "bf16").normalized()
+    assert norm.resolved_family == "sdxl"
+    assert norm.base_precision == "bf16"
+
+    # The non-bf16-compute gate is also skipped for SDXL (fp16 is a valid SDXL mixed
+    # precision), even with a dense base_precision requested.
+    norm2 = _cfg(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0",
+        base_precision = "int8",
+        mixed_precision = "fp16",
+    ).normalized()
+    assert norm2.resolved_family == "sdxl"
+
+    # The mode-name validity check still runs for SDXL: an unknown mode is rejected.
+    with pytest.raises(ValueError, match = "base_precision"):
+        _cfg(base_model = _SDXL_PREQUANT_NAME, base_precision = "banana").normalized()
+
+    # The gates STILL fire for a DiT family: a prequant DiT base with a dense mode raises.
+    with pytest.raises(ValueError, match = "dense base repo"):
+        _cfg(base_model = _Z_PREQUANT, base_precision = "bf16").normalized()
 
 
 # ── repo_is_prequantized heuristic + trainer alias ────────────────────────────
@@ -107,6 +136,10 @@ def test_pick_auto_precision_policy_table():
 
     # Middle band (30 > 23.8 * 1.15 = 27.4, but not > 23.8 * 1.5 = 35.7) -> int8.
     assert p(False, "cuda", 30, 23.8, (10, 0), True) == "int8"
+    # int8 needs torchao at runtime (no fallback), so the int8 band drops to nf4 when
+    # torchao is not importable while the bf16 band is unaffected.
+    assert p(False, "cuda", 30, 23.8, (10, 0), True, False) == "nf4"
+    assert p(False, "cuda", 140, 23.8, (10, 0), True, False) == "bf16"
     # int8 still materialises the full bf16 transformer before quantize_ shrinks it, so
     # free VRAM below the dense-load transient (25 < 27.4) must fall back to nf4 even
     # though the QUANTIZED weights would have fit.
@@ -138,6 +171,47 @@ def test_resolve_auto_requires_bf16_compute():
     spec = dit._SPECS["flux.1"]
     cfg = _cfg(base_precision = "auto", mixed_precision = "fp16")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
+
+
+def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
+    # The int8 auto band needs torchao at runtime; when torchao is not importable
+    # _resolve_base_precision must fall to nf4 instead of picking an int8 that would crash
+    # in _int8_quantize_base. Drive the probe into the int8 band and toggle torchao.
+    import importlib.util as _ilu
+    import torch
+
+    spec = dit._SPECS["flux.1"]  # dense_bf16_gb = 23.8
+    cfg = _cfg(base_precision = "auto", mixed_precision = "bf16")
+    real_find_spec = _ilu.find_spec
+
+    def _no_torchao(name, *args, **kwargs):
+        if name == "torchao":
+            return None  # simulate torchao not installed
+        return real_find_spec(name, *args, **kwargs)
+
+    def _has_torchao(name, *args, **kwargs):
+        if name == "torchao":
+            return object()  # simulate torchao installed
+        return real_find_spec(name, *args, **kwargs)
+
+    class _FakeCuda:
+        # Free VRAM in the int8 band (30 > 23.8 * 1.15) but below the bf16 band.
+        @staticmethod
+        def mem_get_info():
+            return (int(30 * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (10, 0)
+
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+
+    monkeypatch.setattr(_ilu, "find_spec", _no_torchao)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
+
+    # With torchao importable the same band picks int8.
+    monkeypatch.setattr(_ilu, "find_spec", _has_torchao)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
 
 
 # ── _fp8_module_filter ────────────────────────────────────────────────────────

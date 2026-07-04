@@ -201,6 +201,48 @@ def test_apply_event_transitions():
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
 
 
+def test_progress_nulls_non_finite_floats_for_strict_json():
+    # A divergent step (or an inf grad norm) can push loss / avg_loss / learning_rate to
+    # NaN or Infinity, which strict JSON forbids. The service must null those so the status
+    # snapshot and the metric history stay strict-JSON serializable.
+    import json
+    import math
+
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event(
+        {
+            "type": "progress",
+            "step": 3,
+            "total_steps": 10,
+            "loss": float("nan"),
+            "avg_loss": float("inf"),
+            "learning_rate": float("-inf"),
+            "grad_norm": float("inf"),
+        }
+    )
+    snap = svc.status()
+    assert snap["loss"] is None
+    assert snap["avg_loss"] is None
+    assert snap["learning_rate"] is None
+    # The reviewer's exact case: an inf pre-clip grad norm must not reach the status JSON.
+    assert snap["grad_norm"] is None
+    # The non-finite point is skipped in the history, so the loss series stays clean.
+    assert snap["metric_loss"] == []
+    assert snap["metric_steps"] == []
+    # strict JSON (allow_nan=False) round-trips without a ValueError from NaN/Infinity.
+    json.dumps(snap, allow_nan = False)
+
+    # A finite point after the bad one is recorded and preserved verbatim.
+    svc._apply_event(
+        {"type": "progress", "step": 4, "total_steps": 10, "loss": 0.5, "learning_rate": 1e-4}
+    )
+    snap2 = svc.status()
+    assert snap2["loss"] == 0.5
+    assert snap2["metric_loss"] == [0.5] and snap2["metric_steps"] == [4]
+    assert math.isfinite(snap2["learning_rate"])
+    json.dumps(snap2, allow_nan = False)
+
+
 def test_terminal_events_clear_model_load_flag():
     # A stop or error during model load emits complete/error WITHOUT a preceding
     # model_load_completed, so the terminal update must reset in_model_load or the
