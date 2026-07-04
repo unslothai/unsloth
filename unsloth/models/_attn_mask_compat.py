@@ -38,7 +38,11 @@ class AttentionMaskConverter:
     is_causal: bool
     sliding_window: int | None = None
 
-    def __init__(self, is_causal: bool, sliding_window: int | None = None):
+    def __init__(
+        self,
+        is_causal: bool,
+        sliding_window: int | None = None,
+    ):
         self.is_causal = is_causal
         self.sliding_window = sliding_window
 
@@ -56,7 +60,9 @@ class AttentionMaskConverter:
         device: Union[torch.device, str] = "cpu",
     ) -> torch.Tensor | None:
         if not self.is_causal:
-            raise ValueError(f"Please use `to_causal_4d` only if {self.__class__} has `is_causal` set to True.")
+            raise ValueError(
+                f"Please use `to_causal_4d` only if {self.__class__} has `is_causal` set to True."
+            )
 
         input_shape = (batch_size, query_length)
         past_key_values_length = key_value_length - query_length
@@ -66,9 +72,9 @@ class AttentionMaskConverter:
             causal_4d_mask = self._make_causal_mask(
                 input_shape,
                 dtype,
-                device=device,
-                past_key_values_length=past_key_values_length,
-                sliding_window=self.sliding_window,
+                device = device,
+                past_key_values_length = past_key_values_length,
+                sliding_window = self.sliding_window,
             )
 
         return causal_4d_mask
@@ -93,19 +99,23 @@ class AttentionMaskConverter:
             causal_4d_mask = self._make_causal_mask(
                 input_shape,
                 dtype,
-                device=attention_mask_2d.device,
-                past_key_values_length=past_key_values_length,
-                sliding_window=self.sliding_window,
+                device = attention_mask_2d.device,
+                past_key_values_length = past_key_values_length,
+                sliding_window = self.sliding_window,
             )
         elif self.sliding_window is not None:
-            raise NotImplementedError("Sliding window is currently only implemented for causal masking")
+            raise NotImplementedError(
+                "Sliding window is currently only implemented for causal masking"
+            )
 
-        expanded_attn_mask = self._expand_mask(attention_mask_2d, dtype, tgt_len=input_shape[-1]).to(
-            attention_mask_2d.device
-        )
+        expanded_attn_mask = self._expand_mask(
+            attention_mask_2d, dtype, tgt_len = input_shape[-1]
+        ).to(attention_mask_2d.device)
 
         if causal_4d_mask is not None:
-            expanded_attn_mask = causal_4d_mask.masked_fill(expanded_attn_mask.bool(), torch.finfo(dtype).min)
+            expanded_attn_mask = causal_4d_mask.masked_fill(
+                expanded_attn_mask.bool(), torch.finfo(dtype).min
+            )
 
         return expanded_attn_mask
 
@@ -118,19 +128,22 @@ class AttentionMaskConverter:
         sliding_window: int | None = None,
     ):
         bsz, tgt_len = input_ids_shape
-        mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
-        mask_cond = torch.arange(mask.size(-1), device=device)
+        mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device = device)
+        mask_cond = torch.arange(mask.size(-1), device = device)
         mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
 
         mask = mask.to(dtype)
 
         if past_key_values_length > 0:
-            mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
+            mask = torch.cat(
+                [torch.zeros(tgt_len, past_key_values_length, dtype = dtype, device = device), mask],
+                dim = -1,
+            )
 
         if sliding_window is not None:
             diagonal = past_key_values_length - sliding_window - 1
 
-            context_mask = torch.tril(torch.ones_like(mask, dtype=torch.bool), diagonal=diagonal)
+            context_mask = torch.tril(torch.ones_like(mask, dtype = torch.bool), diagonal = diagonal)
             if is_torchdynamo_compiling():
                 mask = mask.clone()
             mask.masked_fill_(context_mask, torch.finfo(dtype).min)
@@ -138,27 +151,28 @@ class AttentionMaskConverter:
         return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
     @staticmethod
-    def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = None):
+    def _expand_mask(
+        mask: torch.Tensor,
+        dtype: torch.dtype,
+        tgt_len: int | None = None,
+    ):
         bsz, src_len = mask.size()
         tgt_len = tgt_len if tgt_len is not None else src_len
 
         expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
 
-        inverted_mask = torch.tensor(1.0, dtype=dtype) - expanded_mask
+        inverted_mask = torch.tensor(1.0, dtype = dtype) - expanded_mask
 
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
     @staticmethod
-    def _unmask_unattended(
-        expanded_mask: torch.FloatTensor,
-        min_dtype: float,
-    ):
+    def _unmask_unattended(expanded_mask: torch.FloatTensor, min_dtype: float):
         if expanded_mask.dtype == torch.bool:
             raise ValueError(
                 "AttentionMaskConverter._unmask_unattended expects a float `expanded_mask`, got a BoolTensor."
             )
 
-        return expanded_mask.mul(~torch.all(expanded_mask == min_dtype, dim=-1, keepdim=True))
+        return expanded_mask.mul(~torch.all(expanded_mask == min_dtype, dim = -1, keepdim = True))
 
     @staticmethod
     def _ignore_causal_mask_sdpa(
@@ -199,24 +213,28 @@ def _prepare_4d_causal_attention_mask_for_sdpa(
     past_key_values_length: int,
     sliding_window: int | None = None,
 ):
-    attn_mask_converter = AttentionMaskConverter(is_causal=True, sliding_window=sliding_window)
+    attn_mask_converter = AttentionMaskConverter(is_causal = True, sliding_window = sliding_window)
 
     key_value_length = input_shape[-1] + past_key_values_length
 
     is_tracing_ = is_tracing(inputs_embeds)
 
     ignore_causal_mask = AttentionMaskConverter._ignore_causal_mask_sdpa(
-        attention_mask=attention_mask,
-        inputs_embeds=inputs_embeds,
-        past_key_values_length=past_key_values_length,
-        sliding_window=sliding_window,
+        attention_mask = attention_mask,
+        inputs_embeds = inputs_embeds,
+        past_key_values_length = past_key_values_length,
+        sliding_window = sliding_window,
     )
 
     if ignore_causal_mask:
         expanded_4d_mask = None
     elif attention_mask is None:
         expanded_4d_mask = attn_mask_converter.to_causal_4d(
-            input_shape[0], input_shape[-1], key_value_length, dtype=inputs_embeds.dtype, device=inputs_embeds.device
+            input_shape[0],
+            input_shape[-1],
+            key_value_length,
+            dtype = inputs_embeds.dtype,
+            device = inputs_embeds.device,
         )
     else:
         if attention_mask.dim() == 4:
@@ -225,27 +243,39 @@ def _prepare_4d_causal_attention_mask_for_sdpa(
             expanded_4d_mask = attn_mask_converter.to_4d(
                 attention_mask,
                 input_shape[-1],
-                dtype=inputs_embeds.dtype,
-                key_value_length=key_value_length,
+                dtype = inputs_embeds.dtype,
+                key_value_length = key_value_length,
             )
 
-    if not is_tracing_ and expanded_4d_mask is not None and expanded_4d_mask.device.type in ["cuda", "xpu"]:
+    if (
+        not is_tracing_
+        and expanded_4d_mask is not None
+        and expanded_4d_mask.device.type in ["cuda", "xpu"]
+    ):
         expanded_4d_mask = AttentionMaskConverter._unmask_unattended(
-            expanded_4d_mask, min_dtype=torch.finfo(inputs_embeds.dtype).min
+            expanded_4d_mask, min_dtype = torch.finfo(inputs_embeds.dtype).min
         )
 
     return expanded_4d_mask
 
 
-def _prepare_4d_attention_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = None):
-    return AttentionMaskConverter._expand_mask(mask=mask, dtype=dtype, tgt_len=tgt_len)
+def _prepare_4d_attention_mask(
+    mask: torch.Tensor,
+    dtype: torch.dtype,
+    tgt_len: int | None = None,
+):
+    return AttentionMaskConverter._expand_mask(mask = mask, dtype = dtype, tgt_len = tgt_len)
 
 
-def _prepare_4d_attention_mask_for_sdpa(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = None):
+def _prepare_4d_attention_mask_for_sdpa(
+    mask: torch.Tensor,
+    dtype: torch.dtype,
+    tgt_len: int | None = None,
+):
     _, key_value_length = mask.shape
     tgt_len = tgt_len if tgt_len is not None else key_value_length
 
     if not is_tracing(mask) and torch.all(mask == 1):
         return None
 
-    return AttentionMaskConverter._expand_mask(mask=mask, dtype=dtype, tgt_len=tgt_len)
+    return AttentionMaskConverter._expand_mask(mask = mask, dtype = dtype, tgt_len = tgt_len)

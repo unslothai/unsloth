@@ -31,17 +31,16 @@ compat = _load_compat_module()
 
 
 def test_no_deprecation_warning_on_causal_mask():
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
-        compat.AttentionMaskConverter(is_causal=True, sliding_window=3).to_causal_4d(
+        compat.AttentionMaskConverter(is_causal = True, sliding_window = 3).to_causal_4d(
             1,
             8,
             8,
-            dtype=torch.float16,
+            dtype = torch.float16,
         )
     assert not any(
-        issubclass(w.category, FutureWarning)
-        and "modeling_attn_mask_utils" in str(w.message)
+        issubclass(w.category, FutureWarning) and "modeling_attn_mask_utils" in str(w.message)
         for w in caught
     )
 
@@ -61,23 +60,23 @@ def test_causal_4d_matches_transformers(batch_size, query_length, sliding_window
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         expected = legacy.AttentionMaskConverter(
-            is_causal=True,
-            sliding_window=sliding_window,
+            is_causal = True,
+            sliding_window = sliding_window,
         ).to_causal_4d(
             batch_size,
             query_length,
             key_value_length,
-            dtype=dtype,
+            dtype = dtype,
         )
 
     actual = compat.AttentionMaskConverter(
-        is_causal=True,
-        sliding_window=sliding_window,
+        is_causal = True,
+        sliding_window = sliding_window,
     ).to_causal_4d(
         batch_size,
         query_length,
         key_value_length,
-        dtype=dtype,
+        dtype = dtype,
     )
 
     if expected is None:
@@ -95,7 +94,9 @@ def test_causal_4d_matches_transformers(batch_size, query_length, sliding_window
         (torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]]), 0),
     ],
 )
-def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(attention_mask, past_length):
+def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
+    attention_mask, past_length
+):
     try:
         legacy = importlib.import_module("transformers.modeling_attn_mask_utils")
     except ImportError:
@@ -103,7 +104,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(attentio
 
     batch_size = 2 if attention_mask is not None else 1
     query_length = 5
-    inputs_embeds = torch.zeros(batch_size, query_length, 16, dtype=torch.float32)
+    inputs_embeds = torch.zeros(batch_size, query_length, 16, dtype = torch.float32)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
@@ -112,7 +113,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(attentio
             (batch_size, query_length),
             inputs_embeds,
             past_length,
-            sliding_window=3,
+            sliding_window = 3,
         )
 
     actual = compat._prepare_4d_causal_attention_mask_for_sdpa(
@@ -120,7 +121,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(attentio
         (batch_size, query_length),
         inputs_embeds,
         past_length,
-        sliding_window=3,
+        sliding_window = 3,
     )
 
     if expected is None:
@@ -135,14 +136,14 @@ def test_prepare_4d_attention_mask_for_sdpa_matches_transformers():
     except ImportError:
         pytest.skip("transformers.modeling_attn_mask_utils unavailable")
 
-    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1]], dtype=torch.float32)
+    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1]], dtype = torch.float32)
     dtype = torch.float32
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
-        expected = legacy._prepare_4d_attention_mask_for_sdpa(mask, dtype=dtype)
+        expected = legacy._prepare_4d_attention_mask_for_sdpa(mask, dtype = dtype)
 
-    actual = compat._prepare_4d_attention_mask_for_sdpa(mask, dtype=dtype)
+    actual = compat._prepare_4d_attention_mask_for_sdpa(mask, dtype = dtype)
 
     if expected is None:
         assert actual is None
@@ -156,7 +157,7 @@ def test_repo_has_no_direct_deprecated_imports():
     for path in model_dir.glob("*.py"):
         if path.name == "_attn_mask_compat.py":
             continue
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding = "utf-8")
         if "transformers.modeling_attn_mask_utils" in text:
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     assert offenders == []
