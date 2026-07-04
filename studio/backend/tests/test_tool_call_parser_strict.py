@@ -607,3 +607,78 @@ class TestHealerSignalAlignment:
         text_out = "".join(v for k, v in events if k == "text")
         assert "[TOOL_CALLS]" in text_out  # streamed through, not buffered
         assert not list(healer.finalize()) or all(k == "text" for k, _v in healer.finalize())
+
+
+class TestPythonTagLiteralInsideMistralArgs:
+    """A python_tag LITERAL (spelled-out text, not the stripped special token)
+    inside a leading Mistral call's arguments is data: the outer [TOOL_CALLS]
+    call must execute, not the rehearsed inner literal."""
+
+    def test_mistral_arg_quoting_python_tag_call(self):
+        text = (
+            '[TOOL_CALLS] [{"name": "web_search", "arguments": '
+            '{"query": "what is <|python_tag|>evil.call(x=1)"}}]'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "what is <|python_tag|>evil.call(x=1)"
+
+
+class TestBareJsonOuterOverXmlLiteral:
+    """A leading bare-JSON call whose string arguments quote tool XML must
+    execute the OUTER call (sibling of the Mistral-outer guard); XML before
+    the JSON keeps the normal order."""
+
+    def test_bare_json_code_arg_quoting_function_xml(self):
+        text = (
+            '{"name": "python", "arguments": '
+            '{"code": "run() # <function=terminal>ls</function>"}}'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
+        assert [c["function"]["name"] for c in calls] == ["python"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "run() # <function=terminal>ls</function>"
+
+    def test_bare_json_outer_unrestricted_mode(self):
+        text = (
+            '{"name": "python", "parameters": '
+            '{"code": "<function=terminal>ls</function>"}}'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["python"]
+
+    def test_xml_before_json_keeps_xml_order(self):
+        text = (
+            '<function=web_search><parameter=query>cats</parameter></function>'
+            ' {"name": "python", "arguments": {"code": "x"}}'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestMagistralThinkRehearsal:
+    """A tool call rehearsed inside a leading [THINK]...[/THINK] block (any
+    format) is reasoning, not a call: the real call AFTER the think block must
+    win, and parse must agree with the display strip that drops the block."""
+
+    def test_function_xml_rehearsal_in_think_is_not_promoted(self):
+        text = (
+            '[THINK]I could emit <function=web_search>{"query":"x"}</function>'
+            ' here[/THINK][TOOL_CALLS] [{"name":"terminal","arguments":{"cmd":"ls"}}]'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["terminal"]
+
+    def test_hermes_rehearsal_in_think_is_not_promoted(self):
+        text = (
+            '[THINK]maybe <tool_call>{"name":"web_search","arguments":'
+            '{"query":"x"}}</tool_call>[/THINK]'
+            '[TOOL_CALLS] [{"name":"terminal","arguments":{"cmd":"ls"}}]'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["terminal"]
+
+    def test_unclosed_think_parses_nothing(self):
+        text = '[THINK]let me try <function=web_search>{"query":"x"}</function>'
+        assert parse_tool_calls_from_text(text) == []

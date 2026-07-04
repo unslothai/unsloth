@@ -394,28 +394,60 @@ def _mistral_region_end(text: str, idx: int) -> int | None:
 
 
 def _xml_signal_inside_leading_mistral(content: str) -> bool:
-    """True when the first XML tool signal sits inside the balanced body of an
-    earlier Mistral ``[TOOL_CALLS]`` call -- i.e. it is that call's argument
-    data (a query quoting tool XML), not a real call. The shared XML parser
-    would otherwise promote the literal and execute the wrong tool, so the
-    Mistral parser must take the outer call first. An XML signal BEFORE the
-    trigger keeps the normal order (the outer XML call wins and a
-    ``[TOOL_CALLS]`` literal inside its arguments stays data)."""
+    """True when the first foreign tool signal sits inside the balanced body of
+    an earlier Mistral ``[TOOL_CALLS]`` call -- i.e. it is that call's argument
+    data (a query quoting tool markup), not a real call. The shared XML parser
+    (or the python_tag parser) would otherwise promote the literal and execute
+    the wrong tool, so the Mistral parser must take the outer call first. A
+    signal BEFORE the trigger keeps the normal order (the outer XML call wins
+    and a ``[TOOL_CALLS]`` literal inside its arguments stays data)."""
     trig = content.find(_MISTRAL_TRIGGER)
     if trig < 0:
         return False
-    first_xml = None
-    for sig in ("<tool_call>", "<|tool_call>", "<function="):
-        p = content.find(sig)
-        if p >= 0 and (first_xml is None or p < first_xml):
-            first_xml = p
-    attr = re.search(r'<function\s+name="', content)
-    if attr is not None and (first_xml is None or attr.start() < first_xml):
-        first_xml = attr.start()
+    first_xml = _first_foreign_tool_signal(content)
     if first_xml is None or first_xml < trig:
         return False
     end = _mistral_region_end(content, trig)
     return end is not None and first_xml < end
+
+
+def _first_foreign_tool_signal(content: str) -> int | None:
+    """Offset of the first tool signal a non-envelope parser would fire on:
+    the XML forms plus the Llama-3 ``<|python_tag|>`` marker
+    (``_parse_llama3_python_tag`` also runs before the Mistral parser, so a
+    python_tag literal inside a leading envelope's arguments needs the same
+    protection as XML literals)."""
+    first = None
+    for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>"):
+        p = content.find(sig)
+        if p >= 0 and (first is None or p < first):
+            first = p
+    attr = re.search(r'<function\s+name="', content)
+    if attr is not None and (first is None or attr.start() < first):
+        first = attr.start()
+    return first
+
+
+def _xml_signal_inside_leading_bare_json(content: str) -> bool:
+    """True when the first foreign tool signal sits inside the balanced body of
+    a LEADING bare-JSON call object -- i.e. it is a string argument quoting
+    tool markup (a ``code`` value citing ``<function=...>``), not a real call.
+    The shared XML parser would otherwise promote the literal and execute the
+    wrong tool, so the bare-JSON parser must take the outer call first
+    (sibling of ``_xml_signal_inside_leading_mistral``)."""
+    i = 0
+    n = len(content)
+    while i < n and content[i] in " \t\n\r":
+        i += 1
+    if i >= n or content[i] != "{":
+        return False
+    end = _balanced_brace_end(content, i)
+    if end is None:
+        return False
+    if _top_level_bare_json_name(content[i : end + 1]) is None:
+        return False
+    first_xml = _first_foreign_tool_signal(content)
+    return first_xml is not None and i < first_xml < end
 
 
 def parse_tool_calls_from_text(
@@ -429,6 +461,13 @@ def parse_tool_calls_from_text(
 
     ``allow_incomplete`` heals truncated calls; ``False`` accepts only closed calls (llama-server
     strict path). ``enabled_tool_names`` gates only the markerless Llama-3.2 bare-JSON form."""
+    # Magistral reasoning is dropped BEFORE any parser dispatch: a rehearsed
+    # call inside [THINK]...[/THINK] (in any format, e.g. a <function=...>
+    # snippet while the real [TOOL_CALLS] follows the think block) must never
+    # be promoted by an earlier pass. The display strip already drops the think
+    # block; the parse path has to agree with it.
+    content = _strip_mistral_reasoning(content)
+
     # A [TOOL_CALLS] call whose JSON arguments quote tool XML must win over the
     # literal: when the first XML signal sits inside a leading balanced Mistral
     # body it is argument data, so the Mistral parser runs first (mirrors the
@@ -437,6 +476,16 @@ def parse_tool_calls_from_text(
     if _xml_signal_inside_leading_mistral(content):
         calls = _parse_mistral_tool_calls(
             content, id_offset = id_offset, allow_incomplete = allow_incomplete
+        )
+        if calls:
+            return calls
+
+    # Same principle for a leading bare-JSON call: a string argument quoting
+    # tool markup must stay data, so the bare-JSON parser takes the outer call
+    # before the shared XML pass can promote the literal.
+    if _xml_signal_inside_leading_bare_json(content):
+        calls = _parse_llama3_bare_json(
+            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
         )
         if calls:
             return calls
