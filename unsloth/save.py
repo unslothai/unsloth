@@ -232,28 +232,33 @@ def _loaded_via_remote_code(obj):
     reload trust_remote_code from this - the already approved load decision - instead of from a
     checkpoint's static ``auto_map``: a model that loads with built-in classes must not have its
     unvetted remote code run when it is re-read during quantization export. Walks PEFT / wrapper
-    layers so a LoRA over a custom-code base is still detected.
+    layers so a LoRA over a custom-code base is still detected, and processor components so a
+    custom tokenizer held inside a built-in processor keeps its approved trust.
     """
     seen = set()
-    node = obj
-    for _ in range(4):
+    queue = [obj]
+    while queue and len(seen) < 16:
+        node = queue.pop(0)
         if node is None or id(node) in seen:
-            break
+            continue
         seen.add(id(node))
         # __module__ can be None/absent on some dynamically created or C-extension classes;
         # treat anything non-string as "not remote code" rather than crashing the export.
         module = getattr(type(node), "__module__", None)
         if isinstance(module, str) and module.startswith("transformers_modules"):
             return True
-        nxt = None
         if hasattr(node, "get_base_model"):
             try:
-                nxt = node.get_base_model()
+                queue.append(node.get_base_model())
             except Exception:
-                nxt = None
-        if nxt is None or nxt is node:
-            nxt = getattr(node, "base_model", None) or getattr(node, "model", None)
-        node = nxt
+                pass
+        # PEFT / trainer wrappers hold the real model in base_model / model; a built-in
+        # ProcessorMixin holds its (possibly custom-code) components as attributes.
+        for attr in (
+            "base_model", "model",
+            "tokenizer", "image_processor", "feature_extractor", "video_processor",
+        ):
+            queue.append(getattr(node, attr, None))
     return False
 
 
@@ -4441,7 +4446,10 @@ def _unsloth_save_compressed_tensors(
         # trust_remote_code must reflect the approved load decision (whether the model / tokenizer
         # was actually loaded from custom code), not the config's static auto_map, so a
         # built-in-loadable model carrying auto_map cannot run unvetted code in the subprocess.
-        trust_remote_code = _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)
+        # Model and tokenizer trust stay separate, like the torchao path: an approved custom
+        # tokenizer must not enable an unapproved model's code in the subprocess (or vice versa).
+        model_trust = _loaded_via_remote_code(model)
+        tok_trust = _loaded_via_remote_code(tokenizer)
 
         # 5) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
         #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; Dataset -> temp.
@@ -4516,8 +4524,10 @@ def _unsloth_save_compressed_tensors(
             cmd += ["--calibration-dataset", calib_value]
         if is_vlm:
             cmd.append("--is-vlm")
-        if trust_remote_code:
+        if model_trust:
             cmd.append("--trust-remote-code")
+        if tok_trust:
+            cmd.append("--trust-remote-code-tokenizer")
         if variant:
             cmd += ["--variant", variant]
 

@@ -88,6 +88,36 @@ def test_wrapper_over_builtin_stays_false():
     assert _loaded_via_remote_code(wrapper) is False
 
 
+def test_processor_held_custom_tokenizer_is_detected():
+    # A built-in ProcessorMixin can hold an approved custom-code tokenizer; the walk must
+    # descend into processor components or the export reload loses that approved trust.
+    tok = _obj("transformers_modules.acme.tokenization_x")
+    proc = _obj("transformers.processing_utils", tokenizer = tok)
+    assert _loaded_via_remote_code(proc) is True
+
+
+def test_processor_held_custom_image_processor_is_detected():
+    ip = _obj("transformers_modules.acme.image_processing_x")
+    proc = _obj("transformers.processing_utils", image_processor = ip)
+    assert _loaded_via_remote_code(proc) is True
+
+
+def test_builtin_processor_with_builtin_components_stays_false():
+    proc = _obj(
+        "transformers.processing_utils",
+        tokenizer = _obj("transformers.tokenization_utils_fast"),
+        image_processor = _obj("transformers.image_processing_utils"),
+    )
+    assert _loaded_via_remote_code(proc) is False
+
+
+def test_cyclic_wrappers_terminate():
+    a = _obj("peft.peft_model")
+    b = _obj("peft.peft_model", model = a)
+    a.model = b
+    assert _loaded_via_remote_code(a) is False
+
+
 # -- call-site assertions: the auto_map-derived trust is gone from every export path -----------
 
 
@@ -101,9 +131,20 @@ def test_torchao_export_derives_trust_from_load_decision():
 
 
 def test_compressed_and_gguf_lora_paths_drop_auto_map_trust():
-    assert (
-        "trust_remote_code = _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)"
-        in _SRC
-    )
-    # No path derives a trust decision straight from config auto_map anymore.
+    # No path derives a trust decision straight from config auto_map anymore, and no path
+    # collapses model and tokenizer trust into one flag.
     assert 'bool(getattr(model.config, "auto_map", None))' not in _SRC
+    assert "_loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer)" not in _SRC
+    assert "if _loaded_via_remote_code(model):" in _SRC  # GGUF-LoRA converter flag
+
+
+def test_compressed_export_keeps_model_and_tokenizer_trust_separate():
+    # The subprocess gets one flag per component, so an approved custom tokenizer cannot
+    # enable an unapproved model's code during compressed quantization (or vice versa).
+    assert 'cmd.append("--trust-remote-code")' in _SRC
+    assert 'cmd.append("--trust-remote-code-tokenizer")' in _SRC
+    qsrc = (_SAVE_PY.parent / "_compressed_quantize.py").read_text(encoding = "utf-8")
+    assert 'ap.add_argument("--trust-remote-code-tokenizer", action = "store_true")' in qsrc
+    assert "trust_remote_code = args.trust_remote_code_tokenizer" in qsrc
+    # The model loads keep the model flag only.
+    assert "args.model, args.trust_remote_code)" in qsrc
