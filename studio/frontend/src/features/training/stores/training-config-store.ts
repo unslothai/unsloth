@@ -91,6 +91,9 @@ const initialState: TrainingConfigState = {
   isDatasetAudio: false,
   maxPositionEmbeddings: null,
   contextLengthManuallySet: false,
+  trainOnCompletionsManuallySet: false,
+  learningRateManuallySet: false,
+  trainingMethodManuallySet: false,
   ...DEFAULT_HYPERPARAMS,
 };
 
@@ -99,17 +102,6 @@ let _datasetCheckController: AbortController | null = null;
 
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
-
-// Has the user manually toggled trainOnCompletions since the last auto-set
-// (model load or dataset change)?
-let _trainOnCompletionsManuallySet = false;
-
-// Has the user manually edited the LR since the last model load? When false,
-// switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
-let _learningRateManuallySet = false;
-
-// Has the user manually chosen a training method since the last model load?
-let _trainingMethodManuallySet = false;
 
 // Stash the YAML learning rate so setTrainingMethod can restore it when
 // switching back from full to adapter.
@@ -306,8 +298,9 @@ function getRestoreDatasetFormatFromCptPatch(): TrainingMethodStatePatch {
 function resolveTrainingMethodLearningRate(
   prevMethod: TrainingMethod,
   nextMethod: TrainingMethod,
+  learningRateManuallySet: boolean,
 ): number | undefined {
-  if (_learningRateManuallySet) {
+  if (learningRateManuallySet) {
     return undefined;
   }
 
@@ -331,6 +324,7 @@ function buildTrainingMethodPatch(
   prevMethod: TrainingMethod,
   nextMethod: TrainingMethod,
   currentDatasetFormat: DatasetFormat,
+  learningRateManuallySet: boolean,
 ): TrainingMethodStatePatch {
   const patch: TrainingMethodStatePatch = { trainingMethod: nextMethod };
 
@@ -346,7 +340,7 @@ function buildTrainingMethodPatch(
     );
   }
 
-  const learningRate = resolveTrainingMethodLearningRate(prevMethod, nextMethod);
+  const learningRate = resolveTrainingMethodLearningRate(prevMethod, nextMethod, learningRateManuallySet);
   if (learningRate !== undefined) {
     patch.learningRate = learningRate;
   }
@@ -361,9 +355,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         _modelConfigController?.abort();
         const controller = new AbortController();
         _modelConfigController = controller;
-        _trainOnCompletionsManuallySet = false;
-        _learningRateManuallySet = false;
-        _trainingMethodManuallySet = false;
         _yamlLearningRate = undefined;
         set({
           isLoadingModelDefaults: true,
@@ -378,6 +369,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
             const contextLengthManuallySet = get().contextLengthManuallySet;
+            const trainOnCompletionsManuallySet = get().trainOnCompletionsManuallySet;
+            const learningRateManuallySet = get().learningRateManuallySet;
             const effectiveContextLength = contextLengthManuallySet
               ? get().contextLength
               : patch.contextLength ?? get().contextLength;
@@ -388,6 +381,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (contextLengthManuallySet) {
               delete patch.contextLength;
             }
+            if (learningRateManuallySet) {
+              delete patch.learningRate;
+            }
+            if (trainOnCompletionsManuallySet) {
+              delete patch.trainOnCompletions;
+            }
 
             // Treat a model-config LR as authoritative so async auto-select
             // won't overwrite it.
@@ -396,23 +395,24 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
             // use the full-finetune default instead of the YAML adapter LR.
-            if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
+            if (!learningRateManuallySet && modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
               patch.learningRate = LR_DEFAULT_FULL;
             }
 
-            // Vision model + known image dataset: force trainOnCompletions off.
-            if (modelDetails.is_vision && get().isDatasetImage === true) {
-              patch.trainOnCompletions = false;
-            }
-
             const isAudio = !!modelDetails.is_audio;
-            // Pure audio model -> always uncheck trainOnCompletions.
-            if (isAudio && !modelDetails.is_vision) {
-              patch.trainOnCompletions = false;
-            }
-            // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
-            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
-              patch.trainOnCompletions = false;
+            if (!trainOnCompletionsManuallySet) {
+              // Vision model + known image dataset: force trainOnCompletions off.
+              if (modelDetails.is_vision && get().isDatasetImage === true) {
+                patch.trainOnCompletions = false;
+              }
+              // Pure audio model -> always uncheck trainOnCompletions.
+              if (isAudio && !modelDetails.is_vision) {
+                patch.trainOnCompletions = false;
+              }
+              // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
+              if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
+                patch.trainOnCompletions = false;
+              }
             }
 
             // Use backend model_type when available, else infer from flags.
@@ -448,16 +448,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (
               modelSizeBytes &&
               modelSizeBytes > 0 &&
-              !_trainingMethodManuallySet &&
+              !get().trainingMethodManuallySet &&
               get().trainingMethod !== "cpt"
             ) {
               void autoSelectTrainingMethod(modelSizeBytes, effectiveContextLength)
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
-                  if (_trainingMethodManuallySet) return;
+                  if (get().trainingMethodManuallySet) return;
                   if (get().trainingMethod === "cpt") return;
                   if (method) {
-                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
+                    const lrPatch = !get().learningRateManuallySet && !modelConfigHasLR
                       ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
                       : {};
                     set({ trainingMethod: method, ...lrPatch });
@@ -523,7 +523,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isDatasetAudio: isAudio,
               isCheckingDataset: false,
             };
-            if (!_trainOnCompletionsManuallySet) {
+            if (!get().trainOnCompletionsManuallySet) {
               const { isVisionModel, isAudioModel } = get();
               if (isVisionModel && isImage) {
                 updates.trainOnCompletions = false;
@@ -583,6 +583,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
+            trainOnCompletionsManuallySet: false,
+            learningRateManuallySet: false,
+            trainingMethodManuallySet: false,
           });
         },
         setSelectedModel: (selectedModel) => {
@@ -598,6 +601,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isVisionModel?: boolean;
             isAudioModel?: boolean;
             isEmbeddingModel?: boolean;
+            trainOnCompletionsManuallySet?: boolean;
+            learningRateManuallySet?: boolean;
+            trainingMethodManuallySet?: boolean;
           } = {
             selectedModel,
             modelDefaultsError: null,
@@ -614,6 +620,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             patch.isVisionModel = false;
             patch.isAudioModel = false;
             patch.isEmbeddingModel = false;
+            patch.trainOnCompletionsManuallySet = false;
+            patch.learningRateManuallySet = false;
+            patch.trainingMethodManuallySet = false;
           }
           set(patch);
 
@@ -629,6 +638,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isLoadingModelDefaults: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: null,
+              trainOnCompletionsManuallySet: false,
+              learningRateManuallySet: false,
+              trainingMethodManuallySet: false,
             });
             return;
           }
@@ -649,14 +661,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setProjectName: (projectName) => set({ projectName }),
         setTrainingMethod: (trainingMethod) => {
-          _trainingMethodManuallySet = true;
           const state = get();
           set(
-            buildTrainingMethodPatch(
-              state.trainingMethod,
-              trainingMethod,
-              state.datasetFormat,
-            ),
+            {
+              ...buildTrainingMethodPatch(
+                state.trainingMethod,
+                trainingMethod,
+                state.datasetFormat,
+                state.learningRateManuallySet,
+              ),
+              trainingMethodManuallySet: true,
+            },
           );
         },
         setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
@@ -664,10 +679,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
           set({
             datasetSource: "huggingface",
             dataset,
+            trainOnCompletionsManuallySet: false,
             uploadedFile: null,
             ...resetDatasetState(),
           });
@@ -675,10 +690,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         selectLocalDataset: (uploadedFile) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
           set({
             datasetSource: "upload",
             dataset: null,
+            trainOnCompletionsManuallySet: false,
             uploadedFile,
             ...resetDatasetState(),
           });
@@ -689,10 +704,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         selectS3Source: () => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
           set({
             datasetSource: "s3",
             dataset: null,
+            trainOnCompletionsManuallySet: false,
             uploadedFile: null,
             ...resetDatasetState(),
           });
@@ -720,9 +735,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDataset: (dataset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
           set({
             dataset,
+            trainOnCompletionsManuallySet: false,
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -737,9 +752,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetSubset: (datasetSubset) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
           set({
             datasetSubset,
+            trainOnCompletionsManuallySet: false,
             datasetSplit: null,
             datasetEvalSplit: null,
             datasetManualMapping: emptyManualMapping(),
@@ -856,9 +871,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setUploadedFile: (uploadedFile) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
           set({
             uploadedFile,
+            trainOnCompletionsManuallySet: false,
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -880,8 +895,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ contextLength, contextLengthManuallySet: true }),
         setVisionImageSize: (visionImageSize) => set({ visionImageSize }),
         setLearningRate: (learningRate) => {
-          _learningRateManuallySet = true;
-          set({ learningRate });
+          set({ learningRate, learningRateManuallySet: true });
         },
         setEmbeddingLearningRate: (embeddingLearningRate) =>
           set({ embeddingLearningRate }),
@@ -919,9 +933,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setPacking: (packing) => set({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
-          _trainOnCompletionsManuallySet = true;
           set({
             trainOnCompletions,
+            trainOnCompletionsManuallySet: true,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
         },
@@ -946,9 +960,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setS3Config: (s3Config) => set({ s3Config }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
-          _trainOnCompletionsManuallySet = false;
-          _learningRateManuallySet = false;
-          _trainingMethodManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
           set({ ...initialState, hfToken: getHfToken() });
@@ -956,9 +967,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
-          _trainingMethodManuallySet = false;
           set({
             contextLengthManuallySet: false,
+            trainOnCompletionsManuallySet: false,
+            learningRateManuallySet: false,
+            trainingMethodManuallySet: false,
             modelDefaultsAppliedFor: null,
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
@@ -968,13 +981,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const patch = mapBackendModelConfigToTrainingPatch(config);
           // Only clear the manual-edit flag when the config provides a LR,
           // so unrelated config patches don't silently disarm the guard.
-          if (patch.learningRate !== undefined) {
-            _learningRateManuallySet = false;
-          }
           set({
             ...patch,
             ...(patch.contextLength !== undefined
               ? { contextLengthManuallySet: true }
+              : {}),
+            ...(patch.learningRate !== undefined
+              ? { learningRateManuallySet: false }
               : {}),
           });
         },
@@ -982,7 +995,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 12,
+      version: 13,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -1044,6 +1057,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
           delete s.hfToken;
           s.contextLengthManuallySet = false;
+        }
+        if (version < 13) {
+          s.trainOnCompletionsManuallySet = false;
+          s.learningRateManuallySet = false;
+          s.trainingMethodManuallySet = false;
         }
         return s as unknown as TrainingConfigStore;
       },
