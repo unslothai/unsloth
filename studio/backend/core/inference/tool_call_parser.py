@@ -1779,9 +1779,7 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
                 continue
             if ch == quote:
                 quote = ""
-        elif ch in "\"'" and (
-            prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())
-        ):
+        elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
             quote = ch
         elif ch == "{":
             depth += 1
@@ -2067,9 +2065,7 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
                     continue
                 if ch == quote:
                     quote = ""
-            elif ch in "\"'" and (
-                prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())
-            ):
+            elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
                 quote = ch
             elif ch in "{[(":
                 depth += 1
