@@ -132,6 +132,31 @@ def test_candidate_none_when_no_scheme_resolves(monkeypatch):
     assert resolve_dense_quant_candidate(fam = _fam(), target = object(), requested = "auto") is None
 
 
+def test_candidate_disk_gate_skips_when_cache_disk_low(monkeypatch):
+    # The dense artifact may be a multi-GB download; a nearly-full model-cache disk
+    # drops the candidate (the loader then keeps the GGUF build).
+    import core.inference.diffusion_auto_policy as ap
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    assert (
+        resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+        is None
+    )
+
+
+def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
+    # Disk probing must never sink the candidate: unprobeable (None) passes through.
+    import core.inference.diffusion_auto_policy as ap
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: None)
+    est = resolve_dense_quant_candidate(
+        fam = _fam("z-image"), target = object(), requested = "auto"
+    )
+    assert isinstance(est, DenseQuantEstimate)
+
+
 def test_candidate_none_for_an_unlisted_family(monkeypatch):
     # No size entry -> no basis to re-plan; the loader keeps today's resident-only gate.
     _patch_selector(monkeypatch)

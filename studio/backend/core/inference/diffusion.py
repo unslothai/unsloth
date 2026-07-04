@@ -86,6 +86,7 @@ from .diffusion_prequant import (
 )
 from .diffusion_auto_policy import build_resolved_record, resolve_dense_quant_candidate
 from .diffusion_transformer_quant import (
+    TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     normalize_transformer_quant,
@@ -439,7 +440,12 @@ class DiffusionBackend:
         unload/cancellation cannot preempt the download. Mirrors the dense-path
         gates in ``load_pipeline``: quant requested and supported for this device,
         and no pre-quantized checkpoint that would shortcut the dense build."""
-        mode = normalize_transformer_quant(kwargs.get("transformer_quant"))
+        raw = kwargs.get("transformer_quant")
+        # Unset defaults to the hardware ladder (mirrors load_pipeline's tri-state).
+        if raw is None or str(raw).strip().lower() in ("", "auto"):
+            mode = TQ_AUTO
+        else:
+            mode = normalize_transformer_quant(raw)
         if mode is None:
             return False
         try:
@@ -984,7 +990,16 @@ class DiffusionBackend:
                     repo_id = repo_id,
                 )
 
-                # Opt-in fast path: load the DENSE bf16 transformer and torchao-quantise it
+                # Dtype tri-state: an UNSET request (or "auto") hands the decision to
+                # the hardware ladder -- on a dense-capable GPU the quantised build
+                # (int8 minimum, fp8 on data-center silicon) beats running the GGUF
+                # as-is, so auto is the DEFAULT. An explicit "none"/"off" pins
+                # GGUF-as-is and an explicit scheme pins that scheme. The overwritten
+                # "auto" still records source=auto in the resolved provenance.
+                if transformer_quant is None or str(transformer_quant).strip().lower() in ("", "auto"):
+                    transformer_quant = TQ_AUTO
+
+                # Default-on fast path: load the DENSE bf16 transformer and torchao-quantise it
                 # (int8 / fp8 / fp4 tensor cores), which beats GGUF's bf16-rate per-matmul
                 # dequant on both speed and quality, at the cost of a higher-memory dense
                 # load. Gated on CUDA + bf16 + a resident fit; ANY failure (unsupported arch
