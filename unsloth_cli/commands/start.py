@@ -1055,7 +1055,11 @@ def write_openclaw_config(
         if isinstance(tools, dict):
             exec_policy = tools.get("exec")
             if isinstance(exec_policy, dict):
-                for field, yolo_value in (("host", "gateway"), ("security", "full"), ("ask", "off")):
+                for field, yolo_value in (
+                    ("host", "gateway"),
+                    ("security", "full"),
+                    ("ask", "off"),
+                ):
                     if exec_policy.get(field) == yolo_value:
                         del exec_policy[field]
                 if not exec_policy:
@@ -1070,7 +1074,9 @@ def write_openclaw_config(
                 changed = False
                 if isinstance(defaults, dict):
                     for field, yolo_value in (
-                        ("security", "full"), ("ask", "off"), ("askFallback", "full"),
+                        ("security", "full"),
+                        ("ask", "off"),
+                        ("askFallback", "full"),
                     ):
                         if defaults.get(field) == yolo_value:
                             del defaults[field]

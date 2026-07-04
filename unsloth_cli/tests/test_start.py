@@ -1806,7 +1806,9 @@ def test_openclaw_non_yolo_preserves_stricter_approval_defaults(tmp_path):
     # settings from the user or the OpenClaw UI) are kept, and the file stays.
     path = tmp_path / "openclaw.json"
     approvals = path.parent / "exec-approvals.json"
-    approvals.write_text(json.dumps({"version": 1, "defaults": {"security": "allowlist", "ask": "on"}}))
+    approvals.write_text(
+        json.dumps({"version": 1, "defaults": {"security": "allowlist", "ask": "on"}})
+    )
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     state = json.loads(approvals.read_text())
     assert state["defaults"] == {"security": "allowlist", "ask": "on"}
