@@ -115,3 +115,48 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 
     assert row.path == str(root)
     assert row.model_format == "gguf"
+
+
+# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
+from models.models import LocalModelInfo  # noqa: E402
+
+
+def _local(path, *, model_format = None, model_id = None, display_name = "m", id = "m"):
+    return LocalModelInfo(
+        id = id,
+        display_name = display_name,
+        path = str(path),
+        source = "models_dir",
+        model_id = model_id,
+        model_format = model_format,
+    )
+
+
+def test_local_task_tags_diffusers_pipeline_dir(tmp_path):
+    # A local diffusers pipeline (top-level model_index.json) is an image model even
+    # though its model_format is not "gguf": tag it so the Images picker keeps it.
+    d = tmp_path / "my-local-pipeline"
+    _touch(d / "model_index.json")
+    _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
+    assert models_route._local_model_task(_local(d)) == "text-to-image"
+
+
+def test_local_task_tags_diffusers_by_family_id(tmp_path):
+    # A single-file / safetensors image checkpoint ships no model_index.json; fall back
+    # to the model id resolving to a known diffusion family.
+    d = tmp_path / "flux-checkpoint"
+    _touch(d / "flux1-dev.safetensors")
+    assert (
+        models_route._local_model_task(
+            _local(d, model_id = "black-forest-labs/FLUX.1-dev")
+        )
+        == "text-to-image"
+    )
+
+
+def test_local_task_none_for_plain_llm(tmp_path):
+    # A plain non-GGUF LLM checkpoint (no pipeline, no image family) stays untagged.
+    d = tmp_path / "llama"
+    _touch(d / "config.json")
+    _touch(d / "model.safetensors")
+    assert models_route._local_model_task(_local(d, model_id = "meta-llama/Llama-3.1-8B")) is None

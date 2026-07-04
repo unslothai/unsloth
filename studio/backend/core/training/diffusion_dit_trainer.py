@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     EventCb,
     StopCb,
@@ -66,6 +67,20 @@ _FLUX_TARGETS = (
 )
 _QWEN_TARGETS = _FLUX_TARGETS
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
+
+
+def _select_lora_targets(
+    cfg_targets: tuple[str, ...], spec_targets: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Pick the LoRA target modules for a DiT run.
+
+    ``normalized()`` always fills ``lora_target_modules`` with the generic
+    ``DEFAULT_LORA_TARGETS`` when a caller does not set it, so that value means "unset"
+    here: prefer the family's ``spec.lora_targets`` (which add the DiT-specific
+    projections). Any OTHER explicit tuple is a deliberate override and still wins."""
+    if tuple(cfg_targets) == DEFAULT_LORA_TARGETS:
+        return tuple(spec_targets)
+    return tuple(cfg_targets)
 
 
 @dataclass
@@ -1012,7 +1027,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    use_lora_targets = tuple(cfg.lora_target_modules) or spec.lora_targets
+    use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
 
     # Phase 1: conditioning only. The pipeline loads WITHOUT its transformer, so the text

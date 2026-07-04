@@ -417,10 +417,14 @@ def discover_image_caption_pairs(
     """Resolve ``(image_path, caption)`` pairs from a dataset directory.
 
     Caption sources, in priority order per image:
-      1. a ``metadata.jsonl`` / ``captions.jsonl`` row keyed by ``file_name`` (or ``image``)
+      1. a per-image sidecar ``<stem>.txt`` / ``<stem>.caption``,
+      2. a ``metadata.jsonl`` / ``captions.jsonl`` row keyed by ``file_name`` (or ``image``)
          carrying the caption in ``caption_column`` (default ``text``),
-      2. a per-image sidecar ``<stem>.txt`` / ``<stem>.caption``,
       3. ``instance_prompt`` (dreambooth) for any remaining image.
+
+    A sidecar wins over the metadata row because it is the user's explicit per-image edit
+    (the labeling grid writes a .txt sidecar), which must override the bulk metadata file.
+    Must agree with ``routes.training._image_record``, which resolves captions the same way.
 
     Images with no caption from any source are skipped. Pure filesystem + JSON, so it is
     unit-testable without torch. Raises FileNotFoundError for a missing dir and ValueError
@@ -453,15 +457,15 @@ def discover_image_caption_pairs(
     pairs: list[tuple[str, str]] = []
     for img in images:
         caption: Optional[str] = None
-        # 1. metadata row keyed by file name (basename or the name as written).
-        caption = meta_caption.get(img.name) or meta_caption.get(str(img.relative_to(root)))
-        # 2. per-image sidecar caption file.
+        # 1. per-image sidecar caption file (the user's explicit edit; wins over metadata).
+        for ext in _CAPTION_EXTS:
+            sidecar = img.with_suffix(ext)
+            if sidecar.is_file():
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+                break
+        # 2. metadata row keyed by file name (basename or the name as written).
         if caption is None:
-            for ext in _CAPTION_EXTS:
-                sidecar = img.with_suffix(ext)
-                if sidecar.is_file():
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
-                    break
+            caption = meta_caption.get(img.name) or meta_caption.get(str(img.relative_to(root)))
         # 3. dreambooth instance prompt.
         if caption is None and instance_prompt:
             caption = instance_prompt
