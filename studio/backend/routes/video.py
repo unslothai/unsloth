@@ -55,7 +55,6 @@ def _guard_video_load_against_training() -> None:
     diffusion_active = False
     try:
         from core.training.diffusion_training_service import get_diffusion_training_service
-
         diffusion_active = get_diffusion_training_service().is_active()
     except Exception:  # noqa: BLE001
         diffusion_active = False
@@ -136,7 +135,6 @@ async def load_video_model(
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
 async def video_load_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-
     return VideoLoadProgressResponse(**get_video_backend().load_progress())
 
 
@@ -215,14 +213,12 @@ async def generate_video(
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
 async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-
     return VideoGenerateProgressResponse(**get_video_backend().generate_progress())
 
 
 @router.post("/video/generate/cancel")
 async def cancel_video_generation(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-
     cancelled = await asyncio.to_thread(get_video_backend().cancel_generate)
     return {"cancelled": cancelled}
 
@@ -230,7 +226,6 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
 @router.get("/video/status", response_model = VideoStatusResponse)
 async def video_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-
     return VideoStatusResponse(**get_video_backend().status())
 
 
@@ -301,6 +296,5 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
 @router.delete("/video/gallery")
 async def clear_gallery_videos(current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
-
     removed = await asyncio.to_thread(video_gallery.clear)
     return {"removed": removed}

@@ -79,7 +79,6 @@ _PERFECT_MATCH_PSNR = 100.0
 
 def _gray(frame: Any) -> Any:
     import numpy as np
-
     f = np.asarray(frame, dtype = np.float64)
     return f @ np.array([0.299, 0.587, 0.114])
 
@@ -109,7 +108,11 @@ def _box_mean(x: Any, w: int) -> Any:
     return total / float(w * w)
 
 
-def frame_ssim(a: Any, b: Any, window: int = 7) -> float:
+def frame_ssim(
+    a: Any,
+    b: Any,
+    window: int = 7,
+) -> float:
     """Pure numpy box-window SSIM on luminance (Wang et al. constants); identical
     math to scripts/diffusion_quality.py so image and video budgets compare."""
     ga, gb = _gray(a), _gray(b)
@@ -148,7 +151,11 @@ def temporal_deviation(ref_frames: Any, cand_frames: Any) -> float:
     return sum(abs(r - c) for r, c in zip(ref_series, cand_series)) / denom
 
 
-def clip_metrics(ref_frames: Any, cand_frames: Any, sample_count: int = 5) -> dict[str, Any]:
+def clip_metrics(
+    ref_frames: Any,
+    cand_frames: Any,
+    sample_count: int = 5,
+) -> dict[str, Any]:
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
@@ -179,7 +186,7 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
         if a is None:
             return None
         arr = np.asarray(a, dtype = np.float64)
-        return float(np.sqrt((arr ** 2).mean())) if arr.size else 0.0
+        return float(np.sqrt((arr**2).mean())) if arr.size else 0.0
 
     ref_rms, cand_rms = _rms(ref_audio), _rms(cand_audio)
     silent_collapse = (
@@ -243,10 +250,14 @@ def parse_spec(spec: str) -> dict[str, str]:
 def spec_label(spec: dict[str, str]) -> str:
     if not spec:
         return "base"
-    return ",".join(f"{k}={Path(v).name if k == 'gguf_filename' else v}" for k, v in sorted(spec.items()))
+    return ",".join(
+        f"{k}={Path(v).name if k == 'gguf_filename' else v}" for k, v in sorted(spec.items())
+    )
 
 
-def run_config(backend: Any, args: Any, spec: dict[str, str], workdir: Path, name: str) -> dict[str, Any]:
+def run_config(
+    backend: Any, args: Any, spec: dict[str, str], workdir: Path, name: str
+) -> dict[str, Any]:
     """Load per spec, generate the fixed clip, unload. Returns frames/audio/cost."""
     import torch
 
@@ -276,9 +287,7 @@ def run_config(backend: Any, args: Any, spec: dict[str, str], workdir: Path, nam
         seed = args.seed,
     )
     generate_s = time.monotonic() - t0
-    peak_gib = (
-        torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_available() else 0.0
-    )
+    peak_gib = torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_available() else 0.0
     backend.unload()
     frames, audio = decode_mp4(result["mp4_bytes"], workdir, name)
     return {
@@ -287,10 +296,19 @@ def run_config(backend: Any, args: Any, spec: dict[str, str], workdir: Path, nam
         "load_s": round(load_s, 1),
         "generate_s": round(generate_s, 1),
         "peak_vram_gib": round(peak_gib, 2),
-        "resolved": {k: v for k, v in status.items() if k in (
-            "speed_mode", "attention_backend", "transformer_cache", "transformer_quant",
-            "offload_policy", "model_kind",
-        )},
+        "resolved": {
+            k: v
+            for k, v in status.items()
+            if k
+            in (
+                "speed_mode",
+                "attention_backend",
+                "transformer_cache",
+                "transformer_quant",
+                "offload_policy",
+                "model_kind",
+            )
+        },
     }
 
 
@@ -319,8 +337,10 @@ def run_gate(args: Any) -> int:
         audio = audio_metrics(ref["audio"], cand["audio"])
         row = {
             "candidate": label,
-            **{k: (round(v, 4) if isinstance(v, float) and math.isfinite(v) else v)
-               for k, v in metrics.items()},
+            **{
+                k: (round(v, 4) if isinstance(v, float) and math.isfinite(v) else v)
+                for k, v in metrics.items()
+            },
             **{f"audio_{k}": v for k, v in audio.items()},
             "load_s": cand["load_s"],
             "generate_s": cand["generate_s"],
@@ -363,7 +383,11 @@ def selftest() -> int:
     rng = np.random.default_rng(0)
     h, w, n = 64, 96, 12
 
-    def make_clip(offset = 0.0, noise = 0.0, black = False):
+    def make_clip(
+        offset = 0.0,
+        noise = 0.0,
+        black = False,
+    ):
         frames = []
         for t in range(n):
             x = np.linspace(0, 1, w)[None, :] + t * 0.05 + offset
@@ -385,24 +409,29 @@ def selftest() -> int:
         ok = ok and cond
 
     same = clip_metrics(ref, make_clip())
-    check(same["ssim_mean"] > 0.99 and same["temporal_deviation"] < 0.01,
-          f"identical clip scores ~1 (ssim {same['ssim_mean']:.3f})")
+    check(
+        same["ssim_mean"] > 0.99 and same["temporal_deviation"] < 0.01,
+        f"identical clip scores ~1 (ssim {same['ssim_mean']:.3f})",
+    )
     check(verdict(same, {"silent_collapse": False}) == "PASS", "identical clip verdict PASS")
 
     noisy = clip_metrics(ref, make_clip(noise = 12.0))
     check(0.3 < noisy["ssim_mean"] < 0.99, f"noisy clip degrades ssim ({noisy['ssim_mean']:.3f})")
 
     black = clip_metrics(ref, make_clip(black = True))
-    check(verdict(black, {"silent_collapse": False}) == "FAIL",
-          f"black clip verdict FAIL (min_luma {black['min_luma']:.3f})")
+    check(
+        verdict(black, {"silent_collapse": False}) == "FAIL",
+        f"black clip verdict FAIL (min_luma {black['min_luma']:.3f})",
+    )
 
     shifted = clip_metrics(ref, make_clip(offset = 0.5))
     check(shifted["ssim_mean"] < same["ssim_mean"], "content shift lowers ssim")
 
     audio = audio_metrics(np.sin(np.linspace(0, 100, 16000)), np.zeros(16000))
     check(audio["silent_collapse"] is True, "silent audio collapse detected")
-    audio_ok = audio_metrics(np.sin(np.linspace(0, 100, 16000)),
-                             np.sin(np.linspace(0, 100, 16000)) * 0.8)
+    audio_ok = audio_metrics(
+        np.sin(np.linspace(0, 100, 16000)), np.sin(np.linspace(0, 100, 16000)) * 0.8
+    )
     check(audio_ok["silent_collapse"] is False, "attenuated audio is not a collapse")
 
     print("VIDEO-QUALITY-SELFTEST", "PASS" if ok else "FAIL")
@@ -414,7 +443,9 @@ def main() -> int:
     parser.add_argument("--selftest", action = "store_true", help = "CPU metric sanity check")
     parser.add_argument("--model", help = "Repo id handed to the video backend")
     parser.add_argument("--model-kind", default = None, help = "pipeline | gguf | single_file")
-    parser.add_argument("--reference", default = "", help = "Reference spec 'k=v;k=v' ('' = plain base load)")
+    parser.add_argument(
+        "--reference", default = "", help = "Reference spec 'k=v;k=v' ('' = plain base load)"
+    )
     parser.add_argument("--candidates", nargs = "+", default = [], help = "Candidate specs 'k=v;k=v'")
     parser.add_argument("--prompt", default = DEFAULT_PROMPT)
     parser.add_argument("--width", type = int, default = 768)

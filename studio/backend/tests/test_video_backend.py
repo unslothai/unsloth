@@ -479,17 +479,21 @@ def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
 
     gguf = types.ModuleType("gguf")
     # GGUF headers store dims in GGML (reversed) order.
-    gguf.GGUFReader = _reader_for({
-        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 9),
-    })
+    gguf.GGUFReader = _reader_for(
+        {
+            "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 9),
+        }
+    )
     monkeypatch.setitem(sys.modules, "gguf", gguf)
     path = tmp_path / "ltx23.gguf"
     path.write_bytes(b"x")
     assert is_ltx23_checkpoint(path) is True
 
-    gguf.GGUFReader = _reader_for({
-        "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
-    })
+    gguf.GGUFReader = _reader_for(
+        {
+            "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
+        }
+    )
     assert is_ltx23_checkpoint(path) is False
 
     def _boom(path):
@@ -643,9 +647,7 @@ def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
     pipe = _FakeHV15Pipeline.instance
     # Cancel lands during the FIRST real step; the next wrapped call must raise out
     # of the denoise loop and generate() must surface the cancelled sentinel.
-    pipe.scheduler.on_step = (
-        lambda n: backend.cancel_generate() if n == 1 else None
-    )
+    pipe.scheduler.on_step = lambda n: backend.cancel_generate() if n == 1 else None
     with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
         backend.generate(prompt = "a fox", steps = 4)
     assert pipe.scheduler.calls == 1
@@ -785,7 +787,14 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
-    def _fake_quant(view, target, *, mode, family, logger = None):
+    def _fake_quant(
+        view,
+        target,
+        *,
+        mode,
+        family,
+        logger = None,
+    ):
         # The helper reads view.transformer; record the object it would quantise so the
         # test proves the second expert was reached through the proxy.
         quantised.append(view.transformer)
@@ -815,7 +824,14 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
-    def _fake_quant(view, target, *, mode, family, logger = None):
+    def _fake_quant(
+        view,
+        target,
+        *,
+        mode,
+        family,
+        logger = None,
+    ):
         quantised.append(view.transformer)
         return "int8"
 
@@ -856,7 +872,14 @@ def test_wan_ti2v_dense_quant_applies_to_single_dit(fake_runtime, monkeypatch):
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
-    def _fake_quant(view, target, *, mode, family, logger = None):
+    def _fake_quant(
+        view,
+        target,
+        *,
+        mode,
+        family,
+        logger = None,
+    ):
         quantised.append(view.transformer)
         return "fp8"
 
@@ -876,13 +899,9 @@ def test_wan_validate_trusted_repos(fake_runtime):
     # The two Wan base repos are trusted for non-GGUF (pipeline) loads; an unrelated
     # repo carrying the family name is not.
     backend = VideoBackend()
-    fam = backend.validate_load_request(
-        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline"
-    )
+    fam = backend.validate_load_request("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert fam.name == "wan2.2-ti2v-5b"
-    fam2 = backend.validate_load_request(
-        "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline"
-    )
+    fam2 = backend.validate_load_request("Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline")
     assert fam2.name == "wan2.2-t2v-a14b"
     with pytest.raises(ValueError, match = "limited to"):
         backend.validate_load_request("evil/wan2.2-ti2v-5b-repack", model_kind = "pipeline")

@@ -270,12 +270,10 @@ def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, 
     path = str(checkpoint_path)
     if path.lower().endswith(".gguf"):
         from gguf import GGUFReader
-
         for tensor in GGUFReader(path).tensors:
             names_shapes[str(tensor.name)] = tuple(int(x) for x in tensor.shape)
     else:
         from safetensors import safe_open
-
         with safe_open(path, framework = "pt") as handle:
             for name in handle.keys():
                 names_shapes[name] = tuple(handle.get_slice(name).get_shape())
@@ -344,16 +342,20 @@ def _split_checkpoint(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     connector keys, nothing else).
     """
     groups: dict[str, dict[str, Any]] = {
-        "dit": {}, "connectors": {}, "vae": {}, "audio_vae": {}, "vocoder": {}
+        "dit": {},
+        "connectors": {},
+        "vae": {},
+        "audio_vae": {},
+        "vocoder": {},
     }
     for key, value in state.items():
-        bare = key[len(_DIT_PREFIX):] if key.startswith(_DIT_PREFIX) else key
+        bare = key[len(_DIT_PREFIX) :] if key.startswith(_DIT_PREFIX) else key
         if bare.startswith("vae."):
-            groups["vae"][bare[len("vae."):]] = value
+            groups["vae"][bare[len("vae.") :]] = value
         elif bare.startswith("audio_vae."):
-            groups["audio_vae"][bare[len("audio_vae."):]] = value
+            groups["audio_vae"][bare[len("audio_vae.") :]] = value
         elif bare.startswith("vocoder."):
-            groups["vocoder"][bare[len("vocoder."):]] = value
+            groups["vocoder"][bare[len("vocoder.") :]] = value
         elif bare.startswith(_CONNECTOR_KEY_PREFIXES):
             groups["connectors"][bare] = value
         else:
@@ -382,9 +384,14 @@ def checkpoint_variant(checkpoint_path: Path | str) -> str:
 # ── component builders ───────────────────────────────────────────────────────
 
 
-def _build_from_config(model_cls: Any, config: dict[str, Any], state: dict[str, Any],
-                       rename: dict[str, str], torch_dtype: Any,
-                       remove_suffixes: tuple[str, ...] = ()) -> Any:
+def _build_from_config(
+    model_cls: Any,
+    config: dict[str, Any],
+    state: dict[str, Any],
+    rename: dict[str, str],
+    torch_dtype: Any,
+    remove_suffixes: tuple[str, ...] = (),
+) -> Any:
     from accelerate import init_empty_weights
 
     state = _apply_rename(_to_plain_dtype(state, torch_dtype), rename)
@@ -396,8 +403,14 @@ def _build_from_config(model_cls: Any, config: dict[str, Any], state: dict[str, 
     return model.to(torch_dtype)
 
 
-def load_ltx23_transformer(dit_state: dict[str, Any], *, base_repo: str, torch_dtype: Any,
-                           is_gguf: bool, hf_token: Optional[str]) -> Any:
+def load_ltx23_transformer(
+    dit_state: dict[str, Any],
+    *,
+    base_repo: str,
+    torch_dtype: Any,
+    is_gguf: bool,
+    hf_token: Optional[str],
+) -> Any:
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
 
@@ -406,7 +419,7 @@ def load_ltx23_transformer(dit_state: dict[str, Any], *, base_repo: str, torch_d
     # base repo's 2.0 transformer config and runs the stock 2.0 key conversion.
     for old, new in _TRANSFORMER_PRERENAME:
         for key in [k for k in dit_state if k.startswith(old)]:
-            dit_state[new + key[len(old):]] = dit_state.pop(key)
+            dit_state[new + key[len(old) :]] = dit_state.pop(key)
     kwargs: dict[str, Any] = {
         "config": base_repo,
         "subfolder": "transformer",
@@ -415,44 +428,54 @@ def load_ltx23_transformer(dit_state: dict[str, Any], *, base_repo: str, torch_d
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
     if is_gguf:
-        kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
-            compute_dtype = torch_dtype
-        )
+        kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     return LTX2VideoTransformer3DModel.from_single_file(dit_state, **kwargs)
 
 
-def load_ltx23_connectors(connector_state: dict[str, Any], *, variant: str,
-                          torch_dtype: Any, hf_token: Optional[str]) -> Any:
+def load_ltx23_connectors(
+    connector_state: dict[str, Any], *, variant: str, torch_dtype: Any, hf_token: Optional[str]
+) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
     # Transformer-only checkpoints carry the connector stacks but not the huge
     # per-modality text projections; fetch those from the companion file.
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
-        connector_state.update(_load_extras_file(
-            _EXTRAS_TEXT_PROJ.format(variant = variant), hf_token
-        ))
+        connector_state.update(
+            _load_extras_file(_EXTRAS_TEXT_PROJ.format(variant = variant), hf_token)
+        )
     return _build_from_config(
-        LTX2TextConnectors, _CONNECTORS_CONFIG, connector_state, _CONNECTORS_RENAME,
+        LTX2TextConnectors,
+        _CONNECTORS_CONFIG,
+        connector_state,
+        _CONNECTORS_RENAME,
         torch_dtype,
     )
 
 
-def load_ltx23_vae(vae_state: dict[str, Any], *, variant: str, torch_dtype: Any,
-                   hf_token: Optional[str]) -> Any:
+def load_ltx23_vae(
+    vae_state: dict[str, Any], *, variant: str, torch_dtype: Any, hf_token: Optional[str]
+) -> Any:
     from diffusers import AutoencoderKLLTX2Video
-
     if not vae_state:
         vae_state = _load_extras_file(_EXTRAS_VIDEO_VAE.format(variant = variant), hf_token)
     return _build_from_config(
-        AutoencoderKLLTX2Video, _VIDEO_VAE_CONFIG, vae_state, _VIDEO_VAE_RENAME,
-        torch_dtype, remove_suffixes = _VIDEO_VAE_REMOVE_SUFFIXES,
+        AutoencoderKLLTX2Video,
+        _VIDEO_VAE_CONFIG,
+        vae_state,
+        _VIDEO_VAE_RENAME,
+        torch_dtype,
+        remove_suffixes = _VIDEO_VAE_REMOVE_SUFFIXES,
     )
 
 
 def load_ltx23_audio_vae_and_vocoder(
-    audio_vae_state: dict[str, Any], vocoder_state: dict[str, Any], *, variant: str,
-    torch_dtype: Any, hf_token: Optional[str],
+    audio_vae_state: dict[str, Any],
+    vocoder_state: dict[str, Any],
+    *,
+    variant: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
 ) -> tuple[Any, Any]:
     from diffusers import AutoencoderKLLTX2Audio
     from diffusers.pipelines.ltx2.vocoder import LTX2VocoderWithBWE
@@ -460,13 +483,16 @@ def load_ltx23_audio_vae_and_vocoder(
     if not audio_vae_state or not vocoder_state:
         combined = _load_extras_file(_EXTRAS_AUDIO_VAE.format(variant = variant), hf_token)
         audio_vae_state = {
-            k[len("audio_vae."):]: v for k, v in combined.items() if k.startswith("audio_vae.")
+            k[len("audio_vae.") :]: v for k, v in combined.items() if k.startswith("audio_vae.")
         }
         vocoder_state = {
-            k[len("vocoder."):]: v for k, v in combined.items() if k.startswith("vocoder.")
+            k[len("vocoder.") :]: v for k, v in combined.items() if k.startswith("vocoder.")
         }
     audio_vae = _build_from_config(
-        AutoencoderKLLTX2Audio, _AUDIO_VAE_CONFIG, audio_vae_state, _AUDIO_VAE_RENAME,
+        AutoencoderKLLTX2Audio,
+        _AUDIO_VAE_CONFIG,
+        audio_vae_state,
+        _AUDIO_VAE_RENAME,
         torch_dtype,
     )
     # The 2.3 vocoder is a composite (base vocoder + bandwidth-extension stack +
@@ -485,8 +511,14 @@ def load_ltx23_audio_vae_and_vocoder(
 # ── pipeline assembly ────────────────────────────────────────────────────────
 
 
-def load_ltx23_pipeline(checkpoint_path: Path | str, *, base_repo: str, torch_dtype: Any,
-                        is_gguf: bool, hf_token: Optional[str] = None) -> Any:
+def load_ltx23_pipeline(
+    checkpoint_path: Path | str,
+    *,
+    base_repo: str,
+    torch_dtype: Any,
+    is_gguf: bool,
+    hf_token: Optional[str] = None,
+) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint.
 
     Assembled per-component (constructor, not from_pretrained) because the base
@@ -500,7 +532,9 @@ def load_ltx23_pipeline(checkpoint_path: Path | str, *, base_repo: str, torch_dt
     variant = checkpoint_variant(checkpoint_path)
     logger.info(
         "video.ltx23_assembly: variant=%s gguf=%s extras=%s",
-        variant, is_gguf, LTX23_EXTRAS_REPO,
+        variant,
+        is_gguf,
+        LTX23_EXTRAS_REPO,
     )
     state = load_single_file_checkpoint(str(checkpoint_path))
     groups = _split_checkpoint(state)
@@ -518,19 +552,25 @@ def load_ltx23_pipeline(checkpoint_path: Path | str, *, base_repo: str, torch_dt
         )
 
     transformer = load_ltx23_transformer(
-        groups["dit"], base_repo = base_repo, torch_dtype = torch_dtype,
-        is_gguf = is_gguf, hf_token = hf_token,
-    )
-    connectors = load_ltx23_connectors(
-        groups["connectors"], variant = variant, torch_dtype = torch_dtype,
+        groups["dit"],
+        base_repo = base_repo,
+        torch_dtype = torch_dtype,
+        is_gguf = is_gguf,
         hf_token = hf_token,
     )
-    vae = load_ltx23_vae(
-        groups["vae"], variant = variant, torch_dtype = torch_dtype, hf_token = hf_token
+    connectors = load_ltx23_connectors(
+        groups["connectors"],
+        variant = variant,
+        torch_dtype = torch_dtype,
+        hf_token = hf_token,
     )
+    vae = load_ltx23_vae(groups["vae"], variant = variant, torch_dtype = torch_dtype, hf_token = hf_token)
     audio_vae, vocoder = load_ltx23_audio_vae_and_vocoder(
-        groups["audio_vae"], groups["vocoder"], variant = variant,
-        torch_dtype = torch_dtype, hf_token = hf_token,
+        groups["audio_vae"],
+        groups["vocoder"],
+        variant = variant,
+        torch_dtype = torch_dtype,
+        hf_token = hf_token,
     )
 
     # Shared 2.0/2.3 components from the base repo, resolved through model_index
