@@ -386,7 +386,9 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             # Hidden dim not divisible by the activation block: dequant + plain matmul.
             # Use the original (un-expanded) scale so a scalar per-tensor scale keeps
             # the fast scalar path in both forward and backward.
-            W_deq = _blockwise_weight_dequant_any_shape(weight, original_weight_scale, block_size, X.dtype)
+            W_deq = _blockwise_weight_dequant_any_shape(
+                weight, original_weight_scale, block_size, X.dtype
+            )
             ctx.weight = weight
             ctx.weight_scale = original_weight_scale
             ctx.block_size = block_size
