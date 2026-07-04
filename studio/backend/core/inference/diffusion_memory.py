@@ -270,10 +270,7 @@ def estimate_image_runtime_mib(
 
 
 def estimate_video_runtime_mib(
-    *,
-    width: Optional[int],
-    height: Optional[int],
-    num_frames: Optional[int],
+    *, width: Optional[int], height: Optional[int], num_frames: Optional[int]
 ) -> int:
     """Per-call activation / latent / decode headroom for a video generation.
 
