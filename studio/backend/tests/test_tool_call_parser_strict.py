@@ -197,3 +197,47 @@ class TestHealingPathUnaffected:
         assert text[span[0] : span[1]] == (
             "<function=web_search><parameter=query>cats</parameter></function>"
         )
+
+
+class TestGemmaAwareClosedBlockPrePass:
+    """The closed JSON/function strip pre-pass must not delete across a complete
+    Gemma span: a literal <function=...> quoted in a Gemma argument plus a later
+    real </function> would otherwise mangle the Gemma close marker and truncate
+    the whole visible tail."""
+
+    def test_literal_function_in_gemma_arg_with_later_real_call(self):
+        from core.tool_healing import strip_tool_call_markup
+
+        text = (
+            'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
+            "<tool_call|> <function=terminal><parameter=cmd>ls</parameter>"
+            "</function> after"
+        )
+        assert strip_tool_call_markup(text, final = True) == "before   after"
+
+    def test_literal_function_in_gemma_arg_with_prose_closer(self):
+        from core.tool_healing import strip_tool_call_markup
+
+        text = (
+            'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
+            "<tool_call|> then use </function> to close. after"
+        )
+        out = strip_tool_call_markup(text, final = True)
+        assert out.startswith("before")
+        assert out.endswith("after")
+        assert "call:python" not in out
+
+    def test_gemma_opener_inside_json_arg_still_strips_block(self):
+        from core.tool_healing import strip_tool_call_markup
+
+        text = '<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after'
+        assert strip_tool_call_markup(text, final = True) == "after"
+
+    def test_gemma_opener_inside_function_param_still_strips_block(self):
+        from core.tool_healing import strip_tool_call_markup
+
+        text = (
+            '<function=python><parameter=code>x = "<|tool_call>call:t{"</parameter>'
+            "</function> after"
+        )
+        assert strip_tool_call_markup(text, final = True) == "after"

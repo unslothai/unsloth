@@ -567,15 +567,74 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _gemma_span_ranges(text: str) -> list:
+    """``(start, end)`` of each complete Gemma-native span, same walk as
+    ``_strip_gemma_native_spans`` without stripping (brace/quote-balanced,
+    close marker searched after the braces)."""
+    ranges: list[tuple] = []
+    cursor = 0
+    for match in _TC_GEMMA_START_RE.finditer(text):
+        start = match.start()
+        if start < cursor:
+            continue
+        brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
+        if brace_end < 0:
+            break
+        close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
+        if close is None:
+            break
+        ranges.append((start, close.end()))
+        cursor = close.end()
+    return ranges
+
+
+def _strip_closed_blocks_outside_gemma(text: str) -> str:
+    """Closed JSON/function pre-pass that leaves matches STARTING inside a
+    complete Gemma span alone. A literal ``<function=...>`` quoted in a Gemma
+    argument plus a later real ``</function>`` would otherwise be deleted
+    across the Gemma boundary, mangling the Gemma close marker so the
+    quote-aware strip truncates the whole tail. A skipped match resumes the
+    scan at the END of the covering Gemma span (not the match end), so a real
+    function-XML call after the span is still stripped."""
+    ranges = _gemma_span_ranges(text)
+    if not ranges:
+        return strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
+    for pat in _TOOL_CLOSED_BLOCK_PATS:
+        token = _PAT_REQUIRED_TOKEN.get(pat)
+        if token is not None and token not in text:
+            continue
+        out: list[str] = []
+        pos = 0
+        while True:
+            m = pat.search(text, pos)
+            if m is None:
+                out.append(text[pos:])
+                break
+            covering = next((r for r in ranges if r[0] <= m.start() < r[1]), None)
+            if covering is not None:
+                out.append(text[pos : covering[1]])
+                pos = covering[1]
+                continue
+            out.append(text[pos : m.start()])
+            pos = m.end()
+        new_text = "".join(out)
+        if new_text != text:
+            text = new_text
+            ranges = _gemma_span_ranges(text)
+    return text
+
+
 def strip_tool_markup_final(text: str) -> str:
     """Final display strip, shared by ``strip_tool_call_markup`` and the streaming
     wrappers so all three order the passes the same way. Closed JSON/function
-    blocks go first, so a Gemma opener in their argument data cannot make the
-    quote-aware helper truncate the block (and text after it) to EOF; then
-    well-formed Gemma spans (quote-aware); then the regex sweeps mop up malformed
-    spans and drop any unclosed remainder to EOF. Surrounding whitespace is kept.
+    blocks go first (so a Gemma opener in their argument data cannot make the
+    quote-aware helper truncate the block and its tail to EOF), but Gemma-aware:
+    a match starting inside a complete Gemma span is that span's argument data,
+    not a block to delete across the boundary. Then well-formed Gemma spans
+    (quote-aware); then the regex sweeps mop up malformed spans and drop any
+    unclosed remainder to EOF. Surrounding whitespace is kept.
     """
-    text = strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
+    text = _strip_closed_blocks_outside_gemma(text)
     text = _strip_gemma_native_spans(text, final = True)
     return strip_tool_patterns(text, _TOOL_ALL_PATS)
 
@@ -592,6 +651,6 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     # Non-final: closed JSON/function blocks first (same reason as the final path),
     # then keep any still-incomplete Gemma span (quote-aware), then the closed
     # patterns mop up the rest without touching incomplete blocks.
-    text = strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
+    text = _strip_closed_blocks_outside_gemma(text)
     text = _strip_gemma_native_spans(text, final = False)
     return strip_tool_patterns(text, _TOOL_CLOSED_PATS)
