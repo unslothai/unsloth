@@ -630,11 +630,16 @@ _EMBEDDED_MARKER_RE = re.compile(
 # both -- otherwise an attribute-form call whose argument embeds a DeepSeek/Kimi
 # marker is hijacked by the marker pre-pass and the wrong tool runs.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")')
-# The CLOSED forms of the outer envelopes above (first two ``_TOOL_CLOSED_PATS``
-# entries). Their patterns span to the REAL final close, so a literal
-# ``</function>``/``</tool_call>`` inside an argument value is treated as data, not
-# the envelope boundary.
-_OUTER_ENVELOPE_CLOSED_PATS = tuple(_TOOL_CLOSED_PATS[:2])
+# The CLOSED forms of the outer envelopes above, each spanning to its REAL final
+# close so a literal ``</tool_call>``/``</function>`` inside an argument value is
+# treated as data, not the envelope boundary. ``_TOOL_CLOSED_PATS[0]`` is the LAZY
+# ``<tool_call>.*?</tool_call>`` strip form (stops at the first, possibly in-string,
+# close), so use a real-close ``<tool_call>`` pattern here -- the negative lookahead
+# keeps back-to-back calls separate, mirroring the ``<function>`` arm.
+_OUTER_ENVELOPE_CLOSED_PATS = (
+    re.compile(r"<tool_call>(?:(?!<tool_call>).)*</tool_call>", re.DOTALL),
+    _TOOL_CLOSED_PATS[1],
+)
 
 
 def _marker_inside_leading_envelope(content: str) -> bool:
