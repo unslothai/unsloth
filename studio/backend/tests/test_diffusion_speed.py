@@ -453,3 +453,36 @@ def test_fp16_accum_not_touched_off_cuda(monkeypatch):
     )
     assert applied["fp16_accum"] is False
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
+
+
+def test_fp16_accum_denied_on_fp16_dtype_below_max(monkeypatch):
+    # fp16 compute is where the accumulator width actually changes results (measured
+    # same-seed drift, mean 2-5%): the quality-neutral tiers must refuse it.
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    for mode in ("eager", "default"):
+        applied = apply_speed_optims(
+            _Pipe(),
+            _target(dtype = "float16"),
+            is_gguf = True,
+            family = _family(),
+            speed_mode = mode,
+        )
+        assert applied["fp16_accum"] is False
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
+
+
+def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
+    # max already trades exactness for speed (conv algos, max-autotune), so the 2x
+    # fp16 accumulate joins that tier for fp16 pipelines.
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, with_fuse = True),
+        _target(dtype = "float16"),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = "max",
+    )
+    assert applied["fp16_accum"] is True
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
