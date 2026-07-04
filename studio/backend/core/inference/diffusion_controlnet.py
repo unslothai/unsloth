@@ -205,7 +205,8 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
 # Union ControlNet mode indices. A single "union" model covers several control modes and
 # selects the active one via an integer ``control_mode`` argument; these are the standard
 # indices used by the FLUX.1 / Qwen-Image union ControlNets. "passthrough" (an already-made
-# map) carries no intrinsic mode, so it maps to nothing (the caller omits control_mode).
+# map) carries no intrinsic mode, so union_control_mode() defaults it to 0 (a union model
+# still requires a concrete mode).
 _UNION_CONTROL_MODES: dict[str, int] = {
     "canny": 0,
     "tile": 1,
@@ -220,13 +221,16 @@ _UNION_CONTROL_MODES: dict[str, int] = {
 def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     """The integer ``control_mode`` for a union ControlNet, or None.
 
-    Returns a mode only for a curated *union* catalog entry AND a control type that maps to a
-    known index; otherwise None so the caller omits the kwarg (a non-union ControlNet has a
-    single fixed mode, and 'passthrough' does not name one). Pure lookup, no network."""
+    A union model REQUIRES a concrete ``control_mode`` (diffusers raises when it is None),
+    so for a curated union entry always return an index: the mapped mode, or a default
+    (0 / canny) for a type that carries no intrinsic mode such as 'passthrough' (an
+    already-made control map, which is also the UI's default for these models). For a
+    non-union entry return None so the caller omits the kwarg (it has a single fixed
+    mode). Pure lookup, no network."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None or not entry.is_union:
         return None
-    return _UNION_CONTROL_MODES.get((control_type or "").strip().lower())
+    return _UNION_CONTROL_MODES.get((control_type or "").strip().lower(), 0)
 
 
 def preprocess_control(image: Any, control_type: str) -> Any:

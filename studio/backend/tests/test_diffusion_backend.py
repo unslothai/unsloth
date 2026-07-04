@@ -2043,7 +2043,7 @@ def test_reset_step_cache_helper_is_best_effort():
     # Calls the transformer's reset hook when present.
     calls = []
     pipe = types.SimpleNamespace(
-        transformer = types.SimpleNamespace(reset_stateful_hooks = lambda: calls.append(True))
+        transformer = types.SimpleNamespace(_reset_stateful_cache = lambda: calls.append(True))
     )
     DiffusionBackend._reset_step_cache(pipe)
     assert calls == [True]
@@ -2065,7 +2065,7 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
     )
     resets = []
     backend._state.pipe.transformer = types.SimpleNamespace(
-        reset_stateful_hooks = lambda: resets.append(True)
+        _reset_stateful_cache = lambda: resets.append(True)
     )
     # No cache engaged (transformer_cache is None) -> reset must NOT run.
     backend.generate(prompt = "a sloth")

@@ -842,15 +842,32 @@ class DiffusionBackend:
     def _companion_cache_bytes(base: str) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan.
 
-        For a hub base repo this is the cached blob total (``_cache_bytes``). For a
-        LOCAL diffusers base directory the blob cache is empty, so sum the on-disk
-        component weights instead, excluding ``transformer/`` (the GGUF supplies the
-        transformer). Without this a local base folds its multi-GB VAE / text-encoder
-        weights to zero and auto planning can pick a resident placement that OOMs."""
+        Sums the cached VAE + text-encoder weights while EXCLUDING ``transformer/`` (the
+        GGUF / single file supplies the transformer, so its ``transformer/`` shards are
+        not resident here). This matters for the dense ``transformer_quant`` path: it
+        prefetches the base repo's ``transformer/`` shards into the cache, and folding
+        those multi-GB shards into the companion size would inflate the plan and wrongly
+        force offload -- gating off the very quant path that fetched them. For a LOCAL
+        diffusers base the blob cache is empty, so walk the on-disk weights; for a hub
+        base, walk the snapshot (whose ``transformer/`` subfolder we can skip) instead of
+        the flat, content-addressed ``blobs/`` dir, which carries no subfolder split."""
         local = Path(base).expanduser()
         if local.is_dir():
             return DiffusionBackend._local_dir_weight_bytes(local, exclude_transformer = True)
-        return DiffusionBackend._cache_bytes(base)
+        from huggingface_hub import constants
+
+        snapshots = Path(constants.HF_HUB_CACHE) / f"models--{base.replace('/', '--')}" / "snapshots"
+        if not snapshots.is_dir():
+            return 0
+        # Multiple revisions may be cached; the active one is the fullest, so take the max.
+        return max(
+            (
+                DiffusionBackend._local_dir_weight_bytes(rev, exclude_transformer = True)
+                for rev in snapshots.iterdir()
+                if rev.is_dir()
+            ),
+            default = 0,
+        )
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
@@ -1653,7 +1670,13 @@ class DiffusionBackend:
         resolution/batch changed, or a stale-cache reuse otherwise. Best-effort: a
         transformer without the hook (uncached load) is a silent no-op."""
         transformer = getattr(pipe, "transformer", None)
-        reset = getattr(transformer, "reset_stateful_hooks", None)
+        # A diffusers CacheMixin transformer clears FBCache via ``_reset_stateful_cache``
+        # (which drives its HookRegistry.reset_stateful_hooks internally). The public
+        # ``reset_stateful_hooks`` name lives only on the HookRegistry, not on the
+        # transformer, so keep it only as a version fallback.
+        reset = getattr(transformer, "_reset_stateful_cache", None) or getattr(
+            transformer, "reset_stateful_hooks", None
+        )
         if callable(reset):
             try:
                 reset()

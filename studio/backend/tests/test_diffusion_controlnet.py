@@ -56,12 +56,13 @@ def test_resolve_controlnet_enforces_family_match():
 
 
 def test_union_control_mode_maps_only_union_entries():
-    # Union entries map a known control type to its integer mode; passthrough / unknown
-    # types and non-union ids return None so the caller omits control_mode.
+    # Union entries map a known control type to its integer mode; a union model always
+    # needs a concrete mode, so an unmapped type (passthrough) defaults to 0. A non-union
+    # id returns None so the caller omits control_mode.
     assert dc.union_control_mode("flux-union-pro", "canny") == 0
     assert dc.union_control_mode("flux-union-pro", "depth") == 2
     assert dc.union_control_mode("flux-union-pro", "pose") == 4
-    assert dc.union_control_mode("flux-union-pro", "passthrough") is None
+    assert dc.union_control_mode("flux-union-pro", "passthrough") == 0
     assert dc.union_control_mode("some/bare-repo", "canny") is None
 
 

@@ -318,23 +318,30 @@ export function DiffusionTrainPanel({
   // terminal "completed" status until the next start, so we can't rely on it clearing).
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
   const running = Boolean(status?.active) || status?.status === "running";
-  const completed =
-    status?.status === "completed" && status.job_id !== dismissedJobId;
+  // A stopped run still saves + catalog-publishes a real, deployable adapter (status
+  // carries catalog_path), so treat "stopped with an adapter" as terminal-with-adapter
+  // too -- otherwise the normal "stop once the loss looks good" flow leaves the trained
+  // adapter with no Deploy button and no picker refresh. A save=False cancel has no
+  // catalog_path, so it correctly still shows nothing.
+  const hasSavedAdapter =
+    status?.status === "completed" ||
+    (status?.status === "stopped" && Boolean(status?.catalog_path));
+  const completed = hasSavedAdapter && status?.job_id !== dismissedJobId;
   const pct =
     status && status.total_steps > 0
       ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
       : 0;
 
-  // Notify the parent exactly once per completed run so it rescans the LoRA picker.
+  // Notify the parent exactly once per finished run so it rescans the LoRA picker.
   const notifiedComplete = useRef(false);
   useEffect(() => {
-    if (status?.status === "completed" && !notifiedComplete.current) {
+    if (hasSavedAdapter && !notifiedComplete.current) {
       notifiedComplete.current = true;
       onTrainingComplete?.();
     } else if (status?.status === "running" && notifiedComplete.current) {
       notifiedComplete.current = false;
     }
-  }, [status?.status, onTrainingComplete]);
+  }, [hasSavedAdapter, status?.status, onTrainingComplete]);
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
@@ -780,7 +787,7 @@ export function DiffusionTrainPanel({
       <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
         {status &&
         status.status !== "idle" &&
-        !(status.status === "completed" && status.job_id === dismissedJobId) ? (
+        !(hasSavedAdapter && status.job_id === dismissedJobId) ? (
           <>
             <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
               <div className="flex items-center justify-between">

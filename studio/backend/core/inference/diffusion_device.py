@@ -14,6 +14,7 @@ dtype choice and the capability flags the backend keys optimisation paths off.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -234,6 +235,16 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
+        # Relax the MPS memory watermark BEFORE the first MPS allocation (the bfloat16
+        # probe just below). torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO exactly once,
+        # when the MPS allocator first initializes, so setting it any later is a no-op.
+        # The allocator otherwise caps a process at ~1.7x recommendedMaxWorkingSetSize,
+        # and a model that fits in unified system RAM but exceeds that cap OOMs at
+        # pipe.to("mps") (observed on an 8GB M1 mac mini: "MPS allocated 9.06 GiB, max
+        # allowed 9.07 GiB"). CPU offload can't help on unified memory (it frees no
+        # device bytes). Lifting the cap lets MPS spill into system RAM; a model larger
+        # than RAM would fail either way. setdefault respects a user-provided override.
+        os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
         # Prefer bfloat16; otherwise fall back to float32, NEVER silent float16.
         # Modern diffusion transformers (Z-Image, FLUX.2, ...) produce activations
         # far outside float16's finite range (~6.5e4) -- Z-Image's MLP

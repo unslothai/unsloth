@@ -125,7 +125,12 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
 def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
     """``stem`` locations under a stable-diffusion.cpp checkout/install ``root``,
     highest priority first: the cmake ``build/bin`` tree, then a Windows Release
-    subdir, then the root itself."""
+    subdir, then the root itself, then the prebuilt archive's versioned subdir.
+
+    The prebuilt archive extracts into a top-level versioned dir
+    (``sd-master-<tag>-bin-<host>/``) rather than flattening into ``root``, so without
+    the ``root/*/`` glob a fresh prebuilt install is invisible here -- which silently
+    demotes the persistent sd-server to one-shot mode and re-downloads on every start."""
     name = _binary_name(stem)
     cands = [
         root / "build" / "bin" / name,
@@ -133,6 +138,17 @@ def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
         root / "bin" / name,
         root / name,
     ]
+    # Prebuilt archive layout: root/sd-master-<tag>-bin-<host>/<name> (+ its own bin/).
+    # Newest install first (by mtime -- tag strings don't sort numerically, so a lexical
+    # sort would rank build 99 above build 100).
+    try:
+        subdirs = [p for p in root.iterdir() if p.is_dir()]
+        subdirs.sort(key = lambda p: p.stat().st_mtime, reverse = True)
+        for sub in subdirs:
+            cands.append(sub / name)
+            cands.append(sub / "bin" / name)
+    except OSError:
+        pass
     return cands
 
 
