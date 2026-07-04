@@ -566,6 +566,37 @@ def test_ltx23_split_and_variant(tmp_path):
     assert checkpoint_variant("x/ltx-2.3-22b-dev-Q8_0.gguf") == "dev"
 
 
+def test_ltx23_scaled_fp8_refused(monkeypatch, tmp_path):
+    # The Lightricks fp8 files carry .weight_scale/.input_scale companions; a
+    # plain dtype cast would silently corrupt them, so the loader must refuse
+    # with a pointer to the supported GGUF path.
+    from core.inference import video_ltx2
+
+    # Stub the module tree so this also runs under the CI sim, which blocks the
+    # real diffusers import.
+    diffusers = types.ModuleType("diffusers")
+    diffusers.LTX2Pipeline = object
+    loaders = types.ModuleType("diffusers.loaders")
+    sfu = types.ModuleType("diffusers.loaders.single_file_utils")
+    sfu.load_single_file_checkpoint = lambda path: {
+        "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight": object(),
+        "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight_scale": object(),
+    }
+    diffusers.loaders = loaders
+    loaders.single_file_utils = sfu
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    monkeypatch.setitem(sys.modules, "diffusers.loaders", loaders)
+    monkeypatch.setitem(sys.modules, "diffusers.loaders.single_file_utils", sfu)
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+
+    path = tmp_path / "ltx-2.3-22b-distilled-fp8.safetensors"
+    path.write_bytes(b"x")
+    with pytest.raises(ValueError, match = "scaled fp8"):
+        video_ltx2.load_ltx23_pipeline(
+            path, base_repo = "Lightricks/LTX-2", torch_dtype = None, is_gguf = False
+        )
+
+
 def test_generate_without_load_raises(fake_runtime):
     backend = VideoBackend()
     with pytest.raises(RuntimeError, match = VIDEO_NOT_LOADED_MSG):
