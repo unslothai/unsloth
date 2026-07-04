@@ -69,6 +69,8 @@ def snapshot_backend_flags() -> Optional[dict]:
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     if matmul is not None and hasattr(matmul, "allow_tf32"):
         state["matmul_tf32"] = bool(matmul.allow_tf32)
+    if matmul is not None and hasattr(matmul, "allow_fp16_accumulation"):
+        state["matmul_fp16_accum"] = bool(matmul.allow_fp16_accumulation)
     cudnn = getattr(torch.backends, "cudnn", None)
     if cudnn is not None:
         if hasattr(cudnn, "allow_tf32"):
@@ -95,9 +97,9 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             except Exception:  # noqa: BLE001 — best-effort per-flag restore
                 pass
 
-    _set(
-        getattr(getattr(torch.backends, "cuda", None), "matmul", None), "allow_tf32", "matmul_tf32"
-    )
+    matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+    _set(matmul, "allow_tf32", "matmul_tf32")
+    _set(matmul, "allow_fp16_accumulation", "matmul_fp16_accum")
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
@@ -179,6 +181,7 @@ def apply_speed_optims(
         "channels_last": False,
         "cudnn_benchmark": False,
         "tf32": False,
+        "fp16_accum": False,
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
@@ -202,6 +205,15 @@ def apply_speed_optims(
     # pick a different conv algorithm, so it is a "default"-tier (not bit-identical) win.
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
+
+    # Consumer-only: fp16 GEMMs accumulate in fp16 (~2x on GeForce-class parts, whose
+    # fp32-accumulate rate is halved; datacenter HBM parts gain nothing and keep the
+    # safer fp32 accumulate). Only affects fp16 matmuls -- the bf16 DiT paths are
+    # untouched -- so it engages wherever fp16 compute appears (SDXL pipelines, fp16
+    # LoRA adapters). Guarded by a per-family deny-list fed by the overflow validation
+    # harness and the UNSLOTH_DISABLE_FP16_ACCUM kill switch.
+    if on_cuda:
+        applied["fp16_accum"] = _enable_fp16_accumulation(family, logger)
 
     # --- the compile lever, remapped per tier ----------------------------------------
     # default = LIGHT compile: for a GGUF model, compile ONLY the dequant op chain
@@ -327,6 +339,44 @@ def _enable_tf32(logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "tf32", exc)
+        return False
+
+
+# Families the overflow validation harness (scripts/fp16_accum_validate.py) found to
+# produce non-finite activations or visible drift under fp16 accumulation. Empty until
+# a family actually fails: the gate below already restricts the flag to consumer GPUs
+# and fp16 GEMMs, and the DiT families run bf16 compute (unaffected by this flag).
+_FP16_ACCUM_DENY: frozenset[str] = frozenset()
+
+
+def _enable_fp16_accumulation(family: Any, logger: Any) -> bool:
+    """Turn on fp16-accumulated fp16 GEMMs for consumer GPUs, where they run ~2x the
+    fp32-accumulate rate (datacenter HBM parts are not throughput-nerfed, so they keep
+    the safer default). Gated on: the torch build exposing the flag (2.10+), a
+    consumer-class device, the family not being deny-listed by the overflow harness,
+    and the UNSLOTH_DISABLE_FP16_ACCUM kill switch being unset. The caller's
+    snapshot/restore pair returns the process-wide flag to its prior value on unload."""
+    import os
+
+    if os.environ.get("UNSLOTH_DISABLE_FP16_ACCUM", "").strip() in ("1", "true", "yes"):
+        return False
+    name = str(getattr(family, "name", family or "")).lower()
+    if name in _FP16_ACCUM_DENY:
+        return False
+    try:
+        import torch
+
+        matmul = torch.backends.cuda.matmul
+        if not hasattr(matmul, "allow_fp16_accumulation"):
+            return False
+        from .diffusion_transformer_quant import _is_consumer_gpu
+
+        if not _is_consumer_gpu():
+            return False
+        matmul.allow_fp16_accumulation = True
+        return True
+    except Exception as exc:  # noqa: BLE001 — optimisation only
+        _warn(logger, "fp16_accum", exc)
         return False
 
 
