@@ -146,11 +146,7 @@ def test_generation_defaults_distilled_vs_dev():
 
 
 def test_supported_names():
-    assert supported_video_family_names() == (
-        "ltx-2",
-        "wan2.2-ti2v-5b",
-        "wan2.2-t2v-a14b",
-    )
+    assert supported_video_family_names() == ("ltx-2", "wan2.2-ti2v-5b", "wan2.2-t2v-a14b")
 
 
 def test_wan_snap_num_frames_4k_plus_1():

@@ -667,7 +667,14 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
-    def _fake_quant(view, target, *, mode, family, logger = None):
+    def _fake_quant(
+        view,
+        target,
+        *,
+        mode,
+        family,
+        logger = None,
+    ):
         # The helper reads view.transformer; record the object it would quantise so the
         # test proves the second expert was reached through the proxy.
         quantised.append(view.transformer)
@@ -694,7 +701,14 @@ def test_wan_ti2v_dense_quant_applies_to_single_dit(fake_runtime, monkeypatch):
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
-    def _fake_quant(view, target, *, mode, family, logger = None):
+    def _fake_quant(
+        view,
+        target,
+        *,
+        mode,
+        family,
+        logger = None,
+    ):
         quantised.append(view.transformer)
         return "fp8"
 
@@ -714,13 +728,9 @@ def test_wan_validate_trusted_repos(fake_runtime):
     # The two Wan base repos are trusted for non-GGUF (pipeline) loads; an unrelated
     # repo carrying the family name is not.
     backend = VideoBackend()
-    fam = backend.validate_load_request(
-        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline"
-    )
+    fam = backend.validate_load_request("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert fam.name == "wan2.2-ti2v-5b"
-    fam2 = backend.validate_load_request(
-        "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline"
-    )
+    fam2 = backend.validate_load_request("Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline")
     assert fam2.name == "wan2.2-t2v-a14b"
     with pytest.raises(ValueError, match = "limited to"):
         backend.validate_load_request("evil/wan2.2-ti2v-5b-repack", model_kind = "pipeline")

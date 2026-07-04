@@ -670,9 +670,7 @@ class VideoBackend:
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
-        offload_policy, vae_tiling = apply_memory_plan(
-            pipe, plan, device = device, logger = logger
-        )
+        offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
         if not vae_tiling:
             # Decode of a whole clip is the video memory peak; tiling is near-free
             # in quality and keeps the decode bounded, so it is always on.
@@ -755,7 +753,11 @@ class VideoBackend:
             )
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
-            repo_id, fam.name, kind, offload_policy, effective_speed,
+            repo_id,
+            fam.name,
+            kind,
+            offload_policy,
+            effective_speed,
             transformer_quant_engaged or "off",
         )
         return self.status()
@@ -846,11 +848,7 @@ class VideoBackend:
                 # (pipeline_wan.py:322), so the gate is BOTH the family flag and the
                 # signature: TI2V-5B has no cfg2_kwarg, so it never reaches here. A None
                 # request lets the pipeline default it (to guidance_scale) itself.
-                if (
-                    fam.cfg2_kwarg
-                    and fam.cfg2_kwarg in call_params
-                    and guidance_2 is not None
-                ):
+                if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
 
                 started = time.monotonic()
