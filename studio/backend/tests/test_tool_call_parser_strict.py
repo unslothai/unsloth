@@ -815,10 +815,8 @@ class TestGemmaWrapperlessLiteralMarkers:
     def test_single_quoted_brace_strip_span_covers_whole_call(self):
         from core.inference.tool_call_parser import strip_tool_markup
 
-        text = "call:python{code:print('}')} Done." 
-        stripped = strip_tool_markup(
-            text, final = True, enabled_tool_names = {"python"}
-        )
+        text = "call:python{code:print('}')} Done."
+        stripped = strip_tool_markup(text, final = True, enabled_tool_names = {"python"})
         assert "call:python" not in stripped
         assert "')}" not in stripped
         assert stripped.strip() == "Done."
@@ -902,16 +900,13 @@ class TestBareJsonOuterOverXmlLiteral:
         assert args["code"] == "run() # <function=terminal>ls</function>"
 
     def test_bare_json_outer_unrestricted_mode(self):
-        text = (
-            '{"name": "python", "parameters": '
-            '{"code": "<function=terminal>ls</function>"}}'
-        )
+        text = '{"name": "python", "parameters": {"code": "<function=terminal>ls</function>"}}'
         calls = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in calls] == ["python"]
 
     def test_xml_before_json_keeps_xml_order(self):
         text = (
-            '<function=web_search><parameter=query>cats</parameter></function>'
+            "<function=web_search><parameter=query>cats</parameter></function>"
             ' {"name": "python", "arguments": {"code": "x"}}'
         )
         calls = parse_tool_calls_from_text(text)
