@@ -809,7 +809,6 @@ class DiffusionBackend:
     def _hub_cache_repo_dir(repo_id: str) -> Path:
         """The local HF hub cache dir for ``repo_id`` (``.../models--org--name``)."""
         from huggingface_hub import constants
-
         return Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}"
 
     @staticmethod
@@ -1448,9 +1447,7 @@ class DiffusionBackend:
                 # expansion. The single-file-is-pipeline (SDXL) path is a full bf16 pipeline
                 # checkpoint, not this fp8 transformer path, so it stays at on-disk size.
                 fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
-                    "fp8" in Path(single_file_path).name.lower()
-                    if single_file_path
-                    else False
+                    "fp8" in Path(single_file_path).name.lower() if single_file_path else False
                 )
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast

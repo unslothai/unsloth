@@ -492,7 +492,9 @@ def test_diffusion_dataset_upload_rejects_unsupported_files(client, dataset_root
     assert "Unsupported file" in r.json()["detail"]
 
 
-def test_diffusion_dataset_upload_over_cap_rolls_back_whole_batch(client, dataset_roots, monkeypatch):
+def test_diffusion_dataset_upload_over_cap_rolls_back_whole_batch(
+    client, dataset_roots, monkeypatch
+):
     # All-or-nothing: a valid image ahead of the one that trips the size cap must NOT be
     # left on disk (the 413 mid-batch rolls back every file written this request).
     import utils.upload_limits as ul
