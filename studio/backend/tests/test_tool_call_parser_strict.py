@@ -1059,9 +1059,7 @@ class TestMistralLiteralInsideLeadingJson:
 
     def test_outer_json_call_wins_over_mistral_literal(self):
         text = '{"name": "python", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
-        calls = parse_tool_calls_from_text(
-            text, enabled_tool_names = {"python", "web_search"}
-        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"})
         assert [c["function"]["name"] for c in calls] == ["python"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "[TOOL_CALLS]web_search{}"
@@ -1112,3 +1110,19 @@ class TestDisabledJsonBeforeDeepSeekCall:
     def test_disabled_json_with_marker_alone_stays_data(self):
         text = '{"name": "Alice", "note": "<｜tool▁calls▁begin｜>"}'
         assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+
+class TestGemmaDottedArgumentKeys:
+    """Gemma emits dotted argument keys (user.name:...) for namespaced
+    schemas; the key-quoting scanner must accept dots like the parser's
+    key/name charset, or json.loads fails and the whole call is lost."""
+
+    def test_dotted_key_parses(self):
+        text = (
+            '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, '
+            'query:<|"|>x<|"|>}<tool_call|>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"user.name": "bob", "query": "x"}

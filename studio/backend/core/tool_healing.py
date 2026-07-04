@@ -228,7 +228,10 @@ def _quote_gemma_object_keys(src: str) -> str:
         while i < len(src) and src[i].isspace():
             i += 1
         key_name_start = i
-        while i < len(src) and (src[i].isalnum() or src[i] in "_-"):
+        # Dots to match the parser's key/name charset ([\w.\-]) -- Gemma
+        # emits dotted argument keys (user.name:...) for namespaced schemas,
+        # and leaving them unquoted fails the whole json.loads (call lost).
+        while i < len(src) and (src[i].isalnum() or src[i] in "_-."):
             i += 1
         key_name = src[key_name_start:i]
         colon_pos = i
