@@ -48,7 +48,7 @@ def test_detect_override_and_unknown():
     [
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
         "wan-ai/wan2.2-ti2v-5b-diffusers",
-        "unsloth/Wan2.2-TI2V-5B-GGUF",
+        "QuantStack/Wan2.2-TI2V-5B-GGUF",
         "some/dir/wan2.2-ti2v-5b-Q4_K_M.gguf",
     ],
 )
@@ -69,7 +69,7 @@ def test_detect_wan_ti2v_5b(repo_id):
     [
         "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
-        "unsloth/Wan2.2-T2V-A14B-GGUF",
+        "QuantStack/Wan2.2-T2V-A14B-GGUF",
         "some/dir/wan2.2-t2v-a14b-Q4_K_M.gguf",
     ],
 )

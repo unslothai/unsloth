@@ -147,7 +147,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Measured from the diffusers repo (safetensors on disk, all stored bf16, so these
         # are the bf16-resident sizes): transformer 20.0, UMT5 text encoder 11.4, VAE 2.8.
         bf16_components_gb = (20.0, 11.4, 2.8),
-        gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+        gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE.
     # Its model_index.json lists BOTH ``transformer`` and ``transformer_2`` as
@@ -188,7 +188,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # total ~114.3; UMT5 text encoder 11.4; VAE 0.5. The two-expert DiT total is the
         # memory headline (~114 GB bf16-resident before offload).
         bf16_components_gb = (114.3, 11.4, 0.5),
-        gguf_repo = "unsloth/Wan2.2-T2V-A14B-GGUF",
+        gguf_repo = "QuantStack/Wan2.2-T2V-A14B-GGUF",
     ),
 )
 
