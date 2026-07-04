@@ -155,7 +155,9 @@ def resolve_dense_quant_candidate(
         return None
     if not dense_transformer_supported(target):
         return None
-    scheme = select_transformer_quant_scheme(target, requested)
+    scheme = select_transformer_quant_scheme(
+        target, requested, family = getattr(fam, "name", None)
+    )
     if scheme is None:
         return None
     prequant_available = False
