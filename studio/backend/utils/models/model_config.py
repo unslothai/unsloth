@@ -1904,6 +1904,14 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
             ):
                 logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
                 return None
+            # Connection / DNS / timeout errors are unlikely to self-heal
+            # on retry — fall back to local cache immediately
+            if isinstance(e, (ConnectionError, TimeoutError)) or err_name in (
+                "ConnectError",
+                "ConnectTimeout",
+                "ReadTimeout",
+            ):
+                break
             if attempt < 2:
                 time.sleep(2**attempt)
 
@@ -1965,6 +1973,12 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
+
+    # Offline: cannot check remote metadata — assume not embedding to avoid blocking
+    if _env_offline():
+        logger.debug("Offline mode — skipping embedding model detection for %s", model_name)
+        _embedding_detection_cache[cache_key] = False
+        return False
 
     try:
         from huggingface_hub import model_info as hf_model_info
