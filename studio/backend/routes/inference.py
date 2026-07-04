@@ -6927,9 +6927,7 @@ async def openai_chat_completions(
         # OpenAI "developer" role and the fallback formatter drops it -- then
         # clear the separate prompt so the worker does not prepend a duplicate.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
-            _flatten_content_parts_for_local_template(
-                _openai_messages_for_passthrough(payload)
-            ),
+            _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload)),
             system_prompt,
         )
         gen_kwargs["system_prompt"] = ""
