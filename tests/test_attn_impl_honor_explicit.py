@@ -38,7 +38,6 @@ def test_explicit_flex_is_honored_even_when_not_marked_supported():
 
 
 def test_no_disable_reason_returns_request_untouched():
-    # When nothing disables flash, the function returns the request as-is.
     result = _disable_flash_attention_if_needed(
         {},
         attn_implementation = "flash_attention_2",
