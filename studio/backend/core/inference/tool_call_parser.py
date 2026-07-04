@@ -644,7 +644,7 @@ _EMBEDDED_MARKER_RE = re.compile(
 # supported outer envelopes (see ``_TC_FUNC_START_RE``), so the guard must cover
 # both -- otherwise an attribute-form call whose argument embeds a DeepSeek/Kimi
 # marker is hijacked by the marker pre-pass and the wrong tool runs.
-_OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")')
+_OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")|<\|tool_call>')
 # The CLOSED forms of the outer envelopes above, each spanning to its REAL final
 # close so a literal ``</tool_call>``/``</function>`` inside an argument value is
 # treated as data, not the envelope boundary. ``_TOOL_CLOSED_PATS[0]`` is the LAZY
@@ -654,6 +654,9 @@ _OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")')
 _OUTER_ENVELOPE_CLOSED_PATS = (
     re.compile(r"<tool_call>(?:(?!<tool_call>).)*</tool_call>", re.DOTALL),
     _TOOL_CLOSED_PATS[1],
+    # Wrapped Gemma: a DeepSeek/Kimi example quoted inside its <|"|> string
+    # arguments is data for the outer call, exactly like the XML envelopes.
+    re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
 )
 
 
@@ -686,6 +689,14 @@ def _marker_inside_leading_envelope(content: str) -> bool:
     # not end them early. If that removes every marker, the marker sat inside a closed
     # outer call (e.g. a user asking about the syntax), so skip the DeepSeek/Kimi
     # pre-pass and let the outer XML parser own it.
+    # A closed non-DeepSeek/Kimi call that PRECEDES the first marker owns the
+    # turn in document order: the marker is a trailing example or argument
+    # data, so the pre-pass must not steal it (same rule as the other leading
+    # guards). Markers inside the closed call are covered a fortiori.
+    for _pat in _OUTER_ENVELOPE_CLOSED_PATS:
+        m = _pat.search(content)
+        if m is not None and m.start() < first_marker.start():
+            return True
     residue = content
     for _pat in _OUTER_ENVELOPE_CLOSED_PATS:
         residue = _pat.sub("", residue)
@@ -1679,14 +1690,17 @@ def _parse_gemma_tool_calls(
         name = m.group(1)
         body_start = m.end() - 1
         end = _gemma_body_brace_end(content, body_start)
-        # Resume past this call's balanced body (or just past the token when the body
-        # is unbalanced/truncated) so its arguments are never rescanned for calls.
-        cursor = (end + 1) if end is not None else m.end()
+        if end is None:
+            # Unclosed/unbalanced call: nothing parseable follows (mirrors the
+            # strip contract), and scanning on would promote a call quoted
+            # inside the truncated call's own argument text.
+            break
+        # Resume past this call's balanced body so its arguments are never
+        # rescanned for calls.
+        cursor = end + 1
         # Markerless: only a call when the name is an enabled tool, else it is prose
         # (an example / disabled name) and must stay in the visible answer.
         if enabled_tool_names is not None and name not in enabled_tool_names:
-            continue
-        if end is None:
             continue
         body = content[body_start + 1 : end]
         try:
@@ -1912,6 +1926,21 @@ def _gemma_parse_value(text: str, i: int):
         return _gemma_parse_mapping(text, i)
     if text[i] == "[":
         return _gemma_parse_array(text, i)
+    if text[i] in "\"'":
+        # Raw-quoted string (stripped stream): delimiters inside it are data,
+        # so ``{city:"New, York"}`` is one value, not a split pair. Returned
+        # unquoted, matching the top-level scalar coercion.
+        quote = text[i]
+        j = i + 1
+        n = len(text)
+        while j < n:
+            if text[j] == "\\" and j + 1 < n:
+                j += 2
+                continue
+            if text[j] == quote:
+                return text[i + 1 : j], j + 1, True
+            j += 1
+        return text[i + 1 :], n, False
     # Primitive: number / true/false/null / bare identifier.
     end = i
     while end < len(text) and text[end] not in ",}]" and not text.startswith(_GEMMA_STR_BEGIN, end):
