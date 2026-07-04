@@ -1190,12 +1190,8 @@ class TestJsonAnswersAreDataForMarkerlessScans:
 
     def test_gemma_example_inside_json_answer_not_stripped(self):
         from core.inference.tool_call_parser import strip_tool_markup
-
         text = '{"answer":"Gemma syntax is call:web_search{query:hi}"}'
-        assert (
-            strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"})
-            == text
-        )
+        assert strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"}) == text
 
     def test_kimi_marker_inside_json_answer_not_promoted(self):
         text = (
