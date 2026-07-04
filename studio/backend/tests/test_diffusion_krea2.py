@@ -6,6 +6,8 @@ import json
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from core.inference.diffusion_krea2 import (
     KREA2_FAMILY_NAME,
     _load_model_index,
@@ -187,6 +189,9 @@ def test_krea2_spec_registered_with_authors_targets():
 
 
 def test_krea2_collate_and_forward_roundtrip():
+    # spec.forward imports Krea2Pipeline (prepare_position_ids), so this needs a real
+    # diffusers install; CI hosts run the backend suite without one.
+    pytest.importorskip("diffusers")
     import torch
     from core.training.diffusion_dit_trainer import _SPECS
 
