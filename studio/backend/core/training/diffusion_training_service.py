@@ -450,7 +450,9 @@ class DiffusionTrainingService:
                     if "learning_rate" in ev
                     else s["learning_rate"]
                 )
-                grad_norm = _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
+                grad_norm = (
+                    _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
+                )
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
