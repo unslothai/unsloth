@@ -99,7 +99,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
     out: list[dict] = []
     for p in files[: max(0, int(limit))]:
         try:
-            rec = json.loads(p.read_text())
+            rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
         # A valid-JSON file with the wrong shape (an old or hand-edited record that is not a
@@ -124,7 +124,7 @@ def get_diffusion_run(job_id: str) -> Optional[dict]:
         return None
     p = _runs_dir() / f"{job_id}.json"
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding = "utf-8"))
     except Exception:  # noqa: BLE001 -- missing/corrupt record
         return None
 
@@ -403,7 +403,7 @@ class DiffusionTrainingService:
                 },
             }
             path = _runs_dir() / f"{s['job_id']}.json"
-            path.write_text(json.dumps(record))
+            path.write_text(json.dumps(record), encoding = "utf-8")
         except Exception:  # noqa: BLE001 -- persisting history must never break the run
             pass
 

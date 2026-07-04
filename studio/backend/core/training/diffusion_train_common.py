@@ -407,6 +407,7 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
             compile_transformer = compile_transformer,
             base_precision = base_precision,
