@@ -153,10 +153,11 @@ def test_list_loras_scans_local(tmp_path, monkeypatch):
     (d / "other.gguf").write_bytes(b"y")
     (d / "ignore.txt").write_bytes(b"z")
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
-    ids = {e.id for e in dl.list_loras()}
-    assert ids == {"mystyle", "other"}
-    fmts = {e.id: e.fmt for e in dl.list_loras()}
-    assert fmts["other"] == "gguf" and fmts["mystyle"] == "safetensors"
+    # The merged catalog also carries the curated hub entries; the local scan is
+    # exactly the weight files dropped in the directory.
+    local = {e.id: e for e in dl.list_loras() if e.source == "local"}
+    assert set(local) == {"mystyle", "other"}
+    assert local["other"].fmt == "gguf" and local["mystyle"].fmt == "safetensors"
 
 
 def test_resolve_one_local_and_unknown(tmp_path, monkeypatch):

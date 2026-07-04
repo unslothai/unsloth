@@ -31,9 +31,11 @@ from utils.hardware import clear_gpu_cache
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
+    IDEOGRAM4_FAMILY_NAME,
     DiffusionFamily,
     default_generation_params,
     detect_family_for_pick,
+    excluded_model_reason,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -84,7 +86,11 @@ from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
 )
-from .diffusion_auto_policy import build_resolved_record, resolve_dense_quant_candidate
+from .diffusion_auto_policy import (
+    build_resolved_record,
+    family_bf16_components_gb,
+    resolve_dense_quant_candidate,
+)
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
@@ -221,6 +227,13 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # training LoRAs on (train on Raw, run adapters on Turbo).
         "krea/krea-2-turbo",
         "krea/krea-2-raw",
+        # Ideogram 4: official vendor repos, safetensors-only diffusers pipelines, no
+        # remote code. The vendor ships no bf16 checkpoint: -fp8 stores the two DiTs
+        # as raw float8 (highest precision available, the family base); the two nf4
+        # repos are identical bnb-4bit exports (both listed so either id loads).
+        "ideogram-ai/ideogram-4-fp8",
+        "ideogram-ai/ideogram-4-nf4",
+        "ideogram-ai/ideogram-4-nf4-diffusers",
     }
 )
 
@@ -508,6 +521,12 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
+            # A deliberately-excluded model gets its stated reason, not the generic
+            # unknown-family message (which reads like a detection gap and invites a
+            # family_override retry that would fail deeper and less clearly).
+            excluded = excluded_model_reason(repo_id)
+            if excluded:
+                raise ValueError(f"'{repo_id}' cannot be loaded: {excluded}")
             raise ValueError(
                 f"'{repo_id}' is not a supported diffusion image model. Supported families: "
                 f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
@@ -1590,6 +1609,19 @@ class DiffusionBackend:
                 cached = self._cache_bytes(repo_id) if repo_id else 0
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
+            # A repo can store weights in a NARROWER dtype than they occupy after the
+            # loader's torch_dtype cast: ideogram-4's base repo ships its two DiTs as
+            # raw float8, so the cached bytes undershoot the bf16-resident footprint
+            # by ~2x and auto planning would pick a resident placement that OOMs.
+            # When the family size table knows the bf16-resident total for THIS repo
+            # (the family base -- prequant repos like the bnb-4bit exports have
+            # different ids and really do stay compressed), plan against the larger
+            # of the two estimates.
+            if repo_id and repo_id.strip().lower() == fam.base_repo.lower():
+                table = family_bf16_components_gb(fam, fam.base_repo)
+                if table is not None and model_dense_mib is not None:
+                    table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
+                    model_dense_mib = max(model_dense_mib, table_mib)
             companion_mib = None
         else:
             if transformer_resident_override_mib is not None:
@@ -2118,6 +2150,18 @@ class DiffusionBackend:
                     # share this call's seed, drawn sequentially from one generator.
                     "num_images_per_prompt": batch_size,
                 }
+                if state.family.name == IDEOGRAM4_FAMILY_NAME:
+                    # Ideogram 4 drives CFG through EITHER a constant guidance_scale OR
+                    # a per-step guidance_schedule; its check_inputs rejects the call
+                    # when both are set, and the schedule DEFAULTS to the recommended
+                    # 45x7.0 + 3x3.0 polish taper (valid only at exactly 48 steps). At
+                    # the family's advertised defaults, drop the constant so the
+                    # recommended taper engages; any other request nulls the schedule
+                    # so the constant broadcasts legally to the chosen step count.
+                    if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
+                        kwargs.pop(state.family.cfg_kwarg, None)
+                    else:
+                        kwargs["guidance_schedule"] = None
                 if init_pil is not None:
                     # Reference with extra images passes the whole list (FLUX.2 combines them);
                     # every other workflow takes the single image.

@@ -383,6 +383,9 @@ def fake_runtime(monkeypatch):
     diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
     # Instruction-editing pipeline (Qwen-Image-Edit): its own pipeline IS the loaded one.
     diffusers.QwenImageEditPlusPipeline = _FakePipeline
+    # Ideogram 4, so its guidance_scale/guidance_schedule pairing is exercisable.
+    diffusers.Ideogram4Pipeline = _FakePipeline
+    diffusers.Ideogram4Transformer2DModel = _FakeTransformer
     # SDXL: a U-Net family. Its single-file checkpoint is the whole pipeline, so the
     # pipeline class carries from_single_file; UNet2DConditionModel is the denoiser
     # class (fetched but unused on the pipeline/single-file-pipeline paths).
@@ -1221,6 +1224,41 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
     # Qwen-Image's distilled guidance is off; the real CFG must land on true_cfg_scale.
     call = backend._state.pipe.last_kwargs
     assert call["true_cfg_scale"] == 4.0 and call["guidance_scale"] is None
+
+
+def _load_ideogram(backend, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "ideogram-ai/ideogram-4-fp8",
+        family_override = "ideogram-4",
+    )
+
+
+def test_generate_ideogram_defaults_keep_recommended_schedule(fake_runtime, tmp_path):
+    # Ideogram 4's pipeline defaults to its recommended tapered guidance_schedule
+    # (45x7.0 + 3x3.0, valid only at 48 steps) and REJECTS guidance_scale while the
+    # schedule is set. At the family's advertised defaults the backend must drop the
+    # constant so the recommended taper engages.
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["guidance_scale"] is None  # not passed: the pipe default engages
+    assert "guidance_schedule" not in call
+
+
+def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path):
+    # Any non-default request must broadcast the constant legally: guidance_scale set
+    # AND guidance_schedule explicitly nulled (the pipeline raises when both are set,
+    # and its default schedule is non-None).
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    backend.generate(prompt = "a sloth", steps = 20, guidance = 5.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0
+    assert "guidance_schedule" in call and call["guidance_schedule"] is None
 
 
 def test_begin_load_rejects_concurrent(monkeypatch):

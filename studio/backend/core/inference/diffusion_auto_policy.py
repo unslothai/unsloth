@@ -59,6 +59,12 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "qwen-image-edit": (40.9, 16.6, 0.3),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
+    # Two ~9.3B DiTs (the conditional transformer PLUS the separate
+    # unconditional_transformer driving Ideogram's dual-branch CFG), both resident
+    # for every generation, and a Qwen3-VL text encoder. The vendor repo stores the
+    # DiTs as raw float8 (9.29 GB each); these are the bf16-resident sizes after the
+    # loader's dtype cast, per this table's contract.
+    "ideogram-4": (37.2, 8.8, 0.2),
 }
 
 # Base-repo overrides for families whose picker offers multiple sizes under one family
