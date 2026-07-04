@@ -130,6 +130,9 @@ def test_zimage_collate_list():
 
 # ── index-based sigma gather ──────────────────────────────────────────────────
 def test_gather_sigmas_matches_search_based_gather():
+    # CI installs the backend test deps without diffusers; the scheduler math is what we
+    # are checking, so skip rather than fail there.
+    pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     torch.manual_seed(0)
