@@ -801,6 +801,31 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     return first_xml is not None and i < first_xml < end
 
 
+def _signal_inside_leading_wrapperless_gemma(
+    content: str, enabled_tool_names: Optional[set]
+) -> bool:
+    """True when the first foreign tool signal sits inside the balanced body
+    of a LEADING wrapper-less Gemma call -- a quoted literal in its argument
+    (a query citing another tool syntax) is data, and the earlier passes would
+    promote it and drop the outer call (sibling of the Mistral/bare-JSON
+    leading guards). Markerless form, so the name must be an enabled tool
+    (``None`` keeps the name-agnostic behaviour)."""
+    i = 0
+    n = len(content)
+    while i < n and content[i] in " \t\n\r":
+        i += 1
+    m = _GEMMA_BARE_TC_RE.match(content, i)
+    if m is None:
+        return False
+    if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+        return False
+    end = _gemma_body_brace_end(content, m.end() - 1)
+    if end is None:
+        return False
+    first = _first_foreign_tool_signal(content)
+    return first is not None and m.end() - 1 < first <= end
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -859,6 +884,19 @@ def parse_tool_calls_from_text(
             allow_incomplete = allow_incomplete,
             enabled_tool_names = enabled_tool_names,
         )
+
+    # And for a leading wrapper-less Gemma call (markerless, so gated on an
+    # enabled name): a quoted foreign literal inside its body is data, and
+    # tool_healing would otherwise promote it before the Gemma fallback runs.
+    if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
+        calls = _parse_gemma_tool_calls(
+            content,
+            id_offset = id_offset,
+            allow_incomplete = allow_incomplete,
+            enabled_tool_names = enabled_tool_names,
+        )
+        if calls:
+            return calls
 
     # DeepSeek / Kimi use unique (often full-width) markers that do not collide
     # with the shared formats, so try them first -- unless a Qwen/Hermes
