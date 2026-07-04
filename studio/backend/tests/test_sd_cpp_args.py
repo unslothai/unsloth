@@ -54,7 +54,9 @@ def test_native_speed_flags():
     assert native_speed_flags(None) == []
     assert native_speed_flags("off") == []
     assert native_speed_flags("") == []
-    assert native_speed_flags("default") == ["--diffusion-fa"]
+    # default now includes conv-direct: measured ~9% faster sampling on CPU
+    # (z-image Q8_0, 192 threads) with identical RSS and unchanged decode.
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
     assert native_speed_flags("max") == ["--diffusion-fa", "--diffusion-conv-direct"]
     with pytest.raises(ValueError):
         native_speed_flags("ludicrous")
