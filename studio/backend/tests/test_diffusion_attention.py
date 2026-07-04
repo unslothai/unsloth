@@ -245,7 +245,6 @@ class _Recorder:
 
 def _stub_subprocess(monkeypatch, run):
     import subprocess
-
     monkeypatch.setattr(subprocess, "run", run)
 
 
