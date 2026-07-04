@@ -784,6 +784,12 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     if _top_level_bare_json_name(content[i : end + 1]) is None:
         return False
     first_xml = _first_foreign_tool_signal(content)
+    # The Mistral trigger is foreign to a JSON envelope too: the Mistral parser
+    # runs before the bare-JSON one, so a "[TOOL_CALLS]..." literal inside the
+    # leading object's strings would otherwise be promoted over the outer call.
+    trig = content.find(_MISTRAL_TRIGGER)
+    if trig >= 0 and (first_xml is None or trig < first_xml):
+        first_xml = trig
     return first_xml is not None and i < first_xml < end
 
 
