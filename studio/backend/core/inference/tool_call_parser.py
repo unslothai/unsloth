@@ -762,6 +762,14 @@ def _first_foreign_tool_signal(content: str) -> int | None:
     attr = re.search(r'<function\s+name="', content)
     if attr is not None and (first is None or attr.start() < first):
         first = attr.start()
+    # DeepSeek/Kimi markers are foreign to a JSON envelope too: their pre-pass
+    # runs before the bare-JSON parser, so a marker literal inside a leading
+    # object must route through the same guard (and, for a disabled object,
+    # the same drop-and-parse-the-tail recursion, so a real DeepSeek/Kimi call
+    # AFTER the object is still reached).
+    marker = _EMBEDDED_MARKER_RE.search(content)
+    if marker is not None and (first is None or marker.start() < first):
+        first = marker.start()
     return first
 
 

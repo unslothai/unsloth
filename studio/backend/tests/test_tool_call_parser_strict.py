@@ -1090,3 +1090,25 @@ class TestGemmaWrappedWhitespace:
     def test_strict_mode_still_requires_the_closing_tag(self):
         text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}'
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+
+class TestDisabledJsonBeforeDeepSeekCall:
+    """A disabled leading bare-JSON object whose strings mention a
+    DeepSeek/Kimi marker is dropped and the tail parsed, so a REAL
+    DeepSeek/Kimi call after the object still executes instead of the whole
+    message skipping the pre-pass."""
+
+    _DS = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>web_search\n"
+        '```json\n{"query": "cats"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+
+    def test_real_deepseek_call_after_disabled_json_parses(self):
+        text = '{"name": "Alice", "note": "<｜tool▁calls▁begin｜>"} ' + self._DS
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_disabled_json_with_marker_alone_stays_data(self):
+        text = '{"name": "Alice", "note": "<｜tool▁calls▁begin｜>"}'
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
