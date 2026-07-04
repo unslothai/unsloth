@@ -126,7 +126,7 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
     root = str(dir_path)
     found: list[Path] = []
     for current, dirs, files in os.walk(root, followlinks = False):
-        depth = current[len(root):].count(os.sep)
+        depth = current[len(root) :].count(os.sep)
         if depth >= _GGUF_SCAN_MAX_DEPTH:
             dirs[:] = []
         for name in files:
@@ -151,7 +151,7 @@ def _variant_matches(relative_path: str, needle: str) -> bool:
     prefix = f"{needle}-"
     if not quant.startswith(prefix):
         return False
-    suffix = quant[len(prefix):]
+    suffix = quant[len(prefix) :]
     if not suffix.endswith("bpw"):
         return False
     value = suffix[:-3]
