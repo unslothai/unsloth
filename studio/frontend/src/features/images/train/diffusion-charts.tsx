@@ -106,7 +106,6 @@ export function DiffusionCharts({
     () => buildYDomain(gradData.map((p) => p.displayGradNorm)),
     [gradData],
   );
-
   const avgRaw =
     lossItems.length > 0
       ? +(lossItems.reduce((s, p) => s + p.loss, 0) / lossItems.length).toFixed(4)

@@ -481,7 +481,7 @@ function AdvancedSelect({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
           {label}
           {hint && <InfoHint>{hint}</InfoHint>}
         </span>
@@ -1872,7 +1872,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
           label="GGUF compute"
-          desc="Off runs the GGUF as-is. INT8/FP8/FP4 dequantise the transformer onto low-precision tensor cores for a faster step, at the cost of a larger download and more VRAM."
+          desc="Off runs the GGUF as-is. INT8/FP8/FP4 instead download the base model's bf16 transformer and quantise it directly onto low-precision tensor cores (the GGUF is not requantised): a faster step, at the cost of a larger download and more VRAM."
           hint="Optional speed-up for GGUF models. Off runs the GGUF as-is. FP8/INT8/FP4 instead load the FULL base model and quantise its transformer onto low-precision tensor cores: faster per step, but a larger download and more VRAM, and it falls back to the GGUF if it can't fit. Needs CUDA."
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
