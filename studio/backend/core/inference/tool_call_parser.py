@@ -648,6 +648,62 @@ def _marker_inside_leading_envelope(content: str) -> bool:
     return opener is not None and opener.start() < marker.start()
 
 
+def _mistral_region_end(text: str, idx: int) -> int | None:
+    """Exclusive end of the balanced ``[TOOL_CALLS]`` call starting at ``idx``,
+    or ``None`` when truncated/unrecognised (same shapes as the strip scan:
+    array, single-object, and named ``name [CALL_ID]? [ARGS]? {json}``)."""
+    n = len(text)
+    i = idx + len(_MISTRAL_TRIGGER)
+    while i < n and text[i] in " \t\n\r":
+        i += 1
+    if i < n and text[i] == "[":
+        end = _balanced_bracket_end(text, i)
+        return None if end is None else end + 1
+    if i < n and text[i] == "{":
+        end = _balanced_brace_end(text, i)
+        return None if end is None else end + 1
+    name_match = _MISTRAL_V11_NAME_RE.match(text, i)
+    if not name_match:
+        return None
+    i = name_match.end()
+    while i < n and text[i] in " \t\n\r":
+        i += 1
+    i = _skip_mistral_call_id(text, i)
+    if text.startswith(_MISTRAL_ARGS_MARKER, i):
+        i += len(_MISTRAL_ARGS_MARKER)
+        while i < n and text[i] in " \t\n\r":
+            i += 1
+    if i >= n or text[i] != "{":
+        return None
+    end = _balanced_brace_end(text, i)
+    return None if end is None else end + 1
+
+
+def _xml_signal_inside_leading_mistral(content: str) -> bool:
+    """True when the first XML tool signal sits inside the balanced body of an
+    earlier Mistral ``[TOOL_CALLS]`` call -- i.e. it is that call's argument
+    data (a query quoting tool XML), not a real call. The shared XML parser
+    would otherwise promote the literal and execute the wrong tool, so the
+    Mistral parser must take the outer call first. An XML signal BEFORE the
+    trigger keeps the normal order (the outer XML call wins and a
+    ``[TOOL_CALLS]`` literal inside its arguments stays data)."""
+    trig = content.find(_MISTRAL_TRIGGER)
+    if trig < 0:
+        return False
+    first_xml = None
+    for sig in ("<tool_call>", "<|tool_call>", "<function="):
+        p = content.find(sig)
+        if p >= 0 and (first_xml is None or p < first_xml):
+            first_xml = p
+    attr = re.search(r'<function\s+name="', content)
+    if attr is not None and (first_xml is None or attr.start() < first_xml):
+        first_xml = attr.start()
+    if first_xml is None or first_xml < trig:
+        return False
+    end = _mistral_region_end(content, trig)
+    return end is not None and first_xml < end
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -664,6 +720,18 @@ def parse_tool_calls_from_text(
     ``enabled_tool_names`` gates only the markerless Llama-3.2 bare-JSON form (the
     marker-based forms carry an explicit signal, so a disabled-tool name there is a
     real call attempt). ``None`` keeps the name-agnostic behaviour."""
+    # A [TOOL_CALLS] call whose JSON arguments quote tool XML must win over the
+    # literal: when the first XML signal sits inside a leading balanced Mistral
+    # body it is argument data, so the Mistral parser runs first (mirrors the
+    # leading-envelope guard in the DeepSeek/Kimi pre-pass on the follow-up
+    # branch).
+    if _xml_signal_inside_leading_mistral(content):
+        calls = _parse_mistral_tool_calls(
+            content, id_offset = id_offset, allow_incomplete = allow_incomplete
+        )
+        if calls:
+            return calls
+
     # DeepSeek / Kimi use unique (often full-width) markers that do not collide
     # with the shared formats, so try them first -- unless a Qwen/Hermes
     # <tool_call> / <function=...> envelope opens before the first such marker, in
