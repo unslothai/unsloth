@@ -58,7 +58,10 @@ def test_select_lora_targets_explicit_override_wins():
         base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
     ).normalized()
     assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
-    assert _select_lora_targets(cfg.lora_target_modules, _SPECS["flux.1"].lora_targets) == _FLUX_TARGETS
+    assert (
+        _select_lora_targets(cfg.lora_target_modules, _SPECS["flux.1"].lora_targets)
+        == _FLUX_TARGETS
+    )
 
 
 @pytest.mark.parametrize(
