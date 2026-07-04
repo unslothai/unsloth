@@ -256,7 +256,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
-    # Detect chat-only mode (/api/health.chat_only): in chat-only mode /studio + /export redirect to /chat.
+    # Detect chat-only mode (/api/health.chat_only): /studio redirects to /chat while /export stays reachable and self-gated.
     health_resp = evaluate_fetch(
         page,
         f"{BASE}/api/health",
@@ -404,15 +404,19 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 3. Export route.
     # ─────────────────────────────────────────────────────
-    step(f"Export route ({'chat-only redirect' if chat_only else 'form fields'})")
+    step(f"Export route ({'chat-only self-gated' if chat_only else 'form fields'})")
     page.goto(f"{BASE}/export")
     page.wait_for_timeout(1500)
     shoot("07-export")
     if chat_only:
-        if "/export" in page.url:
-            soft_fail(f"chat-only mode should redirect /export -> /chat; url={page.url}")
+        if "/export" not in page.url:
+            soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
-            info(f"OK chat-only redirected /export -> {page.url}")
+            unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
+            if unavailable.count() == 0:
+                soft_fail("chat-only /export did not show the export unavailable gate")
+            else:
+                info("OK chat-only /export rendered the unavailable gate")
     else:
         # Non-chat-only: verify the export-cta button + HF token field.
         cta = page.locator('[data-tour="export-cta"]').first

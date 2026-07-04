@@ -181,6 +181,75 @@ def _probe_installed_torch_version() -> str | None:
     return lines[-1] if lines else None
 
 
+def _installed_torch_is_windows_rocm() -> bool:
+    """Return True when the target venv currently has a Windows ROCm torch build.
+
+    This is a belt-and-suspenders guard for the torchao override step: if the
+    earlier ROCm install path failed to set _rocm_windows_torch_installed but the
+    venv already contains a ROCm torch wheel, still skip torchao because it
+    crashes on import on Windows ROCm.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, torch; "
+                    "hip = getattr(getattr(torch, 'version', None), 'hip', None) or ''; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "sys.stdout.write('yes' if (hip or 'rocm' in ver or 'rocmsdk' in ver) else '')"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 90,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+    return probe.returncode == 0 and bool(lines and lines[-1] == "yes")
+
+
+# constraints.txt caps new anyio resolutions at <4.14 (#6483), but an install
+# from before the cap existed can already be stuck at 4.14+, which later
+# constrained installs won't touch since it already satisfies mcp/fastmcp.
+_ANYIO_BAD_FLOOR = (4, 14)
+
+
+def _installed_anyio_version() -> tuple[int, int] | None:
+    try:
+        from importlib.metadata import version as _pkg_version
+        raw = _pkg_version("anyio")
+    except Exception:
+        return None
+    parts = raw.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(re.sub(r"[^0-9].*", "", parts[1])) if len(parts) > 1 else 0
+    except (IndexError, ValueError):
+        return None
+    return (major, minor)
+
+
+def _repair_bad_anyio() -> None:
+    installed = _installed_anyio_version()
+    if installed is None or installed < _ANYIO_BAD_FLOOR:
+        return
+    _safe_print(_dim(f"   anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14..."))
+    pip_install(
+        "Repairing anyio version",
+        "--no-cache-dir",
+        "--force-reinstall",
+        "anyio<4.14.0",
+        constrain = False,
+    )
+
+
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
@@ -1970,7 +2039,7 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    base_total = 10 if IS_WINDOWS else 11
+    base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -2221,7 +2290,7 @@ def install_python_stack() -> int:
     #    (no working build; see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
-    elif _rocm_windows_torch_installed:
+    elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
         # No working Windows ROCm torchao build: it imports an absent c10d backend
         # and crashes transformers.quantizers. Studio stubs it at runtime, so
         # installing it only ships a package that crashes on import -- skip it.
@@ -2283,6 +2352,10 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         req = REQ_ROOT / "studio.txt",
     )
+
+    # 8b. anyio repair (#6483)
+    _progress("anyio check")
+    _repair_bad_anyio()
 
     # 9. Data-designer dependencies
     _progress("data designer deps")
