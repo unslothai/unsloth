@@ -79,6 +79,14 @@ assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegat
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
+_gate_src = _re.search(
+    r"def _gemma_strip_gate\((?:.|\n)*?\) -> set:\n(?:    .+\n)+",
+    _src,
+)
+assert _gate_src, "could not extract _gemma_strip_gate source"
+exec(_gate_src.group(0), _ns)
+_gemma_strip_gate = _ns["_gemma_strip_gate"]
+
 
 # ── Well-formed pairs ─────────────────────────────────────────────
 
@@ -487,3 +495,21 @@ def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
     )
     # No gate (legacy) strips every closed call.
     assert "call:foo" not in _strip_tool_xml(prose)
+
+
+def test_gemma_strip_gate_empty_tools_preserves_prose():
+    # With NO tools enabled the gate must return an EMPTY set (strip nothing), not
+    # None: None falls back to strip-all and deletes an answer that documents the
+    # call:NAME{...} syntax. Covers both the explicit empty list and None (the
+    # Anthropic path massages an empty tool list to None).
+    assert _gemma_strip_gate([]) == set()
+    assert _gemma_strip_gate(None) == set()
+    assert _gemma_strip_gate([{"function": {"name": "web_search"}}]) == {"web_search"}
+    prose = "To document syntax you write call:foo{query:example}. That shows the format."
+    assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate([]))
+    assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate(None))
+    # An enabled tool's real call is still stripped.
+    assert "call:web_search" not in _strip_tool_xml(
+        "Answer. call:web_search{query:x}",
+        _gemma_strip_gate([{"function": {"name": "web_search"}}]),
+    )

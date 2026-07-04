@@ -688,3 +688,25 @@ def test_literal_tool_call_close_in_qwen_json_before_marker_runs_outer_call():
         '<tool_call>{"name":"b","arguments":{}}</tool_call>'
     )
     assert [c["function"]["name"] for c in parse_tool_calls_from_text(bb)] == ["a", "b"]
+
+
+def test_r1_heal_keeps_later_call_when_first_omits_close_fence():
+    # DeepSeek R1 multi-call where the FIRST call has balanced JSON but omits its close
+    # fence/terminator, followed by a well-formed second call. Auto-Heal must return
+    # BOTH: an unbounded forward search for the close landed on the SECOND call's
+    # terminator and advanced past it, so the valid later call was dropped. Heal must
+    # never return fewer calls than strict mode (which already keeps the later call).
+    text = (
+        "<｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather\n```json\n"
+        '{"city":"SF"}\n```'  # no <｜tool▁call▁end｜>
+        "<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_time\n```json\n"
+        '{"tz":"UTC"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    heal = [c["function"]["name"] for c in parse_tool_calls_from_text(text)]
+    assert "get_time" in heal, heal
+    # Strict keeps the later well-formed call; heal must be a superset.
+    strict = [
+        c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)
+    ]
+    assert set(strict) <= set(heal), (strict, heal)

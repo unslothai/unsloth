@@ -1866,22 +1866,21 @@ def _parse_deepseek_tool_calls(
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
-        # Closing ``` fence + ``<｜tool▁call▁end｜>``. ``search`` advances ``pos`` in
-        # the heal path, but in strict mode the close must immediately follow the
-        # JSON (after optional whitespace) so a truncated R1 call -- one whose
-        # fence/terminator never arrived -- is rejected, matching the V3/V3.1 and
-        # other strict parsers instead of being healed into a call.
-        close_m = _DEEPSEEK_R1_CLOSE_RE.search(body, brace_end + 1)
-        if not allow_incomplete:
-            after = brace_end + 1
-            while after < len(body) and body[after] in " \t\r\n":
-                after += 1
-            if _DEEPSEEK_R1_CLOSE_RE.match(body, after) is None:
-                # Strict mode: fence / terminator missing -- skip this call but keep
-                # the later well-formed ones (matches the Kimi strict parser) instead
-                # of dropping the rest of the envelope.
-                pos = brace_end + 1
-                continue
+        # Closing ``` fence + ``<｜tool▁call▁end｜>`` must IMMEDIATELY follow the JSON
+        # (after optional whitespace). An unbounded ``search`` would land on a LATER
+        # call's terminator, and ``pos = close_m.end()`` below would then advance past
+        # that valid call -- so a multi-call turn whose first call omits its fence
+        # dropped the rest. When the immediate close is absent we heal this call (name
+        # known, JSON balanced) and advance by just the JSON so the next call is still
+        # scanned; strict mode rejects it instead. Both keep later well-formed calls,
+        # matching the V3/V3.1 and Kimi parsers.
+        after = brace_end + 1
+        while after < len(body) and body[after] in " \t\r\n":
+            after += 1
+        close_m = _DEEPSEEK_R1_CLOSE_RE.match(body, after)
+        if not allow_incomplete and close_m is None:
+            pos = brace_end + 1
+            continue
         if name:
             out.append(
                 {

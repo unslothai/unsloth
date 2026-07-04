@@ -1686,19 +1686,22 @@ _TOOL_XML_RE = _re.compile(
 )
 
 
-def _gemma_strip_gate(tools) -> Optional[set]:
-    """Enabled tool NAMES for gating the wrapper-less Gemma ``call:NAME{...}`` strip,
-    or None when no tools are enabled. Mirrors the parser/loop gate: a markerless
-    ``call:foo{...}`` is a real call only when ``foo`` is an enabled tool; otherwise it
-    is prose (an example/disabled name) and must survive in display/history. ``None``
-    keeps the legacy strip-all behaviour (unrestricted / no tools)."""
+def _gemma_strip_gate(tools) -> set:
+    """Enabled tool NAMES for gating the wrapper-less Gemma ``call:NAME{...}`` strip.
+    Mirrors the parser/loop gate: a markerless ``call:foo{...}`` is a real call only
+    when ``foo`` is an enabled tool; otherwise it is prose (an example/disabled name)
+    and must survive in display/history. This is a display/history gate only, so with
+    NO tools enabled it returns an EMPTY set (strip nothing) rather than ``None``: with
+    no active tool, every ``call:NAME{...}`` is prose. Returning ``None`` here would
+    fall back to the strip-all behaviour and delete a legitimate answer that documents
+    the syntax."""
     names = {
         (t.get("function") or {}).get("name")
         for t in (tools or [])
         if isinstance(t, dict) and isinstance(t.get("function"), dict)
     }
     names.discard(None)
-    return names or None
+    return names
 
 
 def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
