@@ -297,6 +297,7 @@ from routes import (
     rag_router,
     training_history_router,
     training_router,
+    video_router,
 )
 from routes.llama import router as llama_router
 from routes.preview import router as preview_router
@@ -944,6 +945,9 @@ app.include_router(inference_router, prefix = "/api/inference", tags = ["inferen
 # Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
+
+# Studio-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
+app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
