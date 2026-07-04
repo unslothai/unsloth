@@ -85,12 +85,20 @@ def load_krea2_text_encoder(
 
 def _load_model_index(repo_id: str, hf_token: Optional[str] = None) -> dict[str, Any]:
     """model_index.json as a dict, from a local path or the Hub cache."""
+    is_local_dir = False
     try:
-        local = Path(repo_id).expanduser() / "model_index.json"
+        root = Path(repo_id).expanduser()
+        is_local_dir = root.is_dir()
+        local = root / "model_index.json"
         if local.is_file():
             return json.loads(local.read_text())
     except OSError:
         pass
+    if is_local_dir:
+        # A local checkpoint dir without the file must fail clearly here: falling through
+        # to hf_hub_download with a filesystem path as the repo id would die with an
+        # opaque HFValidationError instead.
+        raise FileNotFoundError(f"model_index.json not found in local model dir {repo_id}")
     from huggingface_hub import hf_hub_download
 
     path = hf_hub_download(repo_id, "model_index.json", token = hf_token or None)
