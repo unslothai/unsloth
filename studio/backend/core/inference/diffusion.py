@@ -1167,17 +1167,13 @@ class DiffusionBackend:
                 # explicit "off" / "fbcache" are pinned and never toggled.
                 cache_request = normalize_transformer_cache(transformer_cache)
                 cache_auto = transformer_cache is None or cache_request == TC_AUTO
-                cache_quant_active = (
-                    transformer_quant_engaged is not None or bool(gguf_filename)
-                )
+                cache_quant_active = transformer_quant_engaged is not None or bool(gguf_filename)
                 default_steps: Optional[int] = None
                 if cache_auto:
                     default_steps, _ = default_generation_params(
                         gguf_filename, repo_id, base, fam.name
                     )
-                    cache_request = (
-                        TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
-                    )
+                    cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
                 cache_engaged = apply_step_cache(
                     pipe,
                     mode = cache_request,
