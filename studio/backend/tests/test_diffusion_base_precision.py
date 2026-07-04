@@ -265,7 +265,9 @@ def test_family_train_infos_carries_precision_fields(monkeypatch):
     sdxl = infos["sdxl"]
     assert sdxl["precision_modes"] == []
     assert sdxl["recommended_precision"] == "nf4"
-    assert sdxl["supports_compile"] is False
+    # The SDXL trainer regionally compiles its U-Net blocks too, so compile is advertised
+    # for every family; only the precision selector stays DiT-only.
+    assert sdxl["supports_compile"] is True
 
 
 # ── request model base_precision field ────────────────────────────────────────
