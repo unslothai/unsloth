@@ -108,25 +108,28 @@ from ._utils import (
     set_task_config_attr,
 )
 
-# Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
-# doing `from unsloth.models.loader import FORCE_FLOAT32` keep working.
-# Fallback list mirrors zoo for users who upgrade unsloth without upgrading
-# unsloth_zoo (so this module never fails at import).
+# Source of truth is unsloth_zoo.model_lists. Re-exported so callers doing
+# `from unsloth.models.loader import FORCE_FLOAT32` keep working. The fallback
+# list is also unioned in so a newer unsloth still forces float32 for these
+# archs when paired with an older unsloth_zoo that predates them (upgrade skew).
+_FORCE_FLOAT32_FALLBACK = [
+    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
+    "gemma3n",
+    "gemma4",  # Gemma4 (gemma4 / gemma4_text): float16 NaNs grad norms in the backward
+    "glm4_moe",  # GLM-4.x MoE (glm4_moe / glm4_moe_lite): float16 NaNs grad norms
+    "gpt_oss",
+    "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
+    "qwen3_moe",  # Qwen3-MoE (Qwen3-30B-A3B): float16 NaNs grad norms in the backward
+]
 try:
-    from unsloth_zoo import FORCE_FLOAT32  # noqa: F401
+    from unsloth_zoo import FORCE_FLOAT32 as _ZOO_FORCE_FLOAT32
+    FORCE_FLOAT32 = list(_ZOO_FORCE_FLOAT32)
 except ImportError:
-    global FORCE_FLOAT32
-    # Forces float32 precision since float16 goes to infinity
-    FORCE_FLOAT32 = [
-        "gemma3,",  # Add comma bc gemma3 will match gemma3n
-        "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
-        "gemma3n",
-        "gemma4",  # Gemma4 (gemma4 / gemma4_text): float16 NaNs grad norms in the backward
-        "glm4_moe",  # GLM-4.x MoE (glm4_moe / glm4_moe_lite): float16 NaNs grad norms
-        "gpt_oss",
-        "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
-        "qwen3_moe",  # Qwen3-MoE (Qwen3-30B-A3B): float16 NaNs grad norms in the backward
-    ]
+    FORCE_FLOAT32 = []
+for _mt in _FORCE_FLOAT32_FALLBACK:
+    if not any(_mt in _entry for _entry in FORCE_FLOAT32):
+        FORCE_FLOAT32.append(_mt)
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
