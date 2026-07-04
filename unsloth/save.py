@@ -255,8 +255,12 @@ def _loaded_via_remote_code(obj):
         # PEFT / trainer wrappers hold the real model in base_model / model; a built-in
         # ProcessorMixin holds its (possibly custom-code) components as attributes.
         for attr in (
-            "base_model", "model",
-            "tokenizer", "image_processor", "feature_extractor", "video_processor",
+            "base_model",
+            "model",
+            "tokenizer",
+            "image_processor",
+            "feature_extractor",
+            "video_processor",
         ):
             queue.append(getattr(node, attr, None))
     return False
