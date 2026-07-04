@@ -678,7 +678,6 @@ def parse_tool_calls_from_text(
         )
         call_spans.append((start, span_end))
 
-
     if not tool_calls:
         func_starts = [
             fm
