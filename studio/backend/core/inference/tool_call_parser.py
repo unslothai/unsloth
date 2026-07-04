@@ -656,8 +656,29 @@ _OUTER_ENVELOPE_CLOSED_PATS = (
 
 
 def _marker_inside_leading_envelope(content: str) -> bool:
-    if _EMBEDDED_MARKER_RE.search(content) is None:
+    first_marker = _EMBEDDED_MARKER_RE.search(content)
+    if first_marker is None:
         return False
+    # A leading bare-JSON call object or Mistral [TOOL_CALLS] call is an outer
+    # envelope too: a DeepSeek/Kimi marker inside its argument strings is data
+    # (a query documenting the marker), and running the pre-pass on it would
+    # promote the embedded no-arg literal and drop the real outer call.
+    i = 0
+    n = len(content)
+    while i < n and content[i] in " \t\n\r":
+        i += 1
+    if content.startswith("{", i):
+        end = _balanced_brace_end(content, i)
+        if (
+            end is not None
+            and _top_level_bare_json_name(content[i : end + 1]) is not None
+            and i < first_marker.start() < end
+        ):
+            return True
+    elif content.startswith(_MISTRAL_TRIGGER, i):
+        end = _mistral_region_end(content, i)
+        if end is not None and i < first_marker.start() < end:
+            return True
     # Remove CLOSED outer envelopes first. Their patterns extend to the REAL final
     # close, so a literal ``</function>``/``</tool_call>`` inside an argument value does
     # not end them early. If that removes every marker, the marker sat inside a closed

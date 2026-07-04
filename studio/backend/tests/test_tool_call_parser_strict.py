@@ -1018,3 +1018,35 @@ class TestDisabledBareJsonLiteralNotPromoted:
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestDeepSeekMarkerInsideLeadingEnvelopes:
+    """A DeepSeek/Kimi marker quoted inside a leading bare-JSON or Mistral
+    call's argument strings is data: the pre-pass must not promote the
+    embedded no-arg literal and drop the real outer call."""
+
+    def test_marker_inside_leading_json_call_stays_data(self):
+        text = (
+            '{"name": "web_search", "arguments": '
+            '{"query": "what is <｜tool▁calls▁begin｜>...{}..."}}'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert "tool▁calls▁begin" in args["query"]
+
+    def test_marker_inside_leading_mistral_call_stays_data(self):
+        text = (
+            '[TOOL_CALLS] [{"name": "web_search", "arguments": '
+            '{"query": "docs on <｜tool▁calls▁begin｜> markers"}}]'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_standalone_deepseek_call_still_parses(self):
+        text = (
+            "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>web_search\n"
+            '```json\n{"query": "cats"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
