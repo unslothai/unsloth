@@ -48,6 +48,7 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   GgufVariantDetail,
@@ -144,6 +145,11 @@ interface ServerTimings {
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
+
+type OpenAIStreamAdapterOptions = {
+  modelType?: ModelType;
+  pairId?: string;
+};
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
@@ -1185,7 +1191,17 @@ export function findLatestUserAudioBase64(
 
 async function resolveUseAdapter(
   threadId: string | undefined,
+  options: OpenAIStreamAdapterOptions = {},
 ): Promise<boolean | undefined> {
+  if (options.modelType === "model1" || options.modelType === "model2") {
+    return undefined;
+  }
+  if (
+    options.pairId &&
+    (options.modelType === "base" || options.modelType === "lora")
+  ) {
+    return options.modelType === "lora";
+  }
   if (!threadId) {
     return undefined;
   }
@@ -1722,7 +1738,9 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
   }
 }
 
-export function createOpenAIStreamAdapter(): ChatModelAdapter {
+export function createOpenAIStreamAdapter(
+  options: OpenAIStreamAdapterOptions = {},
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -2169,7 +2187,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(resolvedThreadId);
+      const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
@@ -2803,6 +2821,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                             params.checkpoint,
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
+
+                          ...(ragAutoInject === "off"
+                            ? { whole_doc: false }
+                            : {}),
+                          context_length:
+                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
                         },
                       }
                     : {}),

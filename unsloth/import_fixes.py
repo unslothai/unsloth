@@ -158,6 +158,11 @@ if not UNSLOTH_ENABLE_LOGGING:
     logging.getLogger("torchao").addFilter(
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
+    # torch >= 2.11 path: torchao dlopens each prebuilt _C*.so and logs "Failed to load
+    # .../_C*.so" when one can't (ABI tag mismatch in the wheel, e.g. a cp310 .so under a
+    # cp312 runtime on Colab, or an arch-specific kernel the GPU lacks). It falls back to
+    # non-cpp paths and Unsloth doesn't use these kernels, so drop the cosmetic record.
+    logging.getLogger("torchao").addFilter(HideLoggingMessage("Failed to load "))
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
@@ -1487,6 +1492,143 @@ def disable_broken_wandb():
 # Stamped on stub modules so a second call is a strict no-op and so third
 # parties can introspect ``__unsloth_stub__`` to detect our patch.
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
+_PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
+    "ALL_PARALLEL_STYLES",
+    "ColwiseParallel",
+    "EmbeddingParallel",
+    "RowwiseParallel",
+)
+
+
+def _extract_peft_tensor_parallel_imported_symbols():
+    """Return names PEFT imports from ``transformers.integrations.tensor_parallel``.
+
+    Parsed from ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` to
+    avoid a stale hard-coded symbol list.
+    """
+    try:
+        import peft.utils.save_and_load as _save_and_load
+    except Exception:
+        return ()
+    try:
+        sharding_fn = _save_and_load._maybe_shard_state_dict_for_tp
+    except AttributeError:
+        return ()
+
+    try:
+        source = inspect.getsource(sharding_fn)
+    except Exception as exc:
+        logger.debug("Failed to inspect PEFT tensor-parallel imports: %r", exc)
+        return _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+    import_pattern = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s*\((.*?)\)",
+        re.S,
+    )
+    import_pattern_single = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\s,]*)",
+        re.S,
+    )
+    matches = import_pattern.findall(source)
+    if not matches:
+        matches = import_pattern_single.findall(source)
+
+    symbols = []
+    seen = set()
+    for match in matches:
+        pieces = re.split(r"[,\n]", match)
+        for piece in pieces:
+            candidate = piece.strip()
+            if not candidate:
+                continue
+            if candidate.endswith(")"):
+                candidate = candidate[:-1].strip()
+            if not candidate.isidentifier():
+                continue
+            if candidate in seen:
+                continue
+            symbols.append(candidate)
+            seen.add(candidate)
+    return tuple(symbols) or _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+
+def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
+    raise NotImplementedError(
+        f"Unsloth: cannot use unsupported "
+        f"`transformers.integrations.tensor_parallel.{symbol_name}` on this "
+        f"transformers installation. Please upgrade transformers before "
+        f"using PEFT tensor-parallel adapter sharding features."
+    )
+
+
+def fix_peft_transformers_tensor_parallel_import_compat():
+    """Add placeholders to ``transformers.integrations.tensor_parallel`` for symbols
+    PEFT expects but this transformers build omits, keeping existing objects.
+
+    Returns ``True`` when patched, ``False`` when no patch is needed, ``None``
+    when transformers / PEFT context is absent.
+    """
+    try:
+        tensor_parallel_spec = importlib.util.find_spec("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError:
+        return None
+    if tensor_parallel_spec is None:
+        return None
+
+    required_symbols = _extract_peft_tensor_parallel_imported_symbols()
+    if not required_symbols:
+        return None
+
+    try:
+        tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "transformers",
+            "transformers.integrations",
+            "transformers.integrations.tensor_parallel",
+        }:
+            raise
+        return None
+    missing = [symbol for symbol in required_symbols if not hasattr(tp_mod, symbol)]
+    if not missing:
+        return False
+
+    def _install_symbol_placeholder(symbol_name):
+        if symbol_name == "ALL_PARALLEL_STYLES":
+
+            class _UnslothTensorParallelStyles(dict):
+                def __getitem__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def get(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __contains__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __iter__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __len__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelStyles()
+        else:
+
+            class _UnslothTensorParallelPlaceholder:
+                def __init__(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelPlaceholder
+            value.__name__ = f"UnslothTensorParallelPlaceholder{symbol_name}"
+
+        setattr(value, _UNSLOTH_STUB_SENTINEL, True)
+        setattr(tp_mod, symbol_name, value)
+
+    for symbol in missing:
+        _install_symbol_placeholder(symbol)
+
+    return True
 
 
 def _peft_stub_module_importable(name):
@@ -2349,11 +2491,9 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Also catch CUDA shared library mismatches during vllm import
-        # e.g. "libcudart.so.12: cannot open shared object file"
-        if (
-            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
-        ) and "cannot open shared object file" in message:
+        # Forced extension load raises the bare loader error (no "vllm._C"
+        # wrapper); match any .so failure as callers feed only vLLM imports.
+        if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
@@ -2545,6 +2685,16 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
+# vLLM's compiled extensions. A CUDA-major ABI break hits all of them, so
+# probing the eagerly-loaded _C and its siblings reliably trips it.
+_VLLM_COMPILED_EXTENSIONS = (
+    "vllm._C",
+    "vllm._C_stable_libtorch",
+    "vllm._moe_C",
+    "vllm._rocm_C",
+)
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
@@ -2562,6 +2712,15 @@ def disable_broken_vllm(error = None):
 
         try:
             import vllm  # noqa: F401
+
+            # Lazy vLLM lets a bare `import vllm` succeed even when an extension
+            # is ABI-broken; force-load each to surface the .so failure here.
+            # A missing one raises ModuleNotFoundError (skipped below).
+            for _ext in _VLLM_COMPILED_EXTENSIONS:
+                try:
+                    importlib.import_module(_ext)
+                except ModuleNotFoundError:
+                    pass
             return False
         except Exception as import_error:
             failure = import_error

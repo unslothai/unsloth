@@ -40,7 +40,7 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
-from .loader_utils import _get_fp8_mode_and_check_settings
+from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -238,6 +238,71 @@ def _attach_bnb_multidevice_hooks(
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
+
+def _unsloth_generate_accepts_kwarg(model, key):
+    # True if the top level accepts this generate kwarg (some models expose it on an inner forward only).
+    try:
+        model_args = set(inspect.signature(model.prepare_inputs_for_generation).parameters)
+    except (TypeError, ValueError, AttributeError):
+        model_args = set()
+    if "kwargs" in model_args or "model_kwargs" in model_args:
+        try:
+            model_args |= set(inspect.signature(model.forward).parameters)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return key in model_args
+
+
+def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_device):
+    # Lookup runs on the weight's current device (CPU when offloaded); the output returns to the
+    # decoder device read live from output_embeddings (lm_head, untied here) so it tracks
+    # model.to() moves. A meta (disk-offloaded) or missing lm_head falls back to return_device.
+    if embed_tokens is None:
+        return False
+    if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
+        return True
+
+    def _decoder_device():
+        weight = getattr(output_embeddings, "weight", None)
+        if weight is not None and weight.device.type != "meta":
+            return weight.device
+        return return_device
+
+    def _unsloth_offload_pre_hook(module, args):
+        if not args:
+            return args
+        inp = args[0]
+        if not hasattr(inp, "device"):
+            return args
+        weight = getattr(module, "weight", None)
+        target = weight.device if weight is not None else _decoder_device()
+        if target is None or inp.device == target:
+            return args
+        return (inp.to(target),) + tuple(args[1:])
+
+    def _unsloth_offload_post_hook(module, args, output):
+        target = _decoder_device()
+        if target is not None and hasattr(output, "device") and output.device != target:
+            return output.to(target)
+        return output
+
+    embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
+    embed_tokens.register_forward_hook(_unsloth_offload_post_hook, prepend = True)
+    embed_tokens._unsloth_offload_hooks_installed = True
+    return True
+
+
+def _embeddings_are_tied(input_embeddings, output_embeddings):
+    # Tied lm_head reuses this weight; offloading to CPU would strand the output projection.
+    if input_embeddings is None or output_embeddings is None:
+        return False
+    w_in = getattr(input_embeddings, "weight", None)
+    w_out = getattr(output_embeddings, "weight", None)
+    if w_in is None or w_out is None:
+        return False
+    return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
+
+
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
@@ -321,6 +386,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs.pop("token_type_ids", None)
     # kwargs.pop("token_type_ids", None)
 
+    # Vision processors emit mm_token_type_ids that generate() rejects (Qwen3-VL); unlike
+    # logits_to_keep it is an incoming kwarg, so drop it when generate does not accept it.
+    if "mm_token_type_ids" in kwargs and not _unsloth_generate_accepts_kwarg(
+        self, "mm_token_type_ids"
+    ):
+        kwargs.pop("mm_token_type_ids", None)
+
     # VLMs do not allow logits_to_keep
     global NUM_LOGITS_TO_KEEP
     if arch not in NUM_LOGITS_TO_KEEP:
@@ -339,7 +411,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if arch not in NUM_LOGITS_TO_KEEP:
             NUM_LOGITS_TO_KEEP[arch] = None
     key = NUM_LOGITS_TO_KEEP[arch]
-    if key is not None and key not in kwargs:
+    if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
         kwargs[key] = 1
 
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -1024,6 +1096,12 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         try:
+            if offload_embedding and fast_inference:
+                # vLLM manages its own weights; embedding offload does not apply.
+                print(
+                    "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
+                )
+                offload_embedding = False
             if not fast_inference:
                 # Prevent load_in_fp8 from being forwarded into HF internal model loading
                 load_in_fp8 = kwargs.pop("load_in_fp8", None)
@@ -1070,21 +1148,26 @@ class FastBaseModel:
                         pass
                     else:
                         embed_tokens = model.get_input_embeddings()
+                        out_embed = (
+                            model.get_output_embeddings()
+                            if hasattr(model, "get_output_embeddings")
+                            else None
+                        )
+                        if _embeddings_are_tied(embed_tokens, out_embed):
+                            raise NotImplementedError(
+                                "offload_embedding = True is not supported for models with tied word "
+                                "embeddings (embed_tokens shares its weight with lm_head). Offloading "
+                                "would strand the output projection on CPU and saves no VRAM. Set "
+                                "offload_embedding = False for this model."
+                            )
                         nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
                         ngb = round(nbytes / 1024 / 1024 / 1024, 2)
                         print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                        _embed_device = embed_tokens.weight.device  # decoder device, before offload
                         embed_tokens.to("cpu")
 
-                        # Add hooks to move inputs to CPU and back to CUDA
-                        # [TODO] Doesn't seem to work!
-                        # def pre_hook(module, args):
-                        #     args[0]._old_device = args[0].device
-                        #     return (args[0].to("cpu", non_blocking = True))
-                        # def post_hook(module, args, output):
-                        #     old_device = getattr(args[0], "_old_device", "cuda")
-                        #     return output.to(old_device, non_blocking = True)
-                        # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
-                        # embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                        # Device-safe embedding offload.
+                        _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
                         # Must free GPU memory otherwise will not free!
                         torch.cuda.empty_cache()
                         gc.collect()
@@ -1440,16 +1523,14 @@ class FastBaseModel:
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length
             m._saved_temp_tokenizer = tokenizer
-            # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         m.max_seq_length = max_seq_length
         # Save to modules as well
         for module in model.modules():
             module.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
-        # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True if not full_finetuning else False
+        # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
+        _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
         # Patch generate
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0" and hasattr(
@@ -1741,6 +1822,7 @@ class FastBaseModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile
         # graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model
 
     @staticmethod
@@ -1791,6 +1873,11 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        # Persist the configured GC mode so the trainer restores it verbatim.
+        # for_inference() clears the module flags (GRPO does this every generation
+        # step), and a plain TrainingArguments defaults gradient_checkpointing=False,
+        # which would otherwise silently disable this setting at train time (#4735).
+        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # Gemma3N audio conformer processes variable-length audio tensors
         # that cause stride mismatches in AOT autograd compiled backward
@@ -1825,14 +1912,12 @@ class FastBaseModel:
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
                     m._saved_temp_tokenizer.tokenizer.padding_side = "left"
-            # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
                 m._saved_temp_tokenizer.tokenizer.padding_side = "left"
-        # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True if not full_finetuning else False
+        # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
+        _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
         # Clear deleted GPU items
         for _ in range(3):
