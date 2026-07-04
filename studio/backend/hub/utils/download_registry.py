@@ -848,6 +848,39 @@ class DownloadRegistry:
             else:
                 self._jobs[key] = DownloadState(state, error)
 
+    def set_error_unless_cancelled(
+        self,
+        key: str,
+        error: str,
+    ) -> tuple[JobState, Optional[DownloadMetadata]]:
+        key = normalize_job_key(key)
+        with self._lock:
+            current = self._jobs.get(key, DownloadState("idle")).state
+            has_pending_cancel = key in self._pending_cancel
+            pending_generation = self._pending_cancel.get(key)
+            metadata = self._metadata.get(key)
+            should_cancel = (
+                current == "cancelling"
+                or (
+                    has_pending_cancel
+                    and self._generation_matches_locked(key, pending_generation)
+                )
+            )
+            terminal_state: JobState = "cancelled" if should_cancel else "error"
+            self._put_terminal_job_locked(
+                key,
+                terminal_state,
+                None if should_cancel else error,
+            )
+            self._pending_cancel.pop(key, None)
+            repo = _repo_of_key(key)
+            active = self._repo_active.get(repo)
+            if active is not None:
+                active.discard(key)
+                if not active:
+                    self._repo_active.pop(repo, None)
+            return terminal_state, metadata
+
     def get_job(self, key: str) -> DownloadState:
         key = normalize_job_key(key)
         with self._lock:

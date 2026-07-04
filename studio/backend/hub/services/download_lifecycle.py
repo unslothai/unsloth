@@ -288,6 +288,31 @@ def _set_job_transport(
         registry._metadata[key] = replace(metadata, transport = transport)
 
 
+def _set_retry_failure_state(
+    registry: download_registry.DownloadRegistry,
+    key: str,
+    error: str,
+    *,
+    repo_type: RepoType,
+    repo_id: str,
+    fallback_variant: Optional[str],
+    fallback_transport: Optional[str],
+    logger,
+) -> str:
+    state, metadata = registry.set_error_unless_cancelled(key, error)
+    if state == "cancelled":
+        download_registry.persist_cancel_marker(
+            repo_type,
+            repo_id,
+            metadata.variant if metadata is not None and metadata.variant else fallback_variant,
+            metadata.transport
+            if metadata is not None and metadata.transport
+            else fallback_transport,
+            logger = logger,
+        )
+    return state
+
+
 def _try_http_retry(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -351,22 +376,16 @@ def _try_http_retry(
     )
     if not claimed:
         logger.debug("%s XET retry claim rejected for %s; another job took the slot", log_prefix, label)
-        if registry.cancel_requested(key):
-            metadata = registry.get_job_metadata(key)
-            registry.set_job(key, "cancelled")
-            download_registry.persist_cancel_marker(
-                repo_type,
-                repo_id,
-                metadata.variant
-                if metadata is not None and metadata.variant
-                else variant,
-                metadata.transport
-                if metadata is not None and metadata.transport
-                else original_metadata.transport,
-                logger = logger,
-            )
-            return False
-        registry.set_job(key, "error", "HTTP retry could not reclaim the download slot")
+        _set_retry_failure_state(
+            registry,
+            key,
+            "HTTP retry could not reclaim the download slot",
+            repo_type = repo_type,
+            repo_id = repo_id,
+            fallback_variant = variant,
+            fallback_transport = original_metadata.transport,
+            logger = logger,
+        )
         return False
 
     args: list[str] = ["--repo-id", repo_id]
@@ -399,7 +418,16 @@ def _try_http_retry(
             scrubbed,
         )
         _set_job_transport(registry, key, download_registry.TRANSPORT_XET)
-        registry.set_job(key, "error", scrubbed)
+        _set_retry_failure_state(
+            registry,
+            key,
+            scrubbed,
+            repo_type = repo_type,
+            repo_id = repo_id,
+            fallback_variant = variant,
+            fallback_transport = original_metadata.transport,
+            logger = logger,
+        )
         return False
 
     return register_worker(
