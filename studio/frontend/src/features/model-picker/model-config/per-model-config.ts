@@ -259,7 +259,7 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    const map = readMap();
+    const map = readMapRaw();
     if (!mergeLegacyEntries(map, legacy as Record<string, unknown>)) {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
@@ -275,8 +275,7 @@ function migrateLegacyLoadSettingsOnce(): void {
   }
 }
 
-function readMap(): StoredMap {
-  migrateLegacyLoadSettingsOnce();
+function readMapRaw(): StoredMap {
   if (!canUseStorage()) {
     return {};
   }
@@ -293,6 +292,11 @@ function readMap(): StoredMap {
   } catch {
     return {};
   }
+}
+
+function readMap(): StoredMap {
+  migrateLegacyLoadSettingsOnce();
+  return readMapRaw();
 }
 
 function writeMap(map: StoredMap): boolean {
