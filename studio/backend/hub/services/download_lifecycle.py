@@ -276,9 +276,7 @@ def finalize_worker_exit(
 
 
 def _set_job_transport(
-    registry: download_registry.DownloadRegistry,
-    key: str,
-    transport: str,
+    registry: download_registry.DownloadRegistry, key: str, transport: str
 ) -> None:
     registry.update_job_transport(key, transport)
 
@@ -390,7 +388,9 @@ def _try_http_retry(
         replace_active = True,
     )
     if not claimed:
-        logger.debug("%s XET retry claim rejected for %s; another job took the slot", log_prefix, label)
+        logger.debug(
+            "%s XET retry claim rejected for %s; another job took the slot", log_prefix, label
+        )
         _set_retry_failure_state(
             registry,
             key,
@@ -507,7 +507,8 @@ def register_worker(
                 transport == download_registry.TRANSPORT_XET
                 and download_registry.download_transport_unavailable_reason(
                     download_registry.TRANSPORT_HTTP
-                ) is None
+                )
+                is None
             )
             state = finalize_worker_exit(
                 registry,
@@ -526,10 +527,7 @@ def register_worker(
             # HTTP is available, attempt one automatic retry over HTTP.  The
             # transport check is the recursion guard: an HTTP worker that errors
             # never satisfies `transport == TRANSPORT_XET`, so it stays terminal.
-            if (
-                can_retry_http
-                and state == "error"
-            ):
+            if can_retry_http and state == "error":
                 _try_http_retry(
                     registry,
                     key,

@@ -17,7 +17,7 @@ def _set_xet_reason(monkeypatch, reason):
     )
 
 
-def _make_proc(rc, stderr=b""):
+def _make_proc(rc, stderr = b""):
     class _Proc:
         pid = 4242
 
@@ -63,7 +63,9 @@ def test_resolve_effective_use_xet_downgrades_when_xet_unavailable(monkeypatch):
     assert download_lifecycle.resolve_effective_use_xet(True) is False
 
 
-def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(monkeypatch, tmp_path):
+def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     real_register_worker = download_lifecycle.register_worker
@@ -127,7 +129,13 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
             baseline_calls.append(args)
             return retry_baseline_bytes
 
-        def fake_spawn_worker(args, hf_token, *, use_xet, protected_blob_hashes = None):
+        def fake_spawn_worker(
+            args,
+            hf_token,
+            *,
+            use_xet,
+            protected_blob_hashes = None,
+        ):
             assert registry.get_job(key).state == "running"
             spawned.append((args, use_xet, protected_blob_hashes))
             return _make_proc(0, b"http retry")
@@ -155,7 +163,9 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
         )
 
         assert spawned == [(expected_args, False, None)]
-        assert retry_registers and retry_registers[0]["transport"] == download_registry.TRANSPORT_HTTP
+        assert (
+            retry_registers and retry_registers[0]["transport"] == download_registry.TRANSPORT_HTTP
+        )
         metadata = registry.get_job_metadata(key)
         assert metadata is not None
         assert metadata.transport == download_registry.TRANSPORT_HTTP
@@ -270,9 +280,7 @@ def test_http_retry_skip_for_non_xet_transport_sets_error(monkeypatch, tmp_path)
     assert registry.get_job(key).state == "error"
 
 
-def test_download_watcher_restores_xet_transport_when_http_retry_spawn_fails(
-    monkeypatch, tmp_path
-):
+def test_download_watcher_restores_xet_transport_when_http_retry_spawn_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     real_register_worker = download_lifecycle.register_worker
