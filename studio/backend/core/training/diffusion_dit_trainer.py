@@ -1136,12 +1136,22 @@ def run_dit_lora_training(
     should_stop: Optional[StopCb] = None,
 ) -> str:
     """Train a flow-matching DiT LoRA (FLUX.1-dev / Qwen-Image / Z-Image) and export it."""
-    import torch
-
     cfg = config.normalized()
     spec = _SPECS.get(cfg.resolved_family)
     if spec is None:
         raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
+
+    # DiT families train in bf16 (Z-Image/Qwen require it; FLUX prefers it). A caller that
+    # explicitly asks for fp16 on a bf16-only family is refused rather than silently
+    # upgraded, so the choice is never misrepresented. Validation runs before the heavy
+    # imports so a host without diffusers still sees the real error.
+    if cfg.mixed_precision == "fp16" and spec.force_bf16:
+        raise ValueError(
+            f"{spec.family} LoRA training requires bf16: fp16 overflows its fp32 RoPE / "
+            f"embedder internals. Set mixed precision to bf16."
+        )
+
+    import torch
 
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
@@ -1159,15 +1169,6 @@ def run_dit_lora_training(
         if isinstance(sig, dict) and sig.get("save") is False:
             save_on_stop = False
         return True
-
-    # DiT families train in bf16 (Z-Image/Qwen require it; FLUX prefers it). A caller that
-    # explicitly asks for fp16 on a bf16-only family is refused rather than silently
-    # upgraded, so the choice is never misrepresented.
-    if cfg.mixed_precision == "fp16" and spec.force_bf16:
-        raise ValueError(
-            f"{spec.family} LoRA training requires bf16: fp16 overflows its fp32 RoPE / "
-            f"embedder internals. Set mixed precision to bf16."
-        )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, which is
