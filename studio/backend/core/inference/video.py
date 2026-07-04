@@ -619,6 +619,27 @@ class VideoBackend:
 
     # ── generation ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _reset_step_cache(pipe: Any) -> None:
+        """Clear FBCache residuals on the resident DiT(s) before a generation.
+
+        diffusers keys the residuals on the long-lived transformer and no pipeline
+        resets them, so the next clip would compare against the previous request's
+        state: a shape mismatch when the resolution changed, stale reuse otherwise.
+        ``_reset_stateful_cache`` is the transformer-level entry point in diffusers
+        0.39 (``reset_stateful_hooks`` lives only on the HookRegistry). Best-effort:
+        an uncached transformer is a silent no-op."""
+        for name in ("transformer", "transformer_2"):
+            module = getattr(pipe, name, None)
+            reset = getattr(module, "_reset_stateful_cache", None) or getattr(
+                module, "reset_stateful_hooks", None
+            )
+            if callable(reset):
+                try:
+                    reset()
+                except Exception:  # noqa: BLE001 -- reset is best-effort, never fail a generation
+                    pass
+
     def generate(
         self,
         *,
@@ -704,6 +725,8 @@ class VideoBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
+                if state.transformer_cache:
+                    self._reset_step_cache(pipe)
                 with torch.inference_mode():
                     output = pipe(**kwargs)
                 if cancel.is_set():

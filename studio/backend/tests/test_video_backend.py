@@ -227,6 +227,39 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     assert call["guidance_scale"] == 1.0
 
 
+def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
+    # FBCache residuals live on the long-lived DiT(s) and survive a generation, so
+    # the next clip at a new resolution would crash on stale state. generate must
+    # reset them when a cache is engaged (diffusers 0.39 exposes
+    # _reset_stateful_cache on the transformer; reset_stateful_hooks only exists on
+    # the HookRegistry) and must not touch an uncached load. transformer_2 (the Wan
+    # dual expert) resets too when present.
+    import dataclasses
+
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    resets = []
+    backend._state.pipe.transformer = types.SimpleNamespace(
+        _reset_stateful_cache = lambda: resets.append("transformer")
+    )
+    backend._state.pipe.transformer_2 = types.SimpleNamespace(
+        _reset_stateful_cache = lambda: resets.append("transformer_2")
+    )
+    # No cache engaged -> no reset.
+    backend.generate(prompt = "a sloth")
+    assert resets == []
+    # Cache engaged -> both resident DiTs reset before the pipe call.
+    backend._state = dataclasses.replace(backend._state, transformer_cache = "fbcache")
+    backend.generate(prompt = "a sloth")
+    assert resets == ["transformer", "transformer_2"]
+
+
 def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
     # diffusers maps every LTX-2 single file to the 2.0 config; a 2.3 checkpoint
     # (9-row modulation tables in the header) must be detected so the loader
