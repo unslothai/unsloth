@@ -1404,14 +1404,25 @@ def _parse_gemma_tool_calls(
     # for us, so defer anything still carrying the wrapper or ``<|"|>`` markers.
     if "<|tool_call>" in content or _GEMMA_STR_BEGIN in content:
         return out
-    for m in _GEMMA_BARE_TC_RE.finditer(content):
+    # Manual cursor (not ``finditer``): after consuming a ``call:NAME{...}`` we must
+    # resume scanning AFTER its balanced body, otherwise a nested ``call:OTHER{...}``
+    # mentioned inside this call's own string argument (e.g. a query that quotes the
+    # Gemma tool syntax) is re-matched and executed as a spurious extra tool call.
+    cursor = 0
+    while True:
+        m = _GEMMA_BARE_TC_RE.search(content, cursor)
+        if m is None:
+            break
         name = m.group(1)
+        body_start = m.end() - 1
+        end = _balanced_brace_end(content, body_start)
+        # Resume past this call's balanced body (or just past the token when the body
+        # is unbalanced/truncated) so its arguments are never rescanned for calls.
+        cursor = (end + 1) if end is not None else m.end()
         # Markerless: only a call when the name is an enabled tool, else it is prose
         # (an example / disabled name) and must stay in the visible answer.
         if enabled_tool_names is not None and name not in enabled_tool_names:
             continue
-        body_start = m.end() - 1
-        end = _balanced_brace_end(content, body_start)
         if end is None:
             continue
         body = content[body_start + 1 : end]

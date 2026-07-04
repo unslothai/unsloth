@@ -710,3 +710,22 @@ def test_r1_heal_keeps_later_call_when_first_omits_close_fence():
         c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)
     ]
     assert set(strict) <= set(heal), (strict, heal)
+
+
+def test_wrapperless_gemma_nested_call_in_arg_is_not_a_second_call():
+    # A wrapper-less Gemma call whose quoted argument MENTIONS another enabled tool in
+    # the same call:NAME{...} syntax must not execute that nested name as a second tool:
+    # the scan has to resume past the outer call's balanced body, not inside its
+    # argument, or an unintended (possibly destructive) tool runs.
+    text = 'call:web_search{query:"explain call:delete_all{target:files}"}'
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete_all"})
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "query": "explain call:delete_all{target:files}"
+    }
+    # Two genuinely separate calls still both parse.
+    two = "call:web_search{query:hi}call:get_time{tz:UTC}"
+    assert [
+        c["function"]["name"]
+        for c in parse_tool_calls_from_text(two, enabled_tool_names = {"web_search", "get_time"})
+    ] == ["web_search", "get_time"]
