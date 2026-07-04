@@ -356,7 +356,6 @@ def _apply_mxfp8_training(transformer, on_event) -> bool:
     Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
         from torchao.quantization import quantize_
-
         quantize_(
             transformer,
             _mxfp8_training_config(),
