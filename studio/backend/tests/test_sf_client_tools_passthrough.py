@@ -644,3 +644,72 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
     assert all(isinstance(m.get("content"), str) for m in templated)
     assert any(m["content"] == "what is this?" for m in templated)
     assert body["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_string_arguments_history_deserialized_for_template(monkeypatch):
+    # Spec-compliant clients send prior tool_calls arguments as JSON strings;
+    # local templates take mappings (some raise on strings), so the templated
+    # copy carries dicts while the HTTP response stays OpenAI-shaped.
+    backend = _ScriptedBackend(_fixed("done"))
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", content = "weather?"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"q": "weather"}'},
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_0", content = "sunny"),
+        ],
+    )
+    _json_body(_call(payload, monkeypatch, backend))
+    assistant = next(m for m in backend.calls[0]["messages"] if m["role"] == "assistant")
+    assert assistant["tool_calls"][0]["function"]["arguments"] == {"q": "weather"}
+
+
+def test_unparseable_arguments_string_left_untouched(monkeypatch):
+    backend = _ScriptedBackend(_fixed("ok"))
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "not json {"},
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_0", content = "y"),
+        ],
+    )
+    body = _json_body(_call(payload, monkeypatch, backend))
+    assert body["choices"][0]["message"]["content"] == "ok"
+    assistant = next(m for m in backend.calls[0]["messages"] if m["role"] == "assistant")
+    assert assistant["tool_calls"][0]["function"]["arguments"] == "not json {"
+
+
+def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
+    # mcp_enabled=true with an empty MCP registry must not fall through to
+    # plain generation with the declared tools silently dropped: the gate keys
+    # on whether the server-side path actually claimed the request.
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    payload = _request(tools = [LOOKUP_TOOL], stream = False, mcp_enabled = True)
+    body = _json_body(_call(payload, monkeypatch, backend))
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]

@@ -6906,9 +6906,16 @@ async def openai_chat_completions(
     # matching the GGUF gate. MLX rides this same path (the route only talks to
     # the orchestrator; MLX runs inside the worker).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    # Gate on whether the server-side tool path ACTUALLY claimed the request
+    # (_sf_use_tools is final by here and its branch always returns), not on
+    # the raw mcp_enabled flag: a client that sets mcp_enabled globally while
+    # declaring its own tools must still get the passthrough when no MCP tool
+    # survived (empty registry, CLI --disable-tools policy) instead of the
+    # silent tool-drop this branch exists to fix. The GGUF passthrough gate
+    # has no mcp_enabled clause either.
     _sf_client_tools = (
         not _effective_enable_tools(payload)
-        and not payload.mcp_enabled
+        and not _sf_use_tools
         and image is None
         and not _sf_is_gptoss
         and _sf_features.get("supports_tools", False)
@@ -6927,7 +6934,11 @@ async def openai_chat_completions(
         # OpenAI "developer" role and the fallback formatter drops it -- then
         # clear the separate prompt so the worker does not prepend a duplicate.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
-            _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload)),
+            _structured_tool_history_for_local_template(
+                _flatten_content_parts_for_local_template(
+                    _openai_messages_for_passthrough(payload)
+                )
+            ),
             system_prompt,
         )
         gen_kwargs["system_prompt"] = ""
@@ -11000,6 +11011,38 @@ def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict
                 if isinstance(part, dict) and part.get("type") == "text"
             ]
             msg = {**msg, "content": "\n".join(text_parts) if text_parts else ""}
+        out.append(msg)
+    return out
+
+
+def _structured_tool_history_for_local_template(messages: list[dict]) -> list[dict]:
+    """Deserialize assistant ``tool_calls[].function.arguments`` JSON strings to
+    mappings for safetensors/MLX templating.
+
+    Standard OpenAI clients send prior-turn arguments as JSON strings (the same
+    shape this endpoint returns), but local chat templates take mappings --
+    ``arguments | items`` iteration, or an explicit raise on strings -- so the
+    string shape crashes or misrenders the templated tool history. Only the
+    internal ``gen_kwargs["messages"]`` copy is rewritten; the HTTP response
+    stays OpenAI-shaped, and the GGUF passthrough keeps strings (llama-server
+    expects the wire shape). Unparseable strings are left untouched."""
+    out = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            new_calls = []
+            for tc in tool_calls:
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                args = fn.get("arguments") if isinstance(fn, dict) else None
+                if isinstance(args, str):
+                    try:
+                        parsed = json.loads(args)
+                    except ValueError:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        tc = {**tc, "function": {**fn, "arguments": parsed}}
+                new_calls.append(tc)
+            msg = {**msg, "tool_calls": new_calls}
         out.append(msg)
     return out
 
