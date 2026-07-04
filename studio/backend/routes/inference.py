@@ -7105,7 +7105,9 @@ async def openai_chat_completions(
                             if heal_openai_message(retry_msg, _sf_heal, payload.tools):
                                 full_text, _msg, _finish = retry_text, retry_msg, "tool_calls"
                         except Exception as retry_exc:
-                            logger.debug("Nudge retry failed; keeping first response: %s", retry_exc)
+                            logger.debug(
+                                "Nudge retry failed; keeping first response: %s", retry_exc
+                            )
                 # Honor parallel_tool_calls=false (best-effort) by capping to one
                 # call, matching the GGUF passthrough (covers the nudge retry too).
                 if payload.parallel_tool_calls is False:
