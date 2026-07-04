@@ -121,8 +121,11 @@ except ImportError:
         "gemma3,",  # Add comma bc gemma3 will match gemma3n
         "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
         "gemma3n",
+        "gemma4",  # Gemma4 (gemma4 / gemma4_text): float16 NaNs grad norms in the backward
+        "glm4_moe",  # GLM-4.x MoE (glm4_moe / glm4_moe_lite): float16 NaNs grad norms
         "gpt_oss",
         "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
+        "qwen3_moe",  # Qwen3-MoE (Qwen3-30B-A3B): float16 NaNs grad norms in the backward
     ]
 
 global DISABLE_COMPILE_MODEL_NAMES
