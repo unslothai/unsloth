@@ -179,11 +179,14 @@ def _build_sdxl_latent_cache(
     vae, vae_scale, image_paths, cfg, device, weight_dtype, on_event, check_stop
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
-    encode once and store ``(A, B, time_ids)`` on CPU in the training dtype. ``A`` and ``B``
-    are the affine posterior parameters (mean/std with the VAE scale folded in) so a per-step
-    sample is ``A + B * randn`` -- distribution-identical to an in-loop ``latent_dist.sample()``
-    -- and ``time_ids`` is the SDXL micro-conditioning for the crop. Returns None if the build
-    was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed."""
+    encode once and store ``(A, B, time_ids)`` on CPU in fp32. ``A`` and ``B`` are the affine
+    posterior parameters (mean/std with the VAE scale folded in) so a per-step sample is
+    ``A + B * randn`` -- distribution-identical to an in-loop ``latent_dist.sample()`` -- and
+    ``time_ids`` is the SDXL micro-conditioning for the crop. The stats stay fp32 so the
+    per-step sample happens in fp32 and only the RESULT is cast to weight_dtype, matching the
+    in-loop path (encode fp32 -> sample fp32 -> scale -> .to(weight_dtype)); fp32 doubles the
+    cache RAM over bf16 but the cache is tiny (a handful of latents per image). Returns None if
+    the build was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed."""
     import torch
 
     plan = _plan_cache_variants(
@@ -191,7 +194,7 @@ def _build_sdxl_latent_cache(
     )
 
     def _hold(t):
-        t = t.to(weight_dtype).cpu()
+        t = t.to(torch.float32).cpu()
         if device == "cuda":
             try:
                 t = t.pin_memory()
@@ -224,8 +227,10 @@ def _build_sdxl_latent_cache(
 def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
     """Draw one latent + its time_ids per index from the cache: pick a variant, then sample
     the posterior (A + B * randn) with fresh noise per step, exactly like an in-loop
-    ``latent_dist.sample() * vae_scale``. Returns ``(latents, batch_time_ids)`` already on
-    ``device`` in the training dtype (scale + dtype are folded into the cache)."""
+    ``latent_dist.sample() * vae_scale``. The cached stats are fp32, so the sample is drawn in
+    fp32 and only the RESULT is cast to weight_dtype (matching the in-loop path). Returns
+    ``(latents, batch_time_ids)`` already on ``device`` in the training dtype (scale is folded
+    into the cache)."""
     import torch
 
     parts_a, parts_b, tid_rows = [], [], []
@@ -239,7 +244,7 @@ def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
         tid_rows.append(time_ids)
     lat_a = torch.cat(parts_a).to(device, non_blocking = True)
     lat_b = torch.cat(parts_b).to(device, non_blocking = True)
-    latents = lat_a + lat_b * torch.randn_like(lat_a)
+    latents = (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype = weight_dtype)
     batch_time_ids = torch.tensor(tid_rows, device = device, dtype = weight_dtype)
     return latents, batch_time_ids
 
@@ -449,7 +454,8 @@ def run_diffusion_lora_training(
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
-                    # Scale + dtype are already folded into the cache, so do not re-apply.
+                    # Scale is folded into the cache; the sampler draws in fp32 and casts the
+                    # result to weight_dtype (matching the in-loop path below).
                     latents, batch_time_ids = _sample_sdxl_cached_latents(
                         latent_cache, idx, variant_rng, device, weight_dtype
                     )

@@ -331,7 +331,11 @@ class DiffusionLoraConfig:
         base_precision = str(self.base_precision or "nf4").strip().lower()
         if base_precision not in ("nf4", "bf16", "int8", "fp8", "auto"):
             raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / auto")
-        if base_precision in ("bf16", "int8", "fp8"):
+        # base_precision is a DiT-only lever (nf4/bf16/int8/fp8/auto for the transformer
+        # load); SDXL uses its own mixed_precision path and ignores base_precision entirely,
+        # so the dense-mode gates (prequant base / non-bf16 compute) apply only to the DiT
+        # families. The mode-name validity check above still runs for every family.
+        if resolved_family != "sdxl" and base_precision in ("bf16", "int8", "fp8"):
             if repo_is_prequantized(self.base_model):
                 raise ValueError(
                     f"base_precision={base_precision!r} needs a dense base repo, but "

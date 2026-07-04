@@ -299,7 +299,9 @@ def _apply_fp8_training(transformer, on_event) -> bool:
         return False
 
 
-def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp8) -> str:
+def _pick_auto_precision(
+    prequant, device, free_gb, dense_gb, capability, has_fp8, has_torchao = True
+) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the
     fastest dense mode whose weights + headroom (activations, optimizer, cache) fit the
     free VRAM at decision time. bf16 + regional compile is the measured speed winner
@@ -308,16 +310,18 @@ def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp
     the same hardware. int8 must still materialise the full bf16 transformer before
     ``quantize_`` shrinks it module-by-module, so its band requires the dense-load
     transient (1.15x dense) to fit -- what int8 buys in that band is steady-state
-    headroom for activations and the latent cache, not load-time memory.
-    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
-    generation without changing callers."""
+    headroom for activations and the latent cache, not load-time memory. int8 also needs
+    torchao at runtime (``_int8_quantize_base`` has no fallback, unlike fp8), so auto only
+    picks it when torchao is importable and drops to nf4 otherwise. ``capability``/``has_fp8``
+    remain parameters so the policy can be revisited per GPU generation without changing
+    callers."""
     _ = capability, has_fp8
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
     if free_gb > dense_gb * 1.5:
         return "bf16"
     if free_gb > dense_gb * 1.15:
-        return "int8"
+        return "int8" if has_torchao else "nf4"
     return "nf4"
 
 
@@ -344,6 +348,11 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     free_gb = None
     capability = None
     has_fp8 = False
+    # int8 quantization has no runtime fallback, so gate the auto pick on torchao being
+    # importable (find_spec avoids the cost/side-effects of an actual import).
+    import importlib.util
+
+    has_torchao = importlib.util.find_spec("torchao") is not None
     if device == "cuda":
         try:
             import torch
@@ -353,7 +362,9 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             has_fp8 = hasattr(torch, "float8_e4m3fn")
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
-    return _pick_auto_precision(prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8)
+    return _pick_auto_precision(
+        prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8, has_torchao
+    )
 
 
 # ── FLUX.1-dev ────────────────────────────────────────────────────────────────
@@ -901,8 +912,11 @@ def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, fli
 
 def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_event, check_stop):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
-    encode once and store the affine (A, B) pair on CPU (pinned when possible) in the
-    training dtype. Returns None if the build was interrupted by a stop request."""
+    encode once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The
+    stats stay fp32 so the per-step sample happens in fp32 and only the RESULT is cast to
+    weight_dtype, matching the in-loop path (encode fp32 -> sample/normalise fp32 ->
+    .to(weight_dtype)); fp32 doubles the cache RAM over bf16 but the cache is tiny (a handful
+    of latents per image). Returns None if the build was interrupted by a stop request."""
 
     plan = _plan_cache_variants(
         len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
@@ -911,7 +925,9 @@ def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_ev
     def _hold(t):
         if t is None:
             return None
-        t = t.to(weight_dtype).cpu()
+        import torch
+
+        t = t.to(torch.float32).cpu()
         if device == "cuda":
             try:
                 t = t.pin_memory()
@@ -941,10 +957,12 @@ def _build_latent_cache(spec, vae, image_paths, cfg, device, weight_dtype, on_ev
     return cache
 
 
-def _sample_cached_latents(cache, idxs, variant_rng, device):
+def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
     """Draw one latent per index from the cache: pick a variant, then sample the posterior
     (A + B * randn) when the family is stochastic. Fresh noise per step, exactly like an
-    in-loop ``latent_dist.sample()``."""
+    in-loop ``latent_dist.sample()``. The cached stats are fp32, so the sample is drawn in
+    fp32 and only the RESULT is cast to weight_dtype (matching the in-loop path's
+    ``encode_latents(...).to(weight_dtype)``)."""
     import torch
 
     parts_a, parts_b = [], []
@@ -955,9 +973,9 @@ def _sample_cached_latents(cache, idxs, variant_rng, device):
         parts_b.append(b)
     lat_a = torch.cat(parts_a).to(device, non_blocking = True)
     if parts_b[0] is None:
-        return lat_a
+        return lat_a.to(dtype = weight_dtype)
     lat_b = torch.cat(parts_b).to(device, non_blocking = True)
-    return lat_a + lat_b * torch.randn_like(lat_a)
+    return (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype = weight_dtype)
 
 
 def _should_compile(
@@ -1263,7 +1281,9 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = [rng.randrange(n_images) for _ in range(batch_size)]
             if latent_cache is not None:
-                latents = _sample_cached_latents(latent_cache, idxs, variant_rng, device)
+                latents = _sample_cached_latents(
+                    latent_cache, idxs, variant_rng, device, weight_dtype
+                )
             else:
                 px = torch.stack(
                     [
