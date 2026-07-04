@@ -547,8 +547,10 @@ def test_diffusion_info_counts_metadata_captions(client, dataset_roots):
     (folder / "c.png").write_bytes(b"x")
     # a.png + b.png via metadata; a.png also has a sidecar (must count once); c.png none.
     (folder / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": "cap a"}) + "\n"
-        + json.dumps({"file_name": "b.png", "text": "cap b"}) + "\n",
+        json.dumps({"file_name": "a.png", "text": "cap a"})
+        + "\n"
+        + json.dumps({"file_name": "b.png", "text": "cap b"})
+        + "\n",
         encoding = "utf-8",
     )
     (folder / "a.txt").write_text("edited a", encoding = "utf-8")
