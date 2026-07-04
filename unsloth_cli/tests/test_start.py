@@ -1791,6 +1791,47 @@ def test_openclaw_non_yolo_preserves_foreign_exec_keys(tmp_path):
     assert config["tools"]["exec"] == {"timeout": 30}
 
 
+def test_openclaw_non_yolo_preserves_stricter_exec_policy(tmp_path):
+    # A policy that doesn't carry the yolo values (for example stricter security or
+    # prompting turned on) was not written by --yolo and must survive a plain run.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"security": "deny", "ask": "on"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"security": "deny", "ask": "on"}
+
+
+def test_openclaw_non_yolo_preserves_stricter_approval_defaults(tmp_path):
+    # exec-approvals.json defaults that don't match the yolo payload (stricter
+    # settings from the user or the OpenClaw UI) are kept, and the file stays.
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    approvals.write_text(json.dumps({"version": 1, "defaults": {"security": "allowlist", "ask": "on"}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    state = json.loads(approvals.read_text())
+    assert state["defaults"] == {"security": "allowlist", "ask": "on"}
+
+
+def test_openclaw_non_yolo_leaves_unparseable_approvals(tmp_path):
+    # An unreadable approvals file is left in place rather than deleted, matching
+    # how an unparseable config is handled.
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    approvals.write_text("{not json")
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert approvals.read_text() == "{not json"
+
+
+def test_opencode_non_yolo_preserves_custom_permissions(tmp_path):
+    # Only the auto-allow values the yolo path writes are dropped; deny/ask policies
+    # and other tools' entries survive a plain rerun.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"edit": "allow", "bash": "deny", "read": "ask"}}))
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["permission"] == {"bash": "deny", "read": "ask"}
+
+
 def test_yolo_command_flags_unmapped_agent_is_empty():
     # Config-based agents (and any typo) must yield no flag, not a KeyError.
     assert start._yolo_command_flags("opencode", True) == []

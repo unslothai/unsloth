@@ -1048,29 +1048,43 @@ def write_openclaw_config(
     else:
         # The no-launch config dir is reused across runs, so a previous --yolo run may
         # have left auto-approval state behind. A run without --yolo must restore
-        # prompting: strip both the exec policy and the approvals defaults.
+        # prompting: strip the exec policy and the approvals defaults. Only the exact
+        # values the yolo branch writes are removed, so a stricter policy someone set
+        # by hand (or OpenClaw recorded) survives.
         tools = config.get("tools")
         if isinstance(tools, dict):
             exec_policy = tools.get("exec")
             if isinstance(exec_policy, dict):
-                for field in ("host", "security", "ask"):
-                    exec_policy.pop(field, None)
+                for field, yolo_value in (("host", "gateway"), ("security", "full"), ("ask", "off")):
+                    if exec_policy.get(field) == yolo_value:
+                        del exec_policy[field]
                 if not exec_policy:
                     del tools["exec"]
             if not tools:
                 del config["tools"]
         approvals = path.parent / "exec-approvals.json"
         if approvals.exists():
-            state = _read_json_object(approvals) or {}
-            had_defaults = state.pop("defaults", None) is not None
-            if set(state) <= {"version"}:
-                # Nothing left but our own yolo payload (or unreadable): remove it.
-                approvals.unlink()
-                typer.echo(f"Removed {approvals}")
-            elif had_defaults:
-                # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
-                _write_private_json(approvals, state)
-                typer.echo(f"Updated {approvals}")
+            state = _read_json_object(approvals)
+            if state is not None:
+                defaults = state.get("defaults")
+                changed = False
+                if isinstance(defaults, dict):
+                    for field, yolo_value in (
+                        ("security", "full"), ("ask", "off"), ("askFallback", "full"),
+                    ):
+                        if defaults.get(field) == yolo_value:
+                            del defaults[field]
+                            changed = True
+                    if not defaults:
+                        del state["defaults"]
+                if changed and set(state) <= {"version"}:
+                    # Nothing left but our own yolo payload: remove it.
+                    approvals.unlink()
+                    typer.echo(f"Removed {approvals}")
+                elif changed:
+                    # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
+                    _write_private_json(approvals, state)
+                    typer.echo(f"Updated {approvals}")
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -1120,9 +1134,16 @@ def write_opencode_config(
         # (singular). Allow the prompting tools so tool calls don't block on the TUI.
         config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
     else:
-        # The no-launch config is reused across runs; drop a permission block left by
-        # a previous --yolo run so this session prompts again.
-        config.pop("permission", None)
+        # The no-launch config is reused across runs; drop the auto-allow entries a
+        # previous --yolo run wrote so this session prompts again. Anything else in
+        # the permission block (ask/deny policies, other tools) is kept.
+        permission = config.get("permission")
+        if isinstance(permission, dict):
+            for tool in ("edit", "bash", "webfetch"):
+                if permission.get(tool) == "allow":
+                    del permission[tool]
+            if not permission:
+                del config["permission"]
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
