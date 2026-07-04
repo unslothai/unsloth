@@ -55,6 +55,11 @@ def test_none_is_not_remote_code():
     assert _loaded_via_remote_code(None) is False
 
 
+def test_none_module_is_not_remote_code():
+    # A class whose __module__ is None must not raise AttributeError.
+    assert _loaded_via_remote_code(_obj(None)) is False
+
+
 def test_auto_map_in_config_alone_does_not_grant_trust():
     # The core bypass: a built-in-loadable model whose config merely declares auto_map must NOT
     # be treated as remote-code-loaded (that is exactly what enabled the consent-gate bypass).

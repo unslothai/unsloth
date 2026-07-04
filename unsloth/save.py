@@ -240,7 +240,10 @@ def _loaded_via_remote_code(obj):
         if node is None or id(node) in seen:
             break
         seen.add(id(node))
-        if type(node).__module__.startswith("transformers_modules"):
+        # __module__ can be None/absent on some dynamically created or C-extension classes;
+        # treat anything non-string as "not remote code" rather than crashing the export.
+        module = getattr(type(node), "__module__", None)
+        if isinstance(module, str) and module.startswith("transformers_modules"):
             return True
         nxt = None
         if hasattr(node, "get_base_model"):
