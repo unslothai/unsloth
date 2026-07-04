@@ -341,7 +341,9 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         s_full = weight_scale.repeat_interleave(block_size[0], 0)[:m]
         s_full = s_full.repeat_interleave(block_size[1], 1)[:, :n]
         return (weight.to(torch.float32) * s_full).to(out_dtype)
-    return weight_dequant(weight, weight_scale).to(out_dtype)
+    # Even tiling: block-quant dequant with the real block size (weight_dequant
+    # would silently default to 128 and dequantize wrongly for other sizes).
+    return weight_dequant_block(weight, weight_scale, block_size = block_size[0], dtype = out_dtype)
 
 
 class FP8BlockQuantLinear(torch.autograd.Function):
@@ -382,9 +384,11 @@ class FP8BlockQuantLinear(torch.autograd.Function):
 
         if X.shape[-1] % block_size[1] != 0:
             # Hidden dim not divisible by the activation block: dequant + plain matmul.
-            W_deq = _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, X.dtype)
+            # Use the original (un-expanded) scale so a scalar per-tensor scale keeps
+            # the fast scalar path in both forward and backward.
+            W_deq = _blockwise_weight_dequant_any_shape(weight, original_weight_scale, block_size, X.dtype)
             ctx.weight = weight
-            ctx.weight_scale = weight_scale
+            ctx.weight_scale = original_weight_scale
             ctx.block_size = block_size
             return torch_matmul(X, W_deq.T).to(X.dtype)
 
