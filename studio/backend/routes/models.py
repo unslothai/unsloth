@@ -911,9 +911,7 @@ async def list_local_models(
         models = collect_local_models(models_root)
         # Tag each model with its task so the Images picker can filter to diffusion
         # (GGUF by architecture; local diffusers checkpoints by pipeline / family).
-        models = [
-            m.model_copy(update = {"task": _local_model_task(m)}) for m in models
-        ]
+        models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
 
         return LocalModelListResponse(
             models_dir = str(models_root),
