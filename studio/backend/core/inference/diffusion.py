@@ -45,6 +45,7 @@ from .diffusion_device import (
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
+from .diffusion_ideogram4 import load_ideogram4_pipeline
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     OFFLOAD_NONE,
@@ -1115,6 +1116,12 @@ class DiffusionBackend:
                             # line cannot parse; assemble the pipeline per-component
                             # (see diffusion_krea2.py for the exact compat story).
                             pipe = load_krea2_pipeline(repo_id, dtype, hf_token = hf_token)
+                        elif fam.name == IDEOGRAM4_FAMILY_NAME:
+                            # The ideogram repos ship the same transformers-5.x style Qwen
+                            # text stack as krea (rope under rope_parameters, a slow-only
+                            # tokenizer pin without its vocab files), so this family is
+                            # assembled per-component too (see diffusion_ideogram4.py).
+                            pipe = load_ideogram4_pipeline(repo_id, dtype, hf_token = hf_token)
                         else:
                             pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
                             if hf_token:
