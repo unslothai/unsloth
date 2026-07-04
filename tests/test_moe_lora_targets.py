@@ -49,3 +49,17 @@ def test_explicit_dotted_module_target_does_not_discover_moe_parameters():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "target_modules",
+    [
+        # Attention-only auto-regex lists every projection leaf (incl. gate/up/down)
+        # but its path segment is attention-only, so experts must NOT be targeted.
+        r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn|attention|attn|mixer)\.(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))",
+        ".*self_attn.*proj",
+    ],
+)
+def test_attention_only_regex_does_not_discover_moe_parameters(target_modules):
+    from unsloth.models._utils import get_moe_target_parameters
+    assert get_moe_target_parameters(_FakeMoeModel(), target_modules) is None

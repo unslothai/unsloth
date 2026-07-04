@@ -3507,12 +3507,13 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
         return {target_modules}
 
     is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
-    # Match projection names directly: the auto q/k/v/o regex lists mlp|ffn as path
-    # segments, so a bare "mlp" substring wrongly enabled expert LoRA for attn-only tuning.
-    targets_mlp_proj = any(
-        name in target_modules for name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
+    # The auto regex always lists every projection leaf (q/k/v/o and gate/up/down),
+    # so key detection on the mlp/ffn/experts path segment, absent from an
+    # attention-only regex, not on the proj names.
+    targets_mlp_path = any(
+        tag in target_modules for tag in ("mlp", "ffn", "feed_forward", "experts")
     )
-    if is_regex and targets_mlp_proj:
+    if is_regex and targets_mlp_path and "proj" in target_modules:
         return set(_MOE_BROAD_MLP_TARGETS)
 
     return set()
