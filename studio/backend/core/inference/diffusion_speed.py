@@ -357,7 +357,11 @@ _FP16_ACCUM_DENY: frozenset[str] = frozenset()
 
 
 def _enable_fp16_accumulation(
-    family: Any, logger: Any, *, dtype: Any = None, speed_mode: Optional[str] = None
+    family: Any,
+    logger: Any,
+    *,
+    dtype: Any = None,
+    speed_mode: Optional[str] = None,
 ) -> bool:
     """Turn on fp16-accumulated fp16 GEMMs for consumer GPUs, where they run ~2x the
     fp32-accumulate rate (datacenter HBM parts are not throughput-nerfed, so they keep
