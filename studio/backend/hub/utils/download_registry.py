@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterator, Literal, Optional
 
@@ -880,6 +880,14 @@ class DownloadRegistry:
                 if not active:
                     self._repo_active.pop(repo, None)
             return terminal_state, metadata
+
+    def update_job_transport(self, key: str, transport: str) -> None:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.transport == transport:
+                return
+            self._metadata[key] = replace(metadata, transport = transport)
 
     def get_job(self, key: str) -> DownloadState:
         key = normalize_job_key(key)

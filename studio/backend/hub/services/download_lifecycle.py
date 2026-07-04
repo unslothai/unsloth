@@ -9,7 +9,6 @@ import signal
 import subprocess
 import sys
 import threading
-from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -281,11 +280,7 @@ def _set_job_transport(
     key: str,
     transport: str,
 ) -> None:
-    with registry._lock:
-        metadata = registry._metadata.get(key)
-        if metadata is None or metadata.transport == transport:
-            return
-        registry._metadata[key] = replace(metadata, transport = transport)
+    registry.update_job_transport(key, transport)
 
 
 def _set_retry_failure_state(
@@ -339,6 +334,16 @@ def _try_http_retry(
     original_metadata = registry.get_job_metadata(key)
     if original_metadata is None:
         logger.debug("%s XET retry skipped for %s; metadata unavailable", log_prefix, label)
+        _set_retry_failure_state(
+            registry,
+            key,
+            "XET retry skipped: metadata unavailable",
+            repo_type = repo_type,
+            repo_id = repo_id,
+            fallback_variant = download_registry.variant_from_key(key),
+            fallback_transport = download_registry.TRANSPORT_XET,
+            logger = logger,
+        )
         return False
     if original_metadata.transport != download_registry.TRANSPORT_XET:
         logger.debug(
@@ -346,6 +351,16 @@ def _try_http_retry(
             log_prefix,
             label,
             original_metadata.transport,
+        )
+        _set_retry_failure_state(
+            registry,
+            key,
+            f"XET retry skipped: original transport was {original_metadata.transport}",
+            repo_type = repo_type,
+            repo_id = repo_id,
+            fallback_variant = original_metadata.variant,
+            fallback_transport = original_metadata.transport,
+            logger = logger,
         )
         return False
     variant = original_metadata.variant

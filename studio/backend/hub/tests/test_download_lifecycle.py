@@ -205,6 +205,71 @@ def test_download_watcher_keeps_http_failure_terminal(monkeypatch, tmp_path):
     assert registry.get_job(key).state == "error"
 
 
+def test_http_retry_skip_without_metadata_sets_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    registry.set_job(key, "running")
+
+    def fake_spawn_worker(*_args, **_kwargs):
+        raise AssertionError("metadata-free retry should not spawn a worker")
+
+    def fake_register_worker(*_args, **_kwargs):
+        raise AssertionError("metadata-free retry should not register a worker")
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+    monkeypatch.setattr(download_lifecycle, "register_worker", fake_register_worker)
+
+    assert not download_lifecycle._try_http_retry(
+        registry,
+        key,
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        watch_name = "model-watch",
+    )
+
+    assert registry.get_job(key).state == "error"
+
+
+def test_http_retry_skip_for_non_xet_transport_sets_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_repo_key("Org/Data")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "dataset",
+        repo_id = "Org/Data",
+    )
+
+    def fake_spawn_worker(*_args, **_kwargs):
+        raise AssertionError("non-XET retry should not spawn a worker")
+
+    def fake_register_worker(*_args, **_kwargs):
+        raise AssertionError("non-XET retry should not register a worker")
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+    monkeypatch.setattr(download_lifecycle, "register_worker", fake_register_worker)
+
+    assert not download_lifecycle._try_http_retry(
+        registry,
+        key,
+        hf_token = None,
+        label = "Org/Data",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "dataset",
+        repo_id = "Org/Data",
+        watch_name = "dataset-watch",
+    )
+
+    assert registry.get_job(key).state == "error"
+
+
 def test_download_watcher_restores_xet_transport_when_http_retry_spawn_fails(
     monkeypatch, tmp_path
 ):
