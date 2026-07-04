@@ -981,7 +981,10 @@ class DiffusionBackend:
                 # as-is, so auto is the DEFAULT. An explicit "none"/"off" pins
                 # GGUF-as-is and an explicit scheme pins that scheme. The overwritten
                 # "auto" still records source=auto in the resolved provenance.
-                if transformer_quant is None or str(transformer_quant).strip().lower() in ("", "auto"):
+                if transformer_quant is None or str(transformer_quant).strip().lower() in (
+                    "",
+                    "auto",
+                ):
                     transformer_quant = TQ_AUTO
 
                 # Default-on fast path: load the DENSE bf16 transformer and torchao-quantise it

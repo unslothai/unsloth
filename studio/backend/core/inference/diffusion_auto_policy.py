@@ -135,6 +135,7 @@ def _hf_cache_free_mib() -> Optional[int]:
     """Free MiB on the filesystem holding the HF model cache (None when unprobeable)."""
     try:
         import shutil
+
         try:
             from huggingface_hub.constants import HF_HUB_CACHE as cache_dir
         except Exception:  # noqa: BLE001 -- hub missing/old: probe the conventional path

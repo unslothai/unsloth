@@ -151,9 +151,7 @@ def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
 
     _patch_selector(monkeypatch, scheme = "int8")
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: None)
-    est = resolve_dense_quant_candidate(
-        fam = _fam("z-image"), target = object(), requested = "auto"
-    )
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
     assert isinstance(est, DenseQuantEstimate)
 
 
