@@ -223,3 +223,88 @@ def test_active_attention_backend_reads_tuple_return():
 
     _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
     assert att._active_attention_backend() == "native"
+
+
+# ── on-demand wheel-only install of optional kernels ─────────────────────────────
+@pytest.fixture(autouse = True)
+def _no_real_installs(monkeypatch):
+    # Unit tests must never shell out to pip: the apply path probes installable
+    # backends (sage/flash*), so hard-disable the gate; install tests re-enable it
+    # with a stubbed subprocess.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
+
+
+class _Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(list(cmd))
+        return types.SimpleNamespace(returncode = 0)
+
+
+def _stub_subprocess(monkeypatch, run):
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_install_skipped_when_gate_disabled(monkeypatch):
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert run.calls == []
+
+
+def test_install_skipped_when_module_present(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object() if name == "sageattention" else None
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert run.calls == []
+
+
+def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert len(run.calls) == 1
+    cmd = run.calls[0]
+    assert "--only-binary" in cmd and ":all:" in cmd and "sageattention" in cmd
+
+
+def test_install_never_attempted_for_builtin_backends(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("_native_cudnn")
+    att._ensure_attention_backend_installed("native")
+    assert run.calls == []
+
+
+def test_install_failure_falls_back_to_native(monkeypatch):
+    # pip failing (no wheel for this platform) must not break the load: the apply
+    # path proceeds, set_attention_backend raises on the missing package, and the
+    # dispatcher is restored to native -- same contract as before the hook.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(returncode = 1, cmd = cmd)
+
+    _stub_subprocess(monkeypatch, _boom)
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
+    t = _FakeTransformer(fail = True)
+    assert apply_attention_backend(_pipe(t), "sage") is None

@@ -147,3 +147,97 @@ def test_diffusers_unavailable_runs_uncached(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", None)
     t = _MixinTransformer()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+
+
+# ── the auto policy: normalize("auto") + generation-time toggling ──────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    FBCACHE_MIN_STEPS,
+    TC_AUTO,
+    maybe_toggle_step_cache,
+)
+
+
+class _ToggleTransformer(_MixinTransformer):
+    """CacheMixin-style fake with the disable side too, counting transitions."""
+
+    def __init__(self):
+        super().__init__()
+        self.enables = 0
+        self.disables = 0
+
+    def enable_cache(self, config):
+        super().enable_cache(config)
+        self.enables += 1
+
+    def disable_cache(self):
+        self.disables += 1
+
+
+def test_normalize_auto_is_a_distinct_state():
+    assert normalize_transformer_cache("auto") == TC_AUTO
+    assert normalize_transformer_cache(" AUTO ") == TC_AUTO
+
+
+def test_apply_treats_stray_auto_as_off(monkeypatch):
+    # AUTO must be resolved by the loader; if it ever reaches the engage call the
+    # load runs uncached instead of crashing.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "auto") is None
+    assert t.enabled_with is None
+
+
+def test_toggle_engages_at_the_step_bar(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(_pipe(t), steps = FBCACHE_MIN_STEPS)
+    assert mode == TC_FBCACHE and t.enables == 1
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+    assert t._unsloth_step_cache
+
+
+def test_toggle_uses_quant_threshold(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28, quant_active = True)
+    assert t.enabled_with.threshold == QUANT_FBCACHE_THRESHOLD
+
+
+def test_toggle_is_idempotent_when_engaged(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 28)
+    assert mode == TC_FBCACHE and t.enables == 1 and t.disables == 0
+
+
+def test_toggle_disengages_below_the_bar(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    assert mode is None and t.disables == 1
+    assert not t._unsloth_step_cache
+    # and it stays off on repeat calls (no flapping disable calls).
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert t.disables == 1
+
+
+def test_toggle_reengages_after_a_disable(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    maybe_toggle_step_cache(_pipe(t), steps = 8)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 24)
+    assert mode == TC_FBCACHE and t.enables == 2
+
+
+def test_toggle_noop_without_cache_support(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _NonCacheMixinTransformer()
+    assert maybe_toggle_step_cache(_pipe(t), steps = 28) is None
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+
+
+def test_toggle_noop_without_transformer():
+    assert maybe_toggle_step_cache(types.SimpleNamespace(), steps = 28) is None

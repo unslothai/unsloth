@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 TC_OFF = "off"
+TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
 TC_MODES = (TC_FBCACHE,)
 
@@ -37,9 +38,15 @@ TC_MODES = (TC_FBCACHE,)
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
+# The auto policy's step-count bar: FBCache's win scales with step count (each skipped
+# step is a larger quality hit on a short trajectory), so auto engages it only at 20+
+# steps -- full "dev"-style schedules (28+) qualify, distilled turbo models (4-9) never do.
+FBCACHE_MIN_STEPS = 20
+
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested cache mode; None / "" / "none" / "off" -> None (disabled).
+    """Lower/strip a requested cache mode; None / "" / "none" / "off" -> None (disabled),
+    "auto" -> TC_AUTO (the loader decides from the step count).
 
     Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
     if value is None:
@@ -47,9 +54,12 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     normalized = str(value).strip().lower().replace("-", "_")
     if not normalized or normalized in ("none", "off"):
         return None
+    if normalized == TC_AUTO:
+        return TC_AUTO
     if normalized not in TC_MODES:
         raise ValueError(
-            f"Unsupported transformer_cache '{value}'. Use one of: off, {', '.join(TC_MODES)}."
+            f"Unsupported transformer_cache '{value}'. Use one of: off, auto, "
+            f"{', '.join(TC_MODES)}."
         )
     return normalized
 
@@ -67,7 +77,9 @@ def apply_step_cache(
     the default; ``quant_active`` raises the default so the cache still triggers on a
     quantised transformer. Best-effort: never raises for an incompatible model."""
     mode = normalize_transformer_cache(mode)
-    if mode is None:
+    if mode is None or mode == TC_AUTO:
+        # AUTO must be resolved by the loader (step-count policy) before reaching the
+        # engage call; treat a stray auto as off rather than crashing the load.
         return None
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
@@ -103,6 +115,51 @@ def apply_step_cache(
     except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
         _warn(logger, mode, exc)
         return None
+
+
+def maybe_toggle_step_cache(
+    pipe: Any,
+    *,
+    steps: int,
+    quant_active: bool = False,
+    threshold: Optional[float] = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Generation-time enable/disable for an AUTO cache decision, keyed on the actual
+    step count: engage FBCache at ``FBCACHE_MIN_STEPS`` or more, run uncached below it.
+    Idempotent (the ``_unsloth_step_cache`` marker tracks the engaged state), so calling
+    it on every generation is cheap. Only the loader's auto path calls this; an explicit
+    user choice is never toggled. Returns the mode now active (or None when uncached)."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return None
+    engaged = getattr(transformer, "_unsloth_step_cache", None)
+    want = int(steps) >= FBCACHE_MIN_STEPS
+    if want and not engaged:
+        return apply_step_cache(
+            pipe,
+            mode = TC_FBCACHE,
+            threshold = threshold,
+            quant_active = quant_active,
+            logger = logger,
+        )
+    if not want and engaged:
+        disable_cache = getattr(transformer, "disable_cache", None)
+        if callable(disable_cache):
+            try:
+                disable_cache()
+                transformer._unsloth_step_cache = None
+                if logger is not None:
+                    logger.info(
+                        "diffusion.cache: fbcache disengaged (auto: %s steps < %s)",
+                        steps,
+                        FBCACHE_MIN_STEPS,
+                    )
+                return None
+            except Exception as exc:  # noqa: BLE001 — keep the cache rather than crash
+                _warn(logger, "fbcache disable", exc)
+        return TC_FBCACHE
+    return TC_FBCACHE if engaged else None
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
