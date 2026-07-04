@@ -207,7 +207,8 @@ def finalize_worker_exit(
     repo_type: Optional[RepoType] = None,
     repo_id: Optional[str] = None,
     transport: Optional[str] = None,
-) -> None:
+    defer_error: bool = False,
+) -> str:
     """Block until *proc* exits, then record the job's terminal state in
     *registry*. Drains and scrubs stderr first, then classifies the exit code.
     A no-op when the process was already dropped (e.g. superseded).
@@ -219,7 +220,7 @@ def finalize_worker_exit(
     rc = proc.wait()
     cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
-        return
+        return "idle"
     stderr_text = download_registry.scrub_secrets(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
         hf_token = hf_token,
@@ -263,14 +264,16 @@ def finalize_worker_exit(
             logger = logger,
         )
     else:
-        registry.set_job(
-            key,
-            "error",
-            stderr_text or f"worker exited with code {rc}",
-        )
+        if not defer_error:
+            registry.set_job(
+                key,
+                "error",
+                stderr_text or f"worker exited with code {rc}",
+            )
         logger.error(
             f"{log_prefix} failed for {label} (rc={rc}): {stderr_text}",
         )
+    return state
 
 
 def _set_job_transport(
@@ -344,9 +347,11 @@ def _try_http_retry(
         progress_blob_hashes = progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
         generation = generation,
+        replace_active = True,
     )
     if not claimed:
         logger.debug("%s XET retry claim rejected for %s; another job took the slot", log_prefix, label)
+        registry.set_job(key, "error", "HTTP retry could not reclaim the download slot")
         return False
 
     args: list[str] = ["--repo-id", repo_id]
@@ -440,7 +445,13 @@ def register_worker(
 
     def _watch() -> None:
         try:
-            finalize_worker_exit(
+            can_retry_http = (
+                transport == download_registry.TRANSPORT_XET
+                and download_registry.download_transport_unavailable_reason(
+                    download_registry.TRANSPORT_HTTP
+                ) is None
+            )
+            state = finalize_worker_exit(
                 registry,
                 key,
                 proc,
@@ -451,17 +462,15 @@ def register_worker(
                 repo_type = repo_type,
                 repo_id = repo_id,
                 transport = transport,
+                defer_error = can_retry_http,
             )
             # XET-to-HTTP recovery: when a non-cancelled XET worker fails and
             # HTTP is available, attempt one automatic retry over HTTP.  The
             # transport check is the recursion guard: an HTTP worker that errors
             # never satisfies `transport == TRANSPORT_XET`, so it stays terminal.
             if (
-                transport == download_registry.TRANSPORT_XET
-                and registry.get_job(key).state == "error"
-                and download_registry.download_transport_unavailable_reason(
-                    download_registry.TRANSPORT_HTTP
-                ) is None
+                can_retry_http
+                and state == "error"
             ):
                 _try_http_retry(
                     registry,

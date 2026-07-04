@@ -128,6 +128,7 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(mo
             return retry_baseline_bytes
 
         def fake_spawn_worker(args, hf_token, *, use_xet, protected_blob_hashes = None):
+            assert registry.get_job(key).state == "running"
             spawned.append((args, use_xet, protected_blob_hashes))
             return _make_proc(0, b"http retry")
 

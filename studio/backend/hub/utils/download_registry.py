@@ -964,6 +964,7 @@ class DownloadRegistry:
         progress_blob_hashes: Optional[frozenset[str]] = None,
         completed_baseline_bytes: int = 0,
         generation: Optional[int] = None,
+        replace_active: bool = False,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1008,7 +1009,7 @@ class DownloadRegistry:
             if conflict_state is not None:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
-            if current in _ACTIVE_STATES:
+            if current in _ACTIVE_STATES and not replace_active:
                 return False, current
             if generation is None:
                 self._generation_seq += 1
