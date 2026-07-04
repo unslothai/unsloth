@@ -1604,11 +1604,17 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
     ``skip_special_tokens``, so single-quoted strings hide braces exactly like
     double-quoted ones (``code:print('}')``). Mirror the quote rules of
     ``_gemma_parse_stripped_body`` so the boundary always agrees with the body
-    parser and a quoted ``}`` can never truncate the executed arguments."""
+    parser and a quoted ``}`` can never truncate the executed arguments.
+
+    A quote opens a string only at value-start context (right after ``:``,
+    ``{``, ``[``, ``(``, ``,`` or ``=``): an apostrophe inside an unquoted
+    value (``query:what's the weather``) is prose, and treating it as an
+    opener would swallow the real closing brace and lose the whole call."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
     depth = 0
     quote = ""
+    prev = ""
     i = brace_pos
     n = len(text)
     while i < n:
@@ -1619,7 +1625,7 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
                 continue
             if ch == quote:
                 quote = ""
-        elif ch in "\"'":
+        elif ch in "\"'" and prev in ":{[(,=":
             quote = ch
         elif ch == "{":
             depth += 1
@@ -1627,6 +1633,8 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
             depth -= 1
             if depth == 0:
                 return i
+        if not ch.isspace():
+            prev = ch
         i += 1
     return None
 
@@ -1852,6 +1860,11 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
         vstart = i
         depth = 0
         quote = ""
+        # Quote openers only at value-start context (mirrors
+        # _gemma_body_brace_end): an apostrophe inside an unquoted value
+        # (``query:what's up, n:3``) is prose, not a string opener that would
+        # swallow the next ``, key:`` boundary.
+        prev = ":"
         while i < n:
             ch = body[i]
             if quote:
@@ -1863,7 +1876,7 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
                     continue
                 if ch == quote:
                     quote = ""
-            elif ch in "\"'":
+            elif ch in "\"'" and prev in ":{[(,=":
                 quote = ch
             elif ch in "{[(":
                 depth += 1
@@ -1872,6 +1885,8 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
                     depth -= 1
             elif ch == "," and depth == 0 and _GEMMA_KEY_RE.match(body, i + 1):
                 break
+            if not ch.isspace():
+                prev = ch
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":
@@ -2168,6 +2183,12 @@ def _parse_glm_tool_calls(
             while vstart < len(content) and content[vstart] in " \t\r\n":
                 vstart += 1
             if not content.startswith(_GLM_ARG_VAL_OPEN, vstart):
+                # A key with no <arg_value> tag: strict mode rejects the call
+                # (same contract as an unclosed value below) instead of
+                # executing it with the argument silently dropped; Auto-Heal
+                # keeps the lenient skip.
+                if not allow_incomplete:
+                    valid = False
                 apos = ke + len(_GLM_ARG_KEY_CLOSE)
                 continue
             vs = vstart + len(_GLM_ARG_VAL_OPEN)

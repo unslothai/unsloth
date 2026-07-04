@@ -171,6 +171,10 @@ class MLXInferenceBackend:
 
         self.active_model_name = model_name
         self.models[model_name] = {
+            # Per-model load token for the native-template fallback (matches
+            # the transformers backend; a later token-less load must not break
+            # template fetches for a previously loaded gated model).
+            "hf_token": hf_token,
             "model": self._model,
             "tokenizer": self._tokenizer,
             "processor": self._processor,
@@ -384,17 +388,18 @@ class MLXInferenceBackend:
         # ``self._tokenizer`` is this entry's ``model_info["tokenizer"]``, so the
         # probe and native render use the same renderer. (The VLM path renders via
         # the processor for image tokens and is intentionally not wired here.)
+        model_info = self.models.get(self.active_model_name, {})
         prompt = render_with_native_template_fallback(
             formatted_prompt = prompt,
             tokenizer = self._tokenizer,
-            model_info = self.models.get(self.active_model_name, {}),
+            model_info = model_info,
             active_model_name = self.active_model_name,
             messages = messages,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
-            hf_token = getattr(self, "_hf_token", None),
+            hf_token = model_info.get("hf_token"),
         )
 
         sampler = make_sampler(

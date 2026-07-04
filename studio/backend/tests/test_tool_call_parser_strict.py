@@ -938,3 +938,59 @@ class TestMagistralThinkRehearsal:
     def test_unclosed_think_parses_nothing(self):
         text = '[THINK]let me try <function=web_search>{"query":"x"}</function>'
         assert parse_tool_calls_from_text(text) == []
+
+
+class TestGemmaUnquotedApostrophes:
+    """Quotes open strings only at value-start context: an apostrophe inside
+    an unquoted wrapper-less value (contractions, possessives) is prose, and
+    treating it as an opener swallowed the closing brace and lost the call."""
+
+    def test_contraction_in_unquoted_query_parses(self):
+        text = "call:web_search{query:what's the weather}"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "what's the weather"
+
+    def test_contraction_does_not_swallow_next_key(self):
+        text = "call:web_search{query:what's up, n:3}"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "what's up"
+        assert args["n"] == 3
+
+    def test_contraction_strip_span_covers_whole_call(self):
+        from core.inference.tool_call_parser import strip_tool_markup
+
+        text = "call:web_search{query:what's the weather} Done."
+        stripped = strip_tool_markup(
+            text, final = True, enabled_tool_names = {"web_search"}
+        )
+        assert "call:web_search" not in stripped
+        assert stripped.strip() == "Done."
+
+    def test_quoted_values_still_hide_delimiters(self):
+        text = 'call:web_search{query:"weather, location: Boston", n:2}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "weather, location: Boston"
+        assert args["n"] == 2
+
+
+class TestGlmKeyWithoutValue:
+    """A GLM <arg_key> with no <arg_value> tag: strict mode rejects the call
+    (same contract as an unclosed value) instead of executing it with the
+    argument silently dropped; Auto-Heal keeps the lenient skip."""
+
+    def test_strict_rejects_key_without_value(self):
+        text = "<tool_call>web_search\n<arg_key>query</arg_key>\n</tool_call>"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+    def test_heal_keeps_the_lenient_skip(self):
+        text = "<tool_call>web_search\n<arg_key>query</arg_key>\n</tool_call>"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "web_search"
+        assert json.loads(calls[0]["function"]["arguments"]) == {}

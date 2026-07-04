@@ -234,6 +234,8 @@ class InferenceBackend:
             # Already loaded?
             if model_name in self.models and self.models[model_name].get("model"):
                 logger.info(f"Model {model_name} already loaded")
+                if hf_token:
+                    self.models[model_name]["hf_token"] = hf_token
                 self.active_model_name = model_name
                 return True
 
@@ -249,6 +251,11 @@ class InferenceBackend:
             )
 
             self.models[model_name] = {
+                # Per-model load token: the native-template fallback must use
+                # the token this model was loaded with, not whichever model
+                # loaded last (a later token-less load would break template
+                # fetches for a gated model and silently drop its tools).
+                "hf_token": hf_token,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
                 "is_audio": config.is_audio,
@@ -996,7 +1003,7 @@ class InferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 apply_fn = self._apply_chat_template_for_generation,
-                hf_token = getattr(self, "_hf_token", None),
+                hf_token = model_info.get("hf_token"),
             )
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
