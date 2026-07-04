@@ -30,8 +30,9 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 
-# Default LoRA target modules: the SDXL U-Net attention projections. DiT trainers supply
-# their own wider set instead.
+# Default LoRA target modules: the attention projections common to the SDXL U-Net and the
+# DiT transformers (the diffusers/kohya convention). A family whose trainer wants a wider
+# set overrides this in its own defaults; kept here so DiffusionLoraConfig has a sane fallback.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")
 
 # diffusers' SchedulerType names (diffusers.optimization.get_scheduler).
@@ -235,8 +236,7 @@ class DiffusionLoraConfig:
     lora_rank: int = 16
     lora_alpha: Optional[int] = None  # defaults to lora_rank
     lora_dropout: float = 0.0
-    # Empty = "unset": each trainer supplies its own family default.
-    lora_target_modules: tuple[str, ...] = ()
+    lora_target_modules: tuple[str, ...] = DEFAULT_LORA_TARGETS
     seed: int = 42
     mixed_precision: str = "bf16"  # "bf16" | "fp16" | "no"
     snr_gamma: Optional[float] = 5.0  # min-SNR loss weighting; None disables
@@ -300,8 +300,7 @@ class DiffusionLoraConfig:
         if learning_rate <= 0:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
-        # Leave an unset (empty) target list empty so the trainer fills the family default.
-        targets = tuple(self.lora_target_modules)
+        targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
         # A blank Hub token (the Studio default when none is configured) must load
         # anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token

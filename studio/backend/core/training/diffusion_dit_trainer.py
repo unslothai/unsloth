@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     EventCb,
     StopCb,
@@ -63,9 +64,11 @@ def _select_lora_targets(
 ) -> tuple[str, ...]:
     """Pick the LoRA target modules for a DiT run.
 
-    An empty ``cfg_targets`` means "unset": use the family's ``spec.lora_targets``. Any
-    explicit tuple is a deliberate override and still wins."""
-    if not tuple(cfg_targets):
+    ``normalized()`` always fills ``lora_target_modules`` with the generic
+    ``DEFAULT_LORA_TARGETS`` when a caller does not set it, so that value means "unset"
+    here: prefer the family's ``spec.lora_targets`` (which add the DiT-specific
+    projections). Any OTHER explicit tuple is a deliberate override and still wins."""
+    if tuple(cfg_targets) == DEFAULT_LORA_TARGETS:
         return tuple(spec_targets)
     return tuple(cfg_targets)
 

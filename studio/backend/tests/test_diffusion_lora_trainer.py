@@ -94,8 +94,7 @@ def test_discover_missing_dir_raises(tmp_path):
 def test_config_normalized_defaults():
     cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o").normalized()
     assert cfg.lora_alpha == cfg.lora_rank  # alpha defaults to rank
-    # Targets stay empty (unset) after normalize; each trainer fills its own family default.
-    assert cfg.lora_target_modules == ()
+    assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
 
 
 @pytest.mark.parametrize(

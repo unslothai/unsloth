@@ -41,25 +41,23 @@ def test_specs_cover_the_three_dit_families():
 
 
 def test_select_lora_targets_uses_family_default_for_generic_config():
-    # normalized() leaves lora_target_modules empty when a caller doesn't set it, so an empty
-    # tuple must resolve to the family's targets (which add the DiT-specific joint-attention
-    # projections), not the generic SDXL list.
-    assert _select_lora_targets((), _FLUX_TARGETS) == _FLUX_TARGETS
-    assert _select_lora_targets((), _QWEN_TARGETS) == _QWEN_TARGETS
-    assert _select_lora_targets((), _ZIMAGE_TARGETS) == _ZIMAGE_TARGETS
-    # The generic SDXL default is NOT treated as unset here: an explicit list wins.
-    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _FLUX_TARGETS) == DEFAULT_LORA_TARGETS
+    # normalized() fills lora_target_modules with the generic DEFAULT_LORA_TARGETS when a
+    # caller doesn't set it, so that value must resolve to the family's targets (which add
+    # the DiT-specific projections), not stay stuck on the generic SDXL list.
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _FLUX_TARGETS) == _FLUX_TARGETS
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _QWEN_TARGETS) == _QWEN_TARGETS
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _ZIMAGE_TARGETS) == _ZIMAGE_TARGETS
 
 
 def test_select_lora_targets_explicit_override_wins():
-    # Any explicit tuple is a deliberate override and must win over the family spec.
+    # Any OTHER explicit tuple is a deliberate override and must win over the family spec.
     override = ("to_q", "to_k")
     assert _select_lora_targets(override, _FLUX_TARGETS) == override
-    # The default request path (config leaving targets unset) reaches the spec.
+    # The default request path (config carrying the generic default) reaches the spec.
     cfg = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert cfg.lora_target_modules == ()
+    assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
     assert (
         _select_lora_targets(cfg.lora_target_modules, _SPECS["flux.1"].lora_targets)
         == _FLUX_TARGETS
