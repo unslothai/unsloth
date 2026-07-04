@@ -351,6 +351,21 @@ def _try_http_retry(
     )
     if not claimed:
         logger.debug("%s XET retry claim rejected for %s; another job took the slot", log_prefix, label)
+        if registry.cancel_requested(key):
+            metadata = registry.get_job_metadata(key)
+            registry.set_job(key, "cancelled")
+            download_registry.persist_cancel_marker(
+                repo_type,
+                repo_id,
+                metadata.variant
+                if metadata is not None and metadata.variant
+                else variant,
+                metadata.transport
+                if metadata is not None and metadata.transport
+                else original_metadata.transport,
+                logger = logger,
+            )
+            return False
         registry.set_job(key, "error", "HTTP retry could not reclaim the download slot")
         return False
 
