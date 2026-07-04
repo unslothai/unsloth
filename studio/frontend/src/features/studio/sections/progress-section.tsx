@@ -31,6 +31,7 @@ import type { TrainingViewData } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
+import type { TrainingRunConfigOverride } from "../lib/training-run-config";
 import {
   ChartAverageIcon,
   DashboardSpeed01Icon,
@@ -81,19 +82,7 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
-  configOverride?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: string;
-    maxSteps?: number;
-    contextLength?: number;
-    warmupSteps?: number;
-    optimizerType?: string;
-    loraRank?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    loraVariant?: string;
-  };
+  configOverride?: TrainingRunConfigOverride;
 }
 
 export function ProgressSection({
@@ -183,17 +172,17 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  const cfgEpochs = configOverride?.epochs ?? config.epochs;
+  const cfgBatchSize = configOverride?.batchSize ?? config.batchSize;
+  const cfgLearningRate = configOverride?.learningRate ?? config.learningRate;
+  const cfgMaxSteps = configOverride?.maxSteps ?? config.maxSteps;
+  const cfgContextLength = configOverride?.contextLength ?? config.contextLength;
+  const cfgWarmupSteps = configOverride?.warmupSteps ?? config.warmupSteps;
+  const cfgOptimizerType = configOverride?.optimizerType ?? config.optimizerType;
+  const cfgLoraRank = configOverride?.loraRank ?? config.loraRank;
+  const cfgLoraAlpha = configOverride?.loraAlpha ?? config.loraAlpha;
+  const cfgLoraDropout = configOverride?.loraDropout ?? config.loraDropout;
+  const cfgLoraVariant = configOverride?.loraVariant ?? config.loraVariant;
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??

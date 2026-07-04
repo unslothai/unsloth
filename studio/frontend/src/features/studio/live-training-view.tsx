@@ -5,10 +5,18 @@ import { cn } from "@/lib/utils";
 import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
+  getTrainingRun,
 } from "@/features/training";
-import type { TrainingViewData } from "@/features/training";
-import type { ReactElement } from "react";
+import type {
+  TrainingViewData,
+  TrainingRunDetailResponse,
+} from "@/features/training";
+import { type ReactElement, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import {
+  mapTrainingRunConfigOverride,
+  type TrainingRunConfigOverride,
+} from "./lib/training-run-config";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
 import { TrainingStartOverlay } from "./training-start-overlay";
@@ -51,6 +59,35 @@ export function LiveTrainingView(): ReactElement {
       trainingMethod: state.trainingMethod,
     })),
   );
+
+  const [activeRunDetail, setActiveRunDetail] =
+    useState<TrainingRunDetailResponse | null>(null);
+
+  useEffect(() => {
+    if (!runtime.jobId) {
+      setActiveRunDetail(null);
+      return;
+    }
+    const controller = new AbortController();
+    let active = true;
+    void getTrainingRun(runtime.jobId, controller.signal)
+      .then((detail) => {
+        if (!active || controller.signal.aborted) return;
+        setActiveRunDetail(detail);
+      })
+      .catch(() => {
+        // fetch failure is non-fatal; ProgressSection falls back to store values
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [runtime.jobId]);
+
+  const activeRunConfigOverride =
+    activeRunDetail?.run.id === runtime.jobId
+      ? mapTrainingRunConfigOverride(activeRunDetail)
+      : undefined;
 
   const activeProjectName =
     runtime.startProjectName !== null
@@ -105,7 +142,11 @@ export function LiveTrainingView(): ReactElement {
         )}
       >
         <div data-tour="studio-training-progress">
-          <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
+          <ProgressSection
+            key={runtime.jobId ?? "no-job"}
+            data={viewData}
+            configOverride={activeRunConfigOverride}
+          />
         </div>
         <ChartsSection
           currentStep={viewData.currentStep}
