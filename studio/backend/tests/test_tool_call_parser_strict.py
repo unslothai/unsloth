@@ -1271,9 +1271,7 @@ class TestClosedCallPrecedesMarkerPrePass:
             + self._KIMI_EVIL
             + '<|"|>}<tool_call|>'
         )
-        calls = parse_tool_calls_from_text(
-            text, enabled_tool_names = {"web_search", "evil"}
-        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_leading_xml_call_wins_over_trailing_kimi_example(self):
@@ -1281,9 +1279,7 @@ class TestClosedCallPrecedesMarkerPrePass:
             '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
             " For reference: " + self._KIMI_EVIL
         )
-        calls = parse_tool_calls_from_text(
-            text, enabled_tool_names = {"web_search", "evil"}
-        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_standalone_kimi_call_still_parses(self):
@@ -1294,12 +1290,7 @@ class TestClosedCallPrecedesMarkerPrePass:
 class TestTruncatedWrapperlessGemmaStopsScan:
     def test_call_quoted_inside_truncated_arg_not_promoted(self):
         text = 'call:python{code:example("call:web_search{query:hi}") and then it cut'
-        assert (
-            parse_tool_calls_from_text(
-                text, enabled_tool_names = {"python", "web_search"}
-            )
-            == []
-        )
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"}) == []
 
 
 class TestGemmaQuotedNestedDelimiters:
