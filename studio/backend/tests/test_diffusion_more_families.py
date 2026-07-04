@@ -110,3 +110,81 @@ def test_list_loras_family_filter_gates_krea_entries():
     assert krea_ids <= listed_for_krea
     listed_for_flux = {e.id for e in list_loras(family = "flux.1")}
     assert not (krea_ids & listed_for_flux)
+
+
+# ── ideogram-4 fp8 transformer remap ─────────────────────────────────────────
+def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
+    # The vendor fp8 transformer stores fused attention.qkv (Q/K/V rows stacked) +
+    # attention.o, each with a per-output-channel weight_scale; diffusers expects split
+    # to_q/to_k/to_v/to_out.0 with the scale already applied. The converter must undo
+    # both, or every attention weight loads wrong (garbage) and on meta (a load crash).
+    torch = pytest.importorskip("torch")
+
+    from core.inference.diffusion_ideogram4 import _convert_fp8_state_dict
+
+    hidden = 4  # tiny stand-in for attention_head_dim * num_attention_heads
+    # Reference (real) weights, then a fake per-channel fp8 encoding: value / scale.
+    q = torch.randn(hidden, hidden)
+    k = torch.randn(hidden, hidden)
+    v = torch.randn(hidden, hidden)
+    o = torch.randn(hidden, hidden)
+    ff = torch.randn(hidden, hidden)
+    fused = torch.cat([q, k, v], dim = 0)  # [3 * hidden, hidden]
+    qkv_scale = torch.rand(3 * hidden) + 0.5
+    o_scale = torch.rand(hidden) + 0.5
+    ff_scale = torch.rand(hidden) + 0.5
+    norm = torch.randn(hidden)  # dense (unscaled) weight passes through
+    raw = {
+        "layers.0.attention.qkv.weight": fused / qkv_scale[:, None],
+        "layers.0.attention.qkv.weight_scale": qkv_scale,
+        "layers.0.attention.o.weight": o / o_scale[:, None],
+        "layers.0.attention.o.weight_scale": o_scale,
+        "layers.0.feed_forward.w1.weight": ff / ff_scale[:, None],
+        "layers.0.feed_forward.w1.weight_scale": ff_scale,
+        "layers.0.attention_norm1.weight": norm,
+    }
+    out = _convert_fp8_state_dict(raw, hidden, torch.bfloat16)
+
+    # Every converted tensor is cast to the requested compute dtype (the load_state_dict
+    # copy would silently up/down-cast otherwise).
+    assert all(t.dtype == torch.bfloat16 for t in out.values())
+    # Re-run in float32 for the exact value checks below (bf16 loses precision).
+    out = _convert_fp8_state_dict(raw, hidden, torch.float32)
+
+    # No scale keys leak through; fused/renamed keys are gone.
+    assert not any(key.endswith("_scale") for key in out)
+    assert "layers.0.attention.qkv.weight" not in out
+    assert "layers.0.attention.o.weight" not in out
+    # QKV split back to the reference weights in Q/K/V order.
+    torch.testing.assert_close(out["layers.0.attention.to_q.weight"], q)
+    torch.testing.assert_close(out["layers.0.attention.to_k.weight"], k)
+    torch.testing.assert_close(out["layers.0.attention.to_v.weight"], v)
+    # o renamed to to_out.0 with the scale applied.
+    torch.testing.assert_close(out["layers.0.attention.to_out.0.weight"], o)
+    # A non-attention fp8 weight keeps its name, scale applied.
+    torch.testing.assert_close(out["layers.0.feed_forward.w1.weight"], ff)
+    # A dense weight passes through unchanged.
+    torch.testing.assert_close(out["layers.0.attention_norm1.weight"], norm)
+
+
+def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
+    # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers
+    # create_causal_mask signature; on a matching signature it must forward unchanged,
+    # and a second apply must not double-wrap.
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+
+    import core.inference.diffusion_ideogram4 as ig4
+    from diffusers.pipelines.ideogram4 import pipeline_ideogram4 as pipe_mod
+
+    original = pipe_mod.create_causal_mask
+    try:
+        ig4._CAUSAL_MASK_PATCHED = False
+        ig4._patch_create_causal_mask()
+        wrapped = pipe_mod.create_causal_mask
+        assert wrapped is not original  # the patch installed a wrapper
+        ig4._patch_create_causal_mask()  # idempotent: no re-wrap
+        assert pipe_mod.create_causal_mask is wrapped
+    finally:
+        pipe_mod.create_causal_mask = original
+        ig4._CAUSAL_MASK_PATCHED = False
