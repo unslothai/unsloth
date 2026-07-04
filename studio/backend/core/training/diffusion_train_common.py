@@ -133,9 +133,51 @@ def repo_is_prequantized(base_model: str) -> bool:
     return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
 
 
+def _module_is_torchao_stub(module: Any) -> bool:
+    """True iff ``module`` is the Unsloth Windows-ROCm torchao import stub rather than the
+    real package. The stub (core/_torchao_stub.py) satisfies find_spec and even lets
+    ``from torchao.quantization import quantize_`` succeed -- but the imported symbols are
+    no-op stub types, so the quantization never happens. Every stub module carries the
+    ``_unsloth_stub`` sentinel, so match on it (comparing against the stub module's own
+    sentinel object, not identity of a re-created one)."""
+    if module is None:
+        return False
+    sentinel = getattr(module, "_unsloth_stub", None)
+    if sentinel is None:
+        return False
+    try:
+        from core._torchao_stub import _STUB_SENTINEL
+    except Exception:  # noqa: BLE001 -- stub module absent -> nothing to compare against
+        return False
+    return sentinel is _STUB_SENTINEL
+
+
+def has_functional_torchao() -> bool:
+    """True iff the real torchao quantization API is importable (not the Windows-ROCm stub).
+
+    ``_int8_quantize_base`` needs ``Int8WeightOnlyConfig`` + ``quantize_`` from
+    ``torchao.quantization`` and has no runtime fallback, so gate both the auto int8 pick
+    and the advertised int8 mode on a FUNCTIONAL import: a plain ``find_spec("torchao")``
+    is satisfied by the stub, whose quantize_ is a no-op that leaves the transformer dense
+    while compile is disabled as if it were int8. Import the exact symbols the int8 path
+    uses and reject the stub module. Never raises."""
+    try:
+        import importlib
+
+        quant = importlib.import_module("torchao.quantization")
+        if _module_is_torchao_stub(quant):
+            return False
+        # The symbols the int8 path actually imports must exist on the real module.
+        return hasattr(quant, "Int8WeightOnlyConfig") and hasattr(quant, "quantize_")
+    except Exception:  # noqa: BLE001 -- torchao absent / broken build -> treat as unavailable
+        return False
+
+
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4
-    always works; bf16/int8/auto need CUDA; fp8 needs an fp8-capable GPU (sm89+); mxfp8
+    always works; bf16/auto need CUDA; int8/fp8/mxfp8 additionally need a FUNCTIONAL
+    torchao (their explicit paths import torchao with no fallback, and the Windows-ROCm
+    stub only looks installed). fp8 also needs an fp8-capable GPU (sm89+); mxfp8
     (block-scaled fp8 compute) needs the Blackwell tensor cores (sm100+) its cuBLAS
     kernels target. Used by the /info endpoint so the UI can gate the precision
     selector. Never raises."""
@@ -144,11 +186,14 @@ def train_precision_modes() -> tuple[list[str], str]:
     try:
         import torch
         if torch.cuda.is_available():
-            modes += ["bf16", "int8"]
+            modes.append("bf16")
+            torchao_ok = has_functional_torchao()
+            if torchao_ok:
+                modes.append("int8")
             major, minor = torch.cuda.get_device_capability()
-            if (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
+            if torchao_ok and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
-            if (major, minor) >= (10, 0):
+            if torchao_ok and (major, minor) >= (10, 0):
                 modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
@@ -206,7 +251,10 @@ _FAMILY_VRAM_NOTES = {
     ),
     "qwen-image": "20B model, QLoRA (nf4) by default (~24 GB+). The heaviest option.",
     "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
-    "krea-2": "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only.",
+    "krea-2": (
+        "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only. Trains on the "
+        "undistilled Krea-2-Raw (Krea's guidance: train on Raw, run adapters on Turbo)."
+    ),
 }
 
 
@@ -400,10 +448,14 @@ def discover_image_caption_pairs(
     """Resolve ``(image_path, caption)`` pairs from a dataset directory.
 
     Caption sources, in priority order per image:
-      1. a ``metadata.jsonl`` / ``captions.jsonl`` row keyed by ``file_name`` (or ``image``)
+      1. a per-image sidecar ``<stem>.txt`` / ``<stem>.caption``,
+      2. a ``metadata.jsonl`` / ``captions.jsonl`` row keyed by ``file_name`` (or ``image``)
          carrying the caption in ``caption_column`` (default ``text``),
-      2. a per-image sidecar ``<stem>.txt`` / ``<stem>.caption``,
       3. ``instance_prompt`` (dreambooth) for any remaining image.
+
+    A sidecar wins over the metadata row because it is the user's explicit per-image edit
+    (the labeling grid writes a .txt sidecar), which must override the bulk metadata file.
+    Must agree with ``routes.training._image_record``, which resolves captions the same way.
 
     Images with no caption from any source are skipped. Pure filesystem + JSON, so it is
     unit-testable without torch. Raises FileNotFoundError for a missing dir and ValueError
@@ -436,15 +488,15 @@ def discover_image_caption_pairs(
     pairs: list[tuple[str, str]] = []
     for img in images:
         caption: Optional[str] = None
-        # 1. metadata row keyed by file name (basename or the name as written).
-        caption = meta_caption.get(img.name) or meta_caption.get(str(img.relative_to(root)))
-        # 2. per-image sidecar caption file.
+        # 1. per-image sidecar caption file (the user's explicit edit; wins over metadata).
+        for ext in _CAPTION_EXTS:
+            sidecar = img.with_suffix(ext)
+            if sidecar.is_file():
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+                break
+        # 2. metadata row keyed by file name (basename or the name as written).
         if caption is None:
-            for ext in _CAPTION_EXTS:
-                sidecar = img.with_suffix(ext)
-                if sidecar.is_file():
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
-                    break
+            caption = meta_caption.get(img.name) or meta_caption.get(str(img.relative_to(root)))
         # 3. dreambooth instance prompt.
         if caption is None and instance_prompt:
             caption = instance_prompt
@@ -661,6 +713,17 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     for k, v in config.items():
         if k in valid:
             kwargs[k] = v
+    # Epoch-mode payloads from the generic Studio UI carry max_steps: 0 as the "use epochs"
+    # sentinel, which the max_steps -> train_steps alias copies as train_steps: 0. Since
+    # normalized() rejects train_steps < 1 before resolve_train_steps() can apply num_epochs,
+    # drop a falsy/0 train_steps when num_epochs > 0 so the dataclass default stands in until
+    # epoch resolution replaces it.
+    try:
+        _num_epochs = int(kwargs.get("num_epochs") or 0)
+    except (TypeError, ValueError):
+        _num_epochs = 0
+    if _num_epochs > 0 and not kwargs.get("train_steps"):
+        kwargs.pop("train_steps", None)
     if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
     if "gradient_checkpointing" in kwargs:

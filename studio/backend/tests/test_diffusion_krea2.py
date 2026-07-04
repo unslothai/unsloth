@@ -120,6 +120,17 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
 # ── registry / trust / int8 exclusion wiring ─────────────────────────────────
 
 
+def test_load_krea2_pipeline_requires_krea_capable_diffusers(monkeypatch):
+    # On diffusers < 0.39 (no Krea2Pipeline) the loader must fail fast with the upgrade
+    # hint instead of dying with a bare AttributeError mid-load.
+    import pytest
+
+    fake = SimpleNamespace(__version__ = "0.38.0")
+    monkeypatch.setitem(sys.modules, "diffusers", fake)
+    with pytest.raises(RuntimeError, match = "0.39"):
+        load_krea2_pipeline("krea/Krea-2-Turbo", "bf16")
+
+
 def test_krea2_family_wiring():
     from core.inference.diffusion import _is_trusted_diffusion_repo
     from core.inference.diffusion_families import detect_family, family_sd_cpp_supported
@@ -127,8 +138,10 @@ def test_krea2_family_wiring():
 
     fam = detect_family("krea/Krea-2-Turbo")
     assert fam is not None and fam.name == KREA2_FAMILY_NAME
-    # The vendor repo is non-GGUF allowlisted; no sd.cpp mapping -> diffusers fallback.
+    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training);
+    # no sd.cpp mapping -> diffusers fallback.
     assert _is_trusted_diffusion_repo("krea/Krea-2-Turbo")
+    assert _is_trusted_diffusion_repo("krea/Krea-2-Raw")
     assert not family_sd_cpp_supported(fam)
     # Krea2TimestepEmbedding runs at M = batch; int8 (torch._int_mm, M > 16) must skip it.
     assert "time_embed" in exclude_tokens_for_scheme(TQ_INT8)
@@ -155,7 +168,10 @@ def test_krea2_training_registry():
         "resolution": 512,
     }
     info = {i["name"]: i for i in family_train_infos()}["krea-2"]
-    assert info["default_base"] == "krea/Krea-2-Turbo"
+    # Krea's guidance: train LoRAs on the undistilled Raw model, run them on Turbo, so
+    # Raw leads the training bases while Turbo stays available.
+    assert info["default_base"] == "krea/Krea-2-Raw"
+    assert info["base_repos"] == ["krea/Krea-2-Raw", "krea/Krea-2-Turbo"]
     assert info["supports_compile"] is True
 
 

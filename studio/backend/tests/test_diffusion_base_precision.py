@@ -174,25 +174,14 @@ def test_resolve_auto_requires_bf16_compute():
 
 
 def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
-    # The int8 auto band needs torchao at runtime; when torchao is not importable
-    # _resolve_base_precision must fall to nf4 instead of picking an int8 that would crash
-    # in _int8_quantize_base. Drive the probe into the int8 band and toggle torchao.
-    import importlib.util as _ilu
+    # The int8 auto band needs a FUNCTIONAL torchao at runtime; when torchao is not
+    # importable _resolve_base_precision must fall to nf4 instead of picking an int8 that
+    # would crash in _int8_quantize_base. Drive the probe into the int8 band and toggle the
+    # functional-torchao probe (shared with train_precision_modes, imported into the trainer).
     import torch
 
     spec = dit._SPECS["flux.1"]  # dense_bf16_gb = 23.8
     cfg = _cfg(base_precision = "auto", mixed_precision = "bf16")
-    real_find_spec = _ilu.find_spec
-
-    def _no_torchao(name, *args, **kwargs):
-        if name == "torchao":
-            return None  # simulate torchao not installed
-        return real_find_spec(name, *args, **kwargs)
-
-    def _has_torchao(name, *args, **kwargs):
-        if name == "torchao":
-            return object()  # simulate torchao installed
-        return real_find_spec(name, *args, **kwargs)
 
     class _FakeCuda:
         # Free VRAM in the int8 band (30 > 23.8 * 1.15) but below the bf16 band.
@@ -206,12 +195,73 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
 
-    monkeypatch.setattr(_ilu, "find_spec", _no_torchao)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)  # torchao absent / stub
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
 
-    # With torchao importable the same band picks int8.
-    monkeypatch.setattr(_ilu, "find_spec", _has_torchao)
+    # With a functional torchao the same band picks int8.
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+
+
+def test_resolve_auto_int8_band_treats_stub_as_absent(monkeypatch):
+    # Simulate the Windows-ROCm torchao STUB: has_functional_torchao returns False (the
+    # stub satisfies find_spec but its quantize_ is a no-op), so the int8 band must fall to
+    # nf4 rather than pick an int8 whose quantization silently does nothing.
+    import torch
+
+    spec = dit._SPECS["flux.1"]
+    cfg = _cfg(base_precision = "auto", mixed_precision = "bf16")
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(30 * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (10, 0)
+
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    # The stub scenario: the probe reports no functional torchao.
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
+
+
+def test_has_functional_torchao_rejects_stub(monkeypatch):
+    # has_functional_torchao must reject the Unsloth import stub: even though
+    # `from torchao.quantization import quantize_` would succeed against the stub, the
+    # symbols are no-op stub types. Simulate a stub torchao.quantization module carrying the
+    # stub sentinel and assert the probe returns False.
+    import importlib
+    import types
+
+    from core._torchao_stub import _STUB_SENTINEL
+
+    real_import_module = importlib.import_module
+
+    stub_quant = types.ModuleType("torchao.quantization")
+    stub_quant._unsloth_stub = _STUB_SENTINEL
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "torchao.quantization":
+            return stub_quant
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import)
+    assert common.has_functional_torchao() is False
+
+    # A real module exposing the int8 symbols (no stub sentinel) probes True.
+    real_like = types.ModuleType("torchao.quantization")
+    real_like.Int8WeightOnlyConfig = object
+    real_like.quantize_ = lambda *a, **k: None
+
+    def _fake_import_real(name, *args, **kwargs):
+        if name == "torchao.quantization":
+            return real_like
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_real)
+    assert common.has_functional_torchao() is True
 
 
 # ── _fp8_module_filter ────────────────────────────────────────────────────────
@@ -248,6 +298,28 @@ def test_train_precision_modes_no_cuda(monkeypatch):
     import torch
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert train_precision_modes() == (["nf4"], "nf4")
+
+
+def test_train_precision_modes_gates_int8_fp8_on_torchao(monkeypatch):
+    # int8/fp8 are only advertised when torchao is FUNCTIONAL: on a CUDA host WITHOUT a real
+    # torchao (or with only the Windows-ROCm stub) /info must not offer int8/fp8, since their
+    # explicit paths import torchao with no fallback. bf16 + auto stay advertised.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (10, 0))
+
+    # No functional torchao (absent or stub): bf16 + auto only, int8/fp8 dropped.
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: False)
+    modes, recommended = train_precision_modes()
+    assert modes == ["nf4", "bf16", "auto"]
+    assert "int8" not in modes and "fp8" not in modes
+    assert recommended == "auto"
+
+    # With a functional torchao on an fp8-capable GPU, int8 + fp8 are advertised again.
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
+    modes2, _ = train_precision_modes()
+    assert "int8" in modes2 and "fp8" in modes2
 
 
 # ── family_train_infos precision fields ───────────────────────────────────────

@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     EventCb,
     StopCb,
@@ -47,6 +48,7 @@ from core.training.diffusion_train_common import (
     _publish_to_lora_catalog,
     _restore_perf_flags,
     discover_image_caption_pairs,
+    has_functional_torchao,
     repo_is_prequantized,
     resolve_train_steps,
 )
@@ -86,6 +88,20 @@ _KREA2_TARGETS = (
     "time_embed.linear_2",
     "time_mod_proj",
 )
+
+
+def _select_lora_targets(
+    cfg_targets: tuple[str, ...], spec_targets: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Pick the LoRA target modules for a DiT run.
+
+    ``normalized()`` always fills ``lora_target_modules`` with the generic
+    ``DEFAULT_LORA_TARGETS`` when a caller does not set it, so that value means "unset"
+    here: prefer the family's ``spec.lora_targets`` (which add the DiT-specific
+    projections). Any OTHER explicit tuple is a deliberate override and still wins."""
+    if tuple(cfg_targets) == DEFAULT_LORA_TARGETS:
+        return tuple(spec_targets)
+    return tuple(cfg_targets)
 
 
 @dataclass
@@ -407,11 +423,12 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     free_gb = None
     capability = None
     has_fp8 = False
-    # int8 quantization has no runtime fallback, so gate the auto pick on torchao being
-    # importable (find_spec avoids the cost/side-effects of an actual import).
-    import importlib.util
-
-    has_torchao = importlib.util.find_spec("torchao") is not None
+    # int8 quantization has no runtime fallback, so gate the auto pick on a FUNCTIONAL
+    # torchao: a plain find_spec("torchao") is satisfied by the Windows-ROCm import stub,
+    # whose quantize_ is a no-op that would leave the transformer dense while compile is
+    # disabled as if it were int8. has_functional_torchao imports the exact symbols
+    # _int8_quantize_base uses and rejects the stub.
+    has_torchao = has_functional_torchao()
     if device == "cuda":
         try:
             import torch
@@ -1205,7 +1222,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    use_lora_targets = tuple(cfg.lora_target_modules) or spec.lora_targets
+    use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
 
     # Phase 1: conditioning only. The pipeline loads WITHOUT its transformer, so the text

@@ -11,6 +11,7 @@ service, so wiring / validation / error mapping are covered without a GPU.
 
 from __future__ import annotations
 
+import json
 import queue as _queue
 import threading
 import time
@@ -395,6 +396,44 @@ def test_request_model_base_precision_accepts_mxfp8():
         DiffusionTrainingStartRequest(**base, base_precision = "bogus")
 
 
+def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
+    # The generic Studio epoch-mode payload sends max_steps: 0 as the "use epochs" sentinel.
+    # The max_steps -> train_steps alias would copy that 0 and normalized() would reject
+    # train_steps < 1 before epochs are resolved; _config_from_dict must drop the falsy
+    # value so the default train_steps stands in until resolve_train_steps applies num_epochs.
+    from core.training.diffusion_train_common import DiffusionLoraConfig, _config_from_dict
+
+    cfg = _config_from_dict(
+        {
+            "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "data_dir": "d",
+            "output_dir": "o",
+            "max_steps": 0,
+            "num_epochs": 2,
+        }
+    )
+    # 0 was dropped: the dataclass default train_steps stands in and num_epochs carries over.
+    assert cfg.train_steps == DiffusionLoraConfig.train_steps
+    assert cfg.num_epochs == 2
+    # normalized() no longer raises on the epoch-mode payload.
+    norm = cfg.normalized()
+    assert norm.num_epochs == 2
+
+    # An explicit non-zero max_steps in epochs mode is still honored (only the 0 sentinel is
+    # dropped), and a plain steps payload (no num_epochs) keeps max_steps: 0 -> train_steps 0
+    # so normalized() surfaces the invalid value as before.
+    cfg_explicit = _config_from_dict(
+        {
+            "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "data_dir": "d",
+            "output_dir": "o",
+            "max_steps": 25,
+            "num_epochs": 2,
+        }
+    )
+    assert cfg_explicit.train_steps == 25
+
+
 def test_route_start_rejects_uncontained_paths(client):
     # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
@@ -508,6 +547,31 @@ def test_diffusion_info_lists_image_dataset_folders(client, dataset_roots):
     assert [d["name"] for d in body["datasets"]] == ["cat-photos"]
     assert body["datasets"][0]["image_count"] == 2
     assert body["datasets"][0]["caption_count"] == 1
+
+
+def test_diffusion_info_counts_metadata_captions(client, dataset_roots):
+    # A dataset captioned via metadata.jsonl must not report caption_count=0 (which the
+    # Train UI treats as uncaptioned); metadata rows count like sidecars, without
+    # double-counting an image that has both.
+    ds_root, _ = dataset_roots
+    folder = ds_root / "meta-captioned"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "b.png").write_bytes(b"x")
+    (folder / "c.png").write_bytes(b"x")
+    # a.png + b.png via metadata; a.png also has a sidecar (must count once); c.png none.
+    (folder / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "a.png", "text": "cap a"}) + "\n"
+        + json.dumps({"file_name": "b.png", "text": "cap b"}) + "\n",
+        encoding = "utf-8",
+    )
+    (folder / "a.txt").write_text("edited a", encoding = "utf-8")
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "meta-captioned")
+    assert summary["image_count"] == 3
+    assert summary["caption_count"] == 2
 
 
 def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
@@ -818,3 +882,49 @@ def test_runs_endpoints_list_and_detail(client, _isolated_runs_dir):
     # Unknown and malformed ids 404 (malformed also covers path traversal).
     assert client.get(f"/api/train/diffusion/runs/{'c' * 32}").status_code == 404
     assert client.get("/api/train/diffusion/runs/not-a-job-id").status_code == 404
+
+
+def test_list_diffusion_runs_skips_wrong_shape_records(_isolated_runs_dir):
+    # A valid-JSON file with the wrong shape (non-dict, or missing the required string
+    # job_id / status) must be skipped by list_diffusion_runs so it never reaches the route's
+    # DiffusionTrainingRunSummary(**r) and takes down the whole Previous runs panel.
+    import json
+
+    from core.training.diffusion_training_service import list_diffusion_runs
+
+    good = {"job_id": "a" * 32, "status": "completed", "adapter": "good", "saved": True}
+    (_isolated_runs_dir / "good.json").write_text(json.dumps(good))
+    # A JSON list (not a dict).
+    (_isolated_runs_dir / "not_a_dict.json").write_text(json.dumps([1, 2, 3]))
+    # A dict missing the required job_id / status.
+    (_isolated_runs_dir / "no_ids.json").write_text(json.dumps({"adapter": "orphan"}))
+    # A dict whose job_id / status are the wrong type.
+    (_isolated_runs_dir / "bad_types.json").write_text(
+        json.dumps({"job_id": 123, "status": None, "adapter": "typed"})
+    )
+
+    runs = list_diffusion_runs()
+    adapters = [r.get("adapter") for r in runs]
+    assert adapters == ["good"]  # only the well-shaped record survives
+
+
+def test_runs_route_tolerates_bad_field_record(client, _isolated_runs_dir):
+    # A record that passes the service's shape check but has a wrong-typed field (a
+    # non-numeric avg_loss) would raise pydantic ValidationError in the route; the route must
+    # catch it per record so one bad file never breaks the panel and the good runs still list.
+    import json
+
+    good = {"job_id": "a" * 32, "status": "completed", "adapter": "good", "saved": True}
+    bad = {
+        "job_id": "b" * 32,
+        "status": "completed",
+        "adapter": "bad",
+        "avg_loss": "not-a-number",  # str where the summary expects Optional[float]
+    }
+    (_isolated_runs_dir / f"{good['job_id']}.json").write_text(json.dumps(good))
+    (_isolated_runs_dir / f"{bad['job_id']}.json").write_text(json.dumps(bad))
+
+    r = client.get("/api/train/diffusion/runs")
+    assert r.status_code == 200, r.text
+    adapters = [x["adapter"] for x in r.json()["runs"]]
+    assert adapters == ["good"]  # the bad-field record was skipped, the good one remained

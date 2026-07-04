@@ -61,12 +61,14 @@ def test_list_images_caption_precedence(client, ds_root):
     _write_png(folder / "a.png")
     _write_png(folder / "b.png")
     _write_png(folder / "c.png")
-    # a.png -> metadata (beats a stray sidecar), b.png -> sidecar, c.png -> none.
+    # a.png -> sidecar (an explicit edit beats the metadata row), b.png -> metadata-only,
+    # c.png -> none.
     (folder / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n"
+        + json.dumps({"file_name": "b.png", "text": "from metadata"}) + "\n",
+        encoding = "utf-8",
     )
-    (folder / "a.txt").write_text("stray sidecar", encoding = "utf-8")
-    (folder / "b.txt").write_text("from sidecar", encoding = "utf-8")
+    (folder / "a.txt").write_text("edited sidecar", encoding = "utf-8")
 
     r = client.get("/api/train/diffusion/dataset/styleset/images")
     assert r.status_code == 200, r.text
@@ -74,10 +76,11 @@ def test_list_images_caption_precedence(client, ds_root):
     assert body["name"] == "styleset"
     recs = {rec["filename"]: rec for rec in body["images"]}
     assert set(recs) == {"a.png", "b.png", "c.png"}
-    assert recs["a.png"]["caption"] == "from metadata"
-    assert recs["a.png"]["caption_source"] == "metadata"
-    assert recs["b.png"]["caption"] == "from sidecar"
-    assert recs["b.png"]["caption_source"] == "sidecar"
+    # A sidecar edit overrides the metadata row for the same image.
+    assert recs["a.png"]["caption"] == "edited sidecar"
+    assert recs["a.png"]["caption_source"] == "sidecar"
+    assert recs["b.png"]["caption"] == "from metadata"
+    assert recs["b.png"]["caption_source"] == "metadata"
     assert recs["c.png"]["caption"] is None
     assert recs["c.png"]["caption_source"] == "none"
     assert recs["a.png"]["width"] == 8 and recs["a.png"]["height"] == 8
@@ -131,6 +134,25 @@ def test_put_caption_roundtrip_and_clear(client, ds_root):
     assert r.json()["caption"] is None
     assert r.json()["caption_source"] == "none"
     assert not (folder / "x.txt").exists()
+
+
+def test_put_caption_overrides_metadata_row(client, ds_root):
+    # Editing a caption for an image that already has a metadata.jsonl row must take
+    # effect: the sidecar edit wins over the metadata caption in the response (and in
+    # the data the trainer reads), not the other way round.
+    folder = ds_root / "cap"
+    folder.mkdir()
+    _write_png(folder / "x.png")
+    (folder / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "x.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+    )
+
+    r = client.put(
+        "/api/train/diffusion/dataset/cap/caption/x.png", json = {"caption": "edited caption"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["caption"] == "edited caption"
+    assert r.json()["caption_source"] == "sidecar"
 
 
 def test_put_caption_missing_image_404(client, ds_root):

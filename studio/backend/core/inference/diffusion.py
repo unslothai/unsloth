@@ -204,9 +204,12 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "black-forest-labs/flux.1-dev",
         "tongyi-mai/z-image-turbo",
         "qwen/qwen-image",
-        # Krea 2 Turbo: official vendor repo, safetensors-only, no remote code. Loaded
+        # Krea 2: official vendor repos, safetensors-only, no remote code. Loaded
         # per-component via core/inference/diffusion_krea2.py (no GGUF variant yet).
+        # Turbo is the inference model; Raw is the undistilled base Krea recommends
+        # training LoRAs on (train on Raw, run adapters on Turbo).
         "krea/krea-2-turbo",
+        "krea/krea-2-raw",
     }
 )
 

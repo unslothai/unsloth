@@ -80,6 +80,7 @@ from models.training import (
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ValidationError
 
 
 class TrainingStopRequest(PydanticBaseModel):
@@ -1115,9 +1116,13 @@ def _free_gpu_for_diffusion_training() -> None:
 
     try:
         from core.inference import gpu_arbiter
-        from core.inference.diffusion import get_diffusion_backend
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-        diffusion = get_diffusion_backend()
+        # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp)
+        # selection the diffusers backend reports unloaded while the resident
+        # sd-server still holds the GPU, so unloading only the singleton is a no-op.
+        # Mirrors the LLM training start path.
+        diffusion = get_active_diffusion_engine()
         if diffusion.is_loaded:
             logger.info("Unloading resident Images pipeline to free GPU memory for training")
         diffusion.unload()  # no-op when nothing is loaded; also preempts an in-flight load
@@ -1285,9 +1290,17 @@ async def list_diffusion_training_runs(
     """Previous diffusion training runs (terminal), newest first, from the persisted
     per-run records. Summaries only; fetch one run for its config + metric logs."""
     from core.training.diffusion_training_service import list_diffusion_runs
-    return DiffusionTrainingRunsResponse(
-        runs = [DiffusionTrainingRunSummary(**r) for r in list_diffusion_runs(limit = limit)]
-    )
+
+    summaries: list[DiffusionTrainingRunSummary] = []
+    for r in list_diffusion_runs(limit = limit):
+        # list_diffusion_runs already skips non-dict / missing-id records, but a record with
+        # a wrong-typed field (e.g. a non-numeric avg_loss) would still raise here; catch it
+        # per record so one bad file never breaks the whole Previous runs panel.
+        try:
+            summaries.append(DiffusionTrainingRunSummary(**r))
+        except ValidationError:
+            continue
+    return DiffusionTrainingRunsResponse(runs = summaries)
 
 
 @router.get("/diffusion/runs/{job_id}", response_model = DiffusionTrainingRunDetail)
@@ -1311,14 +1324,19 @@ _DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
 
 
 def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
+    # Count an image as captioned when a metadata/captions.jsonl row or a per-image
+    # sidecar (.txt / .caption) resolves a caption for it -- the same sources the
+    # trainer reads. Counting metadata-only captions here keeps a metadata-captioned
+    # dataset from reporting caption_count=0 and being treated as uncaptioned.
+    meta_captions = _load_metadata_captions(folder)
     images = captions = 0
     for f in folder.iterdir():
-        if not f.is_file():
+        if not f.is_file() or f.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS:
             continue
-        ext = f.suffix.lower()
-        if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
-            images += 1
-        elif ext in (".txt", ".caption"):
+        images += 1
+        if f.name in meta_captions or any(
+            f.with_suffix(ext).is_file() for ext in (".txt", ".caption")
+        ):
             captions += 1
     return DiffusionDatasetSummary(
         name = folder.name, path = str(folder), image_count = images, caption_count = captions
@@ -1515,20 +1533,26 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
 def _image_record(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> DiffusionDatasetImageRecord:
-    """Build one image record, resolving its caption with metadata > sidecar precedence
-    (the same order the trainer uses)."""
-    caption: Optional[str] = meta_captions.get(image_path.name)
-    source = "metadata" if caption is not None else "none"
+    """Build one image record, resolving its caption with sidecar > metadata precedence
+    (the same order the trainer uses). A per-image .txt / .caption sidecar wins because
+    it is the user's explicit edit from the labeling grid, which must override a
+    metadata.jsonl / captions.jsonl row for the image."""
+    caption: Optional[str] = None
+    source = "none"
+    for ext in (".txt", ".caption"):
+        sidecar = image_path.with_suffix(ext)
+        if sidecar.is_file():
+            try:
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+                source = "sidecar"
+            except OSError:
+                caption = None
+            break
     if caption is None:
-        for ext in (".txt", ".caption"):
-            sidecar = image_path.with_suffix(ext)
-            if sidecar.is_file():
-                try:
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
-                    source = "sidecar"
-                except OSError:
-                    caption = None
-                break
+        meta = meta_captions.get(image_path.name)
+        if meta is not None:
+            caption = meta
+            source = "metadata"
     try:
         size_bytes = image_path.stat().st_size
     except OSError:

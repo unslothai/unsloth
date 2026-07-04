@@ -102,6 +102,14 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text())
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
+        # A valid-JSON file with the wrong shape (an old or hand-edited record that is not a
+        # dict, or is missing the required string job_id / status) would later blow up the
+        # route's DiffusionTrainingRunSummary(**r); skip it here so one bad record can never
+        # take down the whole Previous runs panel.
+        if not isinstance(rec, dict):
+            continue
+        if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
+            continue
         rec.pop("metric_history", None)
         rec.pop("config", None)
         out.append(rec)
