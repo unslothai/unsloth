@@ -48,6 +48,7 @@ _HEAL_SIGNALS = (
 def _has_heal_signal(text: str) -> bool:
     return any(s in text for s in _HEAL_SIGNALS)
 
+
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
 # Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process

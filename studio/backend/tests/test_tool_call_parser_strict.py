@@ -767,15 +767,15 @@ class TestHealerSignalAlignment:
 
     def test_heal_signals_subset_of_promotable_formats(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
-
         assert set(_HEAL_SIGNALS) == {"<tool_call>", "<|tool_call>", "<function="}
 
     def test_stream_healer_does_not_hold_mistral_text(self):
         from core.inference.passthrough_healing import StreamToolCallHealer
 
-        healer = StreamToolCallHealer({"web_search"}, [
-            {"type": "function", "function": {"name": "web_search", "parameters": {}}}
-        ])
+        healer = StreamToolCallHealer(
+            {"web_search"},
+            [{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+        )
         events = list(healer.feed('[TOOL_CALLS]web_search[ARGS]{"query":"cats"}'))
         text_out = "".join(v for k, v in events if k == "text")
         assert "[TOOL_CALLS]" in text_out  # streamed through, not buffered
