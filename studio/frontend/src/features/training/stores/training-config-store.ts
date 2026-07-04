@@ -108,6 +108,9 @@ let _trainOnCompletionsManuallySet = false;
 // switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
 
+// Has the user manually chosen a training method since the last model load?
+let _trainingMethodManuallySet = false;
+
 // Stash the YAML learning rate so setTrainingMethod can restore it when
 // switching back from full to adapter.
 let _yamlLearningRate: number | undefined = undefined;
@@ -371,6 +374,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             _trainOnCompletionsManuallySet = false;
             _learningRateManuallySet = false;
+            _trainingMethodManuallySet = false;
             _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
             const contextLengthManuallySet = get().contextLengthManuallySet;
@@ -416,23 +420,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
-            // Auto-select LoRA vs QLoRA by model size vs GPU memory (see
-            // autoSelectTrainingMethod). Skip if the user chose CPT.
-            const modelSizeBytes = modelDetails.model_size_bytes;
-            if (modelSizeBytes && modelSizeBytes > 0 && get().trainingMethod !== "cpt") {
-              void autoSelectTrainingMethod(modelSizeBytes, effectiveContextLength)
-                .then((method) => {
-                  if (get().selectedModel !== modelName) return;
-                  if (get().trainingMethod === "cpt") return;
-                  if (method) {
-                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
-                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
-                      : {};
-                    set({ trainingMethod: method, ...lrPatch });
-                  }
-                });
-            }
-
             // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
             // are tuned for standard LoRA and would clobber CPT settings.
             const cptOverrides =
@@ -453,6 +440,30 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               modelDefaultsAppliedFor: modelName,
               maxPositionEmbeddings: modelDetails.max_position_embeddings ?? null,
             });
+
+            // Auto-select LoRA vs QLoRA by model size vs GPU memory (see
+            // autoSelectTrainingMethod). Skip if the user chose CPT or already
+            // chose a method manually.
+            const modelSizeBytes = modelDetails.model_size_bytes;
+            if (
+              modelSizeBytes &&
+              modelSizeBytes > 0 &&
+              !_trainingMethodManuallySet &&
+              get().trainingMethod !== "cpt"
+            ) {
+              void autoSelectTrainingMethod(modelSizeBytes, effectiveContextLength)
+                .then((method) => {
+                  if (get().selectedModel !== modelName) return;
+                  if (_trainingMethodManuallySet) return;
+                  if (get().trainingMethod === "cpt") return;
+                  if (method) {
+                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
+                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
+                      : {};
+                    set({ trainingMethod: method, ...lrPatch });
+                  }
+                });
+            }
           })
           .catch((error) => {
             if (controller.signal.aborted) return;
@@ -638,6 +649,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setProjectName: (projectName) => set({ projectName }),
         setTrainingMethod: (trainingMethod) => {
+          _trainingMethodManuallySet = true;
           const state = get();
           set(
             buildTrainingMethodPatch(
@@ -936,6 +948,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         reset: () => {
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
+          _trainingMethodManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
           set({ ...initialState, hfToken: getHfToken() });
@@ -943,6 +956,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
+          _trainingMethodManuallySet = false;
           set({
             contextLengthManuallySet: false,
             modelDefaultsAppliedFor: null,
