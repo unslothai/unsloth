@@ -1008,9 +1008,7 @@ class DiffusionBackend:
                             cpu_offload,
                             kind = kind,
                             repo_id = repo_id,
-                            transformer_resident_override_mib = (
-                                candidate.transient_transformer_mib
-                            ),
+                            transformer_resident_override_mib = (candidate.transient_transformer_mib),
                         )
                         if replanned.offload_policy == OFFLOAD_NONE:
                             quant_plan = replanned
