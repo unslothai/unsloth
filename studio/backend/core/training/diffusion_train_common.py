@@ -420,6 +420,7 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
             compile_transformer = compile_transformer,
             base_precision = base_precision,
@@ -494,9 +495,10 @@ def discover_image_caption_pairs(
             if sidecar.is_file():
                 caption = sidecar.read_text(encoding = "utf-8").strip()
                 break
-        # 2. metadata row keyed by file name (basename or the name as written).
+        # 2. metadata row keyed by file name (basename or the relative path; as_posix so a
+        #    Windows backslash path still matches the jsonl's forward-slash keys).
         if caption is None:
-            caption = meta_caption.get(img.name) or meta_caption.get(str(img.relative_to(root)))
+            caption = meta_caption.get(img.name) or meta_caption.get(img.relative_to(root).as_posix())
         # 3. dreambooth instance prompt.
         if caption is None and instance_prompt:
             caption = instance_prompt

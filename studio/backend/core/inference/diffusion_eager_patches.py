@@ -181,6 +181,11 @@ def install_compile_safe_patches() -> int:
     for cls, new_fn in _specs():
         if cls is None:
             continue
+        # torch < 2.4 has no F.rms_norm: leave diffusers' original RMSNorm.forward in
+        # place rather than installing a patch whose fast path would AttributeError.
+        if cls is _RMSNorm and not hasattr(F, "rms_norm"):
+            logger.info("eager-patch: skipping RMSNorm (this torch has no F.rms_norm)")
+            continue
         # Capture the live original BEFORE patching so the RMSNorm fast path can fall back
         # to it for the uncommon (NPU / bias / fp32-weight / tuple-dim) cases.
         if cls is _RMSNorm:
