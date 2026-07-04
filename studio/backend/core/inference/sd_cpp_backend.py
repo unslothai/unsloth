@@ -893,7 +893,10 @@ class SdCppDiffusionBackend:
                 lora_stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
                 materialized = diffusion_lora.materialize_native_dir(lora_resolved, lora_stage)
                 lora_payload = [
-                    {"path": f"{lora_stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
+                    {
+                        "path": f"{lora_stage.name}/{Path(m.path).name}",
+                        "multiplier": float(m.weight),
+                    }
                     for m in materialized
                 ]
         try:
