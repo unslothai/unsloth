@@ -487,7 +487,7 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
-def _glm_value_close(text: str, vs: int) -> int:
+def _glm_value_close(text: str, vs: int, *, strict: bool = False) -> int:
     """Index of the ``</arg_value>`` that really ends the GLM value beginning at
     ``vs``: the first one whose next non-space token is ``<arg_key>``, ``</tool_call>``
     or end-of-text. A literal ``</arg_value>`` inside the value (e.g.
@@ -500,7 +500,10 @@ def _glm_value_close(text: str, vs: int) -> int:
     required to sit at balanced quote state: an embedded pair lives inside a
     string literal, whose open quote is still unclosed at that point. When no
     candidate balances (e.g. an apostrophe in prose), the first token-valid
-    candidate wins as before. Returns -1 if unclosed."""
+    candidate wins as before -- except in ``strict`` mode (Auto-Heal off),
+    which refuses the in-quote fallback: a truncated value whose only close
+    candidates sit inside a string literal must reject the call instead of
+    executing truncated arguments. Returns -1 if unclosed."""
     n = len(text)
     search = vs
     first_candidate = -1
@@ -509,7 +512,7 @@ def _glm_value_close(text: str, vs: int) -> int:
     while True:
         ve = text.find(_GLM_ARG_VAL_CLOSE, search)
         if ve < 0:
-            return first_candidate
+            return -1 if strict else first_candidate
         j = ve + len(_GLM_ARG_VAL_CLOSE)
         while j < n and text[j] in " \t\r\n":
             j += 1
@@ -841,20 +844,25 @@ def _signal_inside_leading_wrapperless_gemma(
     promote it and drop the outer call (sibling of the Mistral/bare-JSON
     leading guards). Markerless form, so the name must be an enabled tool
     (``None`` keeps the name-agnostic behaviour)."""
-    i = 0
-    n = len(content)
-    while i < n and content[i] in " \t\n\r":
-        i += 1
-    m = _GEMMA_BARE_TC_RE.match(content, i)
-    if m is None:
-        return False
-    if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
-        return False
-    end = _gemma_body_brace_end(content, m.end() - 1)
-    if end is None:
-        return False
     first = _first_foreign_tool_signal(content)
-    return first is not None and m.end() - 1 < first <= end
+    if first is None:
+        return False
+    # The call need not open the response: a visible preamble before
+    # ``call:NAME{...}`` is the normal shape. What matters is that an ENABLED
+    # balanced call begins before the first foreign signal and contains it;
+    # a signal that precedes every such call keeps the normal order.
+    cursor = 0
+    while True:
+        m = _GEMMA_BARE_TC_RE.search(content, cursor)
+        if m is None or m.start() > first:
+            return False
+        if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+            cursor = m.end()
+            continue
+        end = _gemma_body_brace_end(content, m.end() - 1)
+        if end is None:
+            return False
+        return m.end() - 1 < first <= end
 
 
 def parse_tool_calls_from_text(
@@ -2390,7 +2398,7 @@ def _parse_glm_tool_calls(
             # <arg_key> / </tool_call> / end: a value may legitimately contain a literal
             # </arg_value> (print("</arg_value>")) or </tool_call>, and a first-match
             # find would truncate it and execute the tool with corrupted arguments.
-            ve = _glm_value_close(content, vs)
+            ve = _glm_value_close(content, vs, strict = not allow_incomplete)
             key = content[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
             if ve < 0:
                 # Unclosed <arg_value>: strict mode rejects the whole call instead
