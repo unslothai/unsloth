@@ -774,6 +774,50 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
     assert status["transformer_quant"] == "int8"
 
 
+def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
+    # Offload hooks move modules with Module.to(), which torchao quantized tensors
+    # reject (observed as a hard crash on the A14B gate run). When the memory plan
+    # resolves to any offload policy, quant must be SKIPPED, not attempted: the
+    # load succeeds dense and the resolved record explains why.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    quantised = []
+
+    def _fake_quant(view, target, *, mode, family, logger = None):
+        quantised.append(view.transformer)
+        return "int8"
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _fake_quant)
+    # The CPU fake target never plans an offload, so force one at the plan seam
+    # (frozen dataclass -> dataclasses.replace) and stub the apply step, which
+    # would otherwise call offload hooks the fake pipe does not have.
+    import dataclasses
+
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "apply_memory_plan",
+        lambda pipe, plan, device = None, logger = None: ("model", True),
+    )
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+    )
+    assert status["offload_policy"] == "model"
+    assert quantised == []
+    assert status["transformer_quant"] is None
+    assert "offload moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
+
+
 def test_wan_ti2v_dense_quant_applies_to_single_dit(fake_runtime, monkeypatch):
     # A single-DiT pipeline load quantises exactly one transformer.
     import core.inference.video as video_mod

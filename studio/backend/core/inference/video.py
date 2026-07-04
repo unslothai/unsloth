@@ -648,7 +648,28 @@ class VideoBackend:
         # the DiT dense. Quant must precede compile (dynamic quant is ~30x slower eager),
         # so it runs before apply_speed_optims below -- same order as diffusion.py.
         transformer_quant_engaged: Optional[str] = None
+        quant_skipped_for_offload = False
         if (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and dense_transformer_supported(target)
+            and plan.offload_policy != "none"
+        ):
+            # Offload hooks move modules with Module.to(), which torchao quantized
+            # tensors reject (aten._has_compatible_shallow_copy_type is
+            # unimplemented) -- observed as a hard crash on the Wan2.2-A14B gate
+            # run, where the 114 GB dual DiT plans model offload. A dense DiT
+            # under offload beats a crashed one, so quant is skipped, surfaced in
+            # the resolved record, and the user can force it by pinning a
+            # resident memory mode.
+            logger.info(
+                "video.transformer_quant: skipped (offload policy '%s' moves the "
+                "DiT via Module.to(), unsupported for torchao quantized tensors); "
+                "pin a resident memory mode to combine quant with this model",
+                plan.offload_policy,
+            )
+            quant_skipped_for_offload = True
+        elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
@@ -768,7 +789,12 @@ class VideoBackend:
                     transformer_quant_engaged or "off",
                     "dense DiT(s) torchao-quantised onto the low-precision tensor cores"
                     if transformer_quant_engaged is not None
-                    else "not engaged (dense bf16 DiT loaded)",
+                    else (
+                        "skipped: offload moves the DiT, unsupported for torchao "
+                        "tensors; pin a resident memory mode to combine them"
+                        if quant_skipped_for_offload
+                        else "not engaged (dense bf16 DiT loaded)"
+                    ),
                 ),
             }
         )
