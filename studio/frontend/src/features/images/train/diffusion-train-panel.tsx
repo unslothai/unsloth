@@ -520,13 +520,25 @@ export function DiffusionTrainPanel({
     if (!active) return;
     if (status?.status === "running") return;
     let cancelled = false;
-    listDiffusionTrainingRuns()
-      .then((r) => {
-        if (!cancelled) setPrevRuns(r.runs);
-      })
-      .catch(() => {});
+    const refetch = () => {
+      listDiffusionTrainingRuns()
+        .then((r) => {
+          if (!cancelled) setPrevRuns(r.runs);
+        })
+        .catch(() => {});
+    };
+    refetch();
+    // The service exposes a terminal status before the pump has necessarily finished
+    // writing the run's JSON record, so the one-shot refetch above can win that race and
+    // miss the just-finished run. A short delayed second refetch after a terminal
+    // transition lets the record land so the newest run reliably appears.
+    let delayed: ReturnType<typeof setTimeout> | undefined;
+    if (status?.status === "completed" || status?.status === "stopped" || status?.status === "error") {
+      delayed = setTimeout(refetch, 1500);
+    }
     return () => {
       cancelled = true;
+      if (delayed !== undefined) clearTimeout(delayed);
     };
   }, [active, status?.status]);
 
@@ -745,7 +757,10 @@ export function DiffusionTrainPanel({
         value={value}
         onChange={(e) => {
           settingsDirty.current = true;
-          set(Number(e.target.value) || fallback);
+          // Only fall back when the input parses to NaN (empty/invalid); a real 0 is a
+          // legal value for zero-legal fields (Seed, LR warmup steps) and must be kept.
+          const parsed = Number(e.target.value);
+          set(Number.isNaN(parsed) ? fallback : parsed);
         }}
         className="h-8 text-xs"
       />

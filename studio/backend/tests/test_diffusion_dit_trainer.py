@@ -12,13 +12,21 @@ from __future__ import annotations
 import pytest
 
 from core.training.diffusion_dit_trainer import (
+    _FLUX_TARGETS,
     _GATED_TRAIN_REPOS,
+    _QWEN_TARGETS,
     _SPECS,
+    _ZIMAGE_TARGETS,
     _assert_gated_access,
     _repo_is_prequantized,
+    _select_lora_targets,
     run_dit_lora_training,
 )
-from core.training.diffusion_train_common import DiffusionLoraConfig, family_train_infos
+from core.training.diffusion_train_common import (
+    DEFAULT_LORA_TARGETS,
+    DiffusionLoraConfig,
+    family_train_infos,
+)
 
 
 def test_specs_cover_the_dit_families():
@@ -33,6 +41,27 @@ def test_specs_cover_the_dit_families():
     assert _SPECS["z-image"].force_bf16 is True
     assert _SPECS["qwen-image"].force_bf16 is True
     assert _SPECS["krea-2"].force_bf16 is True
+
+
+def test_select_lora_targets_uses_family_default_for_generic_config():
+    # normalized() fills lora_target_modules with the generic DEFAULT_LORA_TARGETS when a
+    # caller doesn't set it, so that value must resolve to the family's targets (which add
+    # the DiT-specific projections), not stay stuck on the generic SDXL list.
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _FLUX_TARGETS) == _FLUX_TARGETS
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _QWEN_TARGETS) == _QWEN_TARGETS
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _ZIMAGE_TARGETS) == _ZIMAGE_TARGETS
+
+
+def test_select_lora_targets_explicit_override_wins():
+    # Any OTHER explicit tuple is a deliberate override and must win over the family spec.
+    override = ("to_q", "to_k")
+    assert _select_lora_targets(override, _FLUX_TARGETS) == override
+    # The default request path (config carrying the generic default) reaches the spec.
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
+    assert _select_lora_targets(cfg.lora_target_modules, _SPECS["flux.1"].lora_targets) == _FLUX_TARGETS
 
 
 @pytest.mark.parametrize(
