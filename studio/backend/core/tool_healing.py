@@ -367,15 +367,22 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
-) -> list[dict]:
+    with_spans: bool = False,
+):
     """Parse OpenAI-format tool calls from model text.
 
     Handles formats like:
       <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
       <|tool_call>call:web_search{query:"..."}<tool_call|>
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
+
+    With ``with_spans=True`` returns ``(tool_calls, spans)`` where ``spans[i]``
+    is the half-open ``(start, end)`` byte range of ``tool_calls[i]``'s markup
+    in ``content`` (including its close tag when present), so a caller can
+    remove exactly the parsed markup and keep every other byte intact.
     """
     tool_calls: list[dict] = []
+    call_spans: list[tuple] = []
     # Collect JSON/Gemma markers, then decide nesting by each marker's coverage
     # region (see _marker_coverage): a closed outer covers up to its own close
     # marker, so a JSON/Gemma marker smuggled between the outer braces and that
@@ -396,6 +403,7 @@ def parse_tool_calls_from_text(
     markers.sort(key = lambda c: c[0])
 
     coverage = _marker_coverage(content, markers)
+    parsed_items = []  # (start, span_end, name, arguments) in document order
     for idx, (start, brace_end, kind, m) in enumerate(markers):
         # Skip a marker whose start falls in another marker's coverage: it is that
         # outer call's data (its braces, or the gap up to its close), not a call.
@@ -422,6 +430,93 @@ def parse_tool_calls_from_text(
                 arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : brace_end]))
         except (json.JSONDecodeError, ValueError):
             continue
+        # Span for with_spans callers: through the close tag when present so the
+        # healed strip removes the whole wrapped call, else just the braces.
+        span_end = brace_end + 1
+        close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
+        ws = len(content[span_end:]) - len(content[span_end:].lstrip())
+        close_m = close_re.match(content, span_end + ws)
+        if close_m:
+            span_end = close_m.end()
+        parsed_items.append((start, span_end, name, arguments))
+
+    # Function-XML calls parse alongside marker calls (mixed formats promote in
+    # document order -- the #6801 contract). Exclude <function=> markers inside
+    # any marker's coverage -- its braces, or the gap up to its close -- even if
+    # that call failed to parse, so nested XML cannot escape as a real call. A
+    # <function=> after a balanced close-less marker is a sibling (recovered),
+    # not swallowed to EOF.
+    func_starts = [
+        fm
+        for fm in _TC_FUNC_START_RE.finditer(content)
+        if not _inside_open_parameter(content, fm.start())
+        and not any(s <= fm.start() < e for s, e in coverage)
+    ]
+    for idx, fm in enumerate(func_starts):
+        func_name = fm.group(1)
+        body_start = fm.end()
+        next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
+        end_tag = _TC_END_TAG_RE.search(content[body_start:])
+        if end_tag:
+            body_end = body_start + end_tag.start()
+        else:
+            body_end = len(content)
+        body_end = min(body_end, next_func)
+        body = content[body_start:body_end]
+        close_idx = body.rfind(_FUNC_CLOSE_TAG)
+        if close_idx >= 0:
+            span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
+            body = body[:close_idx]
+        elif not allow_incomplete:
+            continue
+        else:
+            body = _TC_FUNC_CLOSE_RE.sub("", body)
+            span_end = body_end
+
+        arguments: dict = {}
+        param_starts = list(_TC_PARAM_START_RE.finditer(body))
+        if len(param_starts) == 1:
+            pm = param_starts[0]
+            val = body[pm.end() :]
+            if not allow_incomplete:
+                stripped_val = val.rstrip()
+                if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                    continue
+                val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+            else:
+                val = _TC_PARAM_CLOSE_RE.sub("", val)
+            arguments[pm.group(1)] = val.strip()
+        else:
+            valid_params = True
+            for pidx, pm in enumerate(param_starts):
+                param_name = pm.group(1)
+                val_start = pm.end()
+                next_param = (
+                    param_starts[pidx + 1].start() if pidx + 1 < len(param_starts) else len(body)
+                )
+                val = body[val_start:next_param]
+                if not allow_incomplete:
+                    stripped_val = val.rstrip()
+                    if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                        valid_params = False
+                        break
+                    val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                else:
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)
+                arguments[param_name] = val.strip()
+            if not valid_params:
+                continue
+
+        span_start = fm.start()
+        wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
+        wrap_close = re.match(r"\s*</tool_call>", content[span_end:])
+        if wrap_open and wrap_close:
+            span_start = wrap_open.start()
+            span_end += wrap_close.end()
+        parsed_items.append((span_start, span_end, func_name, json.dumps(arguments)))
+
+    parsed_items.sort(key = lambda item: item[0])
+    for start, span_end, name, arguments in parsed_items:
         tool_calls.append(
             {
                 "id": f"call_{id_offset + len(tool_calls)}",
@@ -429,83 +524,9 @@ def parse_tool_calls_from_text(
                 "function": {"name": name, "arguments": arguments},
             }
         )
-
-    if not tool_calls:
-        # Exclude <function=> markers inside any marker's coverage -- its braces,
-        # or the gap up to its close -- even if that call failed to parse, so
-        # nested XML cannot escape as a real call. Reusing the same coverage as the
-        # candidate loop keeps this consistent: a <function=> after a balanced
-        # close-less marker is a sibling (recovered), not swallowed to EOF.
-        func_starts = [
-            fm
-            for fm in _TC_FUNC_START_RE.finditer(content)
-            if not _inside_open_parameter(content, fm.start())
-            and not any(s <= fm.start() < e for s, e in coverage)
-        ]
-        for idx, fm in enumerate(func_starts):
-            func_name = fm.group(1)
-            body_start = fm.end()
-            next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-            end_tag = _TC_END_TAG_RE.search(content[body_start:])
-            if end_tag:
-                body_end = body_start + end_tag.start()
-            else:
-                body_end = len(content)
-            body_end = min(body_end, next_func)
-            body = content[body_start:body_end]
-            if not allow_incomplete:
-                close_idx = body.rfind(_FUNC_CLOSE_TAG)
-                if close_idx < 0:
-                    continue
-                body = body[:close_idx]
-            else:
-                body = _TC_FUNC_CLOSE_RE.sub("", body)
-
-            arguments: dict = {}
-            param_starts = list(_TC_PARAM_START_RE.finditer(body))
-            if len(param_starts) == 1:
-                pm = param_starts[0]
-                val = body[pm.end() :]
-                if not allow_incomplete:
-                    stripped_val = val.rstrip()
-                    if not stripped_val.endswith(_PARAM_CLOSE_TAG):
-                        continue
-                    val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
-                else:
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)
-                arguments[pm.group(1)] = val.strip()
-            else:
-                valid_params = True
-                for pidx, pm in enumerate(param_starts):
-                    param_name = pm.group(1)
-                    val_start = pm.end()
-                    next_param = (
-                        param_starts[pidx + 1].start()
-                        if pidx + 1 < len(param_starts)
-                        else len(body)
-                    )
-                    val = body[val_start:next_param]
-                    if not allow_incomplete:
-                        stripped_val = val.rstrip()
-                        if not stripped_val.endswith(_PARAM_CLOSE_TAG):
-                            valid_params = False
-                            break
-                        val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
-                    else:
-                        val = _TC_PARAM_CLOSE_RE.sub("", val)
-                    arguments[param_name] = val.strip()
-                if not valid_params:
-                    continue
-
-            tc = {
-                "id": f"call_{id_offset + len(tool_calls)}",
-                "type": "function",
-                "function": {
-                    "name": func_name,
-                    "arguments": json.dumps(arguments),
-                },
-            }
-            tool_calls.append(tc)
+        call_spans.append((start, span_end))
+    if with_spans:
+        return tool_calls, call_spans
     return tool_calls
 
 
