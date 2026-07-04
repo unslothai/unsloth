@@ -40,6 +40,7 @@ export const zhCN = {
       train: "训练",
       recipes: "配方",
       images: "图像",
+      video: "视频",
       export: "导出",
       recents: "最近",
       settings: "设置",

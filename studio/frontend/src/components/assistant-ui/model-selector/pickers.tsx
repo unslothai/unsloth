@@ -1053,15 +1053,25 @@ export const IMAGE_GEN_TASKS = [
   "image-text-to-image",
 ] as const;
 
+// Video-generation pipeline tasks: handled by the Video page, never loadable as
+// chat models. The backend reports "text-to-video" for video-diffusion GGUFs. The
+// Video page reuses this as its picker's `task` filter, so it lives here.
+export const VIDEO_GEN_TASKS = ["text-to-video"] as const;
+
 // Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/
 // ...). The backend tags them with this task so the chat picker hides them -- they
 // die with "unknown model architecture" in llama.cpp -- while the Images picker,
 // which filters on IMAGE_GEN_TASKS, also leaves them out (they'd 400 on load).
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
-// Tasks that must never appear as a loadable chat model: the Images-handled
-// generation tasks plus the non-loadable diffusion tag above.
-const NON_CHAT_TASKS: readonly string[] = [...IMAGE_GEN_TASKS, UNSUPPORTED_DIFFUSION_TASK];
+// Tasks that must never appear as a loadable chat model: the Images- and Video-handled
+// generation tasks plus the non-loadable diffusion tag above. Keeping text-to-video here
+// stops a downloaded video GGUF from showing up as a loadable chat model (it would 400).
+const NON_CHAT_TASKS: readonly string[] = [
+  ...IMAGE_GEN_TASKS,
+  ...VIDEO_GEN_TASKS,
+  UNSUPPORTED_DIFFUSION_TASK,
+];
 
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image,
 // which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by

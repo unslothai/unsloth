@@ -80,6 +80,7 @@ import {
   Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
+  Video01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -1204,6 +1205,15 @@ export function AppSidebar() {
                 active={pathname === "/images" || pathname.startsWith("/images/")}
                 onClick={() => {
                   navigate({ to: "/images" });
+                  closeMobileIfOpen();
+                }}
+              />
+              <NavItem
+                icon={Video01Icon}
+                label={t("shell.navigation.video")}
+                active={pathname === "/video" || pathname.startsWith("/video/")}
+                onClick={() => {
+                  navigate({ to: "/video" });
                   closeMobileIfOpen();
                 }}
               />
