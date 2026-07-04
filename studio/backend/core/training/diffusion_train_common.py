@@ -360,7 +360,9 @@ def discover_image_caption_pairs(
         # 2. metadata row keyed by file name (basename or the relative path; as_posix so a
         #    Windows backslash path still matches the jsonl's forward-slash keys).
         if caption is None:
-            caption = meta_caption.get(img.name) or meta_caption.get(img.relative_to(root).as_posix())
+            caption = meta_caption.get(img.name) or meta_caption.get(
+                img.relative_to(root).as_posix()
+            )
         # 3. dreambooth instance prompt.
         if caption is None and instance_prompt:
             caption = instance_prompt

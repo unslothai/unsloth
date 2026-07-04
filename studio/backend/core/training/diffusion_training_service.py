@@ -103,7 +103,13 @@ def _idle_state() -> dict[str, Any]:
     }
 
 
-def _append_metric(state: dict[str, Any], step: Any, loss: Any, lr: Any, grad_norm: Any = None) -> None:
+def _append_metric(
+    state: dict[str, Any],
+    step: Any,
+    loss: Any,
+    lr: Any,
+    grad_norm: Any = None,
+) -> None:
     """Append one (step, loss, lr, grad_norm) point to the bounded history arrays on
     ``state``.
 
