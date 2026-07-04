@@ -1356,3 +1356,46 @@ class TestOpenaiStreamingRoute:
             assert chunks[0] == line + "\n\n"  # byte-for-byte relay
 
         asyncio.run(_run())
+
+
+class TestHealerSignalAlignment:
+    """The passthrough healer buffers only formats its parser can promote.
+    The loops' bare [ARGS] rehearsal signal is gated on active tool names
+    there; ungated in the healer it would stall legitimate prose until
+    finalization without ever producing a promotable call."""
+
+    def test_heal_signals_are_promotable_formats_only(self):
+        from core.inference.passthrough_healing import _HEAL_SIGNALS
+
+        assert set(_HEAL_SIGNALS) == {
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "[TOOL_CALLS]",
+        }
+
+    def test_prose_with_bare_args_marker_streams_through(self):
+        healer = StreamToolCallHealer({"Bash"})
+        chunks = [
+            "Use the pattern foo",
+            "[ARGS] in templates when calling tools, ",
+            "and remember to close it.",
+        ]
+        streamed = ""
+        for chunk in chunks:
+            streamed += _events_text(healer.feed(chunk))
+        # Incremental relay: nothing withheld for finalize.
+        assert streamed == "".join(chunks)
+        final = healer.finalize()
+        assert not _events_calls(final)
+        assert not healer.healed
+
+    def test_bracket_tool_calls_still_promote_in_stream(self):
+        healer = StreamToolCallHealer({"web_search"})
+        events = (
+            healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}')
+            + healer.finalize()
+        )
+        (call,) = _events_calls(events)
+        assert call["function"]["name"] == "web_search"
+        assert healer.healed
