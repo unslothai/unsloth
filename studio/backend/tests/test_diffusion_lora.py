@@ -197,9 +197,12 @@ def test_resolve_specs_maps_hub_error_to_valueerror(tmp_path, monkeypatch):
     from huggingface_hub.errors import RepositoryNotFoundError
 
     def _boom(spec_id, weight, **kw):
+        # response is optional in huggingface_hub 0.x but required in 1.x; both only
+        # read .headers / .request, so a stub keeps the test working on either.
         raise RepositoryNotFoundError(
             "404 Client Error. Repository Not Found for url: "
-            "https://huggingface.co/api/models/nope/nope (Request ID: abc)"
+            "https://huggingface.co/api/models/nope/nope (Request ID: abc)",
+            response = types.SimpleNamespace(headers = {}, request = None),
         )
 
     monkeypatch.setattr(dl, "resolve_one", _boom)
