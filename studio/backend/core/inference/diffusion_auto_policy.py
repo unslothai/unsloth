@@ -27,6 +27,7 @@ the decision logic unit-tests on CPU-only hosts.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -130,6 +131,25 @@ def estimate_dense_quant(
     )
 
 
+def _hf_cache_free_mib() -> Optional[int]:
+    """Free MiB on the filesystem holding the HF model cache (None when unprobeable)."""
+    try:
+        import shutil
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE as cache_dir
+        except Exception:  # noqa: BLE001 -- hub missing/old: probe the conventional path
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+        probe = str(cache_dir)
+        while probe and not os.path.isdir(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        return int(shutil.disk_usage(probe).free // (1024 * 1024))
+    except Exception:  # noqa: BLE001 -- disk probing must never sink the candidate
+        return None
+
+
 def resolve_dense_quant_candidate(
     *,
     fam: Any,
@@ -179,6 +199,29 @@ def resolve_dense_quant_candidate(
             estimate.companions_mib,
             prequant_available,
         )
+    if estimate is not None:
+        # The dense path may DOWNLOAD the artifact (the multi-GB bf16 base
+        # transformer, or the prequant checkpoint) into the HF cache; with Dtype
+        # defaulting to auto this must never wedge a nearly-full disk. An
+        # already-cached model re-download is a no-op, so the gate can only
+        # false-positive on a disk that is already critically full -- where
+        # falling back to the GGUF build is the right call anyway.
+        needed_mib = (
+            estimate.steady_transformer_mib
+            if estimate.prequant
+            else estimate.transient_transformer_mib
+        )
+        free_mib = _hf_cache_free_mib()
+        if free_mib is not None and free_mib < needed_mib + 10 * 1024:
+            if logger is not None:
+                logger.info(
+                    "diffusion.auto_policy: skipping dense %s (~%d MiB download, "
+                    "only %d MiB free in the model cache)",
+                    scheme,
+                    needed_mib,
+                    free_mib,
+                )
+            return None
     return estimate
 
 
