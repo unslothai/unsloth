@@ -3106,14 +3106,14 @@ class FastLlamaModel:
                     "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
                     "Reload your model without any quantization by setting `load_in_4bit = False`."
                 )
-        
+
         if init_lora_weights == "mica":
             try:
                 from peft.tuners.lora.variants import MiCALinearVariant
             except ImportError:
                 import peft
                 raise RuntimeError(
-                   f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
+                    f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
                     "MiCA is not yet in a released version. Install from source:\n"
                     "`pip install git+https://github.com/huggingface/peft.git`"
                 )
@@ -3123,7 +3123,6 @@ class FastLlamaModel:
                     "MiCA runs SVD on the base weights and requires fp32/fp16/bf16 — PEFT will refuse quantized weights.\n"
                     "Reload your model without quantization by setting `load_in_4bit = False` and `load_in_8bit = False`."
                 )
-
 
         assert type(use_rslora) is bool
         if use_rslora:

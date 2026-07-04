@@ -3004,9 +3004,9 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
         except ImportError:
             import peft
             raise RuntimeError(
-                   f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
-                    "MiCA is not yet in a released version. Install from source:\n"
-                    "`pip install git+https://github.com/huggingface/peft.git`"
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
+                "MiCA is not yet in a released version. Install from source:\n"
+                "`pip install git+https://github.com/huggingface/peft.git`"
             )
         if hasattr(model.config, "quantization_config"):
             raise ValueError(
@@ -3014,7 +3014,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "MiCA runs SVD on the base weights and requires fp32/fp16/bf16 — PEFT will refuse quantized weights.\n"
                 "Reload your model without quantization by setting `load_in_4bit = False` and `load_in_8bit = False`."
             )
-
 
     return loftq_config
 
