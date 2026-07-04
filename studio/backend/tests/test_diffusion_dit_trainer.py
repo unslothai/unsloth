@@ -230,10 +230,15 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
 
 def _patch_capability(monkeypatch, capability):
     # Drive train_precision_modes' GPU probe: pretend CUDA is present at the given tensor
-    # core capability (fp8 needs sm89+, mxfp8 needs sm100+).
+    # core capability (fp8 needs sm89+, mxfp8 needs sm100+). The torchao probe is stubbed
+    # functional so these tests exercise the CAPABILITY gate on hosts without torchao
+    # (the CPU-only CI runner does not install it).
     import torch
+
+    import core.training.diffusion_train_common as dtc
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    monkeypatch.setattr(dtc, "has_functional_torchao", lambda: True)
 
 
 def test_train_precision_modes_blackwell_lists_mxfp8(monkeypatch):
