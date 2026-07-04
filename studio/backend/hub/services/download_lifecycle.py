@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -272,6 +273,120 @@ def finalize_worker_exit(
         )
 
 
+def _set_job_transport(
+    registry: download_registry.DownloadRegistry,
+    key: str,
+    transport: str,
+) -> None:
+    with registry._lock:
+        metadata = registry._metadata.get(key)
+        if metadata is None or metadata.transport == transport:
+            return
+        registry._metadata[key] = replace(metadata, transport = transport)
+
+
+def _try_http_retry(
+    registry: download_registry.DownloadRegistry,
+    key: str,
+    *,
+    hf_token: Optional[str],
+    label: str,
+    log_prefix: str,
+    logger,
+    repo_type: RepoType,
+    repo_id: str,
+    watch_name: str,
+) -> bool:
+    """Reclaim *key* with HTTP transport and spawn a recovery worker.
+
+    Returns ``True`` when the HTTP worker was successfully registered.
+    Caller is responsible for ensuring this is only called when: the job is
+    in ``"error"`` state, the original transport was XET, and HTTP is available.
+
+    Derives variant and blob-hash metadata from the registry entry written by
+    the original XET claim so callers do not re-construct worker arguments.
+    Re-queries peer protection hashes at spawn time to reflect any concurrent
+    sibling changes between the XET failure and this call.
+    """
+    original_metadata = registry.get_job_metadata(key)
+    if original_metadata is None:
+        logger.debug("%s XET retry skipped for %s; metadata unavailable", log_prefix, label)
+        return False
+    if original_metadata.transport != download_registry.TRANSPORT_XET:
+        logger.debug(
+            "%s XET retry skipped for %s; original transport was %s",
+            log_prefix,
+            label,
+            original_metadata.transport,
+        )
+        return False
+    variant = original_metadata.variant
+    blob_hashes = original_metadata.blob_hashes
+    progress_blob_hashes = original_metadata.progress_blob_hashes
+    completed_baseline_bytes = original_metadata.completed_baseline_bytes
+
+    claimed, _ = registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        repo_type = repo_type,
+        repo_id = repo_id,
+        variant = variant,
+        blob_hashes = blob_hashes,
+        progress_blob_hashes = progress_blob_hashes,
+        completed_baseline_bytes = completed_baseline_bytes,
+    )
+    if not claimed:
+        logger.debug("%s XET retry claim rejected for %s; another job took the slot", log_prefix, label)
+        return False
+
+    args: list[str] = ["--repo-id", repo_id]
+    if repo_type == "dataset":
+        args.append("--dataset")
+    elif variant:
+        args.extend(["--variant", variant])
+
+    # Re-query at spawn time: sibling state may have changed since XET failed.
+    peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()
+
+    logger.warning(
+        "%s XET worker failed for %s; retrying over HTTP",
+        log_prefix,
+        label,
+    )
+    try:
+        proc = spawn_worker(
+            args,
+            hf_token,
+            use_xet = False,
+            protected_blob_hashes = peer_hashes or None,
+        )
+    except Exception as exc:
+        scrubbed = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
+        logger.error(
+            "%s HTTP retry spawn failed for %s: %s",
+            log_prefix,
+            label,
+            scrubbed,
+        )
+        _set_job_transport(registry, key, download_registry.TRANSPORT_XET)
+        registry.set_job(key, "error", scrubbed)
+        return False
+
+    return register_worker(
+        registry,
+        key,
+        proc,
+        hf_token = hf_token,
+        label = label,
+        log_prefix = log_prefix,
+        logger = logger,
+        repo_type = repo_type,
+        repo_id = repo_id,
+        transport = download_registry.TRANSPORT_HTTP,
+        watch_name = watch_name,
+    )
+
+
 def kill_and_reap_process(
     proc: subprocess.Popen,
     *,
@@ -327,6 +442,28 @@ def register_worker(
                 repo_id = repo_id,
                 transport = transport,
             )
+            # XET-to-HTTP recovery: when a non-cancelled XET worker fails and
+            # HTTP is available, attempt one automatic retry over HTTP.  The
+            # transport check is the recursion guard: an HTTP worker that errors
+            # never satisfies `transport == TRANSPORT_XET`, so it stays terminal.
+            if (
+                transport == download_registry.TRANSPORT_XET
+                and registry.get_job(key).state == "error"
+                and download_registry.download_transport_unavailable_reason(
+                    download_registry.TRANSPORT_HTTP
+                ) is None
+            ):
+                _try_http_retry(
+                    registry,
+                    key,
+                    hf_token = worker_token,
+                    label = label,
+                    log_prefix = log_prefix,
+                    logger = logger,
+                    repo_type = repo_type,
+                    repo_id = repo_id,
+                    watch_name = watch_name,
+                )
         except Exception:
             # finalize_worker_exit is the only thing that clears running/cancelling;
             # if it raises, force a terminal state so claim() isn't blocked until restart.
