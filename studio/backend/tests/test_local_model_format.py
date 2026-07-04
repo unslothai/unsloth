@@ -121,7 +121,14 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 from models.models import LocalModelInfo  # noqa: E402
 
 
-def _local(path, *, model_format = None, model_id = None, display_name = "m", id = "m"):
+def _local(
+    path,
+    *,
+    model_format = None,
+    model_id = None,
+    display_name = "m",
+    id = "m",
+):
     return LocalModelInfo(
         id = id,
         display_name = display_name,
@@ -147,9 +154,7 @@ def test_local_task_tags_diffusers_by_family_id(tmp_path):
     d = tmp_path / "flux-checkpoint"
     _touch(d / "flux1-dev.safetensors")
     assert (
-        models_route._local_model_task(
-            _local(d, model_id = "black-forest-labs/FLUX.1-dev")
-        )
+        models_route._local_model_task(_local(d, model_id = "black-forest-labs/FLUX.1-dev"))
         == "text-to-image"
     )
 
