@@ -130,6 +130,7 @@ interface ModelSelectorProps {
   defaultValue?: string;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
+  activeGgufContextLength?: number | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -318,6 +319,7 @@ function ModelSelectorContent({
   value,
   activeGgufVariant,
   activeModelConfig,
+  activeGgufContextLength,
   onSelect,
   onEject,
   onFoldersChange,
@@ -335,6 +337,7 @@ function ModelSelectorContent({
   value?: string;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
+  activeGgufContextLength?: number | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -487,9 +490,10 @@ function ModelSelectorContent({
       onSelect(id, meta);
       return;
     }
+    const resolved = resolveInitialConfig(id, meta.ggufVariant);
     onSelect(id, {
       ...meta,
-      config: resolveInitialConfig(id, meta.ggufVariant).config,
+      ...(resolved.remembered ? { config: resolved.config } : {}),
     });
   };
 
@@ -539,6 +543,12 @@ function ModelSelectorContent({
               value === configTarget.id &&
               (activeGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
                 ? (activeModelConfig ?? null)
+                : null
+            }
+            loadedContextLength={
+              value === configTarget.id &&
+              (activeGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
+                ? (activeGgufContextLength ?? null)
                 : null
             }
           />
@@ -634,6 +644,7 @@ export function ModelSelector({
   defaultValue,
   activeGgufVariant,
   activeModelConfig,
+  activeGgufContextLength,
   onValueChange,
   onEject,
   onFoldersChange,
@@ -764,6 +775,7 @@ export function ModelSelector({
         value={selected}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
+        activeGgufContextLength={activeGgufContextLength}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}

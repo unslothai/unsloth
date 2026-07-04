@@ -3,6 +3,7 @@
 
 import {
   normalizeSpeculativeType,
+  readPersistedSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
 import {
@@ -22,7 +23,9 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       : { params: { ...state.params, maxSeqLength } }),
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
-    speculativeType: normalizeSpeculativeType(config.speculativeType),
+    speculativeType:
+      normalizeSpeculativeType(config.speculativeType) ??
+      readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),

@@ -1107,19 +1107,19 @@ export function ModelsPage() {
       // context length) don't leak into this load -- mirrors the chat page's
       // detachStaged(); keepDownload keeps any staged download running.
       useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
-      const resolvedConfig =
-        opts.ggufVariant != null || selectedModel.isGguf
-          ? resolveInitialConfig(runId, opts.ggufVariant)
-          : null;
-      if (resolvedConfig?.remembered) {
-        applyPerModelConfigToRuntime(resolvedConfig.config);
+      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
+      const rememberedConfig = resolvedConfig.remembered
+        ? resolvedConfig.config
+        : null;
+      if (rememberedConfig) {
+        applyPerModelConfigToRuntime(rememberedConfig);
       }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
-        keepSpeculative: resolvedConfig?.remembered ?? false,
+        keepSpeculative: rememberedConfig != null,
         throwOnError: true,
       })
         .then(() => {

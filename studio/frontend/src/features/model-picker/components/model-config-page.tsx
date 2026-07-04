@@ -13,12 +13,16 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { fetchGgufContextLength } from "@/features/chat/api/chat-api";
+import {
+  readPersistedSpeculativeType,
+  useChatRuntimeStore,
+} from "@/features/chat/stores/chat-runtime-store";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -32,6 +36,7 @@ import {
   MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
   deletePerModelConfig,
+  isDefaultConfig,
   normalizeMaxSeqLength,
   resolveInitialConfig,
   savePerModelConfig,
@@ -150,11 +155,13 @@ function GgufAdvancedSettings({
   config,
   update,
   isMtp,
+  speculativeFallback,
   onEditTemplate,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   isMtp: boolean;
+  speculativeFallback: string;
   onEditTemplate: () => void;
 }) {
   return (
@@ -200,7 +207,7 @@ function GgufAdvancedSettings({
           </InfoHint>
         </div>
         <Select
-          value={config.speculativeType ?? "auto"}
+          value={config.speculativeType ?? speculativeFallback}
           onValueChange={(v) =>
             update({
               speculativeType: v,
@@ -285,6 +292,7 @@ interface ModelConfigPageProps {
   onBack: () => void;
   onRun: (config: PerModelConfig) => void;
   loadedConfig?: PerModelConfig | null;
+  loadedContextLength?: number | null;
 }
 
 export function ModelConfigPage({
@@ -292,12 +300,14 @@ export function ModelConfigPage({
   onBack,
   onRun,
   loadedConfig = null,
+  loadedContextLength = null,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
   const runtimeMaxSeqLength = useChatRuntimeStore(
     (s) => s.params.maxSeqLength,
   );
+  const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const [initialMaxSeqLength] = useState(
     () => normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096,
   );
@@ -307,10 +317,11 @@ export function ModelConfigPage({
       ? { config: loadedConfig, remembered: resolved.remembered }
       : resolved;
   };
-  const [config, setConfig] = useState<PerModelConfig>(
-    () => resolveInitial().config,
-  );
-  const [remember, setRemember] = useState(() => resolveInitial().remembered);
+  const [initial] = useState(resolveInitial);
+  const [config, setConfig] = useState<PerModelConfig>(() => initial.config);
+  const [remember, setRemember] = useState(() => initial.remembered);
+  const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
+  const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(() =>
     hasNonDefaultAdvanced(config),
@@ -328,22 +339,74 @@ export function ModelConfigPage({
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
 
+  const contextFetchKey =
+    target.isGguf && target.meta.contextLength == null
+      ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}`
+      : null;
+  const [fetchedContextLength, setFetchedContextLength] = useState<{
+    key: string;
+    value: number | null;
+  } | null>(null);
+  useEffect(() => {
+    if (contextFetchKey == null) {
+      return;
+    }
+    let cancelled = false;
+    void fetchGgufContextLength({
+      model_path: target.id,
+      gguf_variant: target.ggufVariant ?? null,
+      hf_token: hfToken || null,
+    })
+      .then((contextLength) => {
+        if (!cancelled) {
+          setFetchedContextLength({
+            key: contextFetchKey,
+            value: contextLength,
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFetchedContextLength({ key: contextFetchKey, value: null });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    contextFetchKey,
+    target.id,
+    target.ggufVariant,
+    hfToken,
+  ]);
+
   const isMtp =
     config.speculativeType != null &&
     MTP_SPECULATIVE_TYPES.has(config.speculativeType);
-  const nativeContextLength = target.meta.contextLength ?? null;
+  const nativeContextLength =
+    target.meta.contextLength ??
+    (fetchedContextLength?.key === contextFetchKey
+      ? fetchedContextLength.value
+      : null);
   const minContext = 128;
   const maxContext = nativeContextLength ?? 32768;
+  const activeLoadedContext =
+    isActiveModel && target.isGguf ? loadedContextLength : null;
+  const contextBaseline = activeLoadedContext ?? nativeContextLength;
   const contextValue = Math.min(
     Math.max(
-      config.customContextLength ?? nativeContextLength ?? maxContext,
+      config.customContextLength ??
+        activeLoadedContext ??
+        nativeContextLength ??
+        maxContext,
       minContext,
     ),
     maxContext,
   );
   const setContextLength = (v: number) =>
     update({
-      customContextLength: resolveCustomContextLength(v, nativeContextLength),
+      customContextLength:
+        contextBaseline != null && v === contextBaseline ? null : v,
     });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
@@ -355,9 +418,18 @@ export function ModelConfigPage({
       normalizeMaxSeqLength(config.maxSeqLength) ?? initialMaxSeqLength,
       maxSeqLengthMax,
     );
+  const activeContextForRun =
+    activeLoadedContext ?? (nativeContextLength != null ? contextValue : null);
 
   const runtimeConfig = target.isGguf
-    ? config
+    ? {
+        ...config,
+        customContextLength:
+          config.customContextLength ??
+          (isActiveModel && activeContextForRun != null
+            ? resolveCustomContextLength(activeContextForRun, nativeContextLength)
+            : null),
+      }
     : {
         ...config,
         maxSeqLength:
@@ -365,8 +437,18 @@ export function ModelConfigPage({
             ? null
             : clampMaxSeqLength(config.maxSeqLength, maxSeqLengthMax),
       };
+  const rememberChanged = remember !== savedRemember;
+  const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
+  const primaryActionLabel = persistenceOnly
+    ? remember
+      ? "Save settings"
+      : "Forget settings"
+    : isActiveModel
+      ? "Reload model"
+      : "Load model";
 
   const handleRun = () => {
+    const defaultConfig = isDefaultConfig(runtimeConfig);
     if (remember) {
       const saved = savePerModelConfig(
         target.id,
@@ -379,6 +461,19 @@ export function ModelConfigPage({
       }
     } else {
       deletePerModelConfig(target.id, target.ggufVariant);
+    }
+    if (persistenceOnly) {
+      const nextRemember = remember && !defaultConfig;
+      setSavedRemember(nextRemember);
+      setRemember(nextRemember);
+      toast.success(
+        nextRemember
+          ? "Settings saved."
+          : remember
+            ? "Default settings kept."
+            : "Settings forgotten.",
+      );
+      return;
     }
     onRun(runtimeConfig);
   };
@@ -451,6 +546,7 @@ export function ModelConfigPage({
                 config={config}
                 update={update}
                 isMtp={isMtp}
+                speculativeFallback={speculativeFallback}
                 onEditTemplate={() => setTemplateOpen(true)}
               />
             )}
@@ -522,10 +618,10 @@ export function ModelConfigPage({
             type="button"
             size="sm"
             className="h-8"
-            disabled={isActiveModel && atBaseline}
+            disabled={isActiveModel && atBaseline && !rememberChanged}
             onClick={handleRun}
           >
-            {isActiveModel ? "Reload model" : "Load model"}
+            {primaryActionLabel}
           </Button>
         </div>
       </div>

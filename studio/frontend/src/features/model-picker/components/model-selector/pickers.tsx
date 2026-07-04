@@ -1200,6 +1200,19 @@ function localPathTooltip(name: string, path: string): ReactNode {
   );
 }
 
+function localModelMeta(isGguf = false): ModelSelectorChangeMeta {
+  return {
+    source: "local",
+    isLora: false,
+    isDownloaded: true,
+    ...(isGguf ? { isGguf: true } : {}),
+  };
+}
+
+function localDirectGgufMeta(): ModelSelectorChangeMeta {
+  return localModelMeta(true);
+}
+
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
@@ -3100,47 +3113,62 @@ export function HubModelPicker({
                       );
                       return (
                         <div key={m.id}>
-                          <ModelRow
-                            label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
-                            tooltipText={localPathTooltip(
-                              m.model_id ?? m.display_name,
-                              m.path,
-                            )}
-                            selected={value === m.id}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              value === m.id,
-                            )}
-                            onClick={() => {
-                              if (isDirectGguf) {
-                                onSelect(m.id, {
-                                  source: "local",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                  isGguf: true,
-                                });
-                              } else if (isGguf) {
-                                toggleGgufExpanded(m.id);
-                              } else {
-                                onSelect(m.id, {
-                                  source: "local",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                });
-                              }
-                            }}
-                            onArrowDownIntoChildren={
-                              isGguf && !isDirectGguf && isGgufExpanded(m.id)
-                                ? () => {
-                                    const focused =
-                                      focusFirstChildOption(optionKey);
-                                    return focused;
+                          <div className="flex items-center gap-0.5">
+                            <div className="min-w-0 flex-1">
+                              <ModelRow
+                                label={m.model_id ?? m.display_name}
+                                meta={isGguf ? "GGUF" : "Local"}
+                                tooltipText={localPathTooltip(
+                                  m.model_id ?? m.display_name,
+                                  m.path,
+                                )}
+                                selected={value === m.id}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  value === m.id,
+                                )}
+                                onClick={() => {
+                                  if (isDirectGguf) {
+                                    onSelect(m.id, localDirectGgufMeta());
+                                  } else if (isGguf) {
+                                    toggleGgufExpanded(m.id);
+                                  } else {
+                                    onSelect(m.id, localModelMeta());
                                   }
-                                : undefined
-                            }
-                            vramStatus={null}
-                          />
+                                }}
+                                onArrowDownIntoChildren={
+                                  isGguf &&
+                                  !isDirectGguf &&
+                                  isGgufExpanded(m.id)
+                                    ? () => {
+                                        const focused =
+                                          focusFirstChildOption(optionKey);
+                                        return focused;
+                                      }
+                                    : undefined
+                                }
+                                vramStatus={null}
+                              />
+                            </div>
+                            {isDirectGguf && onConfigure && (
+                              <ModelLoadSettingsAction
+                                ariaLabel={`Inference settings for ${
+                                  m.model_id ?? m.display_name
+                                }`}
+                                onConfigure={() =>
+                                  onConfigure(m.id, localDirectGgufMeta())
+                                }
+                              />
+                            )}
+                            {!isGguf && onConfigure && (
+                              <ModelLoadSettingsAction
+                                ariaLabel={`Inference settings for ${
+                                  m.model_id ?? m.display_name
+                                }`}
+                                onConfigure={() => onConfigure(m.id, localModelMeta())}
+                              />
+                            )}
+                          </div>
                           {isGguf && !isDirectGguf && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
@@ -3192,47 +3220,60 @@ export function HubModelPicker({
                       const optionKey = makeModelOptionKey("lm-studio", m.id);
                       return (
                         <div key={m.id}>
-                          <ModelRow
-                            label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
-                            tooltipText={localPathTooltip(
-                              m.model_id ?? m.display_name,
-                              m.path,
-                            )}
-                            selected={value === m.id}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              value === m.id,
-                            )}
-                            onClick={() => {
-                              if (isGgufFile) {
-                                onSelect(m.id, {
-                                  source: "local",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                  isGguf: true,
-                                });
-                              } else if (isGguf) {
-                                toggleGgufExpanded(m.id);
-                              } else {
-                                onSelect(m.id, {
-                                  source: "local",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                });
-                              }
-                            }}
-                            onArrowDownIntoChildren={
-                              isGguf && !isGgufFile && isGgufExpanded(m.id)
-                                ? () => {
-                                    const focused =
-                                      focusFirstChildOption(optionKey);
-                                    return focused;
+                          <div className="flex items-center gap-0.5">
+                            <div className="min-w-0 flex-1">
+                              <ModelRow
+                                label={m.model_id ?? m.display_name}
+                                meta={isGguf ? "GGUF" : "Local"}
+                                tooltipText={localPathTooltip(
+                                  m.model_id ?? m.display_name,
+                                  m.path,
+                                )}
+                                selected={value === m.id}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  value === m.id,
+                                )}
+                                onClick={() => {
+                                  if (isGgufFile) {
+                                    onSelect(m.id, localDirectGgufMeta());
+                                  } else if (isGguf) {
+                                    toggleGgufExpanded(m.id);
+                                  } else {
+                                    onSelect(m.id, localModelMeta());
                                   }
-                                : undefined
-                            }
-                            vramStatus={null}
-                          />
+                                }}
+                                onArrowDownIntoChildren={
+                                  isGguf && !isGgufFile && isGgufExpanded(m.id)
+                                    ? () => {
+                                        const focused =
+                                          focusFirstChildOption(optionKey);
+                                        return focused;
+                                      }
+                                    : undefined
+                                }
+                                vramStatus={null}
+                              />
+                            </div>
+                            {isGgufFile && onConfigure && (
+                              <ModelLoadSettingsAction
+                                ariaLabel={`Inference settings for ${
+                                  m.model_id ?? m.display_name
+                                }`}
+                                onConfigure={() =>
+                                  onConfigure(m.id, localDirectGgufMeta())
+                                }
+                              />
+                            )}
+                            {!isGguf && onConfigure && (
+                              <ModelLoadSettingsAction
+                                ariaLabel={`Inference settings for ${
+                                  m.model_id ?? m.display_name
+                                }`}
+                                onConfigure={() => onConfigure(m.id, localModelMeta())}
+                              />
+                            )}
+                          </div>
                           {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
@@ -3278,43 +3319,56 @@ export function HubModelPicker({
                       const optionKey = makeModelOptionKey("local-dir", m.id);
                       return (
                         <div key={m.id}>
-                          <ModelRow
-                            label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
-                            tooltipText={localPathTooltip(
-                              m.model_id ?? m.display_name,
-                              m.path,
+                          <div className="flex items-center gap-0.5">
+                            <div className="min-w-0 flex-1">
+                              <ModelRow
+                                label={m.model_id ?? m.display_name}
+                                meta={isGguf ? "GGUF" : "Local"}
+                                tooltipText={localPathTooltip(
+                                  m.model_id ?? m.display_name,
+                                  m.path,
+                                )}
+                                selected={value === m.id}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  value === m.id,
+                                )}
+                                onClick={() => {
+                                  if (isGgufFile) {
+                                    onSelect(m.id, localDirectGgufMeta());
+                                  } else if (isGguf) {
+                                    toggleGgufExpanded(m.id);
+                                  } else {
+                                    onSelect(m.id, localModelMeta());
+                                  }
+                                }}
+                                onArrowDownIntoChildren={
+                                  isGguf && !isGgufFile && isGgufExpanded(m.id)
+                                    ? () => focusFirstChildOption(optionKey)
+                                    : undefined
+                                }
+                                vramStatus={null}
+                              />
+                            </div>
+                            {isGgufFile && onConfigure && (
+                              <ModelLoadSettingsAction
+                                ariaLabel={`Inference settings for ${
+                                  m.model_id ?? m.display_name
+                                }`}
+                                onConfigure={() =>
+                                  onConfigure(m.id, localDirectGgufMeta())
+                                }
+                              />
                             )}
-                            selected={value === m.id}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              value === m.id,
+                            {!isGguf && onConfigure && (
+                              <ModelLoadSettingsAction
+                                ariaLabel={`Inference settings for ${
+                                  m.model_id ?? m.display_name
+                                }`}
+                                onConfigure={() => onConfigure(m.id, localModelMeta())}
+                              />
                             )}
-                            onClick={() => {
-                              if (isGgufFile) {
-                                onSelect(m.id, {
-                                  source: "local",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                  isGguf: true,
-                                });
-                              } else if (isGguf) {
-                                toggleGgufExpanded(m.id);
-                              } else {
-                                onSelect(m.id, {
-                                  source: "local",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                });
-                              }
-                            }}
-                            onArrowDownIntoChildren={
-                              isGguf && !isGgufFile && isGgufExpanded(m.id)
-                                ? () => focusFirstChildOption(optionKey)
-                                : undefined
-                            }
-                            vramStatus={null}
-                          />
+                          </div>
                           {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
@@ -3683,6 +3737,13 @@ function FineTunedRows({
         const isTrainingFull = isTraining && isMerged;
         const isLocalGgufDir =
           isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+        const selectionMeta: ModelSelectorChangeMeta = {
+          source: isLocal ? "local" : isExported ? "exported" : "lora",
+          isLora: !isLocal && !isMerged && !isGguf,
+          isDownloaded: true,
+          isGguf: false,
+        };
+        const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);
         const tag = isLocal
           ? isLocalGgufDir
@@ -3724,15 +3785,7 @@ function FineTunedRows({
                         prev === adapter.id ? null : adapter.id,
                       );
                     } else {
-                      onSelect(adapter.id, {
-                        source: isLocal
-                          ? "local"
-                          : isExported
-                            ? "exported"
-                            : "lora",
-                        isLora: !isLocal && !isMerged && !isGguf,
-                        isDownloaded: true,
-                      });
+                      onSelect(adapter.id, selectionMeta);
                     }
                   }}
                   tooltipText={
@@ -3753,6 +3806,12 @@ function FineTunedRows({
                   }
                 />
               </div>
+              {canConfigure && onConfigure && (
+                <ModelLoadSettingsAction
+                  ariaLabel={`Inference settings for ${adapter.name}`}
+                  onConfigure={() => onConfigure(adapter.id, selectionMeta)}
+                />
+              )}
               {canDelete && (
                 <ModelDeleteAction
                   ariaLabel={`Delete ${adapter.name}`}

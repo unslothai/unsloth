@@ -25,7 +25,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  speculativeType: "auto",
+  speculativeType: null,
   specDraftNMax: null,
   tensorParallel: false,
   chatTemplateOverride: null,

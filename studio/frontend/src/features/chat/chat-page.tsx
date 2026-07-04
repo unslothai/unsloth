@@ -1286,21 +1286,32 @@ export function ChatPage({
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  const rememberedConfigFor = useCallback(
+    (selection: {
+      id: string;
+      ggufVariant?: string | null;
+      source?: string;
+    }) => {
+      if (selection.source === "external") return null;
+      const resolved = resolveInitialConfig(selection.id, selection.ggufVariant);
+      return resolved.remembered ? resolved.config : null;
+    },
+    [],
+  );
   // Load a cached autoLoad pick once its download finishes. The sheet was never
   // opened, so on a load failure just drop the orphaned staged knobs. The knobs
   // were already seeded on stage, so keepSpeculative only when a config was
   // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
-    const { config, remembered } = resolveInitialConfig(
-      pending.id,
-      pending.ggufVariant,
-    );
-    applyPerModelConfigToRuntime(config);
+    const rememberedConfig = rememberedConfigFor(pending);
+    if (rememberedConfig) {
+      applyPerModelConfigToRuntime(rememberedConfig);
+    }
     void selectModel({
       ...pending,
       isDownloaded: true,
       forceReload: true,
-      keepSpeculative: remembered,
+      keepSpeculative: rememberedConfig != null,
       throwOnError: true,
     }).catch(() => {
       const store = useChatRuntimeStore.getState();
@@ -1708,16 +1719,7 @@ export function ChatPage({
         // reads customContextLength before checking the target is GGUF. Detach
         // (not abandon) keeps its download running.
         detachStaged();
-        let appliedConfig = selection.config ?? null;
-        if (!appliedConfig && hasGgufSource(selection)) {
-          const resolved = resolveInitialConfig(
-            selection.id,
-            selection.ggufVariant,
-          );
-          if (resolved.remembered) {
-            appliedConfig = resolved.config;
-          }
-        }
+        const appliedConfig = selection.config ?? rememberedConfigFor(selection);
         if (appliedConfig) {
           applyPerModelConfigToRuntime(appliedConfig);
         }
@@ -1795,21 +1797,12 @@ export function ChatPage({
         isHubRepo: wantManagerDownload || undefined,
         autoLoad: store.loadOnSelection,
       });
-      let stagedConfig = selection.config ?? null;
-      if (!stagedConfig && hasGgufSource(selection)) {
-        const resolved = resolveInitialConfig(
-          selection.id,
-          selection.ggufVariant,
-        );
-        if (resolved.remembered) {
-          stagedConfig = resolved.config;
-        }
-      }
+      const stagedConfig = selection.config ?? rememberedConfigFor(selection);
       if (stagedConfig) {
         applyPerModelConfigToRuntime(stagedConfig);
       }
     },
-    [detachStaged, selectModel, loadingModel],
+    [detachStaged, selectModel, loadingModel, rememberedConfigFor],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
@@ -2481,6 +2474,7 @@ export function ChatPage({
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
+                activeGgufContextLength={ggufContextLength}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
