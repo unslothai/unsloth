@@ -94,7 +94,8 @@ def test_discover_missing_dir_raises(tmp_path):
 def test_config_normalized_defaults():
     cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o").normalized()
     assert cfg.lora_alpha == cfg.lora_rank  # alpha defaults to rank
-    assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
+    # Targets stay empty (unset) after normalize; each trainer fills its own family default.
+    assert cfg.lora_target_modules == ()
 
 
 @pytest.mark.parametrize(
@@ -335,3 +336,85 @@ def test_publish_writes_metadata_sidecar(tmp_path, monkeypatch):
     assert meta["lora_rank"] == 8
     assert meta["trigger_prompt"] == "a photo in sks style"
     assert meta["source"] == "studio-trained"
+
+
+def test_publish_does_not_clobber_same_name_adapter(tmp_path, monkeypatch):
+    # A retrain with the same adapter name must not overwrite a prior mirror: the second
+    # publish lands under a numeric suffix (my-style -> my-style-2), sidecar alongside it.
+    from pathlib import Path
+
+    from core.inference import diffusion_lora
+    from core.training.diffusion_lora_trainer import _publish_to_lora_catalog
+
+    loras = tmp_path / "loras"
+    loras.mkdir()
+    monkeypatch.setattr(diffusion_lora, "loras_dir", lambda: loras)
+
+    def _publish(payload: bytes) -> str:
+        src = tmp_path / "run" / "pytorch_lora_weights.safetensors"
+        src.parent.mkdir(parents = True, exist_ok = True)
+        src.write_bytes(payload)
+        cfg = DiffusionLoraConfig(
+            base_model = "stabilityai/sdxl-turbo",
+            data_dir = "d",
+            output_dir = str(tmp_path / "run"),
+            adapter_name = "my-style",
+        ).normalized()
+        return _publish_to_lora_catalog(str(src), cfg)
+
+    first = _publish(b"adapter-v1")
+    second = _publish(b"adapter-v2")
+    assert Path(first).name == "my-style.safetensors"
+    assert Path(second).name == "my-style-2.safetensors"
+    # The first mirror is intact (not clobbered) and the second is the new content.
+    assert Path(first).read_bytes() == b"adapter-v1"
+    assert Path(second).read_bytes() == b"adapter-v2"
+    assert Path(second).with_suffix(".json").is_file()
+
+
+def test_config_rejects_bad_lr_scheduler():
+    # A typo'd scheduler ('constnat') must fail at normalize time, not later in the subprocess.
+    with pytest.raises(ValueError, match = "lr_scheduler"):
+        DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "constnat"
+        ).normalized()
+    # A valid diffusers scheduler passes.
+    cfg = DiffusionLoraConfig(
+        base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "cosine"
+    ).normalized()
+    assert cfg.lr_scheduler == "cosine"
+
+
+def test_config_rejects_fp16_on_bf16_only_family():
+    # qwen-image / z-image are bf16-only: an fp16 request must be rejected before spawn,
+    # in normalized(), not only by the subprocess-side guard.
+    for base in ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Qwen-Image-2512-unsloth-bnb-4bit"):
+        with pytest.raises(ValueError, match = "bf16"):
+            DiffusionLoraConfig(
+                base_model = base, data_dir = "d", output_dir = "o", mixed_precision = "fp16"
+            ).normalized()
+    # FLUX (not force-bf16) still accepts fp16.
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = "d",
+        output_dir = "o",
+        mixed_precision = "fp16",
+    ).normalized()
+    assert cfg.mixed_precision == "fp16"
+
+
+def test_gguf_substring_does_not_reject_local_diffusers_dir(tmp_path):
+    # A local diffusers directory whose path merely contains 'gguf' is a valid training base
+    # (it carries model_index.json, not GGUF weights); the broad substring must not reject it.
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    local = tmp_path / "my-gguf-experiments" / "sdxl-finetune"
+    local.mkdir(parents = True)
+    (local / "model_index.json").write_text("{}", encoding = "utf-8")
+    assert resolve_trainable_family(str(local)) == "sdxl"
+    # A real .gguf file still rejects even inside such a dir.
+    with pytest.raises(ValueError, match = "GGUF"):
+        resolve_trainable_family(str(local / "weights.gguf"))
+    # A *-GGUF repo id (not a local dir) still rejects.
+    with pytest.raises(ValueError, match = "GGUF"):
+        resolve_trainable_family("unsloth/FLUX.1-dev-GGUF")

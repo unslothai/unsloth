@@ -189,6 +189,26 @@ def test_resolve_specs_maps_unknown_id_to_valueerror(tmp_path, monkeypatch):
         dl.resolve_specs([("nope", 1.0)])
 
 
+def test_resolve_specs_maps_hub_error_to_valueerror(tmp_path, monkeypatch):
+    # A mistyped Hub repo id makes the Hub resolution raise a huggingface_hub client error
+    # (RepositoryNotFoundError, an HfHubHTTPError). resolve_specs must surface it as
+    # ValueError so the route returns 400, not a generic 500. The Hub message embeds the
+    # request URL, which must be scrubbed out of the client-facing 400.
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    def _boom(spec_id, weight, **kw):
+        raise RepositoryNotFoundError(
+            "404 Client Error. Repository Not Found for url: "
+            "https://huggingface.co/api/models/nope/nope (Request ID: abc)"
+        )
+
+    monkeypatch.setattr(dl, "resolve_one", _boom)
+    with pytest.raises(ValueError) as ei:
+        dl.resolve_specs([("nope/nope", 1.0)])
+    assert "http" not in str(ei.value)  # request URL scrubbed
+    assert "Repository Not Found" in str(ei.value)
+
+
 def test_scan_local_disambiguates_identical_stems(tmp_path, monkeypatch):
     # foo.safetensors and foo.gguf must get distinct ids so each is addressable; a
     # unique stem keeps its clean stem id.

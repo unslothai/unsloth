@@ -1375,6 +1375,9 @@ async def upload_diffusion_dataset(
     total_bytes = 0
     uploaded = 0
     allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
+    # Validate every filename up front so a valid image ahead of a bad one is not left
+    # written on disk when the 400 fires -- make the upload all-or-nothing.
+    names: list[str] = []
     for f in files:
         filename = Path(f.filename or "").name.strip().replace("\x00", "")
         ext = Path(filename).suffix.lower()
@@ -1384,9 +1387,17 @@ async def upload_diffusion_dataset(
                 status_code = 400,
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
-        dest = folder / filename
-        complete = False
-        try:
+        names.append(filename)
+    # Roll back every file written this request if the batch does not fully commit, so a
+    # mid-batch 413 (or a disk error / client disconnect) leaves the dataset unchanged
+    # rather than partially populated -- the upload is all-or-nothing, not just for the
+    # extension check above but for the size limit too.
+    written: list[Path] = []
+    committed = False
+    try:
+        for f, filename in zip(files, names):
+            dest = folder / filename
+            written.append(dest)
             with open(dest, "wb") as out:
                 while chunk := await f.read(1024 * 1024):
                     total_bytes += len(chunk)
@@ -1400,14 +1411,15 @@ async def upload_diffusion_dataset(
                             ),
                         )
                     out.write(chunk)
-            complete = True
-        finally:
-            if not complete:
+            uploaded += 1
+        committed = True
+    finally:
+        if not committed:
+            for p in written:
                 try:
-                    dest.unlink(missing_ok = True)
+                    p.unlink(missing_ok = True)
                 except OSError:
                     pass
-        uploaded += 1
 
     summary = _diffusion_dataset_summary(folder)
     return DiffusionDatasetUploadResponse(
@@ -1572,7 +1584,7 @@ async def get_diffusion_dataset_image(
 
         thumbs_dir = folder / _THUMBS_DIRNAME
         thumbs_dir.mkdir(exist_ok = True)
-        thumb_path = thumbs_dir / f"{image_path.stem}_{size}.jpg"
+        thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
             return thumb_path
@@ -1645,7 +1657,7 @@ async def delete_diffusion_dataset_image(
             image_path.with_suffix(ext).unlink(missing_ok = True)
         thumbs_dir = folder / _THUMBS_DIRNAME
         if thumbs_dir.is_dir():
-            for t in thumbs_dir.glob(f"{image_path.stem}_*.jpg"):
+            for t in thumbs_dir.glob(f"{image_path.name}_*.jpg"):
                 t.unlink(missing_ok = True)
         return {"deleted": image_path.name}
 
@@ -1852,7 +1864,7 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     )
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
-    for jf in snap.rglob("*.jsonl"):
+    for jf in sorted(snap.rglob("*.jsonl")):
         for line in jf.read_text(encoding = "utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -1863,7 +1875,9 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
                 continue
             fn = row.get("file_name") or row.get("image") or row.get("file")
             if fn and caption_col in row:
-                captions[Path(str(fn)).name] = str(row[caption_col])
+                # First writer wins over sorted manifests, so the plain manifest
+                # (e.g. output_file.jsonl) is deterministic rather than OS-visit order.
+                captions.setdefault(Path(str(fn)).name, str(row[caption_col]))
     # Copy images (those with a caption first, so a cap keeps captioned pairs).
     images = sorted(
         p

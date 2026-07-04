@@ -30,10 +30,31 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 
-# Default LoRA target modules: the attention projections common to the SDXL U-Net and the
-# DiT transformers (the diffusers/kohya convention). A family whose trainer wants a wider
-# set overrides this in its own defaults; kept here so DiffusionLoraConfig has a sane fallback.
+# Default LoRA target modules: the attention projections of the SDXL U-Net (the
+# diffusers/kohya convention). Used by the SDXL trainer as its fallback when the config
+# leaves ``lora_target_modules`` empty; the DiT trainers supply their own wider set. Kept
+# here so the SDXL trainer has a named default even for an empty (unset) config.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")
+
+# diffusers' SchedulerType names (diffusers.optimization.get_scheduler). Validated in
+# normalized() so a typo fails fast at request time, not minutes later in the subprocess.
+_LR_SCHEDULERS: frozenset[str] = frozenset(
+    {
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+        "piecewise_constant",
+    }
+)
+
+# DiT families that overflow fp16 (their RoPE / embedder run in fp32), so they train in bf16
+# only. Encoded here -- keyed by resolved family -- so normalized() can reject an fp16 request
+# before spawn without importing the DiT trainer's _SPECS (which would create an import
+# cycle). The DiT trainer keeps a matching guard as defense in depth.
+_FORCE_BF16_FAMILIES: frozenset[str] = frozenset({"qwen-image", "z-image"})
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -83,7 +104,15 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # GGUF weights (a ``.gguf`` file or a ``*-GGUF`` repo) are inference-only: training needs
     # the full diffusers pipeline (transformer + VAE + text encoders), which a GGUF repo does
     # not provide. Reject by name even when the family itself is trainable.
-    if name.endswith(".gguf") or "gguf" in name:
+    # A ``.gguf`` file always rejects. The broad ``"gguf" in name`` catch (for ``*-GGUF``
+    # repos) must NOT reject a real local diffusers directory that merely has "gguf" in its
+    # path, so it is skipped for a local diffusers checkout -- identified by its
+    # ``model_index.json`` marker (the same marker the loader uses), NOT a bare ``is_dir()``:
+    # a GGUF-only folder must still reject here and fail fast, rather than pass and fail late
+    # in the subprocess after the resident chat/Images models were already evicted.
+    local = Path(base_model).expanduser() if base_model else None
+    is_local_diffusers = bool(local and (local / "model_index.json").is_file())
+    if name.endswith(".gguf") or ("gguf" in name and not is_local_diffusers):
         raise ValueError(
             f"'{base_model}' is a GGUF checkpoint/repo, which can't be a training base "
             f"(training needs the full diffusers model). {_trainable_hint()}"
@@ -215,7 +244,9 @@ class DiffusionLoraConfig:
     lora_rank: int = 16
     lora_alpha: Optional[int] = None  # defaults to lora_rank
     lora_dropout: float = 0.0
-    lora_target_modules: tuple[str, ...] = DEFAULT_LORA_TARGETS
+    # Empty = "unset": each trainer supplies its family default (SDXL DEFAULT_LORA_TARGETS,
+    # or the DiT family's wider joint-attention set). A non-empty tuple is an explicit override.
+    lora_target_modules: tuple[str, ...] = ()
     seed: int = 42
     mixed_precision: str = "bf16"  # "bf16" | "fp16" | "no"
     snr_gamma: Optional[float] = 5.0  # min-SNR loss weighting; None disables
@@ -259,6 +290,19 @@ class DiffusionLoraConfig:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
+        # A bf16-only DiT family (Qwen-Image / Z-Image) must refuse fp16 up front rather than
+        # accepting the request, evicting resident models, and only then failing in the
+        # subprocess. The DiT trainer keeps a matching guard as defense in depth.
+        if self.mixed_precision == "fp16" and resolved_family in _FORCE_BF16_FAMILIES:
+            raise ValueError(
+                f"'{resolved_family}' LoRA training requires bf16: fp16 overflows its fp32 "
+                f"RoPE / embedder internals. Set mixed precision to bf16."
+            )
+        if str(self.lr_scheduler) not in _LR_SCHEDULERS:
+            raise ValueError(
+                f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
+                f"got {self.lr_scheduler!r}"
+            )
         # learning_rate can arrive as a string ("1e-4") from the Studio config path, which
         # preserves it as a string after validation; coerce so AdamW receives a float.
         try:
@@ -268,7 +312,9 @@ class DiffusionLoraConfig:
         if learning_rate <= 0:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
-        targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
+        # Leave an unset (empty) target list empty: the trainer fills the family default
+        # (SDXL DEFAULT_LORA_TARGETS, or the DiT family's wider set) so the family spec wins.
+        targets = tuple(self.lora_target_modules)
         # A blank Hub token (the Studio default when none is configured) must load
         # anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
@@ -390,8 +436,20 @@ def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Option
             else Path(cfg.output_dir).name
         )
         alias = sanitize_alias(base)
+        src_resolved = Path(lora_path).resolve()
         dest = loras_dir() / f"{alias}.safetensors"
-        if Path(lora_path).resolve() != dest.resolve():
+        # A retrain with the same adapter name must not clobber a prior mirror: if the
+        # destination already exists and is a different file, pick the next free numeric
+        # suffix (<alias>-2, <alias>-3, ...) for both the weights and their .json sidecar.
+        if dest.exists() and dest.resolve() != src_resolved:
+            n = 2
+            while True:
+                candidate = loras_dir() / f"{alias}-{n}.safetensors"
+                if not candidate.exists() or candidate.resolve() == src_resolved:
+                    dest = candidate
+                    break
+                n += 1
+        if src_resolved != dest.resolve():
             shutil.copy2(lora_path, dest)
         _write_lora_sidecar(dest.with_suffix(".json"), cfg)
         return str(dest)

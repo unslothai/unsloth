@@ -266,6 +266,17 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     raise FileNotFoundError(f"no .safetensors/.gguf LoRA file found in '{repo_id}'")
 
 
+def _scrub_hub_url(msg: str) -> str:
+    """Strip embedded http(s) URLs from a Hub error message before it hits a 400 body.
+
+    huggingface_hub errors interpolate the request URL (and a request id) into their
+    message; a raw endpoint URL is noise in a client-facing 400, so drop it.
+    """
+    cleaned = re.sub(r"https?://\S+", "", msg)
+    # Collapse the whitespace / stray separators the URL removal leaves behind.
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
 def resolve_specs(
     specs: list[tuple[str, float]],
     *,
@@ -274,20 +285,41 @@ def resolve_specs(
 ) -> list[ResolvedLora]:
     """Resolve request (id, weight) pairs, dropping zero-weight entries.
 
-    A stale / unknown id raises FileNotFoundError inside resolve_one; convert it to
-    ValueError so the route (which maps only ValueError to a 400) reports bad client
-    input instead of a generic 500. A Hub download can also raise
-    ``RuntimeError("Cancelled")`` when the user unloads / starts a superseding load
-    mid-download; convert that to the diffusion cancellation sentinel so the route
-    maps it to a 409 instead of a generic server error toast."""
+    A stale / unknown id raises FileNotFoundError inside resolve_one; a mistyped Hub
+    repo id makes the Hub resolution raise a huggingface_hub client error (a missing
+    repo -> RepositoryNotFoundError, a bad revision -> RevisionNotFoundError, a missing
+    weight file -> EntryNotFoundError, a gated model -> GatedRepoError). Convert those
+    NAMED not-found/gated errors to ValueError so the route (which maps only ValueError
+    to a 400) reports bad client input instead of a generic 500 -- Hub error messages
+    embed the request URL, so scrub it out before it reaches the 400 body. Catch them by
+    name rather than their common HfHubHTTPError base on purpose: a Hub-side 5xx / 429
+    (an outage, not bad input) is a bare HfHubHTTPError and must stay a 500. A Hub
+    download can also raise ``RuntimeError("Cancelled")`` when the user unloads / starts a
+    superseding load mid-download; convert that to the diffusion cancellation sentinel so
+    the route maps it to a 409 instead of a generic server error toast. A non-cancellation
+    RuntimeError (e.g. a stalled download, disk full) stays a 500 -- it is not bad
+    client input."""
+    from huggingface_hub.errors import (
+        EntryNotFoundError,
+        GatedRepoError,
+        RepositoryNotFoundError,
+        RevisionNotFoundError,
+    )
+
     out: list[ResolvedLora] = []
     try:
         for spec_id, weight in specs:
             if weight == 0:
                 continue
             out.append(resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event))
-    except FileNotFoundError as exc:
-        raise ValueError(str(exc)) from exc
+    except (
+        FileNotFoundError,
+        RepositoryNotFoundError,
+        RevisionNotFoundError,
+        EntryNotFoundError,
+        GatedRepoError,
+    ) as exc:
+        raise ValueError(_scrub_hub_url(str(exc))) from exc
     except RuntimeError as exc:
         if str(exc) == "Cancelled":
             raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc

@@ -698,18 +698,27 @@ class DiffusionTrainingStartRequest(BaseModel):
     lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
     lora_dropout: float = Field(0.0, ge = 0.0, le = 1.0)
     # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that
-    # sets them is not silently trained with defaults. Default the target list to the SDXL
-    # attention projections (the trainer's DEFAULT_LORA_TARGETS) so it is never None.
+    # sets them is not silently trained with defaults. Empty (the default) means "unset": each
+    # trainer supplies its own family targets -- the SDXL DEFAULT_LORA_TARGETS for SDXL, the
+    # wider joint-attention set for the DiT families. A non-empty list is an explicit override.
     lora_target_modules: List[str] = Field(
-        default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
-        description = "U-Net modules to attach LoRA to",
+        default_factory = list,
+        description = "Modules to attach LoRA to; empty = the trainer's family default",
     )
     max_grad_norm: float = Field(1.0, gt = 0, description = "Gradient clipping max-norm")
     seed: int = Field(42)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
     snr_gamma: Optional[float] = Field(5.0, description = "Min-SNR loss weighting; null disables")
     gradient_checkpointing: bool = Field(True)
-    lr_scheduler: str = Field("constant")
+    lr_scheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+        "piecewise_constant",
+    ] = Field("constant")
     lr_warmup_steps: int = Field(0, ge = 0)
     center_crop: bool = Field(False)
     random_flip: bool = Field(True)

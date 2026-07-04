@@ -408,9 +408,14 @@ class DiffusionBackend:
         the transformer), but ``_load_dense_quant_pipeline`` fetches them with
         ``from_pretrained(subfolder = "transformer")`` under the load lock during
         "finalizing", after the previous pipeline was already evicted, where
-        unload/cancellation cannot preempt the download. Mirrors the dense-path
-        gates in ``load_pipeline``: quant requested and supported for this device,
-        and no pre-quantized checkpoint that would shortcut the dense build."""
+        unload/cancellation cannot preempt the download. Checks the dense-path gates
+        in ``load_pipeline`` that are knowable pre-download: quant requested and
+        supported for this device, and no pre-quantized checkpoint that would shortcut
+        the dense build. It deliberately does NOT mirror the ``plan.offload_policy ==
+        OFFLOAD_NONE`` gate: the memory plan needs the GGUF's on-disk size, which
+        isn't known until the GGUF is cached (after this prefetch runs). So the
+        transformer/ shards can be prefetched for a load that the plan then routes to
+        offload -- they stay cached for a later resident load rather than being wasted."""
         mode = normalize_transformer_quant(kwargs.get("transformer_quant"))
         if mode is None:
             return False
@@ -1014,6 +1019,21 @@ class DiffusionBackend:
                         # GGUF build (the OOM-fallback path this cleanup exists for).
                         del exc
                         clear_gpu_cache()
+                elif (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and dense_transformer_supported(target)
+                    and plan.offload_policy != OFFLOAD_NONE
+                ):
+                    # The dense fast path needs the transformer resident, so a memory_mode
+                    # (balanced / low_vram) that forces offload silently drops the requested
+                    # quant. Warn so the disengage is diagnosable rather than a null status.
+                    logger.warning(
+                        "diffusion.transformer_quant: %s requested but memory_mode forces "
+                        "offload (%s); loading GGUF without dense quant",
+                        normalize_transformer_quant(transformer_quant),
+                        plan.offload_policy,
+                    )
 
                 if pipe is None:
                     if kind == "pipeline":
@@ -1390,7 +1410,8 @@ class DiffusionBackend:
 
         The size estimate is per-kind: diffusers keeps GGUF weights packed (per-matmul
         transient dequant), so a GGUF loads near its on-disk size; a safetensors
-        single-file loads near its on-disk size (it carries its dtype); and a full
+        single-file loads near its on-disk size (it carries its dtype), except an fp8
+        transformer file that gets upcast to bf16 on load (~2x resident); and a full
         pipeline is one cached download (transformer + companions), already compressed."""
         device_memory = snapshot_device_memory(target)
         if kind == "pipeline":
@@ -1408,9 +1429,19 @@ class DiffusionBackend:
             companion_mib = None
         else:
             if kind == "single_file":
-                # Safetensors single-file: no dequant expansion (it carries its dtype).
+                # Safetensors single-file. A dense bf16 file loads near its on-disk size,
+                # but a transformer-only fp8 checkpoint is loaded via from_single_file with
+                # a bf16 compute dtype and NO quantization_config, so diffusers upcasts it
+                # fp8 -> bf16 (~2x resident). Detect fp8 from the basename and budget the
+                # expansion. The single-file-is-pipeline (SDXL) path is a full bf16 pipeline
+                # checkpoint, not this fp8 transformer path, so it stays at on-disk size.
+                fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
+                    "fp8" in Path(single_file_path).name.lower()
+                    if single_file_path
+                    else False
+                )
                 transformer_resident = estimate_safetensors_dense_mib(
-                    file_size_mib(single_file_path)
+                    file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
@@ -1500,6 +1531,14 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+            # A single generation uses exactly one ControlNet, so keep at most one resident:
+            # on a miss for a new id, drop the previously-cached module + its from_pipe wrapper
+            # (both dicts, kept consistent) and free the VRAM before loading the new one, or
+            # swapping distinct ControlNets within a base-model load accumulates until OOM.
+            if self._cn_models or self._cn_pipes:
+                self._cn_models.clear()
+                self._cn_pipes.clear()
+                clear_gpu_cache()
             import torch
 
             # state.dtype is the display string saved at load ("bfloat16"), NOT a
@@ -1783,6 +1822,13 @@ class DiffusionBackend:
                     if init_image is None:
                         raise ValueError(
                             f"{state.family.name} is an image-editing model: provide an input image."
+                        )
+                    if mask_image is not None:
+                        # The edit family has no inpaint pipeline; a supplied mask would be
+                        # silently dropped (this branch wins over the inpaint branch below).
+                        raise ValueError(
+                            f"{state.family.name} is an image-editing model and does not "
+                            "support masks (mask_image)."
                         )
                     workflow = "edit"
                     init_pil = _decode_b64_image(init_image, mode = "RGB")

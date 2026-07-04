@@ -265,7 +265,9 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
-    if dtype is None:
+    # torch is None on the no-torch CPU fallback; leave dtype=None then (matching the
+    # no-torch DiffusionDeviceTarget elsewhere) rather than crashing on torch.float32.
+    if dtype is None and torch is not None:
         dtype = torch.float32
     return DiffusionDeviceTarget(
         device = "cpu",

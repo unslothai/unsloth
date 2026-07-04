@@ -315,7 +315,7 @@ function Uninstall-UnslothStudio {
         # 2. A loaded module under a target root (orphaned mp-fork python holding a
         #    venv DLL). Scoped to names that load our DLLs to keep the scan fast.
         try {
-            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli -ErrorAction SilentlyContinue
+            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli, sd-cli, sd-server -ErrorAction SilentlyContinue
             foreach ($proc in $cands) {
                 $hit = $false
                 try {
@@ -366,7 +366,7 @@ function Uninstall-UnslothStudio {
     _StopStudioProcesses -KnownRoots $knownRoots
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultSdCpp, $defaultCache, $defaultNode))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -380,6 +380,9 @@ function Uninstall-UnslothStudio {
             continue
         }
         _RemovePath $r
+        # The native diffusion sibling (<custom root>.parent\stable-diffusion.cpp) is
+        # intentionally NOT removed: sd.cpp writes no owner marker and sits in the user's
+        # own parent dir, so auto-deleting it could destroy a user-managed clone.
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }

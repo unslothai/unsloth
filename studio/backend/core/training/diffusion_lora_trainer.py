@@ -211,13 +211,15 @@ def run_diffusion_lora_training(
     for m in (unet, *text_encoders):
         m.to(device, dtype = weight_dtype)
 
+    # An empty (unset) config means "use the family default": the SDXL attention projections.
+    unet_targets = list(cfg.lora_target_modules) or list(DEFAULT_LORA_TARGETS)
     unet.add_adapter(
         LoraConfig(
             r = cfg.lora_rank,
             lora_alpha = cfg.lora_alpha,
             lora_dropout = cfg.lora_dropout,
             init_lora_weights = "gaussian",
-            target_modules = list(cfg.lora_target_modules),
+            target_modules = unet_targets,
         )
     )
     if cfg.gradient_checkpointing:

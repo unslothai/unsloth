@@ -179,13 +179,15 @@ def test_delete_image_cleans_sidecar_and_thumb(client, ds_root):
     (folder / "x.txt").write_text("cap", encoding = "utf-8")
     # Generate a thumbnail so we can assert it is cleaned up too.
     client.get("/api/train/diffusion/dataset/d/image/x.png?thumb=32")
-    assert list((folder / ".thumbs").glob("x_*.jpg"))
+    # Thumb cache key includes the extension (x.png_32.jpg), so png and jpg
+    # siblings can't collide.
+    assert list((folder / ".thumbs").glob("x.png_*.jpg"))
 
     r = client.delete("/api/train/diffusion/dataset/d/image/x.png")
     assert r.status_code == 200, r.text
     assert not (folder / "x.png").exists()
     assert not (folder / "x.txt").exists()
-    assert not list((folder / ".thumbs").glob("x_*.jpg"))
+    assert not list((folder / ".thumbs").glob("x.png_*.jpg"))
 
 
 # ── traversal / validation ───────────────────────────────────────────────────

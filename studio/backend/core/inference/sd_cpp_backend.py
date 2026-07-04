@@ -737,6 +737,13 @@ class SdCppDiffusionBackend:
                 "img2img / inpaint / reference / upscale are not yet supported on the native "
                 "sd.cpp engine; run on a GPU (diffusers) for image-conditioned workflows."
             )
+        # strength 0 (or None) disables ControlNet -- documented on the request model, and
+        # the diffusers path treats it as plain txt2img -- so a strength-0 spec must be a
+        # no-op here too, not a hard 400. Only a genuinely active (strength > 0) ControlNet
+        # is rejected. Strength is element 3 of the tuple
+        # (id, image, type, strength, guidance_start, guidance_end).
+        if controlnet is not None and controlnet[3] in (None, 0, 0.0):
+            controlnet = None
         if controlnet is not None:
             raise ValueError(
                 "ControlNet is not yet supported on the native sd.cpp engine; run on a GPU "

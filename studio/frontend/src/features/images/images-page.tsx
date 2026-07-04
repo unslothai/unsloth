@@ -1237,7 +1237,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
     setPrompt(image.prompt);
-    setNegativePrompt(image.negative_prompt ?? "");
+    // The Negative-prompt field only renders (and submits) when guidance>0, so a
+    // guidance=0 recipe must not restore a hidden negative prompt that would
+    // resurface if guidance is later raised. Mirror the submit-path gating.
+    setNegativePrompt(image.guidance > 0 ? (image.negative_prompt ?? "") : "");
     setSteps(image.steps);
     setGuidance(image.guidance);
     setSeed(String(image.seed));
@@ -1272,6 +1275,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
+    // The recipe carries no control image (it isn't persisted), so a faithful
+    // restore can't reproduce a ControlNet run -- clear any stale form selection
+    // rather than leaking it into the restored recipe, mirroring the LoRA clear.
+    setControlnetId("");
+    setControlImage(null);
     toast.success("Settings restored to inputs");
   }, []);
 
@@ -1520,11 +1528,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = SAFETENSORS_MODELS[id];
       if (spec) {
+        // Optimistically drop the quant label, but revert if the load never starts
+        // so a failed load doesn't leave a stale 'GGUF · variant' label (mirrors the
+        // GGUF branches below; the poll owns the after-start revert via quantRevert).
+        const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void handleLoad(id, { kind: spec.kind, filename: spec.filename });
+        void handleLoad(id, { kind: spec.kind, filename: spec.filename }).then((started) => {
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
+        });
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker
@@ -1582,11 +1600,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error("Only unsloth or on-device image models can be loaded here");
         return;
       }
+      // Optimistically drop the quant label, but revert if the load never starts so
+      // a failed load doesn't leave a stale 'GGUF · variant' label (mirrors the GGUF
+      // branches above; the poll owns the after-start revert via quantRevert).
+      const prevQuant = quant;
+      quantRevert.current = { prev: prevQuant };
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void handleLoad(id, { kind: "pipeline" });
+      void handleLoad(id, { kind: "pipeline" }).then((started) => {
+        if (!started) {
+          setQuant(prevQuant);
+          quantRevert.current = null;
+        }
+      });
     },
     [busy, handleLoad, quant],
   );

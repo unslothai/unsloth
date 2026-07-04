@@ -217,8 +217,11 @@ _remove_path "$HOME/.unsloth/studio"
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 # Default-mode native diffusion (stable-diffusion.cpp / sd-cli) build, a sibling of
-# studio like llama.cpp (install_sd_cpp_prebuilt.default_install_dir()). No-op in
-# env/custom mode and when absent. A user-set UNSLOTH_SD_CPP_PATH is kept.
+# studio like llama.cpp (install_sd_cpp_prebuilt.default_install_dir()). Only the default
+# location is removed. In env/custom mode the install is <custom root>.parent/
+# stable-diffusion.cpp, which is intentionally left in place: sd.cpp writes no owner
+# marker and sits in the user's own parent dir, so auto-deleting it could destroy a
+# user-managed stable-diffusion.cpp clone. A user-set UNSLOTH_SD_CPP_PATH is kept.
 _remove_path "$HOME/.unsloth/stable-diffusion.cpp"
 _remove_path "$HOME/.unsloth/.cache"
 # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
