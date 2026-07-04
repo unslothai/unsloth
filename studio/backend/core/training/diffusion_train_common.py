@@ -651,6 +651,17 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     for k, v in config.items():
         if k in valid:
             kwargs[k] = v
+    # Epoch-mode payloads from the generic Studio UI carry max_steps: 0 as the "use epochs"
+    # sentinel, which the max_steps -> train_steps alias copies as train_steps: 0. Since
+    # normalized() rejects train_steps < 1 before resolve_train_steps() can apply num_epochs,
+    # drop a falsy/0 train_steps when num_epochs > 0 so the dataclass default stands in until
+    # epoch resolution replaces it.
+    try:
+        _num_epochs = int(kwargs.get("num_epochs") or 0)
+    except (TypeError, ValueError):
+        _num_epochs = 0
+    if _num_epochs > 0 and not kwargs.get("train_steps"):
+        kwargs.pop("train_steps", None)
     if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
     if "gradient_checkpointing" in kwargs:

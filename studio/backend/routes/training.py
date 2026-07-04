@@ -80,6 +80,7 @@ from models.training import (
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ValidationError
 
 
 class TrainingStopRequest(PydanticBaseModel):
@@ -1285,9 +1286,17 @@ async def list_diffusion_training_runs(
     """Previous diffusion training runs (terminal), newest first, from the persisted
     per-run records. Summaries only; fetch one run for its config + metric logs."""
     from core.training.diffusion_training_service import list_diffusion_runs
-    return DiffusionTrainingRunsResponse(
-        runs = [DiffusionTrainingRunSummary(**r) for r in list_diffusion_runs(limit = limit)]
-    )
+
+    summaries: list[DiffusionTrainingRunSummary] = []
+    for r in list_diffusion_runs(limit = limit):
+        # list_diffusion_runs already skips non-dict / missing-id records, but a record with
+        # a wrong-typed field (e.g. a non-numeric avg_loss) would still raise here; catch it
+        # per record so one bad file never breaks the whole Previous runs panel.
+        try:
+            summaries.append(DiffusionTrainingRunSummary(**r))
+        except ValidationError:
+            continue
+    return DiffusionTrainingRunsResponse(runs = summaries)
 
 
 @router.get("/diffusion/runs/{job_id}", response_model = DiffusionTrainingRunDetail)
