@@ -1786,19 +1786,44 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
     return calls
 
 
-def test_default_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch):
-    # With no transformer_quant flag the GGUF path is taken and the dense gate is
-    # never even consulted (short-circuit), so the default cannot regress.
+def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, monkeypatch):
+    # UNSET Dtype defaults to the hardware ladder: the dense gate IS consulted, and a
+    # device without dense support (this fake runtime) falls back to the GGUF build.
+    from core.inference import diffusion as dmod
+
+    consulted = {"n": 0}
+
+    def _supported(*a, **k):
+        consulted["n"] += 1
+        return False
+
+    monkeypatch.setattr(dmod, "dense_transformer_supported", _supported)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert consulted["n"] >= 1
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
+
+
+def test_explicit_off_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch):
+    # An EXPLICIT "none" pins running the GGUF as-is: the dense gate is never even
+    # consulted (short-circuit), so the pinned-off contract cannot regress.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
         dmod,
         "dense_transformer_supported",
-        lambda *a, **k: pytest.fail("dense path must not run without the flag"),
+        lambda *a, **k: pytest.fail("dense path must not run with an explicit off"),
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "none",
+    )
     assert status["transformer_quant"] is None
     assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
 
@@ -2025,8 +2050,10 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is True
-    # No quant requested -> never widen.
-    assert backend._dense_quant_prefetch_needed(fam, {}) is False
+    # UNSET defaults to the hardware ladder (Dtype default-auto) -> widens too.
+    assert backend._dense_quant_prefetch_needed(fam, {}) is True
+    # An explicit off pins running the GGUF as-is -> never widen.
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "none"}) is False
     # A resolvable pre-quantized checkpoint shortcuts the dense download.
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False

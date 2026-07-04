@@ -1750,14 +1750,15 @@ class DiffusionLoadRequest(BaseModel):
         "memory-vs-quality tradeoff (shifts fine detail), not free; "
         "pairs well with balanced mode.",
     )
-    transformer_quant: Optional[Literal["auto", "int8", "fp8", "nvfp4", "mxfp8"]] = Field(
+    transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = Field(
         None,
-        description = "Opt-in fast transformer: load the DENSE bf16 transformer instead "
-        "of the GGUF and torchao-quantise it onto the low-precision tensor "
-        "cores (faster than GGUF's bf16-rate dequant, at higher VRAM). auto "
-        "picks the best for the GPU (Blackwell nvfp4/mxfp8, Ada/Hopper fp8, "
-        "Ampere int8); an explicit scheme forces it. Needs CUDA + bf16 + room "
-        "for the dense load; falls back to GGUF otherwise.",
+        description = "Transformer compute dtype. UNSET or auto (the default) picks the "
+        "fastest precision the hardware supports: the DENSE bf16 transformer "
+        "is loaded instead of the GGUF and torchao-quantised onto the "
+        "low-precision tensor cores (data-center fp8, consumer/Ampere int8), "
+        "falling back to the GGUF when the device, VRAM or disk cannot take "
+        "it. none/off pins running the GGUF as-is; an explicit scheme forces "
+        "that scheme. Dense path needs CUDA + bf16.",
     )
     transformer_quant_fast_accum: Optional[bool] = Field(
         None,
