@@ -279,7 +279,13 @@ def _apply_fp8_training(transformer, on_event) -> bool:
 
 
 def _pick_auto_precision(
-    prequant, device, free_gb, dense_gb, capability, has_fp8, has_torchao = True
+    prequant,
+    device,
+    free_gb,
+    dense_gb,
+    capability,
+    has_fp8,
+    has_torchao = True,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the
     fastest dense mode whose weights + headroom (activations, optimizer, cache) fit the
