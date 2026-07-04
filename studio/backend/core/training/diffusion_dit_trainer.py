@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     EventCb,
     StopCb,
@@ -56,6 +57,20 @@ _FLUX_TARGETS = (
 )
 _QWEN_TARGETS = _FLUX_TARGETS
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
+
+
+def _select_lora_targets(
+    cfg_targets: tuple[str, ...], spec_targets: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Pick the LoRA target modules for a DiT run.
+
+    ``normalized()`` always fills ``lora_target_modules`` with the generic
+    ``DEFAULT_LORA_TARGETS`` when a caller does not set it, so that value means "unset"
+    here: prefer the family's ``spec.lora_targets`` (which add the DiT-specific
+    projections). Any OTHER explicit tuple is a deliberate override and still wins."""
+    if tuple(cfg_targets) == DEFAULT_LORA_TARGETS:
+        return tuple(spec_targets)
+    return tuple(cfg_targets)
 
 
 @dataclass
@@ -513,7 +528,7 @@ def run_dit_lora_training(
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, which is
     # unsupported for real runs but keeps import/unit tests architecture-agnostic).
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    use_lora_targets = tuple(cfg.lora_target_modules) or spec.lora_targets
+    use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
 
     _assert_trusted_base_model(cfg.base_model)
     _assert_gated_access(cfg.base_model, cfg.hf_token)
