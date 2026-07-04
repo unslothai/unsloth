@@ -75,12 +75,17 @@ def _get(model_name: str | None = None):
 
             import os as _os
 
-            _offline = (
-                _os.environ.get("HF_HUB_OFFLINE", "").strip().lower()
-                in {"1", "true", "yes", "on"}
-                or _os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower()
-                in {"1", "true", "yes", "on"}
-            )
+            _offline = _os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            } or _os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
             if _offline:
                 _os.environ["HF_HUB_OFFLINE"] = "1"
                 _os.environ["TRANSFORMERS_OFFLINE"] = "1"

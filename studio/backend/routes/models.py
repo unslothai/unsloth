@@ -1668,12 +1668,12 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
     import os as _os
 
     # Offline: skip HF API call to avoid hanging on DNS/network errors
-    if (
-        _os.environ.get("HF_HUB_OFFLINE", "").strip().lower()
-        in {"1", "true", "yes", "on"}
-        or _os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower()
-        in {"1", "true", "yes", "on"}
-    ):
+    if _os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    } or _os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
         return None
 
     try:

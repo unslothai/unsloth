@@ -461,12 +461,17 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
 def _warm_rag_embedder() -> None:
     """Warm RAG embeddings without blocking backend readiness."""
     try:
-        _offline = (
-            os.environ.get("HF_HUB_OFFLINE", "").strip().lower()
-            in {"1", "true", "yes", "on"}
-            or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
+        _offline = os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        } or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         if _offline:
             return
         from storage import rag_db
