@@ -197,6 +197,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
     },
+    "minimax": {
+        "display_name": "MiniMax",
+        "base_url": "https://api.minimax.io/v1",
+        "default_models": [
+            "MiniMax-M3",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "OpenAI-compatible API. API key from platform.minimax.io. MiniMax-M3 has a 1M-token context window and image input.",
+    },
     "huggingface": {
         "display_name": "Hugging Face",
         "base_url": "https://router.huggingface.co/v1",

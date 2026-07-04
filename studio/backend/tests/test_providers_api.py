@@ -56,6 +56,7 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "huggingface": ("HUGGINGFACE_API_KEY", "meta-llama/Llama-3.3-70B-Instruct"),
     "kimi": ("MOONSHOT_API_KEY", "moonshot-v1-8k"),
     "qwen": ("DASHSCOPE_API_KEY", "qwen-turbo"),
+    "minimax": ("MINIMAX_API_KEY", "MiniMax-M3"),
 }
 
 PROVIDER_KEYS: dict[str, str] = {
@@ -243,7 +244,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 9, f"Expected 9 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 10, f"Expected 10 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
