@@ -6900,11 +6900,21 @@ async def openai_chat_completions(
     )
     if _sf_client_tools:
         # Re-derive from payload.messages so assistant.tool_calls and role="tool"
-        # history survive templating (_extract_content_parts drops them). The
-        # system message rides inside the list, so clear the separate prompt.
-        gen_kwargs["messages"] = _openai_messages_for_passthrough(payload)
+        # history survive templating (_extract_content_parts drops them). Fold
+        # system/developer turns into one leading system message (the extracted
+        # system_prompt already collects both) -- local templates reject the
+        # OpenAI "developer" role and the fallback formatter drops it -- then
+        # clear the separate prompt so the worker does not prepend a duplicate.
+        gen_kwargs["messages"] = _set_or_prepend_system_message(
+            _openai_messages_for_passthrough(payload), system_prompt
+        )
         gen_kwargs["system_prompt"] = ""
-        gen_kwargs["tools"] = payload.tools
+        # tool_choice="none" forces a final-answer turn: keep the tool-history
+        # templating but do not advertise the tools, otherwise the model is
+        # prompted to emit tool markup that heal_gate (correctly off for
+        # "none") then relays as ordinary content. Mirrors the GGUF passthrough,
+        # where llama-server receives and honors tool_choice itself.
+        gen_kwargs["tools"] = None if payload.tool_choice == "none" else payload.tools
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
@@ -7082,14 +7092,20 @@ async def openai_chat_completions(
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {"choices": [{"message": {"role": "assistant", "content": full_text}}]}
                     if nudge_should_retry(_data, _sf_heal, payload.tools):
-                        retry_text = ""
-                        for token in generate(
-                            [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
-                        ):
-                            retry_text = token
-                        retry_msg = {"role": "assistant", "content": retry_text}
-                        if heal_openai_message(retry_msg, _sf_heal, payload.tools):
-                            full_text, _msg, _finish = retry_text, retry_msg, "tool_calls"
+                        # The original answer is already in hand: a retry that
+                        # fails or is cancelled must not turn the request into a
+                        # 500 (the GGUF nudge path keeps the first response too).
+                        try:
+                            retry_text = ""
+                            for token in generate(
+                                [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
+                            ):
+                                retry_text = token
+                            retry_msg = {"role": "assistant", "content": retry_text}
+                            if heal_openai_message(retry_msg, _sf_heal, payload.tools):
+                                full_text, _msg, _finish = retry_text, retry_msg, "tool_calls"
+                        except Exception as retry_exc:
+                            logger.debug("Nudge retry failed; keeping first response: %s", retry_exc)
                 # Honor parallel_tool_calls=false (best-effort) by capping to one
                 # call, matching the GGUF passthrough (covers the nudge retry too).
                 if payload.parallel_tool_calls is False:
@@ -7111,7 +7127,18 @@ async def openai_chat_completions(
                     )
                 ],
             )
-            api_monitor.set_reply(monitor_id, full_text)
+            _monitor_reply = full_text
+            if _finish == "tool_calls":
+                _tcs = _msg.get("tool_calls") or []
+                _calls_text = "; ".join(
+                    f"{(tc.get('function') or {}).get('name', '')}"
+                    f"({(tc.get('function') or {}).get('arguments', '')})"
+                    for tc in _tcs
+                )
+                _monitor_reply = (_msg.get("content") or "") + (
+                    f"[tool_calls] {_calls_text}" if _calls_text else ""
+                )
+            api_monitor.set_reply(monitor_id, _monitor_reply)
             _stats = stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))

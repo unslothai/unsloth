@@ -511,3 +511,68 @@ def test_mlx_uses_same_path(monkeypatch):
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
     assert body["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
+    # tool_choice="none" forces a final-answer turn: the template must NOT be
+    # prompted with the tools (heal_gate is off, so any emitted markup would
+    # relay as prose). History templating still applies.
+    backend = _ScriptedBackend(_fixed("plain answer"))
+    payload = _request(tools = [LOOKUP_TOOL], tool_choice = "none", stream = False)
+    body = _json_body(_call(payload, monkeypatch, backend))
+    assert body["choices"][0]["message"]["content"] == "plain answer"
+    assert backend.calls[0]["tools"] is None
+
+
+def test_developer_message_folded_into_system_prompt(monkeypatch):
+    # The OpenAI "developer" role must not reach local templating verbatim
+    # (templates reject it / the fallback formatter drops it); it folds into a
+    # single leading system message.
+    backend = _ScriptedBackend(_fixed("ok"))
+    payload = _request(
+        messages = [
+            ChatMessage(role = "developer", content = "always be terse"),
+            ChatMessage(role = "user", content = "hi"),
+        ],
+        tools = [LOOKUP_TOOL],
+        stream = False,
+    )
+    _call(payload, monkeypatch, backend)
+    sent = backend.calls[0]["messages"]
+    assert sent[0]["role"] == "system"
+    assert "always be terse" in sent[0]["content"]
+    assert all(m.get("role") != "developer" for m in sent)
+
+
+def test_failed_nudge_retry_keeps_original_response(monkeypatch):
+    # A retry that raises after the original answer exists must not become a
+    # 500; the first response is returned (GGUF nudge parity).
+    state = {"n": 0}
+
+    def responder(messages, tools):
+        state["n"] += 1
+        if state["n"] == 1:
+            return ['<tool_call>{"name":"lookup"']  # unhealable signal
+        raise RuntimeError("retry blew up")
+
+    backend = _ScriptedBackend(responder)
+    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    body = _json_body(_call(payload, monkeypatch, backend))
+    assert state["n"] == 2
+    assert body["choices"][0]["finish_reason"] == "stop"
+    assert body["choices"][0]["message"]["content"] == '<tool_call>{"name":"lookup"'
+
+
+def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    asyncio.run(_run())
+    snap = monitor.snapshot(include_details = True)
+    replies = json.dumps(snap)
+    assert "<tool_call>" not in replies
+    assert "lookup" in replies
