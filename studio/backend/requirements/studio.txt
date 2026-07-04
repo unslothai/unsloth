@@ -22,6 +22,11 @@ fastmcp>=3.0.2
 # the gguf reader. diffusers itself is torch-bound and comes via the ML stack;
 # gguf is torch-free so it lives here, where it's installed in every mode.
 gguf
+# Local video generation (Video page): MP4 encode (H.264 + AAC mux for LTX-2's
+# synchronized audio) runs through PyAV, which bundles its own ffmpeg libs. The
+# video load path fails fast with a clear error when this is missing, so keep it
+# in the base studio set rather than an extra.
+av>=12.0.0
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
 sqlite-vec==0.1.9
