@@ -806,10 +806,15 @@ class DiffusionBackend:
         return total, base_files
 
     @staticmethod
-    def _cache_bytes(repo_id: str) -> int:
+    def _hub_cache_repo_dir(repo_id: str) -> Path:
+        """The local HF hub cache dir for ``repo_id`` (``.../models--org--name``)."""
         from huggingface_hub import constants
 
-        blobs = Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "blobs"
+        return Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}"
+
+    @staticmethod
+    def _cache_bytes(repo_id: str) -> int:
+        blobs = DiffusionBackend._hub_cache_repo_dir(repo_id) / "blobs"
         total = 0
         try:
             for entry in blobs.iterdir():
@@ -861,9 +866,7 @@ class DiffusionBackend:
         local = Path(base).expanduser()
         if local.is_dir():
             return DiffusionBackend._local_dir_weight_bytes(local, exclude_transformer = True)
-        from huggingface_hub import constants
-
-        snapshots = Path(constants.HF_HUB_CACHE) / f"models--{base.replace('/', '--')}" / "snapshots"
+        snapshots = DiffusionBackend._hub_cache_repo_dir(base) / "snapshots"
         if not snapshots.is_dir():
             return 0
         # Multiple revisions may be cached; the active one is the fullest, so take the max.
