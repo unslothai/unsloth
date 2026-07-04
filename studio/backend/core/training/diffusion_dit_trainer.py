@@ -278,7 +278,9 @@ def _apply_fp8_training(transformer, on_event) -> bool:
         return False
 
 
-def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp8) -> str:
+def _pick_auto_precision(
+    prequant, device, free_gb, dense_gb, capability, has_fp8, has_torchao = True
+) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the
     fastest dense mode whose weights + headroom (activations, optimizer, cache) fit the
     free VRAM at decision time. bf16 + regional compile is the measured speed winner
@@ -287,16 +289,18 @@ def _pick_auto_precision(prequant, device, free_gb, dense_gb, capability, has_fp
     the same hardware. int8 must still materialise the full bf16 transformer before
     ``quantize_`` shrinks it module-by-module, so its band requires the dense-load
     transient (1.15x dense) to fit -- what int8 buys in that band is steady-state
-    headroom for activations and the latent cache, not load-time memory.
-    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
-    generation without changing callers."""
+    headroom for activations and the latent cache, not load-time memory. int8 also needs
+    torchao at runtime (``_int8_quantize_base`` has no fallback, unlike fp8), so auto only
+    picks it when torchao is importable and drops to nf4 otherwise. ``capability``/``has_fp8``
+    remain parameters so the policy can be revisited per GPU generation without changing
+    callers."""
     _ = capability, has_fp8
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
     if free_gb > dense_gb * 1.5:
         return "bf16"
     if free_gb > dense_gb * 1.15:
-        return "int8"
+        return "int8" if has_torchao else "nf4"
     return "nf4"
 
 
@@ -323,6 +327,11 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     free_gb = None
     capability = None
     has_fp8 = False
+    # int8 quantization has no runtime fallback, so gate the auto pick on torchao being
+    # importable (find_spec avoids the cost/side-effects of an actual import).
+    import importlib.util
+
+    has_torchao = importlib.util.find_spec("torchao") is not None
     if device == "cuda":
         try:
             import torch
@@ -332,7 +341,9 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             has_fp8 = hasattr(torch, "float8_e4m3fn")
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
-    return _pick_auto_precision(prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8)
+    return _pick_auto_precision(
+        prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8, has_torchao
+    )
 
 
 # ── FLUX.1-dev ────────────────────────────────────────────────────────────────
