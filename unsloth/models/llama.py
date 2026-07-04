@@ -3117,7 +3117,7 @@ class FastLlamaModel:
                     "MiCA is not yet in a released version. Install from source:\n"
                     "`pip install git+https://github.com/huggingface/peft.git`"
                 )
-            if hasattr(model.config, "quantization_config"):
+            if getattr(model.config, "quantization_config", None) is not None:
                 raise ValueError(
                     "Unsloth: You are using `mica` init, yet your model is quantized (e.g. `load_in_4bit = True`).\n"
                     "MiCA runs SVD on the base weights and requires fp32/fp16/bf16 — PEFT will refuse quantized weights.\n"
