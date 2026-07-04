@@ -535,9 +535,7 @@ def _glm_value_close(
                         continue
                     if ch == quote:
                         quote = ""
-                elif ch in "\"'" and (
-                    prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())
-                ):
+                elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
                     quote = ch
                 if not ch.isspace():
                     prev = ch

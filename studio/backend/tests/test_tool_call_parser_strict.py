@@ -1368,21 +1368,14 @@ class TestGlmStrictAcceptsApostrophes:
 class TestDisabledGemmaCallLiteralsAreData:
     def test_literal_inside_disabled_call_not_promoted(self):
         text = 'call:foo{query:"<function=python><parameter=code>x</parameter></function>"}'
-        assert (
-            parse_tool_calls_from_text(
-                text, enabled_tool_names = {"python", "web_search"}
-            )
-            == []
-        )
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"}) == []
 
     def test_real_call_after_disabled_example_still_parses(self):
         text = (
             'call:foo{query:"<function=python><parameter=code>x</parameter></function>"}'
             " call:web_search{query:hi}"
         )
-        calls = parse_tool_calls_from_text(
-            text, enabled_tool_names = {"python", "web_search"}
-        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
