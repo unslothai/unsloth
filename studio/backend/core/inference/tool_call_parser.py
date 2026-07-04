@@ -487,7 +487,12 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
-def _glm_value_close(text: str, vs: int, *, strict: bool = False) -> int:
+def _glm_value_close(
+    text: str,
+    vs: int,
+    *,
+    strict: bool = False,
+) -> int:
     """Index of the ``</arg_value>`` that really ends the GLM value beginning at
     ``vs``: the first one whose next non-space token is ``<arg_key>``, ``</tool_call>``
     or end-of-text. A literal ``</arg_value>`` inside the value (e.g.
