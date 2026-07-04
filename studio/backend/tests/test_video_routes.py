@@ -101,7 +101,8 @@ class _FakeBackend:
             "base_repo": kwargs.get("base_repo") or "Lightricks/LTX-2",
             "device": "cpu",
             "dtype": "float32",
-            "model_kind": kwargs.get("model_kind") or ("gguf" if kwargs.get("gguf_filename") else "pipeline"),
+            "model_kind": kwargs.get("model_kind")
+            or ("gguf" if kwargs.get("gguf_filename") else "pipeline"),
             "memory_mode": kwargs.get("memory_mode") or "auto",
             "has_audio": True,
             "defaults": _defaults(),
@@ -115,7 +116,13 @@ class _FakeBackend:
             "error": None,
         }
 
-    def generate(self, *, prompt, seed = None, **kwargs):
+    def generate(
+        self,
+        *,
+        prompt,
+        seed = None,
+        **kwargs,
+    ):
         if not self.loaded:
             raise RuntimeError(VIDEO_NOT_LOADED_MSG)
         return {
@@ -297,7 +304,9 @@ def test_generate_happy_path_persists_and_returns_record(client):
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
-    gen = client.post("/api/inference/video/generate", json = {"prompt": "a sloth surfing", "seed": 7})
+    gen = client.post(
+        "/api/inference/video/generate", json = {"prompt": "a sloth surfing", "seed": 7}
+    )
     assert gen.status_code == 200
     video = gen.json()["video"]
     assert video["seed"] == 7 and video["prompt"] == "a sloth surfing" and video["id"]

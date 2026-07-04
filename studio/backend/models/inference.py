@@ -2461,7 +2461,9 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
-    frame_step: int = Field(..., description = "Temporal lattice: valid counts are k * frame_step + 1")
+    frame_step: int = Field(
+        ..., description = "Temporal lattice: valid counts are k * frame_step + 1"
+    )
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
         default_factory = list, description = "(width, height) presets the UI offers, default first"

@@ -85,7 +85,6 @@ def test_excluded_model_reason_none_for_supported_and_unknown():
 
 def test_validate_load_request_surfaces_exclusion_reason():
     from core.inference.diffusion import DiffusionBackend
-
     backend = DiffusionBackend()
     with pytest.raises(ValueError, match = "trust_remote_code"):
         backend.validate_load_request("tencent/HunyuanImage-3.0")
