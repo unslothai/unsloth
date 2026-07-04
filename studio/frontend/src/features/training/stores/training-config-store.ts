@@ -361,6 +361,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         _modelConfigController?.abort();
         const controller = new AbortController();
         _modelConfigController = controller;
+        _trainOnCompletionsManuallySet = false;
+        _learningRateManuallySet = false;
+        _trainingMethodManuallySet = false;
+        _yamlLearningRate = undefined;
         set({
           isLoadingModelDefaults: true,
           isCheckingVision: true,
@@ -372,10 +376,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (get().selectedModel !== modelName) return;
 
-            _trainOnCompletionsManuallySet = false;
-            _learningRateManuallySet = false;
-            _trainingMethodManuallySet = false;
-            _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
             const contextLengthManuallySet = get().contextLengthManuallySet;
             const effectiveContextLength = contextLengthManuallySet
