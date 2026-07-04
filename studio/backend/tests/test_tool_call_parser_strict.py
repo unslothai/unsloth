@@ -641,16 +641,13 @@ class TestBareJsonOuterOverXmlLiteral:
         assert args["code"] == "run() # <function=terminal>ls</function>"
 
     def test_bare_json_outer_unrestricted_mode(self):
-        text = (
-            '{"name": "python", "parameters": '
-            '{"code": "<function=terminal>ls</function>"}}'
-        )
+        text = '{"name": "python", "parameters": {"code": "<function=terminal>ls</function>"}}'
         calls = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in calls] == ["python"]
 
     def test_xml_before_json_keeps_xml_order(self):
         text = (
-            '<function=web_search><parameter=query>cats</parameter></function>'
+            "<function=web_search><parameter=query>cats</parameter></function>"
             ' {"name": "python", "arguments": {"code": "x"}}'
         )
         calls = parse_tool_calls_from_text(text)
