@@ -1667,12 +1667,12 @@ def _parse_gemma_tool_calls(
     # strict (Auto-Heal off) and nested-marker handling -- is owned by the
     # shared tool_healing parser, which runs before this fallback. Only the
     # wrapper-less ``call:NAME{...}`` stream (special tokens stripped) is left
-    # for us, so defer content carrying an actual wrapped opener or ``<|"|>``
-    # markers. The wrapper LITERAL alone is not enough: a wrapper-less call
-    # whose argument merely mentions ``<|tool_call>`` (a query about Gemma's
-    # own syntax) has nothing tool_healing can parse, and deferring it would
-    # lose the call entirely.
-    if _GEMMA_TC_RE.search(content) or _GEMMA_STR_BEGIN in content:
+    # for us, so defer content carrying an actual wrapped opener. Marker
+    # LITERALS alone are not enough: a wrapper-less call whose argument merely
+    # mentions ``<|tool_call>`` or ``<|"|>`` (a query about Gemma's own
+    # syntax) has nothing tool_healing can parse, and deferring it would lose
+    # the call entirely.
+    if _GEMMA_TC_RE.search(content):
         return out
     # A whole-content JSON value is a structured ANSWER: a quoted example of
     # an enabled tool's syntax inside it must not become a real call.
@@ -1756,15 +1756,19 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
     ``_gemma_parse_stripped_body`` so the boundary always agrees with the body
     parser and a quoted ``}`` can never truncate the executed arguments.
 
-    A quote opens a string only at value-start context (right after ``:``,
-    ``{``, ``[``, ``(``, ``,`` or ``=``): an apostrophe inside an unquoted
-    value (``query:what's the weather``) is prose, and treating it as an
-    opener would swallow the real closing brace and lose the whole call."""
+    A single quote opens a string only at value-start context (right after
+    ``:``, ``{``, ``[``, ``(``, ``,`` or ``=``): an apostrophe inside an
+    unquoted value (``query:what's the weather``) is prose, and treating it
+    as an opener would swallow the real closing brace and lose the whole
+    call. A double quote also opens at the start of a word (after
+    whitespace), so a quoted phrase mid-value (``query:find "a, b"``) hides
+    its delimiters instead of splitting the value."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
     depth = 0
     quote = ""
     prev = ""
+    prev_raw = ""
     i = brace_pos
     n = len(text)
     while i < n:
@@ -1775,7 +1779,9 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
                 continue
             if ch == quote:
                 quote = ""
-        elif ch in "\"'" and prev in ":{[(,=":
+        elif ch in "\"'" and (
+            prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())
+        ):
             quote = ch
         elif ch == "{":
             depth += 1
@@ -1785,6 +1791,7 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
                 return i
         if not ch.isspace():
             prev = ch
+        prev_raw = ch
         i += 1
     return None
 
@@ -2043,11 +2050,12 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
         vstart = i
         depth = 0
         quote = ""
-        # Quote openers only at value-start context (mirrors
-        # _gemma_body_brace_end): an apostrophe inside an unquoted value
-        # (``query:what's up, n:3``) is prose, not a string opener that would
-        # swallow the next ``, key:`` boundary.
+        # Quote openers mirror _gemma_body_brace_end: a single quote only at
+        # value-start context (an apostrophe in ``query:what's up, n:3`` is
+        # prose), a double quote also at the start of a word so a quoted
+        # phrase mid-value (``query:find "a, b", n:3``) hides its delimiters.
         prev = ":"
+        prev_raw = ":"
         while i < n:
             ch = body[i]
             if quote:
@@ -2059,7 +2067,9 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
                     continue
                 if ch == quote:
                     quote = ""
-            elif ch in "\"'" and prev in ":{[(,=":
+            elif ch in "\"'" and (
+                prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())
+            ):
                 quote = ch
             elif ch in "{[(":
                 depth += 1
@@ -2070,6 +2080,7 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
                 break
             if not ch.isspace():
                 prev = ch
+            prev_raw = ch
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":

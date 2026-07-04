@@ -1300,3 +1300,27 @@ class TestGemmaQuotedNestedDelimiters:
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"loc": {"city": "New, York"}, "n": 1}
+
+
+class TestGemmaStringMarkerLiteralInArgs:
+    def test_string_marker_literal_does_not_lose_the_call(self):
+        text = "call:web_search{query:'what does <|\"|> mean in Gemma'}"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == 'what does <|"|> mean in Gemma'
+
+
+class TestGemmaMidValueQuotedPhrase:
+    def test_quoted_phrase_mid_value_hides_delimiters(self):
+        text = 'call:web_search{query:find "weather, location: Boston", limit:3}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"query": 'find "weather, location: Boston"', "limit": 3}
+
+    def test_apostrophes_still_prose_mid_value(self):
+        text = "call:web_search{query:what's on at the museum, n:2}"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"query": "what's on at the museum", "n": 2}
