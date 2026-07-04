@@ -433,7 +433,7 @@ def test_fp8_config_uses_per_row_granularity():
 
 
 def test_quantize_transformer_applies_and_marks(monkeypatch):
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode: TQ_FP8)
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8)
     seen: dict = {}
 
     def _mk(scheme, fast_accum = None):
@@ -458,13 +458,13 @@ def test_quantize_transformer_applies_and_marks(monkeypatch):
 
 
 def test_quantize_transformer_none_when_unsupported(monkeypatch):
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode: None)
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode, family = None: None)
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert quantize_transformer(pipe, _target(), mode = "auto") is None
 
 
 def test_quantize_transformer_tolerates_failure(monkeypatch):
-    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode: TQ_INT8)
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_INT8)
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: "cfg")
     tqz = types.ModuleType("torchao.quantization")
 
@@ -480,3 +480,59 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     # A quantise failure returns None (caller falls back to GGUF), never raises.
     assert quantize_transformer(pipe, _target(), mode = "int8") is None
+
+
+# ── family scheme deny (measured model-level breakage) ────────────────────────
+
+
+def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
+    # B200 with every scheme available: auto must NOT pick fp8 / nvfp4 / mxfp8 for the
+    # Qwen DiT (per-row fp8 renders black frames on it; see _FAMILY_SCHEME_DENY) and
+    # falls through the ladder to int8, which measures excellent on Qwen.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit")
+        == TQ_INT8
+    )
+
+
+def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
+    # An explicit fp8 request on qwen-image returns None (same contract as an
+    # unsupported scheme: the caller builds the GGUF pipeline instead). int8 stays
+    # honored on qwen, and fp8 stays honored on families outside the deny table.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "fp8", family = "qwen-image") is None
+    assert select_transformer_quant_scheme(_target(), "int8", family = "qwen-image") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "fp8", family = "z-image") == TQ_FP8
+
+
+def test_family_deny_no_family_keeps_ladder(monkeypatch):
+    # Without a family (or an unknown one) the ladder is unchanged: fp8 first on B200.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "sdxl") == TQ_FP8
+
+
+def test_quantize_transformer_threads_family(monkeypatch):
+    # quantize_transformer passes the family down to the selector, so a denied
+    # (family, scheme) pair never reaches torchao.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    called = {}
+    tqz = types.ModuleType("torchao.quantization")
+    def _quantize(module, config, filter_fn = None):
+        called["scheme"] = True
+    tqz.quantize_ = _quantize
+    tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8-cfg"
+    tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
+    tqz.PerRow = lambda: "per-row"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    assert (
+        quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
+    )
+    assert called == {}

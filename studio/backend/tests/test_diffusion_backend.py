@@ -1764,7 +1764,7 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     # Resolve the scheme without the real GPU smoke probe, and configure no pre-quant
     # checkpoint so the dense materialise+quantise branch is the one exercised.
-    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: scheme)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme)
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
     def _quantize(pipe, target, *, mode, **kw):
@@ -1828,7 +1828,7 @@ def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeyp
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8")
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
     prequant_obj = object()
     loaded: dict = {"n": 0}
@@ -1958,7 +1958,7 @@ def test_transformer_quant_unsupported_scheme_skips_dense_download(
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: None)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None)
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
     @classmethod
@@ -2005,7 +2005,7 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     _force_cuda_target(backend, monkeypatch)
     fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8")
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is True
@@ -2016,10 +2016,10 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
     # Unsupported scheme bails before the dense path (and so must the prefetch).
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
-    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: None)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None)
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
     # Device without dense support (e.g. non-CUDA) never widens.
-    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8")
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
 

@@ -101,6 +101,30 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
+# Families whose activation ranges break specific dense-quant schemes at the MODEL
+# level. The kernel smoke probe below cannot see this (it only proves the GEMM runs);
+# these were measured with the 28-pair prequant accuracy gate on a B200
+# (scripts/prequant_accuracy_gate.py) and reproduced with on-the-fly quantisation:
+#   qwen-image + fp8   -> every frame black (mean luma 0.0000, SSIM 0.016 vs bf16). The
+#                         same per-row fp8 that matches bf16 on Z-Image / FLUX: Qwen's
+#                         activation outliers exceed even per-row fp8's dynamic range.
+#   qwen-image + mxfp8 -> real semantic damage at 1024px (CLIP delta mean 0.0146, worst
+#                         cases 0.064 / 0.102 -- 2x the per-case bound).
+#   qwen-image + nvfp4 -> LPIPS mean 0.51 vs bf16: unusable.
+# int8 dynamic (per-token) is excellent on Qwen (LPIPS mean 0.069 / SSIM 0.958), so the
+# auto ladder falls through to it. The deny also applies to an EXPLICIT request: a
+# scheme that renders black frames has no legitimate use, and returning None gives the
+# caller the same fallback contract as an unsupported scheme (GGUF build).
+_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
+    "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
+    "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT + activations
+}
+
+
+def _family_denied(family, scheme: str) -> bool:
+    return scheme in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ())
+
+
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
@@ -201,18 +225,25 @@ def dense_transformer_supported(target: Any) -> bool:
         return False
 
 
-def select_transformer_quant_scheme(target: Any, requested: Optional[str]) -> Optional[str]:
+def select_transformer_quant_scheme(
+    target: Any, requested: Optional[str], family: Optional[str] = None
+) -> Optional[str]:
     """The concrete scheme to apply, or None to fall back to GGUF.
 
     ``auto`` walks the per-arch ladder and returns the first scheme that passes a real
     quantise+matmul smoke test, so on a box where the Blackwell fp4 / mx kernels are
     unavailable it lands on fp8 / int8 with no error. An explicit scheme is honored only
-    if supported (else None -> GGUF), never silently swapped for a different one."""
+    if supported (else None -> GGUF), never silently swapped for a different one.
+    ``family`` additionally applies the measured model-level deny list
+    (``_FAMILY_SCHEME_DENY``): schemes that produce black frames or out-of-bar drift on
+    that family are skipped by ``auto`` and refused when explicit."""
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
     device = str(getattr(target, "device", "cuda"))
     if requested != TQ_AUTO:
+        if _family_denied(family, requested):
+            return None
         return requested if _scheme_supported(requested, device) else None
     cap = _capability()
     if cap is None:
@@ -220,6 +251,8 @@ def select_transformer_quant_scheme(target: Any, requested: Optional[str]) -> Op
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
             for scheme in _prefer_consumer_scheme(schemes, device):
+                if _family_denied(family, scheme):
+                    continue
                 if _scheme_supported(scheme, device):
                     return scheme
             return None
@@ -385,6 +418,7 @@ def quantize_transformer(
     target: Any,
     *,
     mode: Optional[str],
+    family: Optional[str] = None,
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
     fast_accum: Optional[bool] = None,
     logger: Any = None,
@@ -396,7 +430,7 @@ def quantize_transformer(
 
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None
     auto-detects (fast on consumer, precise on data-center), True/False force it."""
-    scheme = select_transformer_quant_scheme(target, mode)
+    scheme = select_transformer_quant_scheme(target, mode, family = family)
     if scheme is None:
         return None
     transformer = getattr(pipe, "transformer", None)
