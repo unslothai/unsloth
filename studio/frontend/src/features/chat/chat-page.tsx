@@ -1699,8 +1699,9 @@ export function ChatPage({
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
       if (
+        selection.loadImmediately ||
         (!hasGgufSource(selection) && !wantManagerDownload) ||
-        selection.isDownloaded
+        (store.loadOnSelection && selection.isDownloaded)
       ) {
         // Detach any staged pick first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
@@ -1792,7 +1793,7 @@ export function ChatPage({
         nativePathToken: selection.nativePathToken,
         isGguf: selection.isGguf,
         isHubRepo: wantManagerDownload || undefined,
-        autoLoad: true,
+        autoLoad: store.loadOnSelection,
       });
       let stagedConfig = selection.config ?? null;
       if (!stagedConfig && hasGgufSource(selection)) {
@@ -1875,6 +1876,7 @@ export function ChatPage({
         expectedBytes?: number;
         isGguf?: boolean;
         config?: PerModelConfig;
+        loadImmediately?: boolean;
       },
     ) => {
       const store = useChatRuntimeStore.getState();
@@ -2078,6 +2080,7 @@ export function ChatPage({
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
           config: meta?.config,
+          loadImmediately: meta?.loadImmediately,
           forceReload: isSameLoadedModel || undefined,
         };
         await stageOrLoad(selection);

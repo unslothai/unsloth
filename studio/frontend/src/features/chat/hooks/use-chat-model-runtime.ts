@@ -77,6 +77,7 @@ export type SelectedModelInput = {
    *  instead of resetting it to the standing preference. */
   keepSpeculative?: boolean;
   config?: PerModelConfig;
+  loadImmediately?: boolean;
 };
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend

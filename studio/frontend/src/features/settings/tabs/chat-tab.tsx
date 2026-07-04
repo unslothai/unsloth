@@ -184,6 +184,10 @@ export function ChatTab() {
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
+  const loadOnSelection = useChatRuntimeStore((state) => state.loadOnSelection);
+  const setLoadOnSelection = useChatRuntimeStore(
+    (state) => state.setLoadOnSelection,
+  );
   const expandQuantizations = useChatRuntimeStore(
     (state) => state.expandQuantizations,
   );
@@ -311,6 +315,22 @@ export function ChatTab() {
       </header>
 
       <SettingsSection title="Select model settings">
+        <SettingsRow
+          label="Load on selection"
+          alignTop={true}
+          description={
+            <span>
+              On: Unsloth auto-picks the best settings and loads it.
+              <br />
+              Off: opens Run settings to customize, then load.
+            </span>
+          }
+        >
+          <Switch
+            checked={loadOnSelection}
+            onCheckedChange={setLoadOnSelection}
+          />
+        </SettingsRow>
         <SettingsRow
           label="Expand quantizations"
           description={

@@ -13,6 +13,12 @@ from jinja2 import TemplateError
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from utils.models.gguf_metadata import read_gguf_chat_template
+from utils.models.model_config import (
+    _extract_quant_label,
+    _is_big_endian_gguf_path,
+    _is_mmproj,
+    _is_mtp_drafter,
+)
 from utils.paths.path_utils import (
     get_cache_path,
     is_local_path,
@@ -124,9 +130,32 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
         if depth >= _GGUF_SCAN_MAX_DEPTH:
             dirs[:] = []
         for name in files:
-            if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
-                found.append(Path(current) / name)
+            if not name.lower().endswith(".gguf") or _is_mmproj(name):
+                continue
+            path = Path(current) / name
+            try:
+                rel = path.relative_to(dir_path).as_posix()
+            except ValueError:
+                rel = name
+            quant = _extract_quant_label(rel)
+            if _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+                continue
+            found.append(path)
     return found
+
+
+def _variant_matches(relative_path: str, needle: str) -> bool:
+    quant = _extract_quant_label(relative_path).lower()
+    if quant == needle:
+        return True
+    prefix = f"{needle}-"
+    if not quant.startswith(prefix):
+        return False
+    suffix = quant[len(prefix):]
+    if not suffix.endswith("bpw"):
+        return False
+    value = suffix[:-3]
+    return bool(value) and value.replace(".", "", 1).isdigit()
 
 
 def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[Path]:
@@ -140,12 +169,16 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
     if needle:
         for path in ggufs:
             try:
-                relative = str(path.relative_to(dir_path)).lower()
+                relative = path.relative_to(dir_path).as_posix()
             except ValueError:
-                relative = path.name.lower()
-            if needle in relative:
+                relative = path.name
+            if _variant_matches(relative, needle):
                 return path
-    return ggufs[0]
+        return None
+    try:
+        return max(ggufs, key = lambda path: path.stat().st_size)
+    except OSError:
+        return ggufs[0]
 
 
 def _chat_template_from_dir(dir_path: Path, gguf_variant: Optional[str] = None) -> Optional[str]:

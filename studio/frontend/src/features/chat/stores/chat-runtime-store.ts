@@ -36,6 +36,7 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
@@ -661,6 +662,7 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  loadOnSelection: boolean;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -778,6 +780,7 @@ type ChatRuntimeStore = {
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
+  setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
@@ -1093,6 +1096,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -1540,6 +1544,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolCallTimeout };
     }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
+  setLoadOnSelection: (loadOnSelection) => {
+    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
+    set({ loadOnSelection });
+  },
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

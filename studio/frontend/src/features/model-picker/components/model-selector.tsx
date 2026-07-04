@@ -529,7 +529,11 @@ function ModelSelectorContent({
             target={configTarget}
             onBack={() => setConfigTarget(null)}
             onRun={(config) =>
-              onSelect(configTarget.id, { ...configTarget.meta, config })
+              onSelect(configTarget.id, {
+                ...configTarget.meta,
+                config,
+                loadImmediately: true,
+              })
             }
             loadedConfig={
               value === configTarget.id &&

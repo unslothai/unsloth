@@ -38,6 +38,7 @@ export interface ModelSelectorChangeMeta {
    *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
   config?: PerModelConfig;
+  loadImmediately?: boolean;
 }
 
 export interface ModelPickTarget {
