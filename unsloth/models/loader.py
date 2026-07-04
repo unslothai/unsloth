@@ -223,6 +223,10 @@ def _maybe_advise_fla_install(model_types):
     global _fla_advised
     if _fla_advised:
         return
+    if model_types is None:
+        return
+    if isinstance(model_types, str):
+        model_types = [model_types]  # a lone string would otherwise iterate chars
     try:
         if not any(
             isinstance(t, str) and t.startswith(FLA_MODEL_TYPE_PREFIXES) for t in model_types
