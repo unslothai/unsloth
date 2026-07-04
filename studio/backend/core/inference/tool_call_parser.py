@@ -454,7 +454,16 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     if end is None:
         return False
     if _top_level_bare_json_name(content[i : end + 1]) is None:
-        return False
+        # Not a call object -- but a NAMELESS leading object that parses as
+        # real JSON (a structured answer) is an envelope for this purpose too:
+        # markup quoted inside its strings is data, and the guard's
+        # decline-then-parse-the-tail path already handles it (the bare-JSON
+        # parser rejects the nameless object, the object is dropped, the tail
+        # is parsed). Non-JSON braced prose keeps the old behaviour.
+        try:
+            json.loads(content[i : end + 1])
+        except ValueError:
+            return False
     first_xml = _first_foreign_tool_signal(content)
     # The Mistral trigger is foreign to a JSON envelope too: the Mistral parser
     # runs before the bare-JSON one, so a "[TOOL_CALLS]..." literal inside the

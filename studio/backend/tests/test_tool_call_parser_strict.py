@@ -787,3 +787,21 @@ class TestGemmaDottedKeyAfterBareValue:
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": "foo", "user.name": "bob"}
+
+
+class TestNamelessLeadingJsonAnswerIsData:
+    """A nameless leading object that parses as real JSON (a structured
+    answer) is an envelope too: markup quoted inside its strings must stay
+    data, while a real call AFTER the answer still parses."""
+
+    def test_xml_literal_inside_json_answer_stays_data(self):
+        text = '{"answer": "use <function=web_search><parameter=query>x</parameter></function>"}'
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+    def test_real_call_after_json_answer_still_parses(self):
+        text = (
+            '{"answer": "docs"} <tool_call>{"name": "web_search", '
+            '"arguments": {"query": "cats"}}</tool_call>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
