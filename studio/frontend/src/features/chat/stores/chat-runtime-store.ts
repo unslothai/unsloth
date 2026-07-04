@@ -42,6 +42,8 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
+export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
+  "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -675,6 +677,9 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
+  /** Persisted, shared by the chat model selector and the Hub page: list only
+   *  models whose size fits this device's memory budget. */
+  fitOnDeviceOnly: boolean;
   /** A local model picked while `loadOnSelection` is off: staged, not loaded.
    *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
@@ -797,6 +802,7 @@ type ChatRuntimeStore = {
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
+  setFitOnDeviceOnly: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
@@ -1117,6 +1123,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1589,6 +1596,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowAllQuantizations: (showAllQuantizations) => {
     saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
     set({ showAllQuantizations });
+  },
+  setFitOnDeviceOnly: (fitOnDeviceOnly) => {
+    saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
+    set({ fitOnDeviceOnly });
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
   stageModel: (selection) => {

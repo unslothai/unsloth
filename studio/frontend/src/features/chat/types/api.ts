@@ -84,7 +84,9 @@ export interface GgufVariantDetail {
   filename: string;
   quant: string;
   size_bytes: number;
+  download_size_bytes?: number;
   downloaded?: boolean;
+  update_available?: boolean;
 }
 
 export interface GgufVariantsResponse {

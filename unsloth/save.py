@@ -205,6 +205,24 @@ COMPRESSED_EXPORT_SCHEMES = {
 }
 
 
+# torchao "portable" quant export: device-agnostic FP8 / INT8, no NVIDIA GPU needed.
+# alias -> (kind, sibling suffix). FP8 saves to safetensors, INT8 to .bin; both load in vLLM.
+TORCHAO_EXPORT_SCHEMES = {
+    "torchao_fp8": ("fp8", "torchao-fp8"),
+    "torchao_int8": ("int8", "torchao-int8"),
+    "portable_fp8": ("fp8", "torchao-fp8"),
+    "portable_int8": ("int8", "torchao-int8"),
+}
+
+
+def _normalize_torchao_method(save_method):
+    """Return (kind, suffix) if `save_method` is a torchao portable FP8/INT8 export, else None."""
+    if not isinstance(save_method, str):
+        return None
+    key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
+    return TORCHAO_EXPORT_SCHEMES.get(key)
+
+
 def _normalize_compressed_method(save_method):
     """Return (scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed
     export, else None (so normal lora / merged_16bit / merged_4bit handling proceeds).
@@ -215,6 +233,9 @@ def _normalize_compressed_method(save_method):
     if not isinstance(save_method, str):
         return None
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
+    # torchao aliases route to the torchao path, so skip them before the "fp8" near-miss check.
+    if key in TORCHAO_EXPORT_SCHEMES:
+        return None
     if key in COMPRESSED_EXPORT_SCHEMES:
         return COMPRESSED_EXPORT_SCHEMES[key]
     if any(tag in key for tag in ("fp8", "fp4", "mxfp", "nvfp", "w4a", "w8a", "int4", "int8")):
@@ -1363,11 +1384,65 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
+# Bound the first-use auto-install so no unvetted release is pulled: not an inflated "0.999.0", nor
+# a crafted higher in-range patch like "0.12.999" from a mirror. Cap to the exact vetted patch and
+# bump deliberately. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7; torch pinned below).
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
+
+# Highest transformers release llm-compressor 0.10.x/0.12.x can run against (its metadata pins
+# transformers<=4.57.6). Models that require a newer-transformers sidecar (e.g. Qwen3.5 needs
+# transformers 5.3.0) cannot be quantized by llm-compressor at all: it imports
+# transformers.modeling_utils.TORCH_INIT_FUNCTIONS, which was removed in transformers 5.x, so the
+# compressed-export subprocess dies with a cryptic ImportError AFTER the expensive 16bit merge.
+# Detect that up front and fail fast with an actionable message. Bump this in lockstep with a
+# llm-compressor release that supports newer transformers.
+_LLM_COMPRESSOR_MAX_TRANSFORMERS = "4.57.6"
+
+
+def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
+    """Return (exceeds, active_version) comparing the active transformers to the llm-compressor ceiling.
+
+    `exceeds` is True only when we can parse both versions and the active transformers is strictly
+    newer than `_LLM_COMPRESSOR_MAX_TRANSFORMERS`. Any parse failure returns False (fail open) so a
+    real quantization attempt still surfaces the underlying error rather than a false positive.
+    """
+    if transformers_version is None:
+        try:
+            import transformers as _tf
+            transformers_version = _tf.__version__
+        except Exception:
+            return False, "unknown"
+    try:
+        from packaging.version import parse as _parse
+
+        # Drop any local build suffix ("4.57.6+abc") so it does not skew the comparison.
+        active = _parse(str(transformers_version).split("+", 1)[0])
+        ceiling = _parse(_LLM_COMPRESSOR_MAX_TRANSFORMERS)
+        return active > ceiling, str(transformers_version)
+    except Exception:
+        return False, str(transformers_version)
+
+
+# A caller (e.g. Unsloth Studio) can enable FP8/FP4 export of newer-transformers models (Qwen3.5,
+# Gemma-4, ...) by provisioning a dedicated llm-compressor-main "shadow" (transformers>=5.9 layered
+# over the existing torch) and pointing us at its sys.path entry via this env var. When set, the
+# quantization subprocess uses it instead of the workspace llm-compressor and the ceiling fail-fast
+# is bypassed.
+_COMPRESSED_QUANTIZE_PYTHONPATH_ENV = "UNSLOTH_COMPRESSED_QUANTIZE_PYTHONPATH"
+
+
+def _compressed_quantize_pythonpath():
+    """Return the llm-compressor-main shadow PYTHONPATH, or None if not set."""
+    pp = os.environ.get(_COMPRESSED_QUANTIZE_PYTHONPATH_ENV, "").strip()
+    return pp or None
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing it on first use for FP8/FP4 export.
 
-    Pins the current torch + transformers so pip does not upgrade them (a plain install pulls
-    transformers>=5 and breaks Unsloth). Returns (oneshot, QuantizationModifier).
+    Installs a version-pinned llm-compressor, pinning the current torch + transformers so pip does
+    not upgrade them. Set UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 to forbid the auto-install.
+    Returns (oneshot, QuantizationModifier).
     """
     try:
         from llmcompressor import oneshot
@@ -1376,9 +1451,24 @@ def install_llm_compressor():
     except Exception:
         pass
 
+    # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
+    if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
+        "0",
+        "",
+        "false",
+        "no",
+    ):
+        raise RuntimeError(
+            "Unsloth: llm-compressor is required for FP8/FP4 compressed export but is not "
+            "installed, and automatic installation is disabled via "
+            "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL. Install it manually with:\n"
+            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
+            "(pin torch and transformers to your current versions to avoid upgrading them)."
+        )
+
     print(
         "Unsloth: Installing llm-compressor for FP8/FP4 export "
-        "(pinning your torch + transformers so they are not upgraded). "
+        f"({_LLM_COMPRESSOR_SPEC}; pinning your torch + transformers so they are not upgraded). "
         "This can take a few minutes..."
     )
     import importlib
@@ -1401,13 +1491,13 @@ def install_llm_compressor():
     import importlib.util
 
     if importlib.util.find_spec("pip") is not None:
-        cmd = [sys.executable, "-m", "pip", "install", "llmcompressor"]
+        cmd = [sys.executable, "-m", "pip", "install", _LLM_COMPRESSOR_SPEC]
     elif shutil.which("uv") is not None:
-        cmd = ["uv", "pip", "install", "--python", sys.executable, "llmcompressor"]
+        cmd = ["uv", "pip", "install", "--python", sys.executable, _LLM_COMPRESSOR_SPEC]
     else:
         raise RuntimeError(
             "Unsloth: cannot install llm-compressor because this environment has neither pip nor "
-            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} llmcompressor\n"
+            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
             "(pin torch and transformers to your current versions to avoid upgrading them)."
         )
     cpath = None
@@ -1421,8 +1511,8 @@ def install_llm_compressor():
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             "Unsloth: Failed to install llm-compressor. Install it manually with:\n"
-            f"    uv pip install --python {sys.executable} llmcompressor\n"
-            f"or, if pip is available:\n    {sys.executable} -m pip install llmcompressor\n"
+            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
+            f"or, if pip is available:\n    {sys.executable} -m pip install '{_LLM_COMPRESSOR_SPEC}'\n"
             "(pin torch and transformers to your current versions to avoid upgrading them).\n"
             f"Underlying error: {e}"
         )
@@ -2001,10 +2091,40 @@ def unsloth_save_pretrained_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = push_to_hub,
+            token = token,
+            is_main_process = is_main_process,
+            # Forward standard save kwargs to the 16bit merge.
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     del arguments["self"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -2085,6 +2205,37 @@ def unsloth_push_to_hub_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = repo_id,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = True,
+            token = token,
+            is_main_process = True,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+            # Forward standard save kwargs to the 16bit merge.
+            use_temp_dir = use_temp_dir,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     arguments["save_directory"] = repo_id
@@ -2092,6 +2243,7 @@ def unsloth_push_to_hub_merged(
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -3790,10 +3942,40 @@ def unsloth_generic_save_pretrained_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = push_to_hub,
+            token = token,
+            is_main_process = is_main_process,
+            # Forward standard save kwargs to the 16bit merge.
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     del arguments["self"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -3874,6 +4056,37 @@ def unsloth_generic_push_to_hub_merged(
             gc.collect()
         return
 
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
+    _torchao = _normalize_torchao_method(save_method)
+    if _torchao is not None:
+        kind, suffix = _torchao
+        _unsloth_save_torchao(
+            model = self,
+            save_directory = repo_id,
+            tokenizer = tokenizer,
+            kind = kind,
+            suffix = suffix,
+            push_to_hub = True,
+            token = token,
+            is_main_process = True,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+            # Forward standard save kwargs to the 16bit merge.
+            use_temp_dir = use_temp_dir,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     arguments["save_directory"] = repo_id
@@ -3881,6 +4094,7 @@ def unsloth_generic_push_to_hub_merged(
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["_compressed"]
+    del arguments["_torchao"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -4092,22 +4306,36 @@ def _unsloth_save_compressed_tensors(
     if not is_main_process:
         return None
 
-    # 1) Install llm-compressor and gate on scheme availability BEFORE merging, so an unsupported
-    #    scheme (e.g. mxfp8) fails fast instead of writing a full 16bit checkpoint first.
-    install_llm_compressor()
-    if not _scheme_is_available(scheme):
-        try:
-            import transformers as _tf
-            tf_ver = _tf.__version__
-        except Exception:
-            tf_ver = "unknown"
-        raise RuntimeError(
-            f"Unsloth: scheme '{scheme}' is not available in your installed "
-            f"compressed-tensors / llm-compressor.\n"
-            f"It requires a newer llm-compressor that needs transformers>=5.9 "
-            f"(you have transformers {tf_ver}).\n"
-            "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
-        )
+    # 1) Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of
+    #    writing a full 16bit checkpoint first. With the llm-compressor-main shadow the subprocess
+    #    validates everything itself, so skip the workspace install / ceiling / scheme checks; without
+    #    it, install the workspace llm-compressor and fail fast past its transformers ceiling.
+    _shadow_pythonpath = _compressed_quantize_pythonpath()
+    if _shadow_pythonpath is None:
+        install_llm_compressor()
+        # llm-compressor cannot run under a newer transformers than its ceiling: the quantization
+        # subprocess would die with a cryptic ImportError (TORCH_INIT_FUNCTIONS) only AFTER the costly
+        # 16bit merge. Detect and fail fast with an actionable message instead.
+        _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
+        if _exceeds:
+            raise RuntimeError(
+                f"Unsloth: FP8/FP4 compressed-tensors export is not available for this model. It runs "
+                f"under transformers {_tf_ver}, but llm-compressor supports transformers "
+                f"<= {_LLM_COMPRESSOR_MAX_TRANSFORMERS}. Export to GGUF or 16-bit instead."
+            )
+        if not _scheme_is_available(scheme):
+            try:
+                import transformers as _tf
+                tf_ver = _tf.__version__
+            except Exception:
+                tf_ver = "unknown"
+            raise RuntimeError(
+                f"Unsloth: scheme '{scheme}' is not available in your installed "
+                f"compressed-tensors / llm-compressor.\n"
+                f"It requires a newer llm-compressor that needs transformers>=5.9 "
+                f"(you have transformers {tf_ver}).\n"
+                "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
+            )
 
     # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
     #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
@@ -4285,8 +4513,15 @@ def _unsloth_save_compressed_tensors(
             env["HF_TOKEN"] = token
             env["HUGGING_FACE_HUB_TOKEN"] = token
 
+        # Clean PYTHONPATH = shadow only. torch still comes from the interpreter's site-packages;
+        # transformers 5.x + llm-compressor main come from the shadow. Dropping the inherited
+        # PYTHONPATH removes any parent transformers sidecar so the shadow's is authoritative.
+        if _shadow_pythonpath is not None:
+            env["PYTHONPATH"] = _shadow_pythonpath
+
         print(
             f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
+            f"{'(llm-compressor-main shadow) ' if _shadow_pythonpath is not None else ''}"
             "(in a separate process)..."
         )
         try:
@@ -4347,6 +4582,255 @@ def _unsloth_save_compressed_tensors(
                 )
         if calib_tmp is not None and os.path.isdir(calib_tmp):
             shutil.rmtree(calib_tmp, ignore_errors = True)
+        if work_tmp is not None:
+            shutil.rmtree(work_tmp, ignore_errors = True)
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+
+def _unsloth_save_torchao(
+    model,
+    save_directory: Union[str, os.PathLike],
+    tokenizer,
+    kind: str,
+    suffix: str,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    **merge_kwargs,
+):
+    """Export a device-agnostic torchao FP8 / INT8 "portable" checkpoint (no NVIDIA GPU needed).
+
+    Merges LoRA to 16bit in a staging dir, then applies torchao weight-only quantization via
+    `TorchAoConfig` into `save_directory + "-" + suffix`. No calibration, subprocess, or CUDA.
+    `kind` is "fp8" (safetensors) or "int8" (.bin; torchao only whitelists float8 for safetensors).
+    """
+    import tempfile
+
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+    if token is None:
+        token = get_token()
+
+    # Only the main process merges, quantizes, and uploads; other ranks return at once.
+    if not is_main_process:
+        return None
+
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        AutoProcessor,
+        TorchAoConfig,
+    )
+    from torchao.quantization import Float8WeightOnlyConfig, Int8WeightOnlyConfig
+
+    if kind == "fp8":
+        quant_type = Float8WeightOnlyConfig()
+        safe_serialization = True
+    elif kind == "int8":
+        quant_type = Int8WeightOnlyConfig()
+        safe_serialization = False  # torchao only supports safetensors for float8 configs
+    else:
+        raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
+
+    # Always merge into an isolated temp staging dir (never save_directory itself), so a co-selected
+    # 16-bit export written to save_directory is not overwritten or deleted; the torchao output is
+    # the sibling "<save_directory>-<suffix>" (or the repo id on a hub push).
+    repo_id, work_tmp, model_dev = None, None, None
+    work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
+    if push_to_hub:
+        repo_id = os.fspath(save_directory)
+        staging = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
+        out_dir = staging + "-" + suffix
+    else:
+        base = os.fspath(save_directory).rstrip("/\\") or os.fspath(save_directory)
+        staging = os.path.join(work_tmp, os.path.basename(base) or "model")
+        out_dir = base + "-" + suffix
+
+    api = None
+    try:
+        if push_to_hub:
+            from huggingface_hub import HfApi
+            api = HfApi(token = token)
+            api.create_repo(
+                repo_id = repo_id,
+                repo_type = "model",
+                private = merge_kwargs.get("private", None),
+                exist_ok = True,
+            )
+
+        # 1) Merge to 16bit at a staging dir (LoRA and base alike). The reload reads default
+        #    weight filenames, so never write variant-named shards here.
+        merge_kwargs.pop("variant", None)
+        print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
+        merge_args = dict(merge_kwargs)
+        merge_args.update(
+            dict(
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = staging,
+                save_method = "merged_16bit",
+                push_to_hub = False,
+                token = token,
+                is_main_process = is_main_process,
+            )
+        )
+        unsloth_generic_save(**merge_args)
+
+        # 2) Detect VLM + trust_remote_code so the right auto class reloads the staged checkpoint.
+        #    A bare *ForConditionalGeneration also matches text seq2seq (T5/BART/Whisper), so key off
+        #    vision_config / a vision-named architecture only, like the compressed path.
+        is_vlm = False
+        trust_remote_code = False
+        if hasattr(model, "config"):
+            archs = getattr(model.config, "architectures", None) or []
+            is_vlm = hasattr(model.config, "vision_config") or any(
+                x.endswith("ForVisionText2Text") for x in archs
+            )
+            trust_remote_code = bool(getattr(model.config, "auto_map", None))
+        # Custom code can be declared only in the tokenizer/processor config, so also honor an
+        # auto_map in any staged config (the original load already had the user's consent).
+        if not trust_remote_code:
+            for _cfg in (
+                "config.json",
+                "tokenizer_config.json",
+                "processor_config.json",
+                "preprocessor_config.json",
+            ):
+                try:
+                    _p = os.path.join(staging, _cfg)
+                    if os.path.exists(_p):
+                        with open(_p, "r", encoding = "utf-8") as _f:
+                            if "auto_map" in json.load(_f):
+                                trust_remote_code = True
+                                break
+                except Exception:
+                    pass
+        # Reload with the class that matches the checkpoint: an image-text VLM class (with a
+        # fallback for older Transformers that lack AutoModelForImageTextToText); the model's own
+        # architecture class for encoder-decoder seq2seq (T5/BART/Whisper are not causal LMs, and
+        # AutoModelForCausalLM would fail to load them); otherwise causal-LM.
+        if is_vlm:
+            try:
+                from transformers import AutoModelForImageTextToText as _reload_model
+            except ImportError:
+                from transformers import AutoModelForVision2Seq as _reload_model
+            auto_model = _reload_model
+        elif getattr(getattr(model, "config", None), "is_encoder_decoder", False):
+            import transformers as _tf
+            auto_model = next(
+                (
+                    getattr(_tf, _arch)
+                    for _arch in (getattr(model.config, "architectures", None) or [])
+                    if getattr(_tf, _arch, None) is not None
+                ),
+                AutoModelForCausalLM,
+            )
+        else:
+            auto_model = AutoModelForCausalLM
+        auto_processor = AutoProcessor if is_vlm else AutoTokenizer
+
+        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from disk.
+        #    Covers CUDA and XPU (torchao runs on Intel GPUs too), so the original doesn't sit
+        #    resident alongside the reloaded copy and OOM a device that fit the model once.
+        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
+        try:
+            if (
+                (torch.cuda.is_available() or _has_xpu)
+                and hasattr(model, "parameters")
+                and not getattr(model, "is_loaded_in_4bit", False)
+                and not getattr(model, "is_loaded_in_8bit", False)
+                and not getattr(model, "is_quantized", False)
+            ):
+                _devs = {str(p.device) for p in model.parameters()}
+                if len(_devs) == 1 and next(iter(_devs)).startswith(("cuda", "xpu")):
+                    _dev = next(model.parameters()).device
+                    model.to("cpu")
+                    model_dev = _dev
+        except Exception:
+            model_dev = None
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if _has_xpu:
+                torch.xpu.empty_cache()
+
+        # 4) Reload the staged 16bit checkpoint with torchao applied. bfloat16 is required;
+        #    device_map="auto" falls back to CPU, so this works on any hardware.
+        print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
+        dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
+        quantized_model = auto_model.from_pretrained(
+            staging,
+            device_map = "auto",
+            quantization_config = TorchAoConfig(quant_type = quant_type),
+            trust_remote_code = trust_remote_code,
+            **dtype_kw,
+        )
+        staged_tokenizer = auto_processor.from_pretrained(
+            staging, trust_remote_code = trust_remote_code
+        )
+
+        quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
+        staged_tokenizer.save_pretrained(out_dir)
+        del quantized_model
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # 5) Validate the artifact.
+        cfg_path = os.path.join(out_dir, "config.json")
+        cfg = {}
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding = "utf-8") as f:
+                cfg = json.load(f)
+        if "quantization_config" not in cfg:
+            raise RuntimeError(
+                f"Unsloth: torchao {kind} export failed - no quantization_config written to "
+                f"{cfg_path}"
+            )
+
+        # 6) Optional hub upload of the quantized artifact (the temp staging is cleaned in finally).
+        if push_to_hub:
+            print(f"Unsloth: Uploading torchao {kind} checkpoint to '{repo_id}' ...")
+            api.upload_folder(
+                folder_path = out_dir,
+                repo_id = repo_id,
+                repo_type = "model",
+                commit_message = merge_kwargs.get("commit_message", None),
+                commit_description = merge_kwargs.get("commit_description", None),
+                create_pr = merge_kwargs.get("create_pr", False),
+                revision = merge_kwargs.get("revision", None),
+            )
+            datasets = merge_kwargs.get("datasets", None)
+            if datasets:
+                try:
+                    from huggingface_hub import metadata_update
+                    metadata_update(repo_id, {"datasets": datasets}, overwrite = True, token = token)
+                except Exception as meta_err:
+                    logger.warning_once(
+                        f"Unsloth: could not update datasets metadata for {repo_id}: {meta_err}"
+                    )
+
+        result = repo_id if push_to_hub else out_dir
+        print(
+            f"Unsloth: Saved torchao {kind} checkpoint to '{result}'.\n"
+            f"Unsloth: This is portable (produced on any device, no NVIDIA GPU required). Load it "
+            f"with vLLM or transformers; FP8/INT8 acceleration is available on supported GPUs."
+        )
+        return result
+    finally:
+        if model_dev is not None:
+            try:
+                model.to(model_dev)
+            except Exception:
+                logger.warning_once(
+                    "Unsloth: could not restore the model to its original device after torchao "
+                    "export; it may remain on CPU."
+                )
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
