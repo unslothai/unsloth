@@ -7,6 +7,7 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
 import {
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "./per-model-config";
@@ -30,6 +31,14 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
   }));
+}
+
+export function applyModelLoadConfigToRuntime(
+  config: PerModelConfig | null | undefined,
+): boolean {
+  const hasConfig = config != null;
+  applyPerModelConfigToRuntime(config ?? DEFAULT_PER_MODEL_CONFIG);
+  return hasConfig;
 }
 
 export function currentRuntimePerModelConfig(

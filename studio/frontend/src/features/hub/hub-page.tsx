@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  applyPerModelConfigToRuntime,
+  applyModelLoadConfigToRuntime,
   resolveInitialConfig,
 } from "@/features/model-picker";
 import { hfModelFitsDevice } from "@/features/model-picker/components/model-selector/recommended-fit";
@@ -1099,23 +1099,21 @@ export function ModelsPage() {
   const openNewChat = useCallback(() => {
     void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
   }, [navigate]);
-	  const runSelectedModel = useCallback(
-	    (opts: ModelLoadOptions, isDownloaded: boolean) => {
-	      if (!selectedModel) return;
-	      const runId = selectedModel.resource.runId;
-	      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
+  const runSelectedModel = useCallback(
+    (opts: ModelLoadOptions, isDownloaded: boolean) => {
+      if (!selectedModel) return;
+      const runId = selectedModel.resource.runId;
+      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
       const rememberedConfig = resolvedConfig.remembered
         ? resolvedConfig.config
         : null;
-      if (rememberedConfig) {
-        applyPerModelConfigToRuntime(rememberedConfig);
-      }
+      const hasAppliedConfig = applyModelLoadConfigToRuntime(rememberedConfig);
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
-        keepSpeculative: rememberedConfig != null,
+        keepSpeculative: hasAppliedConfig,
         throwOnError: true,
       })
         .then(() => {

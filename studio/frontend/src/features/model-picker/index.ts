@@ -14,6 +14,7 @@ export { FolderBrowser } from "./components/model-selector/folder-browser";
 export type { FolderBrowserProps } from "./components/model-selector/folder-browser";
 export { ModelDeleteAction } from "./components/model-selector/model-delete-action";
 export {
+  applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   perModelConfigsEqual,

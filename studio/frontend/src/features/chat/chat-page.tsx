@@ -10,7 +10,7 @@ import {
   ModelSelector,
 } from "@/features/model-picker/components/model-selector";
 import {
-  applyPerModelConfigToRuntime,
+  applyModelLoadConfigToRuntime,
   currentRuntimePerModelConfig,
   type PerModelConfig,
   perModelConfigsEqual,
@@ -1674,12 +1674,11 @@ export function ChatPage({
         }
         return;
       }
-      const appliedConfig = selection.config ?? rememberedConfigFor(selection);
-      if (appliedConfig) {
-        applyPerModelConfigToRuntime(appliedConfig);
-      }
+      const hasAppliedConfig = applyModelLoadConfigToRuntime(
+        selection.config ?? rememberedConfigFor(selection),
+      );
       await selectModel(
-        appliedConfig ? { ...selection, keepSpeculative: true } : selection,
+        hasAppliedConfig ? { ...selection, keepSpeculative: true } : selection,
       );
     },
     [selectModel, loadingModel, rememberedConfigFor],

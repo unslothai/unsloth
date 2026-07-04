@@ -432,10 +432,7 @@ export function ModelConfigPage({
       }
     : {
         ...config,
-        maxSeqLength:
-          config.maxSeqLength == null
-            ? null
-            : clampMaxSeqLength(config.maxSeqLength, maxSeqLengthMax),
+        maxSeqLength: maxSeqLengthValue,
       };
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
