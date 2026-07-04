@@ -207,7 +207,6 @@ class TestGemmaAwareClosedBlockPrePass:
 
     def test_literal_function_in_gemma_arg_with_later_real_call(self):
         from core.tool_healing import strip_tool_call_markup
-
         text = (
             'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
             "<tool_call|> <function=terminal><parameter=cmd>ls</parameter>"
@@ -229,13 +228,13 @@ class TestGemmaAwareClosedBlockPrePass:
 
     def test_gemma_opener_inside_json_arg_still_strips_block(self):
         from core.tool_healing import strip_tool_call_markup
-
-        text = '<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after'
+        text = (
+            '<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after'
+        )
         assert strip_tool_call_markup(text, final = True) == "after"
 
     def test_gemma_opener_inside_function_param_still_strips_block(self):
         from core.tool_healing import strip_tool_call_markup
-
         text = (
             '<function=python><parameter=code>x = "<|tool_call>call:t{"</parameter>'
             "</function> after"
