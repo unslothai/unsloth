@@ -423,6 +423,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_module.router = APIRouter()
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
+    preview_module = ModuleType("routes.preview")
+    preview_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -439,6 +441,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
+        "video_router": APIRouter(),
     }.items():
         setattr(routes_module, name, router)
     routes_module.settings = settings_module
@@ -448,6 +451,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
+    monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
 
     import studio.backend.main as backend_main
 
