@@ -380,9 +380,8 @@ function Uninstall-UnslothStudio {
             continue
         }
         _RemovePath $r
-        # The native diffusion sibling (<custom root>.parent\stable-diffusion.cpp) is
-        # intentionally NOT removed: sd.cpp writes no owner marker and sits in the user's
-        # own parent dir, so auto-deleting it could destroy a user-managed clone.
+        # The native diffusion sibling (<custom root>.parent\stable-diffusion.cpp) is left
+        # in place: sd.cpp writes no owner marker, so auto-deleting it could destroy a clone.
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }

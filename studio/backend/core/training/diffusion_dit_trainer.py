@@ -63,10 +63,8 @@ def _select_lora_targets(
 ) -> tuple[str, ...]:
     """Pick the LoRA target modules for a DiT run.
 
-    ``normalized()`` leaves ``lora_target_modules`` empty when a caller does not set it, so
-    an empty tuple means "unset" here: use the family's ``spec.lora_targets`` (which add the
-    DiT-specific joint-attention projections). Any explicit tuple is a deliberate override
-    and still wins."""
+    An empty ``cfg_targets`` means "unset": use the family's ``spec.lora_targets``. Any
+    explicit tuple is a deliberate override and still wins."""
     if not tuple(cfg_targets):
         return tuple(spec_targets)
     return tuple(cfg_targets)

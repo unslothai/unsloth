@@ -1389,10 +1389,8 @@ async def upload_diffusion_dataset(
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
         names.append(filename)
-    # Roll back every file written this request if the batch does not fully commit, so a
-    # mid-batch 413 (or a disk error / client disconnect) leaves the dataset unchanged
-    # rather than partially populated -- the upload is all-or-nothing, not just for the
-    # extension check above but for the size limit too.
+    # Roll back all files written this request on a mid-batch failure (size limit,
+    # disk error, disconnect) so the dataset is never left partially populated.
     written: list[Path] = []
     committed = False
     try:
@@ -1884,8 +1882,7 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
                 continue
             fn = row.get("file_name") or row.get("image") or row.get("file")
             if fn and caption_col in row:
-                # First writer wins over sorted manifests, so the plain manifest
-                # (e.g. output_file.jsonl) is deterministic rather than OS-visit order.
+                # First writer wins over sorted manifests, for deterministic results.
                 captions.setdefault(Path(str(fn)).name, str(row[caption_col]))
     # Copy images (those with a caption first, so a cap keeps captioned pairs).
     images = sorted(

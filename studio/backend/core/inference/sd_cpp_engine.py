@@ -127,10 +127,7 @@ def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
     highest priority first: the cmake ``build/bin`` tree, then a Windows Release
     subdir, then the root itself, then the prebuilt archive's versioned subdir.
 
-    The prebuilt archive extracts into a top-level versioned dir
-    (``sd-master-<tag>-bin-<host>/``) rather than flattening into ``root``, so without
-    the ``root/*/`` glob a fresh prebuilt install is invisible here -- which silently
-    demotes the persistent sd-server to one-shot mode and re-downloads on every start."""
+    The prebuilt lands in its own versioned subdir rather than flattening into ``root``."""
     name = _binary_name(stem)
     cands = [
         root / "build" / "bin" / name,
@@ -138,9 +135,7 @@ def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
         root / "bin" / name,
         root / name,
     ]
-    # Prebuilt archive layout: root/sd-master-<tag>-bin-<host>/<name> (+ its own bin/).
-    # Newest install first (by mtime -- tag strings don't sort numerically, so a lexical
-    # sort would rank build 99 above build 100).
+    # Newest install first, by mtime -- tag strings don't sort numerically.
     try:
         subdirs = [p for p in root.iterdir() if p.is_dir()]
         subdirs.sort(key = lambda p: p.stat().st_mtime, reverse = True)

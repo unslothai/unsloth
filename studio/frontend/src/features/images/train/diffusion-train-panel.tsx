@@ -318,11 +318,8 @@ export function DiffusionTrainPanel({
   // terminal "completed" status until the next start, so we can't rely on it clearing).
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
   const running = Boolean(status?.active) || status?.status === "running";
-  // A stopped run still saves + catalog-publishes a real, deployable adapter (status
-  // carries catalog_path), so treat "stopped with an adapter" as terminal-with-adapter
-  // too -- otherwise the normal "stop once the loss looks good" flow leaves the trained
-  // adapter with no Deploy button and no picker refresh. A save=False cancel has no
-  // catalog_path, so it correctly still shows nothing.
+  // A stopped run still saves + publishes a deployable adapter (catalog_path set), so
+  // treat it as finished-with-adapter too; a save=False cancel has no catalog_path.
   const hasSavedAdapter =
     status?.status === "completed" ||
     (status?.status === "stopped" && Boolean(status?.catalog_path));

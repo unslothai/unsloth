@@ -211,7 +211,7 @@ def run_diffusion_lora_training(
     for m in (unet, *text_encoders):
         m.to(device, dtype = weight_dtype)
 
-    # An empty (unset) config means "use the family default": the SDXL attention projections.
+    # Empty (unset) config means use the family default.
     unet_targets = list(cfg.lora_target_modules) or list(DEFAULT_LORA_TARGETS)
     unet.add_adapter(
         LoraConfig(

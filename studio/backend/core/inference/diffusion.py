@@ -404,18 +404,11 @@ class DiffusionBackend:
         """True when ``load_pipeline`` may take the dense transformer-quant path, so
         the prefetch should also pull the base repo's ``transformer/`` shards.
 
-        Those shards are excluded from the prefetch by default (the GGUF supplies
-        the transformer), but ``_load_dense_quant_pipeline`` fetches them with
-        ``from_pretrained(subfolder = "transformer")`` under the load lock during
-        "finalizing", after the previous pipeline was already evicted, where
-        unload/cancellation cannot preempt the download. Checks the dense-path gates
-        in ``load_pipeline`` that are knowable pre-download: quant requested and
-        supported for this device, and no pre-quantized checkpoint that would shortcut
-        the dense build. It deliberately does NOT mirror the ``plan.offload_policy ==
-        OFFLOAD_NONE`` gate: the memory plan needs the GGUF's on-disk size, which
-        isn't known until the GGUF is cached (after this prefetch runs). So the
-        transformer/ shards can be prefetched for a load that the plan then routes to
-        offload -- they stay cached for a later resident load rather than being wasted."""
+        Those shards are excluded from the prefetch by default (the GGUF supplies the
+        transformer), but ``_load_dense_quant_pipeline`` fetches them later under the
+        load lock, where unload/cancellation cannot preempt the download. Checks only
+        the dense-path gates knowable pre-download; skips the ``offload_policy`` gate
+        since that needs the GGUF's on-disk size, not known until after this runs."""
         mode = normalize_transformer_quant(kwargs.get("transformer_quant"))
         if mode is None:
             return False
@@ -807,7 +800,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:
-        """The local HF hub cache dir for ``repo_id`` (``.../models--org--name``)."""
+        """Local HF hub cache dir for ``repo_id``."""
         from huggingface_hub import constants
         return Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}"
 
@@ -853,15 +846,10 @@ class DiffusionBackend:
     def _companion_cache_bytes(base: str) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan.
 
-        Sums the cached VAE + text-encoder weights while EXCLUDING ``transformer/`` (the
-        GGUF / single file supplies the transformer, so its ``transformer/`` shards are
-        not resident here). This matters for the dense ``transformer_quant`` path: it
-        prefetches the base repo's ``transformer/`` shards into the cache, and folding
-        those multi-GB shards into the companion size would inflate the plan and wrongly
-        force offload -- gating off the very quant path that fetched them. For a LOCAL
-        diffusers base the blob cache is empty, so walk the on-disk weights; for a hub
-        base, walk the snapshot (whose ``transformer/`` subfolder we can skip) instead of
-        the flat, content-addressed ``blobs/`` dir, which carries no subfolder split."""
+        Excludes ``transformer/`` (supplied by the GGUF/single file, not resident here) --
+        otherwise the dense-quant prefetch's cached transformer shards would inflate this
+        and wrongly force offload. Walks the snapshot dir, not the flat ``blobs/`` cache,
+        since only the snapshot preserves the subfolder split needed to exclude it."""
         local = Path(base).expanduser()
         if local.is_dir():
             return DiffusionBackend._local_dir_weight_bytes(local, exclude_transformer = True)
@@ -1029,9 +1017,7 @@ class DiffusionBackend:
                     and dense_transformer_supported(target)
                     and plan.offload_policy != OFFLOAD_NONE
                 ):
-                    # The dense fast path needs the transformer resident, so a memory_mode
-                    # (balanced / low_vram) that forces offload silently drops the requested
-                    # quant. Warn so the disengage is diagnosable rather than a null status.
+                    # memory_mode forcing offload silently drops the requested quant; warn so it's diagnosable.
                     logger.warning(
                         "diffusion.transformer_quant: %s requested but memory_mode forces "
                         "offload (%s); loading GGUF without dense quant",
@@ -1440,12 +1426,10 @@ class DiffusionBackend:
             companion_mib = None
         else:
             if kind == "single_file":
-                # Safetensors single-file. A dense bf16 file loads near its on-disk size,
-                # but a transformer-only fp8 checkpoint is loaded via from_single_file with
-                # a bf16 compute dtype and NO quantization_config, so diffusers upcasts it
-                # fp8 -> bf16 (~2x resident). Detect fp8 from the basename and budget the
-                # expansion. The single-file-is-pipeline (SDXL) path is a full bf16 pipeline
-                # checkpoint, not this fp8 transformer path, so it stays at on-disk size.
+                # An fp8 transformer checkpoint loads via from_single_file with a bf16
+                # compute dtype and no quantization_config, so diffusers upcasts it to
+                # bf16 (~2x resident); detect it from the basename. Excludes the
+                # single-file-is-pipeline (SDXL) case, which is already a bf16 pipeline.
                 fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
                     "fp8" in Path(single_file_path).name.lower() if single_file_path else False
                 )
@@ -1540,10 +1524,9 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            # A single generation uses exactly one ControlNet, so keep at most one resident:
-            # on a miss for a new id, drop the previously-cached module + its from_pipe wrapper
-            # (both dicts, kept consistent) and free the VRAM before loading the new one, or
-            # swapping distinct ControlNets within a base-model load accumulates until OOM.
+            # Keep at most one ControlNet resident: evict the previous module + its
+            # from_pipe wrapper before loading the new one, or swapping ControlNets
+            # within a base-model load accumulates until OOM.
             if self._cn_models or self._cn_pipes:
                 self._cn_models.clear()
                 self._cn_pipes.clear()
@@ -1718,10 +1701,8 @@ class DiffusionBackend:
         resolution/batch changed, or a stale-cache reuse otherwise. Best-effort: a
         transformer without the hook (uncached load) is a silent no-op."""
         transformer = getattr(pipe, "transformer", None)
-        # A diffusers CacheMixin transformer clears FBCache via ``_reset_stateful_cache``
-        # (which drives its HookRegistry.reset_stateful_hooks internally). The public
-        # ``reset_stateful_hooks`` name lives only on the HookRegistry, not on the
-        # transformer, so keep it only as a version fallback.
+        # ``_reset_stateful_cache`` is the transformer-level entry point; the public
+        # ``reset_stateful_hooks`` lives only on the HookRegistry, kept as a fallback.
         reset = getattr(transformer, "_reset_stateful_cache", None) or getattr(
             transformer, "reset_stateful_hooks", None
         )
@@ -1833,8 +1814,7 @@ class DiffusionBackend:
                             f"{state.family.name} is an image-editing model: provide an input image."
                         )
                     if mask_image is not None:
-                        # The edit family has no inpaint pipeline; a supplied mask would be
-                        # silently dropped (this branch wins over the inpaint branch below).
+                        # The edit family has no inpaint pipeline; a mask would be silently dropped.
                         raise ValueError(
                             f"{state.family.name} is an image-editing model and does not "
                             "support masks (mask_image)."

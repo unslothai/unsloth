@@ -131,9 +131,7 @@ export function DiffusionTrainDialog({
       ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
       : 0;
 
-  // Notify the parent exactly once when a run finishes with a saved adapter, so it can
-  // rescan the LoRA picker (a LoRA trained while a model is loaded is otherwise invisible
-  // until a model swap re-runs the discovery effect).
+  // Notify the parent exactly once per finished run so it rescans the LoRA picker.
   const [notifiedComplete, setNotifiedComplete] = useState(false);
   useEffect(() => {
     if (hasSavedAdapter && !notifiedComplete) {
