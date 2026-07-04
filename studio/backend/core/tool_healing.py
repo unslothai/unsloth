@@ -829,9 +829,7 @@ def parse_tool_calls_from_text(
                             },
                         }
                     )
-                    item_end = (
-                        item_ends[item_idx] if item_idx < len(item_ends) else region_end
-                    )
+                    item_end = item_ends[item_idx] if item_idx < len(item_ends) else region_end
                     last_span_idx = len(call_spans)
                     call_spans.append((tile_start, item_end))
                     tile_start = item_end
