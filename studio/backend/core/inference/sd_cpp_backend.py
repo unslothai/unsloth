@@ -89,6 +89,17 @@ _MAX_SERVER_BATCH = 8
 _SERVER_PER_IMAGE_TIMEOUT_S = 1800.0
 
 
+def _default_threads() -> int:
+    """Physical-core thread count for the sd.cpp CPU backend.
+
+    ``threads = None`` lets sd.cpp pick its own default, which is the logical-core
+    count (all hyperthreads). For the compute-bound GGML matmuls the diffusion CPU
+    path runs, oversubscribing the hyperthreads adds scheduling contention without
+    extra throughput, so pin to physical cores (``cpu_count // 2``) instead. Falls
+    back to 8 when the count is unknown, and clamps to at least 1."""
+    return max(1, (os.cpu_count() or 8) // 2)
+
+
 def _server_binary_runnable(binary: str) -> bool:
     """Best-effort probe that ``binary`` can actually execute (not just exist).
 
@@ -531,7 +542,9 @@ class SdCppDiffusionBackend:
                             vae_format = fam.sd_cpp_vae_format,
                             offload = list(offload),
                             native_speed = native_speed,
-                            threads = None,
+                            # Pin the CPU backend to physical cores; sd.cpp's own
+                            # default oversubscribes hyperthreads (see _default_threads).
+                            threads = _default_threads(),
                         )
                     except SdCppCancelled:
                         # Startup was aborted by an unload / superseding load: stop the
@@ -568,7 +581,9 @@ class SdCppDiffusionBackend:
                     vae_format = fam.sd_cpp_vae_format,
                     native_speed = native_speed,
                     offload_flags = offload,
-                    threads = None,
+                    # One-shot sd-cli reads this per generation (state.threads); pin to
+                    # physical cores for the same reason as the server (see _default_threads).
+                    threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
                     server = server,
