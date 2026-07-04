@@ -705,3 +705,43 @@ class TestDisabledBareJsonLiteralNotPromoted:
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestMistralLiteralInsideLeadingJson:
+    """The Mistral trigger is foreign to a JSON envelope: a [TOOL_CALLS]
+    literal quoted inside the leading object's strings must not be promoted
+    over the outer call by the earlier Mistral parser."""
+
+    def test_outer_json_call_wins_over_mistral_literal(self):
+        text = '{"name": "python", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
+        calls = parse_tool_calls_from_text(
+            text, enabled_tool_names = {"python", "web_search"}
+        )
+        assert [c["function"]["name"] for c in calls] == ["python"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "[TOOL_CALLS]web_search{}"
+
+    def test_disabled_outer_json_keeps_mistral_literal_as_data(self):
+        text = '{"name": "Alice", "note": "[TOOL_CALLS]web_search{}"}'
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+
+class TestGemmaWrappedWhitespace:
+    """Sampling drift puts whitespace around ``call``/``:`` in wrapped Gemma
+    calls; rejecting those in tool_healing lost the call entirely (no
+    fallback re-parses the wrapped form)."""
+
+    def test_space_after_call_colon_parses(self):
+        text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}<tool_call|>'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_space_around_colon_parses(self):
+        text = '<|tool_call>call : web_search{query:<|"|>cats<|"|>}<tool_call|>'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_strict_mode_still_requires_the_closing_tag(self):
+        text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
