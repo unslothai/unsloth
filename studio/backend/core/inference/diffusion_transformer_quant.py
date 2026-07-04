@@ -37,6 +37,12 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
+# The fp8 weight/activation granularity the runtime config uses (see _make_quant_config):
+# per-ROW is REQUIRED for correctness on outlier-heavy DiTs. Stamped into a pre-quantized
+# fp8 checkpoint's metadata at build time and required by the loader, so a stale checkpoint
+# baked with the old per-TENSOR layout is rejected and rebuilt rather than reproducing noise.
+FP8_GRANULARITY = "per_row"
+
 # Skip linears whose in/out features are below this. A small share of the FLOPs, so leaving
 # them bf16 costs ~nothing and keeps quality a touch higher.
 DEFAULT_MIN_LINEAR_FEATURES = 512
@@ -302,19 +308,29 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_INT8:
         return Int8DynamicActivationInt8WeightConfig()
     if scheme == TQ_FP8:
-        # Choose fp8 accumulate by GPU class (unless forced). On consumer / workstation
-        # cards (GDDR) the fp8 tensor cores run ~2x faster with FP16 (fast) accumulate
-        # than FP32 (e.g. ~838 vs ~419 TFLOPS on RTX 50xx), so fast accumulate is a real
-        # win there. Data-center HBM parts default to the higher-precision accumulate.
-        # fast accumulate is a precision (not overflow) tradeoff and stays below the fp8
-        # quant noise floor (measured 0 non-finite even on Z-Image's ~1e6 activations).
+        # Per-ROW granularity (per-token activation scale + per-output-channel weight scale)
+        # is REQUIRED for correctness, not just quality. torchao's default fp8 granularity is
+        # per-TENSOR: one scale for the whole activation tensor. A DiT with extreme activation
+        # outliers breaks under that -- z-image's MLP activations peak near 6.6e4, and a single
+        # such outlier forces a tensor-wide scale that pushes every normal value (~1-30) below
+        # the fp8 resolution, so they quantise to ~0 and the denoise collapses to pure noise
+        # (measured on B200: per-tensor fp8 = noise, per-row fp8 = matches bf16). Per-row
+        # confines each outlier to its own token/channel. This is also why int8 dynamic was
+        # always fine here: it is per-token by default. The per-row scaled_mm is probed by
+        # _smoke_probe, so an arch/build without it falls through the ladder to int8.
+        #
+        # fast accumulate (fp8 only) is chosen by GPU class unless forced: consumer / workstation
+        # cards (GDDR) run the fp8 tensor cores ~2x faster with FP16 (fast) accumulate than FP32
+        # (e.g. ~838 vs ~419 TFLOPS on RTX 50xx); data-center HBM parts keep precise accumulate.
+        from torchao.quantization import PerRow
         try:
             from torchao.float8 import Float8MMConfig
             return Float8DynamicActivationFloat8WeightConfig(
-                mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum))
+                granularity = PerRow(),
+                mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum)),
             )
-        except Exception:  # noqa: BLE001 — older torchao without the explicit knob
-            return Float8DynamicActivationFloat8WeightConfig()
+        except Exception:  # noqa: BLE001 — older torchao without the explicit mm knob
+            return Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
