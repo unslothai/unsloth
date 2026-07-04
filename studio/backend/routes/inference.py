@@ -614,6 +614,51 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     )
 
 
+def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
+    """A delta chunk carrying one or more OpenAI tool-call deltas -- the sibling
+    of ``_chat_content_chunk`` for the in-process streamers that promote
+    text-form calls (see ``_sf_heal_events_to_sse``)."""
+    return _chat_chunk_sse(
+        completion_id,
+        created,
+        model_name,
+        delta = ChoiceDelta(tool_calls = tool_calls),
+        finish_reason = None,
+    )
+
+
+def _sf_heal_events_to_sse(events, completion_id, created, model_name, state, parallel_tool_calls):
+    """Serialize ``StreamToolCallHealer`` events into chat-stream SSE lines,
+    reusing the shared chunk builders. ``state["idx"]`` tracks the healed
+    tool-call index across ``feed``/``finalize`` calls; ``parallel_tool_calls is
+    False`` caps promotion to a single call (mirrors the GGUF passthrough)."""
+    lines = []
+    for kind, value in events:
+        if kind == "text":
+            if value:
+                lines.append(_chat_content_chunk(completion_id, created, model_name, value))
+            continue
+        if parallel_tool_calls is False and state["idx"] >= 1:
+            continue
+        lines.append(
+            _chat_tool_calls_chunk(
+                completion_id,
+                created,
+                model_name,
+                [
+                    {
+                        "index": state["idx"],
+                        "id": value["id"],
+                        "type": "function",
+                        "function": value["function"],
+                    }
+                ],
+            )
+        )
+        state["idx"] += 1
+    return lines
+
+
 def _rewrite_cmpl_id(raw: bytes) -> bytes:
     """Rewrite llama-server's chat-style ``chatcmpl-`` ids to the ``cmpl-``
     prefix OpenAI's legacy /v1/completions use. Anchored on the ``"id":`` key
@@ -6829,25 +6874,67 @@ async def openai_chat_completions(
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
+    # ── Client-tool passthrough (safetensors + MLX) ──────────────
+    # A request that declares client tools (or carries tool-result history) but
+    # does NOT enable server-side tools is the local-model equivalent of the
+    # GGUF client-tool passthrough: generate one turn with the tools rendered
+    # into the template, then repair text-form calls with the shared #6801
+    # healer. Vision / gpt-oss / server-side-tool / MCP turns are handled
+    # elsewhere, and a template that cannot parse the emitted markup
+    # (supports_tools False) falls through to plain relay with tools dropped,
+    # matching the GGUF gate. MLX rides this same path (the route only talks to
+    # the orchestrator; MLX runs inside the worker).
+    _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    _sf_client_tools = (
+        not _effective_enable_tools(payload)
+        and not payload.mcp_enabled
+        and image is None
+        and not _sf_is_gptoss
+        and _sf_features.get("supports_tools", False)
+        and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
+    )
+    _sf_heal = (
+        heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)
+        if _sf_client_tools
+        else None
+    )
+    if _sf_client_tools:
+        # Re-derive from payload.messages so assistant.tool_calls and role="tool"
+        # history survive templating (_extract_content_parts drops them). The
+        # system message rides inside the list, so clear the separate prompt.
+        gen_kwargs["messages"] = _openai_messages_for_passthrough(payload)
+        gen_kwargs["system_prompt"] = ""
+        gen_kwargs["tools"] = payload.tools
+
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
 
     if payload.use_adapter is not None:
 
-        def generate():
+        def generate(messages_override = None):
+            kw = (
+                gen_kwargs
+                if messages_override is None
+                else {**gen_kwargs, "messages": messages_override}
+            )
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
-                **gen_kwargs,
+                **kw,
             )
     else:
 
-        def generate():
+        def generate(messages_override = None):
+            kw = (
+                gen_kwargs
+                if messages_override is None
+                else {**gen_kwargs, "messages": messages_override}
+            )
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
-                **gen_kwargs,
+                **kw,
             )
 
     # ── Streaming response ────────────────────────────────────────
@@ -6862,6 +6949,11 @@ async def openai_chat_completions(
             )
             try:
                 yield _chat_role_chunk(completion_id, created, model_name)
+
+                # Client-tool passthrough: repair text-form calls on the fly with
+                # the shared #6801 healer (None => relay verbatim, as before).
+                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                heal_state = {"idx": 0}
 
                 prev_text = ""
                 # Run the sync generator in a thread pool to avoid blocking the
@@ -6893,9 +6985,32 @@ async def openai_chat_completions(
                     if not new_text:
                         continue
                     api_monitor.append_reply(monitor_id, new_text)
-                    yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                    if healer is None:
+                        yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                    else:
+                        for line in _sf_heal_events_to_sse(
+                            healer.feed(new_text),
+                            completion_id,
+                            created,
+                            model_name,
+                            heal_state,
+                            payload.parallel_tool_calls,
+                        ):
+                            yield line
 
-                yield _chat_final_chunk(completion_id, created, model_name, "stop")
+                if healer is not None:
+                    for line in _sf_heal_events_to_sse(
+                        healer.finalize(),
+                        completion_id,
+                        created,
+                        model_name,
+                        heal_state,
+                        payload.parallel_tool_calls,
+                    ):
+                        yield line
+
+                _finish = "tool_calls" if (healer is not None and healer.healed) else "stop"
+                yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
                 # Request-scoped holder, so concurrent streams cannot
@@ -6956,14 +7071,43 @@ async def openai_chat_completions(
             for token in generate():
                 full_text = token
 
+            # Client-tool passthrough: promote text-form calls, and (opt-in) a
+            # single nudge retry when the model tried to call a tool but emitted
+            # unparseable markup.
+            _msg = {"role": "assistant", "content": full_text}
+            _finish = "stop"
+            if _sf_heal:
+                if heal_openai_message(_msg, _sf_heal, payload.tools):
+                    _finish = "tool_calls"
+                elif nudge_enabled(payload.nudge_tool_calls):
+                    _data = {"choices": [{"message": {"role": "assistant", "content": full_text}}]}
+                    if nudge_should_retry(_data, _sf_heal, payload.tools):
+                        retry_text = ""
+                        for token in generate(
+                            [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
+                        ):
+                            retry_text = token
+                        retry_msg = {"role": "assistant", "content": retry_text}
+                        if heal_openai_message(retry_msg, _sf_heal, payload.tools):
+                            full_text, _msg, _finish = retry_text, retry_msg, "tool_calls"
+                # Honor parallel_tool_calls=false (best-effort) by capping to one
+                # call, matching the GGUF passthrough (covers the nudge retry too).
+                if payload.parallel_tool_calls is False:
+                    _tcs = _msg.get("tool_calls")
+                    if isinstance(_tcs, list) and len(_tcs) > 1:
+                        _msg["tool_calls"] = _tcs[:1]
+
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
                 model = model_name,
                 choices = [
                     CompletionChoice(
-                        message = CompletionMessage(content = full_text),
-                        finish_reason = "stop",
+                        message = CompletionMessage(
+                            content = _msg["content"],
+                            tool_calls = _msg.get("tool_calls"),
+                        ),
+                        finish_reason = _finish,
                     )
                 ],
             )
