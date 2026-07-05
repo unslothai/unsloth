@@ -390,7 +390,6 @@ def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
     # The call ends at its first non-data close: prose after it survives the
     # strip even when it mentions a literal </function>.
     from core.inference.tool_call_parser import strip_tool_markup
-
     text = (
         "<function=web_search><parameter=query>cats</parameter></function>"
         " Done. The tag </function> closes a call."
