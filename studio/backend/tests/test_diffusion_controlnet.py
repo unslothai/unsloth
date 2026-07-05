@@ -263,6 +263,7 @@ def test_controlnet_pipe_rejects_family_without_classes():
     with pytest.raises(ValueError, match = "not supported"):
         b._controlnet_pipe(st, dc.ResolvedControlNet("x", "y", False), threading.Event())
 
+
 def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
     # An unload that lands while from_pipe is assembling must not let the wrapper
     # repopulate the cache around the torn-down base pipe.
