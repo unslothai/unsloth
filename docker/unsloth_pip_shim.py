@@ -130,11 +130,11 @@ def _parse_include(stripped):
     for flag in ("-r", "--requirement", "-c", "--constraint"):
         target = None
         if body == flag or body.startswith(flag + " "):
-            target = body[len(flag):].strip()
+            target = body[len(flag) :].strip()
         elif body.startswith(flag + "="):
-            target = body[len(flag) + 1:].strip()
+            target = body[len(flag) + 1 :].strip()
         elif not flag.startswith("--") and body.startswith(flag) and len(body) > len(flag):
-            target = body[len(flag):].strip()  # attached short form, e.g. `-rextras.txt`
+            target = body[len(flag) :].strip()  # attached short form, e.g. `-rextras.txt`
         else:
             continue
         return flag, (target or None), comment
@@ -208,9 +208,7 @@ def _filter_requirements_file(path, _depth = 0):
             # Option or nested include. Recursively filter a nested `-r`/`-c`
             # include (so protected specs deep in the include tree cannot slip
             # past _KEEP) and repoint it so it still resolves from /tmp.
-            new_line, rewrote, inc_rec, inc_drp = _rewrite_include(
-                line, stripped, src_dir, _depth
-            )
+            new_line, rewrote, inc_rec, inc_drp = _rewrite_include(line, stripped, src_dir, _depth)
             out.append(new_line)
             if rewrote:
                 changed = True

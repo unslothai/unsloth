@@ -27,7 +27,6 @@ try:
         _kid = ""
         try:
             from ipykernel import get_connection_file  # type: ignore
-
             _kid = os.path.splitext(os.path.basename(get_connection_file()))[0]
         except Exception:
             _kid = ""
