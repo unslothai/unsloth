@@ -1086,9 +1086,7 @@ class DiffusionBackend:
                         pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
                         if hf_token:
                             pipe_kwargs["token"] = hf_token
-                        pipe = pipeline_cls.from_pretrained(
-                            _base_local_dir or base, **pipe_kwargs
-                        )
+                        pipe = pipeline_cls.from_pretrained(_base_local_dir or base, **pipe_kwargs)
 
                 # Resolve the effective speed mode: GGUF models default to the
                 # near-lossless `default` profile (compile is ~2.2x and sits below
