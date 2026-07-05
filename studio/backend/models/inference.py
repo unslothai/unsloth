@@ -1146,8 +1146,7 @@ class CompletionMessage(BaseModel):
     """The assistant's complete response message."""
 
     role: Literal["assistant"] = "assistant"
-    # ``None`` on a pure tool-call turn (OpenAI sets content=null when the
-    # assistant only returns tool_calls); a string on every text answer.
+    # ``None`` on a pure tool-call turn (OpenAI content=null); string otherwise.
     content: Optional[str] = None
     refusal: Optional[str] = None
     reasoning_content: Optional[str] = None

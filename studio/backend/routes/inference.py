@@ -615,9 +615,7 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
 
 
 def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
-    """A delta chunk carrying one or more OpenAI tool-call deltas -- the sibling
-    of ``_chat_content_chunk`` for the in-process streamers that promote
-    text-form calls (see ``_sf_heal_events_to_sse``)."""
+    """Delta chunk carrying OpenAI tool-call deltas (sibling of ``_chat_content_chunk``)."""
     return _chat_chunk_sse(
         completion_id,
         created,
@@ -636,16 +634,12 @@ def _sf_heal_events_to_sse(
     parallel_tool_calls,
     monitor_id = None,
 ):
-    """Serialize ``StreamToolCallHealer`` events into chat-stream SSE lines,
-    reusing the shared chunk builders. ``state["idx"]`` tracks the healed
-    tool-call index across ``feed``/``finalize`` calls; ``parallel_tool_calls is
-    False`` caps promotion to a single call (mirrors the GGUF passthrough).
+    """Serialize ``StreamToolCallHealer`` events into chat SSE lines.
 
-    When ``monitor_id`` is given, the monitor entry is fed from the SAME events
-    the client receives -- relayed text verbatim, promoted calls as the
-    ``[tool_calls] name(args)`` summary the non-streaming path records -- so
-    /api/monitor never shows healed-away markup (or capped-off calls) that were
-    not actually returned."""
+    ``state["idx"]`` tracks the call index across ``feed``/``finalize``;
+    ``parallel_tool_calls is False`` caps promotion to one call (GGUF parity).
+    The monitor is fed from the same events the client receives, never the
+    healed-away markup."""
     lines = []
     for kind, value in events:
         if kind == "text":
@@ -6896,23 +6890,14 @@ async def openai_chat_completions(
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
     # ── Client-tool passthrough (safetensors + MLX) ──────────────
-    # A request that declares client tools (or carries tool-result history) but
-    # does NOT enable server-side tools is the local-model equivalent of the
-    # GGUF client-tool passthrough: generate one turn with the tools rendered
-    # into the template, then repair text-form calls with the shared #6801
-    # healer. Vision / gpt-oss / server-side-tool / MCP turns are handled
-    # elsewhere, and a template that cannot parse the emitted markup
-    # (supports_tools False) falls through to plain relay with tools dropped,
-    # matching the GGUF gate. MLX rides this same path (the route only talks to
-    # the orchestrator; MLX runs inside the worker).
+    # Client tools (or tool-result history) without server-side tools: render
+    # the tools into the template, generate one turn, repair text-form calls
+    # with the shared #6801 healer. supports_tools=False falls through to plain
+    # relay (GGUF gate parity); MLX rides the same orchestrator path.
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    # Gate on whether the server-side tool path ACTUALLY claimed the request
-    # (_sf_use_tools is final by here and its branch always returns), not on
-    # the raw mcp_enabled flag: a client that sets mcp_enabled globally while
-    # declaring its own tools must still get the passthrough when no MCP tool
-    # survived (empty registry, CLI --disable-tools policy) instead of the
-    # silent tool-drop this branch exists to fix. The GGUF passthrough gate
-    # has no mcp_enabled clause either.
+    # Gate on whether the server-side path actually claimed the request
+    # (_sf_use_tools), not raw mcp_enabled: with an empty MCP registry the
+    # declared client tools must still get the passthrough, not a silent drop.
     _sf_client_tools = (
         not _effective_enable_tools(payload)
         and not _sf_use_tools
@@ -6927,12 +6912,10 @@ async def openai_chat_completions(
         else None
     )
     if _sf_client_tools:
-        # Re-derive from payload.messages so assistant.tool_calls and role="tool"
-        # history survive templating (_extract_content_parts drops them). Fold
-        # system/developer turns into one leading system message (the extracted
-        # system_prompt already collects both) -- local templates reject the
-        # OpenAI "developer" role and the fallback formatter drops it -- then
-        # clear the separate prompt so the worker does not prepend a duplicate.
+        # Re-derive from payload.messages so tool_calls / role="tool" history
+        # survive templating; fold system/developer turns into one leading
+        # system message (local templates reject "developer") and clear the
+        # separate prompt so the worker does not prepend a duplicate.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
             _structured_tool_history_for_local_template(
                 _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
@@ -6940,14 +6923,10 @@ async def openai_chat_completions(
             system_prompt,
         )
         gen_kwargs["system_prompt"] = ""
-        # tool_choice="none" forces a final-answer turn: keep the tool-history
-        # templating but do not advertise the tools, otherwise the model is
-        # prompted to emit tool markup that heal_gate (correctly off for
-        # "none") then relays as ordinary content. A forced function narrows
-        # templating to that one schema, so the model is never prompted with
-        # tools the healer (correctly) refuses to promote. Both mirror the GGUF
-        # passthrough, where llama-server receives and honors tool_choice
-        # itself.
+        # tool_choice="none": keep history templating but advertise no tools
+        # (heal_gate is off, markup would relay as prose). A forced function
+        # narrows templating to that one schema. Both mirror the GGUF path,
+        # where llama-server honors tool_choice itself.
         _sf_tc = payload.tool_choice
         _sf_forced = None
         if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
@@ -7009,8 +6988,8 @@ async def openai_chat_completions(
             try:
                 yield _chat_role_chunk(completion_id, created, model_name)
 
-                # Client-tool passthrough: repair text-form calls on the fly with
-                # the shared #6801 healer (None => relay verbatim, as before).
+                # Client-tool passthrough: heal text-form calls on the fly
+                # (None => relay verbatim).
                 healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
                 heal_state = {"idx": 0}
 
@@ -7044,10 +7023,8 @@ async def openai_chat_completions(
                     if not new_text:
                         continue
                     if healer is None:
-                        # No healing: the monitor mirrors the verbatim relay.
-                        # With healing on, _sf_heal_events_to_sse records the
-                        # healed events instead, so the monitor never shows raw
-                        # markup the client did not receive.
+                        # Monitor mirrors the verbatim relay; with healing on,
+                        # _sf_heal_events_to_sse records the healed events instead.
                         api_monitor.append_reply(monitor_id, new_text)
                         yield _chat_content_chunk(completion_id, created, model_name, new_text)
                     else:
@@ -7136,9 +7113,8 @@ async def openai_chat_completions(
             for token in generate():
                 full_text = token
 
-            # Client-tool passthrough: promote text-form calls, and (opt-in) a
-            # single nudge retry when the model tried to call a tool but emitted
-            # unparseable markup.
+            # Client-tool passthrough: promote text-form calls; opt-in single
+            # nudge retry on unparseable tool markup.
             _msg = {"role": "assistant", "content": full_text}
             _finish = "stop"
             if _sf_heal:
@@ -7147,9 +7123,8 @@ async def openai_chat_completions(
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {"choices": [{"message": {"role": "assistant", "content": full_text}}]}
                     if nudge_should_retry(_data, _sf_heal, payload.tools):
-                        # The original answer is already in hand: a retry that
-                        # fails or is cancelled must not turn the request into a
-                        # 500 (the GGUF nudge path keeps the first response too).
+                        # A failed retry must not 500 the request; keep the
+                        # first response (GGUF nudge parity).
                         try:
                             retry_text = ""
                             for token in generate(
@@ -7163,8 +7138,7 @@ async def openai_chat_completions(
                             logger.debug(
                                 "Nudge retry failed; keeping first response: %s", retry_exc
                             )
-                # Honor parallel_tool_calls=false (best-effort) by capping to one
-                # call, matching the GGUF passthrough (covers the nudge retry too).
+                # parallel_tool_calls=false: cap to one call (GGUF parity).
                 if payload.parallel_tool_calls is False:
                     _tcs = _msg.get("tool_calls")
                     if isinstance(_tcs, list) and len(_tcs) > 1:
@@ -10989,16 +10963,11 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
 
 
 def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict]:
-    """Flatten OpenAI content-part lists to plain strings for the
-    safetensors/MLX client-tools passthrough.
+    """Flatten OpenAI content-part lists to plain strings.
 
-    Local text templates take string content; forwarding a part list (e.g. a
-    remote ``image_url`` the local backends cannot fetch --
-    ``_extract_content_parts`` only decodes ``data:`` URLs, so such requests
-    reach this path with ``image is None``) raises inside
-    ``apply_chat_template``. Mirror the flattening the plain non-GGUF path
-    performs: keep the text parts, drop the rest. The GGUF passthrough keeps
-    the original parts (llama-server accepts them)."""
+    Local text templates take string content and raise on part lists (e.g. a
+    remote ``image_url`` that leaves ``image is None``): keep the text parts,
+    drop the rest, like the plain non-GGUF path. GGUF keeps the parts."""
     out = []
     for msg in messages:
         content = msg.get("content")
@@ -11015,15 +10984,12 @@ def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict
 
 def _structured_tool_history_for_local_template(messages: list[dict]) -> list[dict]:
     """Deserialize assistant ``tool_calls[].function.arguments`` JSON strings to
-    mappings for safetensors/MLX templating.
+    mappings for local templating.
 
-    Standard OpenAI clients send prior-turn arguments as JSON strings (the same
-    shape this endpoint returns), but local chat templates take mappings --
-    ``arguments | items`` iteration, or an explicit raise on strings -- so the
-    string shape crashes or misrenders the templated tool history. Only the
-    internal ``gen_kwargs["messages"]`` copy is rewritten; the HTTP response
-    stays OpenAI-shaped, and the GGUF passthrough keeps strings (llama-server
-    expects the wire shape). Unparseable strings are left untouched."""
+    Clients send prior-turn arguments as JSON strings, but local templates take
+    mappings (some raise on strings). Only the internal messages copy is
+    rewritten; the HTTP response stays OpenAI-shaped and unparseable strings
+    are left untouched."""
     out = []
     for msg in messages:
         tool_calls = msg.get("tool_calls")

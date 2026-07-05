@@ -57,7 +57,7 @@ class _Request:
 
 
 class _ScriptedBackend:
-    """Non-GGUF backend whose ``generate_chat_response`` replays scripted
+    """Non-GGUF backend: ``generate_chat_response`` replays scripted
     CUMULATIVE snapshots. ``responder(messages, tools)`` returns the snapshot
     list for one generation, so nudge tests can vary output across turns."""
 
@@ -230,8 +230,7 @@ def test_no_tools_request_untouched(monkeypatch):
     backend = _ScriptedBackend(_fixed("just a plain answer"))
     payload = _request(stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
-    # No tools declared and no tool messages -> the branch is skipped and the
-    # plain path returns a normal ChatCompletion.
+    # No tools and no tool messages -> plain path, normal ChatCompletion.
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == "just a plain answer"
@@ -443,8 +442,7 @@ def test_streaming_no_tools_verbatim(monkeypatch):
 
 
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
-    # Same cumulative snapshot twice, then a shrunk one, must not double-heal
-    # or negative-slice.
+    # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = True)
     response = _call(payload, monkeypatch, backend)
@@ -505,8 +503,7 @@ def test_streaming_disconnect_resets_once(monkeypatch):
 
 
 def test_mlx_uses_same_path(monkeypatch):
-    # MLX and safetensors both dispatch through get_inference_backend(); the same
-    # scripted backend + branch cover both. A healed call proves the shared path.
+    # MLX and safetensors share get_inference_backend(); one scripted backend covers both.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -514,9 +511,7 @@ def test_mlx_uses_same_path(monkeypatch):
 
 
 def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
-    # tool_choice="none" forces a final-answer turn: the template must NOT be
-    # prompted with the tools (heal_gate is off, so any emitted markup would
-    # relay as prose). History templating still applies.
+    # tool_choice="none": no tools rendered into the template; history templating still applies.
     backend = _ScriptedBackend(_fixed("plain answer"))
     payload = _request(tools = [LOOKUP_TOOL], tool_choice = "none", stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -525,9 +520,7 @@ def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
 
 
 def test_developer_message_folded_into_system_prompt(monkeypatch):
-    # The OpenAI "developer" role must not reach local templating verbatim
-    # (templates reject it / the fallback formatter drops it); it folds into a
-    # single leading system message.
+    # The "developer" role folds into one leading system message (local templates reject it).
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
         messages = [
@@ -545,8 +538,7 @@ def test_developer_message_folded_into_system_prompt(monkeypatch):
 
 
 def test_failed_nudge_retry_keeps_original_response(monkeypatch):
-    # A retry that raises after the original answer exists must not become a
-    # 500; the first response is returned (GGUF nudge parity).
+    # A raising retry must not 500; the first response is returned.
     state = {"n": 0}
 
     def responder(messages, tools):
@@ -579,9 +571,7 @@ def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
 
 
 def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
-    # The monitor mirrors what the client received: relayed prose verbatim,
-    # promoted calls as the [tool_calls] summary -- never the raw markup the
-    # healer consumed (parity with the non-streaming set_reply rewrite).
+    # Monitor mirrors what the client received, never the healed-away raw markup.
     backend = _ScriptedBackend(
         _fixed("Sure. ", 'Sure. <tool_call>{"name": "loo', "Sure. " + _CALL_XML)
     )
@@ -600,9 +590,7 @@ def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
 
 
 def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
-    # A forced function is the only schema rendered into the local template, so
-    # the model is never prompted with tools the healer refuses to promote
-    # (llama-server enforces tool_choice itself on the GGUF path).
+    # A forced function is the only schema rendered into the template.
     backend = _ScriptedBackend(_fixed(_SEARCH_XML))
     payload = _request(
         tools = [LOOKUP_TOOL, SEARCH_TOOL],
@@ -618,10 +606,8 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
 
 
 def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
-    # Remote image URLs leave image=None (only data: URLs are decoded), so the
-    # request reaches this path with a content-part LIST. Local text templates
-    # take string content: keep the text parts, drop the image part, exactly
-    # like the plain non-GGUF path flattens in _extract_content_parts.
+    # Remote image URLs leave image=None, so content arrives as a part LIST:
+    # text parts are kept, the image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
         messages = [
@@ -647,9 +633,8 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
 
 
 def test_string_arguments_history_deserialized_for_template(monkeypatch):
-    # Spec-compliant clients send prior tool_calls arguments as JSON strings;
-    # local templates take mappings (some raise on strings), so the templated
-    # copy carries dicts while the HTTP response stays OpenAI-shaped.
+    # JSON-string tool_calls arguments become dicts in the templated copy;
+    # the HTTP response stays OpenAI-shaped.
     backend = _ScriptedBackend(_fixed("done"))
     payload = _request(
         tools = [LOOKUP_TOOL],
@@ -703,9 +688,8 @@ def test_unparseable_arguments_string_left_untouched(monkeypatch):
 
 
 def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
-    # mcp_enabled=true with an empty MCP registry must not fall through to
-    # plain generation with the declared tools silently dropped: the gate keys
-    # on whether the server-side path actually claimed the request.
+    # mcp_enabled=true with an empty registry must not silently drop the
+    # declared tools; the gate keys on the server-side path claiming the request.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False, mcp_enabled = True)
     body = _json_body(_call(payload, monkeypatch, backend))
