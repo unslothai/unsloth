@@ -2019,7 +2019,12 @@ def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int 
     return None
 
 
-def _gemma_parse_value(text: str, i: int, *, in_mapping: bool = False):
+def _gemma_parse_value(
+    text: str,
+    i: int,
+    *,
+    in_mapping: bool = False,
+):
     """Parse one Gemma arg value at ``i`` in a single O(n) forward pass; returns
     ``(value, next_index, closed)``. ``closed`` is False when a string/object/array
     runs off the end without its terminator, so the caller can fall back to raw.

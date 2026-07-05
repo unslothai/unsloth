@@ -816,9 +816,7 @@ def test_chained_bare_json_owns_kimi_marker_in_later_call():
     assert [c["function"]["name"] for c in calls] == ["lookup", "lookup"], calls
 
     # Reverse control: prose followed by a real Kimi block still parses.
-    real = (
-        "Let me check.\n<|tool_calls_section_begin|>" + kimi + "<|tool_calls_section_end|>"
-    )
+    real = "Let me check.\n<|tool_calls_section_begin|>" + kimi + "<|tool_calls_section_end|>"
     calls_k = parse_tool_calls_from_text(real, enabled_tool_names = {"lookup", "delete_all"})
     assert [c["function"]["name"] for c in calls_k] == ["delete_all"], calls_k
 
@@ -849,9 +847,7 @@ def test_nested_gemma_values_keep_commas_and_parens():
     prose_comma = parse_tool_calls_from_text(
         "call:python{opts:{note:hello, world}}", enabled_tool_names = {"python"}
     )
-    assert json.loads(prose_comma[0]["function"]["arguments"]) == {
-        "opts": {"note": "hello, world"}
-    }
+    assert json.loads(prose_comma[0]["function"]["arguments"]) == {"opts": {"note": "hello, world"}}
 
     quoted = parse_tool_calls_from_text(
         'call:python{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"python"}
