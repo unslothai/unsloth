@@ -167,6 +167,22 @@ def _scheduler_step_progress(pipe: Any, on_step: Any):
         scheduler.step = original
 
 
+def _detect_load_family(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+) -> Optional[VideoFamily]:
+    """Family detection shared by validate_load_request and the load worker: the
+    repo id first, then the picked filename -- a local directory or generically
+    named repo often carries the family token only in the checkpoint filename,
+    and the worker must resolve the same family the validator accepted."""
+    return detect_video_family(repo_id, family_override) or (
+        detect_video_family(f"{repo_id}/{gguf_filename}")
+        if gguf_filename and not family_override
+        else None
+    )
+
+
 def _ensure_mp4_encoder_available() -> None:
     """Fail a load fast when PyAV is missing: the export otherwise dies AFTER a
     multi-minute denoise, which is the worst possible time to learn about it."""
@@ -311,11 +327,16 @@ class VideoBackend:
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
-        fam = detect_video_family(repo_id, family_override) or (
-            detect_video_family(f"{repo_id}/{gguf_filename}")
-            if gguf_filename and not family_override
-            else None
-        )
+        # A -GGUF repo picked without a quant filename resolves to the pipeline
+        # kind and would only fail minutes later in from_pretrained (no
+        # model_index.json), AFTER the route evicted the current GPU owner.
+        # Reject it here, where failing is still free.
+        if kind == "pipeline" and repo_id.strip().lower().rstrip("/").endswith("-gguf"):
+            raise ValueError(
+                f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
+                "(gguf_filename) instead of loading it as a diffusers pipeline."
+            )
+        fam = _detect_load_family(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -425,7 +446,9 @@ class VideoBackend:
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         try:
-            fam = detect_video_family(kwargs["repo_id"], kwargs.get("family_override"))
+            fam = _detect_load_family(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+            )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
             base = (
                 kwargs["repo_id"]
@@ -503,6 +526,11 @@ class VideoBackend:
                 if self._load_token == token:
                     self._loading = None
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
+            # A failed or cancelled load never commits _VideoLoadState, so the
+            # teardown path has no snapshot to restore: roll back the process-wide
+            # speed globals here (token-scoped, so a superseded load cannot clobber
+            # the globals a newer in-flight load now owns).
+            self._rollback_precommit_globals(token)
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
@@ -511,6 +539,25 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
+
+    def _rollback_precommit_globals(self, token: Optional[int]) -> None:
+        """Restore process-wide speed globals (cudnn.benchmark / TF32 / the compiled
+        GGUF dequantizer) for a load that died BEFORE committing _VideoLoadState.
+        _teardown_state only restores from the committed state's snapshot, so an
+        uncommitted load would otherwise leak its profile into the next speed=off
+        load. Token-scoped: when a newer load has already taken the snapshot slot,
+        the stale worker must leave the globals alone."""
+        stored = getattr(self, "_precommit_globals", None)
+        if stored is None:
+            return
+        stored_token, flags = stored
+        if token is not None and stored_token is not None and stored_token != token:
+            return
+        self._precommit_globals = None
+        restore_backend_flags(flags)
+        from . import diffusion_gguf_compile
+
+        diffusion_gguf_compile.uninstall_all()
 
     # Base-repo subfolders an LTX-2.3 assembly reads: the checkpoint (plus the GGUF
     # repo's extras files) supplies the DiT, connectors, both VAEs and the vocoder,
@@ -720,6 +767,12 @@ class VideoBackend:
         # body, so a bare acquire is the exit barrier (never while holding _lock).
         with self._generate_lock:
             pass
+        # The barrier wait can outlive this load: an unload or a newer load may
+        # have superseded it while blocked, and tearing down now would destroy
+        # the model that should remain current (or waste minutes building a
+        # pipeline nobody wants). Recheck before touching shared state.
+        if _load_token is not None and _load_token != self._load_token:
+            raise RuntimeError("Video load was cancelled or superseded.")
         self._teardown_state()
 
         target = resolve_diffusion_device_target()
@@ -730,13 +783,23 @@ class VideoBackend:
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:
             dtype = torch.float32
+        # The size tables below are bf16 (2-byte) figures. When the promotion
+        # above lands fp32 weights on an accelerator (a pre-bf16 GPU), every
+        # dense estimate doubles; budgeting the 2-byte figure would let auto
+        # pick a resident plan that OOMs inside from_pretrained. GGUF weights
+        # stay quantised on disk and in memory, so only dense estimates scale.
+        dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
         device_memory = snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         if kind == "pipeline":
-            model_dense_mib = int(sum(components) * mib_per_gb) if components is not None else None
+            model_dense_mib = (
+                int(sum(components) * mib_per_gb * dtype_scale)
+                if components is not None
+                else None
+            )
             companion_mib = None
         else:
             checkpoint_path = self._resolve_checkpoint_path(repo_id, gguf_filename, hf_token)
@@ -746,8 +809,10 @@ class VideoBackend:
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
             else:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
+                if transformer_mib is not None:
+                    transformer_mib = int(transformer_mib * dtype_scale)
             companion_mib = (
-                int((components[1] + components[2]) * mib_per_gb)
+                int((components[1] + components[2]) * mib_per_gb * dtype_scale)
                 if components is not None
                 else None
             )
@@ -948,6 +1013,11 @@ class VideoBackend:
             )
             effective_speed = SPEED_DEFAULT
         backend_flags = snapshot_backend_flags()
+        # Until the state commit below transfers ownership to _teardown_state, a
+        # failure or cancellation must restore these process-wide globals itself
+        # (_run_load's error handler calls _rollback_precommit_globals with this
+        # token). Registered BEFORE the first mutating call.
+        self._precommit_globals = (_load_token, backend_flags)
         # Run the step cache per expert so both denoisers cache; the engaged mode is
         # identical across experts.
         cache_engaged = None
@@ -1084,6 +1154,8 @@ class VideoBackend:
                 transformer_quant = transformer_quant_engaged,
                 resolved = resolved,
             )
+            # Ownership of the globals transferred to _state / _teardown_state.
+            self._precommit_globals = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -1371,6 +1443,14 @@ class VideoBackend:
             self._loading = None
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+        # Wait for the signalled generation to actually exit before freeing the
+        # pipeline: the denoise loop holds its own pipe reference until the next
+        # step callback, so tearing down under it would report the VRAM free (and
+        # let the GPU arbiter start another multi-GB load) while this clip still
+        # occupies it. generate() holds _generate_lock for its full body, so a
+        # bare acquire is the exit barrier (never taken while holding _lock).
+        with self._generate_lock:
+            pass
         self._teardown_state()
         logger.info("video.unloaded")
         return self.status()
