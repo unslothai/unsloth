@@ -761,11 +761,14 @@ type ChatRuntimeStore = {
    *  ends. Not persisted. */
   voiceHearing: boolean;
   /** Derived orb state written by VoiceToggle; consumed by VoiceOrb.
-   *  "synthesizing" = TTS is generating audio but nothing is playing yet.
+   *  "transcribing" = Whisper is turning your captured speech into text.
+   *  "generating"   = the LLM is writing its reply (nothing playing yet).
+   *  "synthesizing" = TTS is generating the voice audio but nothing is playing yet.
    *  "hearing" = the mic is picking up your voice right now. */
   voiceOrbState:
     | "listening"
-    | "thinking"
+    | "transcribing"
+    | "generating"
     | "synthesizing"
     | "speaking"
     | "hearing"
@@ -799,7 +802,8 @@ type ChatRuntimeStore = {
   setVoiceOrbState: (
     state:
       | "listening"
-      | "thinking"
+      | "transcribing"
+      | "generating"
       | "synthesizing"
       | "speaking"
       | "hearing"

@@ -2681,6 +2681,10 @@ const VoiceEngine: FC = () => {
   // voiceModeRef is only written in toggle/activate — never in the render body.
   const voiceModeRef = useRef(_voiceMode);
   const isSpeakingRef = useRef(false);
+  // Mirrors isPlaying (a clip is audibly playing) separately from isSpeaking (the
+  // TTS session is streaming). Barge-in must cut in BOTH cases -- including the
+  // tail where the last clip is still playing after the session already ended.
+  const isPlayingRef = useRef(false);
   const auiRef = useRef(aui);
   auiRef.current = aui;
 
@@ -2768,6 +2772,7 @@ const VoiceEngine: FC = () => {
   const { isSpeaking, isPlaying, beginStream, feedText, endStream, stop, primeAudio } =
     useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
   isSpeakingRef.current = isSpeaking;
+  isPlayingRef.current = isPlaying;
   // Streaming TTS handles (refs so the run-lifecycle effect never goes stale).
   const beginStreamRef = useRef(beginStream);
   beginStreamRef.current = beginStream;
@@ -2805,8 +2810,9 @@ const VoiceEngine: FC = () => {
     if (composer.getState().dictation) composer.stopDictation();
     const text = composer.getState().text.trim();
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
-    // This utterance supersedes whatever the model was saying.
-    if (isSpeakingRef.current) stop();
+    // This utterance supersedes whatever the model was saying. Cover the tail
+    // clip (isPlaying) too, not just an active streaming session (isSpeaking).
+    if (isSpeakingRef.current || isPlayingRef.current) stop();
     if (!text) {
       resumeListen();
       return;
@@ -2906,12 +2912,19 @@ const VoiceEngine: FC = () => {
     // above the speaking checks so talking over the model (barge-in) also reads
     // as hearing, and above thinking so it shows the instant you start.
     if (voiceHearing)               { setVoiceOrbState("hearing"); return; }
-    // Transcribing your speech, or the LLM writing its reply -> amber (working),
-    // so the orb isn't sitting green while Whisper churns.
-    if (voiceTranscribing || isThreadRunning) { setVoiceOrbState("thinking"); return; }
-    // TTS session active but no clip playing yet = still synthesizing (lilac).
-    if (isSpeaking && !isPlaying)   { setVoiceOrbState("synthesizing"); return; }
-    if (isSpeaking)                 { setVoiceOrbState("speaking"); return; }
+    // Audio actually playing -> "speaking" wins over any background work (the LLM
+    // still writing the rest of the reply, or the next sentence synthesizing).
+    // These run in parallel with playback, but playing is the most important thing
+    // the user perceives, so it must not be overridden by background generation.
+    if (isPlaying)                  { setVoiceOrbState("speaking"); return; }
+    // Nothing playing yet. Split the old "thinking" into its real phases so the
+    // caption says exactly what's happening: Whisper turning speech->text, then
+    // the LLM writing the reply. Transcribing is checked first since it precedes
+    // generation for a given turn.
+    if (voiceTranscribing)          { setVoiceOrbState("transcribing"); return; }
+    if (isThreadRunning)            { setVoiceOrbState("generating"); return; }
+    // TTS session active, nothing playing, generation done = a real synth gap (lilac).
+    if (isSpeaking)                 { setVoiceOrbState("synthesizing"); return; }
     setVoiceOrbState("listening");
   }, [voiceMode, voiceSlotLoading, sttWarming, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
 
@@ -3184,7 +3197,10 @@ const VoiceEngine: FC = () => {
   useEffect(() => {
     _voiceBargeIn = () => {
       if (voiceModeRef.current !== "active") return;
-      if (isSpeakingRef.current) stop();
+      // Cut whether the TTS session is still streaming (isSpeaking) OR just the
+      // tail clip is still audibly playing (isPlaying) after the session ended --
+      // otherwise a barge-in during that tail wouldn't stop the audio.
+      if (isSpeakingRef.current || isPlayingRef.current) stop();
     };
     return () => {
       _voiceBargeIn = null;

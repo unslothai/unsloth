@@ -36,13 +36,19 @@ const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
 // noise fall under this and are dropped -- this is what stops Whisper being fed
 // junk (and hallucinating repeated tokens) during barge-in / idle listening.
 const MIN_SPEECH_MS = 350;
-// Real-time barge-in (cut the TTS while the model speaks). Deliberately strict so
-// it takes an actual "stop" from the user, not a stray sound: the audio must be
-// LOUD (BARGE_IN_RMS, well above the plain voiced floor) AND sustained
-// CONTINUOUSLY for BARGE_IN_MS. Both gates keep quiet speaker-bleed / room noise
-// during playback from self-interrupting. The utterance still has to clear
-// MIN_SPEECH_MS to actually be transcribed and sent.
-const BARGE_IN_MS = 500;
+// Real-time barge-in (cut the TTS while the model speaks). We cut at two points,
+// whichever comes first:
+//   1. Commit: the moment this utterance has accumulated MIN_SPEECH_MS of real
+//      voiced speech -- i.e. the instant we KNOW it will be transcribed and sent.
+//      Tying the cut to the transcribe gate means you never end up talking over a
+//      reply that's already committed to being replaced, and a sub-threshold blip
+//      that WON'T be transcribed never cuts the model.
+//   2. Fast: a clearly LOUD burst (>= BARGE_IN_RMS) sustained continuously for
+//      BARGE_IN_FAST_MS cuts even sooner, so an emphatic "stop" interrupts snappily.
+// The higher BARGE_IN_RMS gate on the fast path keeps quiet speaker-bleed from
+// self-interrupting before the commit point; the commit path leans on the same
+// SPEECH_RMS floor that already guards transcription itself against bleed.
+const BARGE_IN_FAST_MS = 220;
 const BARGE_IN_RMS = 0.045;
 // Silence trimmed around the voiced span before sending to Whisper (Whisper
 // hallucinates on long leading/trailing silence). Keep a little context.
@@ -137,8 +143,9 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
     // measure voiced duration and to trim silence before transcription.
     const chunkVoiced: boolean[] = [];
     let voicedMs = 0;
-    // Run of continuous LOUD frames (>= BARGE_IN_RMS); resets on any quiet frame.
-    let bargeVoicedMs = 0;
+    // Run of continuous LOUD frames (>= BARGE_IN_RMS) for the fast barge path;
+    // resets on any quiet frame.
+    let bargeLoudMs = 0;
     let bargedIn = false;
     let sampleRate = 16000;
     let heardSpeech = false;
@@ -359,19 +366,21 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
               for (const cb of speechStartCallbacks) cb();
             }
           }
-          // Real-time barge-in: needs LOUD audio (>= BARGE_IN_RMS) sustained
-          // CONTINUOUSLY for BARGE_IN_MS -- one quiet frame resets the run, so
-          // intermittent speaker-bleed / noise during TTS can't accumulate into a
+          // Real-time barge-in: cut the currently-playing TTS the instant this
+          // utterance commits to being transcribed (voicedMs past the transcribe
+          // gate), so you never talk over a reply that's already going to be
+          // replaced. A clearly LOUD continuous burst cuts even sooner. Firing only
+          // at/after the commit point means blips that WON'T be transcribed never
           // self-interrupt. The VoiceEngine handler no-ops unless the model is
-          // actually speaking, so firing during normal listening is harmless.
-          if (rms >= BARGE_IN_RMS) {
-            bargeVoicedMs += frameMs;
-            if (!bargedIn && bargeVoicedMs >= BARGE_IN_MS) {
-              bargedIn = true;
-              requestVoiceBargeIn();
-            }
-          } else {
-            bargeVoicedMs = 0;
+          // actually speaking, so stray calls are harmless.
+          if (rms >= BARGE_IN_RMS) bargeLoudMs += frameMs;
+          else bargeLoudMs = 0;
+          if (
+            !bargedIn &&
+            (voicedMs >= MIN_SPEECH_MS || bargeLoudMs >= BARGE_IN_FAST_MS)
+          ) {
+            bargedIn = true;
+            requestVoiceBargeIn();
           }
 
           const sinceVoice = now - lastVoiceAt;

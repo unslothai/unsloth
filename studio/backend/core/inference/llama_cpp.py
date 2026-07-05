@@ -9021,11 +9021,12 @@ class LlamaCppBackend:
     @staticmethod
     def _trim_leading_word(wav_bytes: bytes, sample_rate: int) -> bytes:
         """Slice the leading spoken speaker name off Orpheus audio on low quants.
-        The name is one short word at the very start followed by the colon's pause,
-        so cut everything up to the first clear silence gap after speech onset.
-        Conservative: if no name+gap is found in the first ~1.2s, or anything goes
-        wrong, return the audio unchanged (better to keep a stray name than clip
-        the reply)."""
+        The name is ONE short word at the very start, set off by the colon's pause.
+        We only cut when we can see that exact shape: a brief leading voiced run
+        (name-length) right at the beginning, followed by a real silence gap, all
+        inside the first fraction of a second. If the name blends into the reply
+        (no gap between them) or the shape doesn't match, we return the audio
+        unchanged -- keeping a stray name is far better than clipping the reply."""
         try:
             import io
 
@@ -9036,35 +9037,48 @@ class LlamaCppBackend:
             mono = data.mean(axis = 1) if data.ndim > 1 else data
             frame = max(1, int(sr * 0.02))  # 20 ms frames
             n = mono.size // frame
-            if n < 3:
+            if n < 6:
                 return wav_bytes
             energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
             peak = float(energy.max())
             if peak <= 0:
                 return wav_bytes
-            voiced = energy > peak * 0.08
-            if not voiced.any():
-                return wav_bytes
+            voiced = energy > peak * 0.06
+
+            def f(ms: float) -> int:  # ms -> number of 20 ms frames
+                return max(1, int((ms / 1000.0) / 0.02))
+
             onset = int(np.argmax(voiced))
-            limit = min(n, onset + int(1.2 / 0.02))  # look for the name in first ~1.2s
-            gap_frames = max(1, int(0.10 / 0.02))  # need >= 100 ms of silence
-            i = onset + 1
-            while i < limit:
-                if not voiced[i]:
-                    j = i
-                    while j < n and not voiced[j]:
-                        j += 1
-                    if j - i >= gap_frames:
-                        trimmed = mono[j * frame:]
-                        if trimmed.size < frame:
-                            return wav_bytes
-                        buf = io.BytesIO()
-                        sf.write(buf, trimmed, sr, format = "WAV")
-                        return buf.getvalue()
-                    i = j
-                else:
-                    i += 1
-            return wav_bytes
+            # The name must start near the very beginning; if the first sound only
+            # shows up late, it's the reply itself -- don't touch it.
+            if onset > f(400):
+                return wav_bytes
+            # End of the leading (name) voiced run.
+            name_end = onset
+            while name_end < n and voiced[name_end]:
+                name_end += 1
+            name_len = name_end - onset
+            # A spoken name is short. If the leading run is long, it's the reply
+            # (name merged into the first word) -- leave it alone.
+            if name_len < f(100) or name_len > f(600):
+                return wav_bytes
+            # Require a real pause right after the name.
+            gap_end = name_end
+            while gap_end < n and not voiced[gap_end]:
+                gap_end += 1
+            if gap_end - name_end < f(80):
+                return wav_bytes  # no clear pause -> not a name we can safely cut
+            # The whole name+pause must sit in the first ~900 ms, with real speech
+            # after it. Back off ~40 ms so the reply's first consonant isn't clipped.
+            if gap_end > onset + f(900) or gap_end >= n:
+                return wav_bytes
+            cut = max(name_end + 1, gap_end - f(40))
+            trimmed = mono[cut * frame:]
+            if trimmed.size < frame:
+                return wav_bytes
+            buf = io.BytesIO()
+            sf.write(buf, trimmed, sr, format = "WAV")
+            return buf.getvalue()
         except Exception:
             return wav_bytes
 
@@ -9107,7 +9121,13 @@ class LlamaCppBackend:
         trim_name = False
         if audio_type == "snac":
             v = voice if voice in self._ORPHEUS_VOICES else "tara"
-            prompt_text = f"{v}: {text}"
+            # A colon inside the CONTENT reads to Orpheus like a "name: text"
+            # speaker tag (that's the format it was trained on for voice select),
+            # so a colon mid-reply can flip or garble the voice. Swap content
+            # colons for commas so the ONLY colon Orpheus sees is our intended
+            # "{voice}:" speaker prefix -- the voice stays stable across the reply.
+            clean = text.replace(":", ",")
+            prompt_text = f"{v}: {clean}"
             trim_name = not self._orpheus_voice_prefix_ok()
 
         payload: dict = {

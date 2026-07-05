@@ -49,6 +49,46 @@ export function splitStreaming(text: string): {
   return { complete: parts.slice(0, -1), partial: parts[parts.length - 1] ?? "" };
 }
 
+// Live output loudness (RMS-ish, ~0..0.3) of the TTS clip currently playing,
+// refreshed each animation frame from a decoded copy of the audio -- the live
+// <audio> element is NEVER routed through Web Audio, so playback can't be
+// silenced. The speaking orb reads this to move its bars with the voice. Plain
+// mutable ref so it never triggers React re-renders; reset to 0 when playback
+// ends or is cut off.
+export const voiceOutputLevel = { current: 0 };
+
+const ENVELOPE_BUCKET_S = 1 / 60;
+let _analysisCtx: AudioContext | null = null;
+
+// Decode a clip and return its RMS envelope (one value per ~1/60s bucket) so the
+// speaking bars can be indexed by playback time. Analysis-only: the context is
+// never connected to an output, so decoding here cannot affect what the user hears.
+async function envelopeFromBlob(blob: Blob): Promise<Float32Array | null> {
+  try {
+    const Ctor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!Ctor) return null;
+    if (!_analysisCtx) _analysisCtx = new Ctor();
+    const audioBuffer = await _analysisCtx.decodeAudioData(await blob.arrayBuffer());
+    const ch = audioBuffer.getChannelData(0);
+    const per = Math.max(1, Math.floor(audioBuffer.sampleRate * ENVELOPE_BUCKET_S));
+    const n = Math.max(1, Math.ceil(ch.length / per));
+    const env = new Float32Array(n);
+    for (let b = 0; b < n; b++) {
+      const start = b * per;
+      const end = Math.min(ch.length, start + per);
+      let sum = 0;
+      for (let i = start; i < end; i++) sum += ch[i] * ch[i];
+      env[b] = Math.sqrt(sum / Math.max(1, end - start));
+    }
+    return env;
+  } catch {
+    return null;
+  }
+}
+
 export function useTtsPlayer(
   audioType: string | null | undefined,
   onPlaybackEnd?: () => void,
@@ -167,10 +207,33 @@ export function useTtsPlayer(
       objectUrlRef.current = url;
       const audio = audioRef.current ?? new Audio();
       audioRef.current = audio;
+
+      // Drive the speaking-orb bars from this clip's loudness. Decode a copy for
+      // its envelope (async; the live element is untouched) and, while it plays,
+      // publish the level at the current playback time each animation frame.
+      let env: Float32Array | null = null;
+      void envelopeFromBlob(blob).then((e) => {
+        env = e;
+      });
+      let levelRaf = 0;
+      const runLevel = () => {
+        if (env) {
+          voiceOutputLevel.current =
+            env[Math.floor(audio.currentTime / ENVELOPE_BUCKET_S)] ?? 0;
+        }
+        levelRaf = requestAnimationFrame(runLevel);
+      };
+      const stopLevel = () => {
+        if (levelRaf) cancelAnimationFrame(levelRaf);
+        levelRaf = 0;
+        voiceOutputLevel.current = 0;
+      };
+
       let settled = false;
       const done = () => {
         if (settled) return;
         settled = true;
+        stopLevel();
         if (playResolveRef.current === done) playResolveRef.current = null;
         if (objectUrlRef.current === url) {
           URL.revokeObjectURL(url);
@@ -190,6 +253,7 @@ export function useTtsPlayer(
       // (synthesis) stays in the synthesizing state.
       audio.onplaying = () => {
         if (requestIdRef.current === reqId) setIsPlaying(true);
+        if (!levelRaf) levelRaf = requestAnimationFrame(runLevel);
       };
       audio.src = url;
       // play() returns a promise that can reject (autoplay policy, decode error)
@@ -340,7 +404,11 @@ export function useTtsPlayer(
   const pumpSynth = useCallback(() => {
     const st = streamRef.current;
     if (!st || requestIdRef.current !== st.reqId || !isTtsModel) return;
-    const lookahead = Math.max(1, useChatRuntimeStore.getState().voiceParallelN);
+    // Keep at most ONE sentence synthesizing ahead of the one playing. The voice
+    // slot is compute-bound on a single GPU even at --parallel N, so firing
+    // further ahead just backs up the queue and makes a barge-in throw away more
+    // in-flight audio; one ahead is enough to hide the gap between sentences.
+    const lookahead = 1;
     const limit = Math.min(st.sentences.length, st.playIndex + 1 + lookahead);
     while (st.launched < limit) {
       st.jobs[st.launched] = synthOne(st.sentences[st.launched] ?? "");

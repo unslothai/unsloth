@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { voiceOutputLevel } from "@/features/chat/hooks/use-tts-player";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,
+  AudioWaveformIcon,
   LoaderCircleIcon,
   MicIcon,
-  SparklesIcon,
+  PencilLineIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
@@ -36,7 +38,18 @@ export const orbConfig = {
     duration: "2s",
     shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
   },
-  thinking: {
+  // Teal quick pulse: Whisper is turning your captured speech into text. Its own
+  // hue + pencil icon so "transcribing" reads as clearly distinct from the LLM
+  // writing its reply (amber) below.
+  transcribing: {
+    gradient: "radial-gradient(circle at 40% 35%, #5eead4, #0d9488)",
+    animation: "voice-orb-pulse",
+    duration: "1.1s",
+    shadow: "0 0 30px 7px rgba(45,212,191,0.35)",
+  },
+  // Amber pulse: the LLM is writing its reply, nothing playing yet. The typing
+  // dots are the classic "assistant is generating a response" indicator.
+  generating: {
     gradient: "radial-gradient(circle at 40% 35%, #fbbf24, #d97706)",
     animation: "voice-orb-pulse",
     duration: "1s",
@@ -69,12 +82,13 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   listening: { label: "Listening", icon: "mic" },
   hearing: { label: "Hearing you", icon: "wave" },
   loading: { label: "Warming up", icon: "spinner" },
-  thinking: { label: "Thinking", icon: "dots" },
-  synthesizing: { label: "Generating", icon: "sparkle" },
-  speaking: { label: "Speaking", icon: "wave" },
+  transcribing: { label: "Transcribing", icon: "pencil" },
+  generating: { label: "Generating LLM response", icon: "dots" },
+  synthesizing: { label: "Generating voice", icon: "waveform" },
+  speaking: { label: "Speaking", icon: "bars-live" },
 };
 
-type IconKind = "mic" | "wave" | "dots" | "spinner" | "sparkle";
+type IconKind = "mic" | "wave" | "bars-live" | "dots" | "spinner" | "pencil" | "waveform";
 
 // Deboss: near-black fill with a faint highlight below and a dark cut above, so
 // the glyph looks carved into the sphere rather than sitting on top of it.
@@ -98,10 +112,60 @@ const Dots: FC = () => (
   </div>
 );
 
+// Speaking: black equalizer bars driven by the ACTUAL TTS output loudness
+// (voiceOutputLevel), set imperatively per animation frame so there are no React
+// re-renders. The group still rides the ball's breathe; the bar HEIGHTS move with
+// the audio. SPEAK_GAIN scales the RMS toward full height on loud speech (tunable).
+const SPEAK_GAIN = 5.5;
+const SpeakingBars: FC = () => {
+  const refs = useRef<Array<HTMLSpanElement | null>>([]);
+  useEffect(() => {
+    const weights = [0.55, 0.85, 1, 0.82, 0.5];
+    const smooth = [0, 0, 0, 0, 0];
+    let raf = 0;
+    const tick = () => {
+      const lvl = Math.min(1, voiceOutputLevel.current * SPEAK_GAIN);
+      const t = performance.now() / 1000;
+      for (let i = 0; i < refs.current.length; i++) {
+        // Per-bar shimmer so the band isn't a flat block, scaled by loudness.
+        const shimmer = 0.78 + 0.22 * Math.sin(t * 9 + i * 1.7);
+        const target = Math.min(1, 0.16 + lvl * weights[i] * shimmer);
+        smooth[i] += (target - smooth[i]) * 0.4;
+        const el = refs.current[i];
+        if (el) el.style.transform = `scaleY(${Math.max(0.14, smooth[i])})`;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5, height: 40 }}>
+      {[0, 1, 2, 3, 4].map((i) => (
+        <span
+          key={i}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          style={{
+            width: 6,
+            height: 40,
+            borderRadius: 3,
+            background: HOLE,
+            transformOrigin: "center",
+            filter: DEBOSS,
+          }}
+        />
+      ))}
+    </div>
+  );
+};
+
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
-  // Soundwave (hearing / speaking): a static glyph -- the ball's own pulse
-  // (faster/harder for speaking) supplies the motion, and the icon rides it, so
-  // it grows and shrinks exactly with the sphere instead of on its own scaleY.
+  // Speaking: live equalizer bars that move with the audio output.
+  if (icon === "bars-live") return <SpeakingBars />;
+  // Soundwave (hearing): a static glyph -- the ball's pulse supplies the motion
+  // and the icon rides it, growing/shrinking with the sphere, not on its own.
   if (icon === "wave")
     return (
       <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
@@ -117,16 +181,16 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
         <LoaderCircleIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
       </motion.div>
     );
-  if (icon === "sparkle")
+  if (icon === "pencil")
+    // Transcribing: a pencil writing down what you said. Static, rides the breathe.
     return (
-      // Rotate-only twinkle: no scale, so it never grows/shrinks on its own.
-      <motion.div
-        animate={{ rotate: [-8, 8, -8] }}
-        transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-        style={{ display: "grid", placeItems: "center" }}
-      >
-        <SparklesIcon size={44} strokeWidth={2.3} color={HOLE} style={{ filter: DEBOSS }} />
-      </motion.div>
+      <PencilLineIcon size={44} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+    );
+  if (icon === "waveform")
+    // Generating voice: a single audio waveform being built. Static like the rest,
+    // so it grows/shrinks with the sphere instead of animating on its own.
+    return (
+      <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
   // mic (listening): a resting state, so the icon gets NO independent animation.
   // It rides the ball's breathe scale only, so it grows and shrinks in perfect
