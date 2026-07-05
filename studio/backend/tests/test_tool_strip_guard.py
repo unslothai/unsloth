@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""strip_tool_patterns must produce identical output to the plain per-pattern
-loop, while skipping a lazy closed-pair sweep whose close token is absent (the
-O(n^2) no-match rescan, O(n^3) when re-run per streamed token)."""
+"""strip_tool_patterns must match the plain per-pattern loop while skipping the
+quadratic no-match rescan of a closed-pair sweep whose close token is absent."""
 
 import random
 import sys
@@ -69,8 +68,7 @@ def test_strip_markup_representative_cases_unchanged():
 
 
 def test_no_quadratic_blowup_on_unclosed_markers():
-    # Many openers with no close token: the guard skips the lazy closed-pair
-    # sweep, keeping this linear. Unguarded this took minutes.
+    # Unguarded, this took minutes.
     big = "<tool_call>" * 20000 + "<function=x>" * 20000
     t0 = time.perf_counter()
     out = strip_tool_call_markup(big, final = True)

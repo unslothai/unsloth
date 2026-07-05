@@ -10,12 +10,10 @@ orchestrator, structlog, httpx, or the rest of the studio backend.
 import json
 import re
 
-# Tool XML stripping patterns. Hyphen in the name class matches dashed MCP names
-# (mcp__srv__list-issues). Both lists strip every closed pair first (JSON, Gemma,
-# function), so a closed call is removed as a unit before any to-EOF sweep can
-# reach markup nested inside it; the final list then adds greedy .*$ sweeps that
-# drop an unclosed opener's remainder to EOF. The non-final list keeps incomplete
-# blocks (no EOF sweeps), matching the parser's allow_incomplete = False path.
+# Strip patterns. The name-class hyphen matches dashed MCP names. Closed pairs
+# strip first, so a closed call is removed as a unit before any to-EOF sweep can
+# reach markup nested inside it; only the final list adds the .*$ EOF sweeps, so
+# the non-final list keeps incomplete blocks.
 _TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
 _TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
@@ -31,15 +29,11 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
-# Closed JSON/function blocks, stripped before the quote-aware Gemma helper so a
-# Gemma opener sitting in their argument data (e.g. a "<|tool_call>call:t{"
-# string) cannot make the helper truncate the whole block, and text after it, to
-# EOF. Both are guarded below, so the pre-pass is skipped when absent.
+# Stripped before the quote-aware Gemma helper so a Gemma opener quoted in
+# their argument data cannot make the helper truncate the block and its tail.
 _TOOL_CLOSED_BLOCK_PATS = [_TC_JSON_CLOSED_PAT, _TC_FUNC_CLOSED_PAT]
-# A lazy closed-pair pattern rescans to EOF from every opener when its close
-# token is absent (O(n^2); O(n^3) re-run per streamed token). Skip the doomed
-# sweep when the token is missing -- identical output, no backtracking. The
-# to-EOF sweeps are greedy, so they short-circuit on the first opener.
+# A lazy closed-pair pattern whose close token is absent rescans to EOF from
+# every opener (quadratic, re-run per streamed token); skip that doomed pass.
 _PAT_REQUIRED_TOKEN = {
     _TC_JSON_CLOSED_PAT: "</tool_call>",
     _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
@@ -48,8 +42,7 @@ _PAT_REQUIRED_TOKEN = {
 
 
 def strip_tool_patterns(text: str, patterns) -> str:
-    """Apply strip ``patterns`` in order, skipping a closed-pair pass whose close
-    token is absent (avoids its quadratic no-match rescan)."""
+    """Apply ``patterns`` in order, skipping closed-pair passes with no close token."""
     for pat in patterns:
         token = _PAT_REQUIRED_TOKEN.get(pat)
         if token is not None and token not in text:
@@ -70,9 +63,8 @@ _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
-# A bare Gemma value ends at `}` or a comma starting the next `key:` pair. The
-# key must be identifier-shaped, so a comma before digits-then-colon stays in
-# the value (`location:New York, NY`; `meet at 10:00, 11:00`).
+# A bare Gemma value ends at `}` or a comma starting the next identifier-shaped
+# `key:`; commas before non-keys stay in the value (`New York, NY`, `10:00, 11:00`).
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 
 
@@ -169,10 +161,8 @@ def _split_top_level_commas(src: str) -> list:
 
 
 def _quote_gemma_array_elements(body: str) -> str:
-    """Normalise a Gemma array value so json.loads succeeds: quote bare string
-    elements, recurse into object/nested-array elements, leave quoted strings,
-    numbers, and JSON literals as-is. Gemma emits these unquoted
-    (``labels:[bug,ui]``, ``items:[{path:a}]``) and the call would otherwise drop."""
+    """Normalise a Gemma array value (``labels:[bug,ui]``) so json.loads succeeds:
+    quote bare strings, recurse into objects/arrays, keep quoted/JSON literals."""
     out: list[str] = []
     for element in _split_top_level_commas(body):
         stripped = element.strip()
@@ -259,8 +249,7 @@ def _quote_gemma_object_keys(src: str) -> str:
             parts.append(src[i:colon_pos])
             parts.append(":")
             i = colon_pos + 1
-            # Quote bare string values ({unit:celsius}); JSON scalars/objects/
-            # arrays/quoted strings stay as-is.
+            # Quote bare string values ({unit:celsius}); JSON stays as-is.
             ws = i
             while i < len(src) and src[i].isspace():
                 i += 1
@@ -317,17 +306,11 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
 
 
 def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
-    """Coverage region ``[start, end]`` for each marker, used to skip markers that
-    are another call's data. Each marker's own close is paired to it with a
-    per-format stack (a close after the braces pops the nearest still-open marker
-    of that format), so an inner call's close is not mistaken for the outer's:
-
-    - braces never balance -> covers ``[start, EOF)`` (the whole ambiguous tail);
-    - braces balance and a matching close is found -> covers ``[start, close_end]``
-      so a marker smuggled between the braces and that close is treated as data;
-    - braces balance but no close is paired -> covers only the brace region, so a
-      later sibling after an omitted close marker is still recovered as its own call.
-    """
+    """Coverage ``[start, end]`` per marker, used to skip markers that are another
+    call's data. Closes pair to markers via a per-format stack so an inner close
+    is not mistaken for the outer's. Unbalanced braces cover to EOF; balanced with
+    a paired close cover through it (markers before the close are data); balanced
+    without one cover only the braces, so a later sibling is still recovered."""
     n = len(content)
     brace_regions = [(s, be) for (s, be, _k, _m) in markers if be >= 0]
     events = []  # (position, order) with order 0 = braces-done, 1 = close marker
@@ -336,10 +319,8 @@ def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
             events.append((brace_end, 0, _kind, idx))
     for kind, close_re in (("json", _TC_END_TAG_RE), ("gemma", _TC_GEMMA_END_TAG_RE)):
         for cm in close_re.finditer(content):
-            # A close token inside another call's balanced braces is that call's
-            # quoted argument data, not a structural close. Ignore it, else it
-            # could pop an earlier close-less marker and extend its coverage over a
-            # later valid sibling (dropping that sibling).
+            # A close inside another call's balanced braces is quoted data; it
+            # must not pop an earlier close-less marker and swallow a sibling.
             if any(s < cm.start() < be for s, be in brace_regions):
                 continue
             events.append((cm.start(), 1, kind, cm.end()))
@@ -383,13 +364,9 @@ def parse_tool_calls_from_text(
     """
     tool_calls: list[dict] = []
     call_spans: list[tuple] = []
-    # Collect JSON/Gemma markers, then decide nesting by each marker's coverage
-    # region (see _marker_coverage): a closed outer covers up to its own close
-    # marker, so a JSON/Gemma marker smuggled between the outer braces and that
-    # close is treated as data, not executed; an outer that balances but has no
-    # close of its own covers only its brace region, so a later sibling after an
-    # omitted close is still recovered. A marker inside an open
-    # <function=...><parameter=> value is that parameter's data, so skip it.
+    # Collect JSON/Gemma markers; nesting is decided by _marker_coverage (a
+    # marker inside another call's coverage is data, not executed). Markers
+    # inside an open <parameter=> value are that parameter's data.
     markers = []  # (start, brace_end, kind, match); brace_end < 0 = unclosed
     for start_re, gemma, kind in (
         (_TC_JSON_START_RE, False, "json"),
@@ -405,10 +382,8 @@ def parse_tool_calls_from_text(
     coverage = _marker_coverage(content, markers)
     parsed_items = []  # (start, span_end, name, arguments) in document order
     for idx, (start, brace_end, kind, m) in enumerate(markers):
-        # Skip a marker whose start falls in another marker's coverage: it is that
-        # outer call's data (its braces, or the gap up to its close), not a call.
-        # The end is exclusive: a marker starting exactly where another's close
-        # ends is the next sibling (adjacent calls), not nested.
+        # A marker starting inside another's coverage is that call's data. The
+        # end is exclusive so a marker at a close's end is an adjacent sibling.
         if any(s <= start < e for j, (s, e) in enumerate(coverage) if j != idx):
             continue
         if brace_end < 0:
@@ -430,8 +405,7 @@ def parse_tool_calls_from_text(
                 arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : brace_end]))
         except (json.JSONDecodeError, ValueError):
             continue
-        # Span for with_spans callers: through the close tag when present so the
-        # healed strip removes the whole wrapped call, else just the braces.
+        # Span reaches through the close tag when present, else just the braces.
         span_end = brace_end + 1
         close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
         ws = len(content[span_end:]) - len(content[span_end:].lstrip())
@@ -440,12 +414,10 @@ def parse_tool_calls_from_text(
             span_end = close_m.end()
         parsed_items.append((start, span_end, name, arguments))
 
-    # Function-XML calls parse alongside marker calls (mixed formats promote in
-    # document order -- the #6801 contract). Exclude <function=> markers inside
-    # any marker's coverage -- its braces, or the gap up to its close -- even if
-    # that call failed to parse, so nested XML cannot escape as a real call. A
-    # <function=> after a balanced close-less marker is a sibling (recovered),
-    # not swallowed to EOF.
+    # Function-XML calls promote in document order alongside marker calls (the
+    # #6801 contract). A <function=> inside any marker's coverage is excluded --
+    # even if that marker failed to parse -- so nested XML cannot escape; one
+    # after a balanced close-less marker is a sibling, not swallowed to EOF.
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
@@ -531,11 +503,9 @@ def parse_tool_calls_from_text(
 
 
 def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
-    """Remove complete Gemma-native ``<|tool_call>call:NAME{...}<tool_call|>``
-    spans, brace/quote-balanced so a literal ``<tool_call|>`` inside a
-    ``<|"|>``-quoted argument cannot truncate the span and leak its suffix. An
-    incomplete span is dropped to EOF when ``final``, else kept (still streaming).
-    """
+    """Remove complete Gemma-native spans, brace/quote-balanced so a literal
+    ``<tool_call|>`` in a quoted argument cannot truncate the span. An incomplete
+    span is dropped to EOF when ``final``, else kept (still streaming)."""
     out: list[str] = []
     cursor = 0
     for match in _TC_GEMMA_START_RE.finditer(text):
@@ -544,17 +514,14 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
             continue
         brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
         if brace_end < 0:
-            # Unbalanced: no complete span from here on. Drop the rest if final,
-            # else keep it, and stop -- later starts are inside this unclosed run,
-            # so rescanning them would re-walk to EOF each time (quadratic).
+            # Unbalanced: nothing completes from here on. Drop the rest if final,
+            # else keep it; stop either way (rescanning would be quadratic).
             if final:
                 out.append(text[cursor:start])
                 cursor = len(text)
             break
-        # Search for the close marker after the braces (not just immediately
-        # after): junk between } and <tool_call|> is malformed-call markup, so
-        # strip through the close and keep any text after it. None anywhere after
-        # means nothing closes from here on, so stop (keeps this linear).
+        # Junk between } and <tool_call|> is malformed-call markup: strip through
+        # the close, keep text after it. No close anywhere means stop (linear).
         close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
         if close is None:
             if final:
@@ -568,9 +535,8 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
 
 
 def _gemma_span_ranges(text: str) -> list:
-    """``(start, end)`` of each complete Gemma-native span, same walk as
-    ``_strip_gemma_native_spans`` without stripping (brace/quote-balanced,
-    close marker searched after the braces)."""
+    """``(start, end)`` of each complete Gemma-native span; same walk as
+    ``_strip_gemma_native_spans`` without stripping."""
     ranges: list[tuple] = []
     cursor = 0
     for match in _TC_GEMMA_START_RE.finditer(text):
@@ -589,13 +555,10 @@ def _gemma_span_ranges(text: str) -> list:
 
 
 def _strip_closed_blocks_outside_gemma(text: str) -> str:
-    """Closed JSON/function pre-pass that leaves matches STARTING inside a
-    complete Gemma span alone. A literal ``<function=...>`` quoted in a Gemma
-    argument plus a later real ``</function>`` would otherwise be deleted
-    across the Gemma boundary, mangling the Gemma close marker so the
-    quote-aware strip truncates the whole tail. A skipped match resumes the
-    scan at the END of the covering Gemma span (not the match end), so a real
-    function-XML call after the span is still stripped."""
+    """Closed JSON/function pre-pass that skips matches starting inside a complete
+    Gemma span: deleting across the span boundary would mangle the Gemma close and
+    truncate the tail. A skipped match resumes at the covering span's end, so a
+    real function-XML call after the span is still stripped."""
     ranges = _gemma_span_ranges(text)
     if not ranges:
         return strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
@@ -625,15 +588,10 @@ def _strip_closed_blocks_outside_gemma(text: str) -> str:
 
 
 def strip_tool_markup_final(text: str) -> str:
-    """Final display strip, shared by ``strip_tool_call_markup`` and the streaming
-    wrappers so all three order the passes the same way. Closed JSON/function
-    blocks go first (so a Gemma opener in their argument data cannot make the
-    quote-aware helper truncate the block and its tail to EOF), but Gemma-aware:
-    a match starting inside a complete Gemma span is that span's argument data,
-    not a block to delete across the boundary. Then well-formed Gemma spans
-    (quote-aware); then the regex sweeps mop up malformed spans and drop any
-    unclosed remainder to EOF. Surrounding whitespace is kept.
-    """
+    """Final display strip, shared with the streaming wrappers so all paths order
+    the passes identically: Gemma-aware closed JSON/function blocks first, then
+    well-formed Gemma spans (quote-aware), then the regex sweeps mop up malformed
+    spans and drop any unclosed remainder to EOF. Whitespace is kept."""
     text = _strip_closed_blocks_outside_gemma(text)
     text = _strip_gemma_native_spans(text, final = True)
     return strip_tool_patterns(text, _TOOL_ALL_PATS)
@@ -648,9 +606,7 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     """
     if final:
         return strip_tool_markup_final(text).strip()
-    # Non-final: closed JSON/function blocks first (same reason as the final path),
-    # then keep any still-incomplete Gemma span (quote-aware), then the closed
-    # patterns mop up the rest without touching incomplete blocks.
+    # Non-final: same ordering as the final path, but incomplete blocks are kept.
     text = _strip_closed_blocks_outside_gemma(text)
     text = _strip_gemma_native_spans(text, final = False)
     return strip_tool_patterns(text, _TOOL_CLOSED_PATS)

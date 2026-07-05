@@ -893,9 +893,8 @@ class _SameTaskStreamingResponse(StreamingResponse):
 
 
 def _tracked_cancel_unstarted_cleanup(tracker):
-    """unstarted_cleanup for a local stream that entered ``tracker`` before
-    returning: exits it on pre-start disconnect, when the generator's finally
-    (which normally does so) never runs. Mutually exclusive with that finally."""
+    """unstarted_cleanup that exits ``tracker`` on a pre-start disconnect, when
+    the generator's finally (which normally exits it) never runs."""
 
     async def _cleanup() -> None:
         tracker.__exit__(None, None, None)
@@ -10879,12 +10878,9 @@ async def _openai_passthrough_stream(
     ``delta.tool_calls``, and any client-requested trailing ``usage`` chunk so
     the client sees a standard OpenAI response.
 
-    Reasoning/tool-call splitting is delegated to llama-server's
-    ``/v1/chat/completions`` (Studio runs ``--jinja --reasoning-format auto``),
-    so ``delta.content`` carries no raw ``<think>``/``<|tool_call>`` markup and
-    is deliberately not re-parsed locally (unlike the ``/completion`` paths). If
-    a future llama.cpp build stops splitting it, this path would need the local
-    extractor as a safety net.
+    Reasoning/tool-call splitting is delegated to llama-server (``--jinja
+    --reasoning-format auto``), so ``delta.content`` carries no raw markup and is
+    deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(

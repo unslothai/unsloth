@@ -201,9 +201,7 @@ class TestHealingPathUnaffected:
 
 class TestGemmaAwareClosedBlockPrePass:
     """The closed JSON/function strip pre-pass must not delete across a complete
-    Gemma span: a literal <function=...> quoted in a Gemma argument plus a later
-    real </function> would otherwise mangle the Gemma close marker and truncate
-    the whole visible tail."""
+    Gemma span (a quoted <function=...> plus a later real </function>)."""
 
     def test_literal_function_in_gemma_arg_with_later_real_call(self):
         from core.tool_healing import strip_tool_call_markup
