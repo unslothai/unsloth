@@ -431,6 +431,47 @@ def resolve_train_steps(cfg: "DiffusionLoraConfig", n_images: int) -> int:
     return cfg.train_steps
 
 
+class PermutationBatchSampler:
+    """Yields batch indices as consecutive slices of a reshuffled permutation of
+    ``range(n)``, so every index is visited exactly once per cycle before any repeats --
+    an epoch-style full pass instead of the with-replacement draw that leaves part of a
+    small dataset unseen at low step counts (num_epochs converts to a step budget, but the
+    per-batch index draw is what decides coverage). When a cycle is exhausted the order is
+    reshuffled from the run's own ``rng`` so the index stream stays seed-deterministic and
+    each cycle differs.
+
+    Both trainers share this so the SDXL ``_next_batch`` path and the DiT per-sample draw
+    select indices the same way. Only the index selection changes (with-replacement ->
+    permutation cycles); step count and batch shapes are unchanged.
+    """
+
+    def __init__(self, n: int, rng: random.Random) -> None:
+        if n <= 0:
+            raise ValueError("PermutationBatchSampler needs at least one item")
+        self._n = n
+        self._rng = rng
+        self._order: list[int] = []
+        self._pos = 0
+
+    def _reshuffle(self) -> None:
+        self._order = list(range(self._n))
+        self._rng.shuffle(self._order)
+        self._pos = 0
+
+    def next_batch(self, k: int) -> list[int]:
+        # k may exceed n (batch larger than the dataset): the permutation is refilled across
+        # as many cycles as needed so the caller always gets exactly k indices and the batch
+        # never shrinks, matching the old sampler's fixed batch shape.
+        out: list[int] = []
+        while len(out) < k:
+            if self._pos >= len(self._order):
+                self._reshuffle()
+            take = min(k - len(out), len(self._order) - self._pos)
+            out.extend(self._order[self._pos : self._pos + take])
+            self._pos += take
+        return out
+
+
 def discover_image_caption_pairs(
     data_dir: str | os.PathLike[str],
     *,

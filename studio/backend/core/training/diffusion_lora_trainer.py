@@ -59,6 +59,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _restore_perf_flags,
     discover_image_caption_pairs,
     get_trainer,
+    PermutationBatchSampler,
     resolve_train_steps,
 )
 
@@ -436,8 +437,14 @@ def run_diffusion_lora_training(
 
         _emit(on_event, "model_load_completed")
 
+        # Permutation-cycle index sampler (shared with the DiT trainer): each dataset image is
+        # visited once per cycle before any repeat, so a short run does not leave part of a
+        # small dataset unseen. Draws from the loop's own rng so the sequence stays
+        # seed-deterministic.
+        index_sampler = PermutationBatchSampler(len(pairs), rng)
+
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            idx = rng.sample(range(len(pairs)), k = min(cfg.train_batch_size, len(pairs)))
+            idx = index_sampler.next_batch(min(cfg.train_batch_size, len(pairs)))
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 

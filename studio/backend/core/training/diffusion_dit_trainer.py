@@ -49,6 +49,7 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     has_functional_torchao,
+    PermutationBatchSampler,
     repo_is_prequantized,
     resolve_train_steps,
 )
@@ -1158,6 +1159,10 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     transformer.train()
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
+    # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once
+    # per cycle before repeating, so a short run covers the whole dataset instead of the old
+    # with-replacement draw. Uses the loop's own rng to stay seed-deterministic.
+    index_sampler = PermutationBatchSampler(n_images, rng)
     stopped = False
     running_loss = 0.0
     peak_gb = 0.0
@@ -1177,7 +1182,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
-            idxs = [rng.randrange(n_images) for _ in range(batch_size)]
+            idxs = index_sampler.next_batch(batch_size)
             if latent_cache is not None:
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
