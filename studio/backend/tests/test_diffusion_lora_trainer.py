@@ -235,6 +235,16 @@ def test_config_rejects_zero_lora_alpha():
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", lora_alpha = 0).normalized()
 
 
+def test_config_rejects_nonpositive_snr_gamma():
+    # gamma <= 0 zeroes/inverts the min-SNR weight; None is the documented disable.
+    with pytest.raises(ValueError, match = "snr_gamma"):
+        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", snr_gamma = 0).normalized()
+    cfg = DiffusionLoraConfig(
+        base_model = "b", data_dir = "d", output_dir = "o", snr_gamma = None
+    ).normalized()
+    assert cfg.snr_gamma is None
+
+
 def test_config_coerces_string_learning_rate():
     # The Studio config path preserves learning_rate as a string; normalize to float.
     cfg = DiffusionLoraConfig(
