@@ -1473,7 +1473,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
                             with _get_inference_mode_context_manager(model):
-                                with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                                with torch.amp.autocast(
+                                    device_type = "cuda", dtype = self._autocast_dtype
+                                ):
                                     _pg_hidden = unwrapped_model(
                                         input_ids = _pg_layout.flat_ids,
                                         position_ids = _pg_layout.position_ids,
