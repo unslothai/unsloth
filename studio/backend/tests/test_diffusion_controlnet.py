@@ -234,7 +234,6 @@ def _state():
 def _allow_cn_security(monkeypatch):
     """Stub the Hub malware preflight to allow the load (hermetic, no network)."""
     import utils.security
-
     monkeypatch.setattr(
         utils.security,
         "evaluate_file_security",
@@ -277,7 +276,12 @@ def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
 
     class _TrapModel(_FakeCNModel):
         @classmethod
-        def from_pretrained(cls, path, torch_dtype = None, token = None):
+        def from_pretrained(
+            cls,
+            path,
+            torch_dtype = None,
+            token = None,
+        ):
             loaded["called"] = True
             return super().from_pretrained(path, torch_dtype = torch_dtype, token = token)
 
