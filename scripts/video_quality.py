@@ -160,6 +160,16 @@ def clip_metrics(
     import numpy as np
 
     n = min(len(ref_frames), len(cand_frames))
+    if n == 0:
+        # An empty/corrupt decode must gate as FAIL, not crash the whole run.
+        return {
+            "frames_compared": 0,
+            "psnr_mean": 0.0,
+            "ssim_mean": 0.0,
+            "temporal_deviation": math.inf,
+            "min_luma": 0.0,
+            "has_nan": True,
+        }
     idx = sorted({int(round(i * (n - 1) / max(1, sample_count - 1))) for i in range(sample_count)})
     psnrs = [min(frame_psnr(ref_frames[i], cand_frames[i]), _PERFECT_MATCH_PSNR) for i in idx]
     ssims = [frame_ssim(ref_frames[i], cand_frames[i]) for i in idx]
@@ -189,8 +199,12 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
         return float(np.sqrt((arr**2).mean())) if arr.size else 0.0
 
     ref_rms, cand_rms = _rms(ref_audio), _rms(cand_audio)
+    # NaN candidate audio compares False against any threshold, so call it out
+    # explicitly: a NaN track is a collapse, not a pass.
     silent_collapse = (
-        ref_rms is not None and ref_rms >= 1e-3 and (cand_rms is None or cand_rms < 1e-4)
+        ref_rms is not None
+        and ref_rms >= 1e-3
+        and (cand_rms is None or math.isnan(cand_rms) or cand_rms < 1e-4)
     )
     return {"ref_rms": ref_rms, "cand_rms": cand_rms, "silent_collapse": silent_collapse}
 
