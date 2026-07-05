@@ -39,6 +39,11 @@ def _security_stub(blocked):
 
 @pytest.fixture
 def client(monkeypatch):
+    # The settings scan unions in the ST module dirs read from modules.json; keep it
+    # offline and deterministic for the endpoint tests that use this fixture.
+    import core.rag.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -60,7 +65,8 @@ def test_flagged_repo_is_blocked_even_with_force(client, monkeypatch):
     r = c.put(
         "/embedding-model", json = {"embedding_model": "attacker/malicious-embed", "force": True}
     )
-    assert r.status_code == 409
+    # 403, not the forceable 409, so the client does not offer "save anyway".
+    assert r.status_code == 403
     assert "model" not in saved  # force must not persist a flagged repo
 
 
@@ -68,8 +74,98 @@ def test_flagged_repo_is_blocked_without_force(client, monkeypatch):
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     r = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed"})
-    assert r.status_code == 409
+    assert r.status_code == 403
     assert "model" not in saved
+
+
+def test_hard_block_uses_non_forceable_status(client, monkeypatch):
+    # The forceable verification path uses 409; the hard security block must be distinct
+    # (403) so the frontend never routes it into the "save anyway" force flow.
+    c, _saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
+    blocked = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed"})
+    assert blocked.status_code == 403
+
+    # A verification failure (not-an-embedding-model) stays forceable at 409.
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setattr(settings, "is_embedding_model", lambda *a, **k: False, raising = False)
+    import utils.models as _models
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
+    unverified = c.put("/embedding-model", json = {"embedding_model": "acme/not-an-embedder"})
+    assert unverified.status_code == 409
+
+
+def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
+    # On the llama-server backend the embedder loads GGUF (inert), not the ST repo's
+    # pickle, so a flagged ST repo with a clean GGUF companion must not be rejected here.
+    saved: dict = {}
+    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
+    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
+    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
+    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
+    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    # force skips the GGUF availability checks; the ST pickle gate is what we assert is skipped.
+    called = {"scanned": False}
+    mod = _types.ModuleType("utils.security")
+
+    def _fail(*a, **k):
+        called["scanned"] = True
+        return _Decision(True)
+
+    mod.evaluate_file_security = _fail
+    mod.security_load_subdirs = lambda *a, **k: ()
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    c = TestClient(app, raise_server_exceptions = False)
+    r = c.put(
+        "/embedding-model", json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True}
+    )
+    assert r.status_code == 200
+    assert called["scanned"] is False  # the ST pickle scan never ran on the llama path
+    assert saved.get("model") == "attacker/flagged-st-clean-gguf"
+
+
+def test_settings_scan_scopes_module_subdirs(monkeypatch):
+    # The settings scan must pass the ST module dirs (0_Transformer/) as load roots so a
+    # pickle directly under one blocks; assert those subdirs reach evaluate_file_security.
+    saved: dict = {}
+    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
+    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
+    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
+    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
+    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+
+    import core.rag.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",))
+    seen = {}
+
+    def _capture(*a, **k):
+        seen["subdirs"] = tuple(k.get("load_subdirs") or ())
+        return _Decision(False)
+
+    mod = _types.ModuleType("utils.security")
+    mod.security_load_subdirs = lambda *a, **k: ()
+    mod.evaluate_file_security = _capture
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    c = TestClient(app, raise_server_exceptions = False)
+    r = c.put(
+        "/embedding-model", json = {"embedding_model": "acme/embed-with-module-dir", "force": True}
+    )
+    assert r.status_code == 200
+    assert "0_Transformer" in seen["subdirs"]
 
 
 def test_clean_repo_saves_under_force(client, monkeypatch):
@@ -111,6 +207,60 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
     embeddings._guard_model_security("acme/gated-embed")
     assert seen["scan_token"] == "hf_ambient"
     assert seen["subdirs_token"] == "hf_ambient"
+
+
+def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
+    # A flagged pickle directly under a Transformer module dir (0_Transformer/) must
+    # reach the scan as a load root; assert the guard unions the module dirs into
+    # load_subdirs so evaluate_file_security treats such a pickle as root-level.
+    seen = {}
+
+    def _capture(*a, **k):
+        seen["subdirs"] = tuple(k.get("load_subdirs") or ())
+        return _Decision(False)
+
+    mod = _types.ModuleType("utils.security")
+    mod.security_load_subdirs = lambda name, token = None: ()
+    mod.evaluate_file_security = _capture
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+    import core.rag.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: None)
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",))
+    embeddings._guard_model_security("acme/embed-with-module-dir")
+    assert "0_Transformer" in seen["subdirs"]
+
+
+def test_st_module_subdirs_reads_local_modules_json(tmp_path, monkeypatch):
+    # The helper must parse each module's non-empty "path" from a local repo's
+    # modules.json and drop the root-level ("") Transformer entry.
+    import json
+    import core.rag.embeddings as embeddings
+
+    (tmp_path / "modules.json").write_text(
+        json.dumps(
+            [
+                {"idx": 0, "name": "0", "path": "0_Transformer", "type": "..."},
+                {"idx": 1, "name": "1", "path": "1_Pooling", "type": "..."},
+                {"idx": 2, "name": "2", "path": "", "type": "..."},
+            ]
+        )
+    )
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None)
+    assert subdirs == ("0_Transformer", "1_Pooling")
+
+
+def test_st_module_subdirs_swallows_errors(monkeypatch):
+    # Any failure (no modules.json, offline, malformed) returns () so the guard never
+    # bricks the embedder.
+    import huggingface_hub
+    import core.rag.embeddings as embeddings
+
+    def _boom(*a, **k):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
+    assert embeddings._st_module_subdirs("acme/no-such-repo-xyz", None) == ()
 
 
 def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):

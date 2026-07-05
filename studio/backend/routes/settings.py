@@ -367,6 +367,8 @@ def update_embedding_model(
     """Set the RAG embedding model. Unless ``force`` is set, the repo is verified
     to be an embedding model via HF metadata; an unverifiable model (wrong type,
     typo, gated repo, or no network) returns 409 so the UI can offer "save anyway".
+    A repo flagged unsafe by HF's security scan returns 403 instead: a hard block
+    that ``force`` cannot bypass, so the UI must not offer "save anyway".
     Documents indexed under the previous model must be re-uploaded."""
     from utils.models import is_embedding_model
 
@@ -385,21 +387,42 @@ def update_embedding_model(
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
     is_local_gguf = _llama_backend_active() and _resolves_as_local_gguf(model)
-    if model != default_embedding_model() and not is_local_gguf:
+    # The pickle gate only matters for the sentence-transformers backend, which is what
+    # deserializes pickles. On the llama-server backend the embedder loads GGUF files
+    # (inert) from effective_gguf_repo(), so scanning the ST repo's pickle here would
+    # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
+    # checks below cover that path instead.
+    scan_st_pickle = (
+        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
+    )
+    if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
         # SentenceTransformer. Runs even under force (force only skips the is-embedding
         # type check for offline/local repos HF cannot verify); local paths and
         # unreachable scans fail open inside evaluate_file_security.
         from utils.security import evaluate_file_security, security_load_subdirs
+        from core.rag.embeddings import _st_module_subdirs
 
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
+        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
+        # one blocks instead of passing as an unreferenced nested shard.
+        load_subdirs = tuple(
+            dict.fromkeys(
+                (
+                    *security_load_subdirs(model, scan_token),
+                    *_st_module_subdirs(model, scan_token),
+                )
+            )
+        )
         if evaluate_file_security(
-            model, hf_token = scan_token, load_subdirs = security_load_subdirs(model, scan_token)
+            model, hf_token = scan_token, load_subdirs = load_subdirs
         ).blocked:
+            # 403, not 409: the client routes every 409 into the forceable "save anyway"
+            # flow, but this block is a hard, non-forceable security refusal.
             raise HTTPException(
-                status_code = 409,
+                status_code = 403,
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."

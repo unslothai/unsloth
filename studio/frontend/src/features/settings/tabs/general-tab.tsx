@@ -42,6 +42,7 @@ import {
   updatePreviewSharing,
 } from "../api/preview-sharing";
 import {
+  EmbeddingModelBlockedError,
   type EmbeddingModelSettings,
   EmbeddingModelVerificationError,
   loadEmbeddingModelSettings,
@@ -409,7 +410,10 @@ export function GeneralTab() {
         description: t("settings.general.rag.reindexWarning"),
       });
     } catch (error) {
-      if (error instanceof EmbeddingModelVerificationError) {
+      // A hard security block cannot be forced; keep the "save anyway" action hidden.
+      if (error instanceof EmbeddingModelBlockedError) {
+        setEmbeddingModelNeedsForce(false);
+      } else if (error instanceof EmbeddingModelVerificationError) {
         setEmbeddingModelNeedsForce(true);
       }
       setEmbeddingModelError(

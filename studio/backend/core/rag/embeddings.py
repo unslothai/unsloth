@@ -79,6 +79,45 @@ def _ambient_hf_token() -> str | None:
         return None
 
 
+def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
+    """The module directories a SentenceTransformer load reads weights from, taken from
+    the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
+    ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
+    security scan: a flagged pickle directly under one must block. Returns () on any
+    failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
+    """
+    try:
+        import json
+
+        from utils.paths import is_local_path
+
+        if is_local_path(name):
+            from pathlib import Path
+            from utils.paths import normalize_path
+
+            path = Path(normalize_path(name)).expanduser() / "modules.json"
+            if not path.is_file():
+                return ()
+            data = json.loads(path.read_text())
+        else:
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.utils import EntryNotFoundError
+
+            try:
+                local = hf_hub_download(name, "modules.json", token = token or None)
+            except EntryNotFoundError:
+                return ()
+            data = json.loads(open(local).read())
+        subdirs = []
+        for module in data or ():
+            sub = str((module or {}).get("path", "")).strip().strip("/")
+            if sub:
+                subdirs.append(sub)
+        return tuple(dict.fromkeys(subdirs))
+    except Exception:
+        return ()
+
+
 def _guard_model_security(name: str) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
@@ -88,8 +127,16 @@ def _guard_model_security(name: str) -> None:
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
         token = _ambient_hf_token()
+        # Union the audio-model load roots with the ST module dirs so a flagged pickle
+        # directly under a Transformer module dir (0_Transformer/) blocks instead of
+        # passing as an unreferenced nested shard.
+        load_subdirs = tuple(
+            dict.fromkeys(
+                (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
+            )
+        )
         blocked = evaluate_file_security(
-            name, hf_token = token, load_subdirs = security_load_subdirs(name, token)
+            name, hf_token = token, load_subdirs = load_subdirs
         ).blocked
     except Exception:
         return
