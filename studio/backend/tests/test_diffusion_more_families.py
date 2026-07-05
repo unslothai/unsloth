@@ -166,6 +166,39 @@ def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
     torch.testing.assert_close(out["layers.0.attention_norm1.weight"], norm)
 
 
+def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
+    # A local mirror of the fp8 base never string-matches base_repo, so memory planning
+    # relies on this shard-header probe to reserve the bf16 footprint. The fp8 layout is
+    # marked by a companion ``*.weight_scale``; the bnb-4bit (nf4) mirror carries none and
+    # must read as not-fp8 so it stays (correctly) planned against its compressed bytes.
+    torch = pytest.importorskip("torch")
+    st = pytest.importorskip("safetensors.torch")
+
+    from core.inference.diffusion_ideogram4 import ideogram4_repo_is_fp8
+
+    fp8 = tmp_path / "fp8"
+    (fp8 / "transformer").mkdir(parents = True)
+    st.save_file(
+        {
+            "layers.0.attention.o.weight": torch.zeros(2, 2),
+            "layers.0.attention.o.weight_scale": torch.ones(2),
+        },
+        str(fp8 / "transformer" / "diffusion_pytorch_model.safetensors"),
+    )
+    assert ideogram4_repo_is_fp8(str(fp8)) is True
+
+    nf4 = tmp_path / "nf4"
+    (nf4 / "transformer").mkdir(parents = True)
+    st.save_file(
+        {"layers.0.attention.to_q.weight": torch.zeros(2, 2)},
+        str(nf4 / "transformer" / "diffusion_pytorch_model.safetensors"),
+    )
+    assert ideogram4_repo_is_fp8(str(nf4)) is False
+
+    # A directory with no transformer shards at all resolves to False, not an error.
+    assert ideogram4_repo_is_fp8(str(tmp_path / "missing")) is False
+
+
 def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
     # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers
     # create_causal_mask signature; on a matching signature it must forward unchanged,
