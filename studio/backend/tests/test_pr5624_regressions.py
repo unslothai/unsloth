@@ -956,7 +956,7 @@ def test_disabled_leading_bare_json_does_not_hide_later_marker_call():
 def test_disabled_leading_bare_json_ownership_controls():
     kimi_delete = (
         "<|tool_calls_section_begin|><|tool_call_begin|>functions.delete_all:0"
-        '<|tool_call_argument_begin|>{}<|tool_call_end|><|tool_calls_section_end|>'
+        "<|tool_call_argument_begin|>{}<|tool_call_end|><|tool_calls_section_end|>"
     )
     # ENABLED leading name still owns the turn (document order, the shipped
     # inside-or-after rule).

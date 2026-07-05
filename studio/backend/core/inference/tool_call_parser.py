@@ -676,9 +676,7 @@ _OUTER_ENVELOPE_CLOSED_PATS = (
 )
 
 
-def _marker_inside_leading_envelope(
-    content: str, enabled_tool_names: Optional[set] = None
-) -> bool:
+def _marker_inside_leading_envelope(content: str, enabled_tool_names: Optional[set] = None) -> bool:
     first_marker = _EMBEDDED_MARKER_RE.search(content)
     if first_marker is None:
         return False
