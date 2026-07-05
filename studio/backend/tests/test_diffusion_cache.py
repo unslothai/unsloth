@@ -166,7 +166,10 @@ def test_missing_transformer_is_none(monkeypatch):
 
 
 def test_diffusers_unavailable_runs_uncached(monkeypatch):
-    # no diffusers import -> best-effort returns None, load proceeds uncached.
+    # no diffusers import -> best-effort returns None, load proceeds uncached. Block the
+    # hooks module too: the config import falls back to diffusers.hooks, which a REAL
+    # earlier import in the test session may have left cached in sys.modules.
     monkeypatch.setitem(sys.modules, "diffusers", None)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", None)
     t = _MixinTransformer()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
