@@ -530,7 +530,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
-  const [transformerCache, setTransformerCache] = useState<"off" | "fbcache">("off");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerQuant, setTransformerQuant] = useState<
+    "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
+  >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced
   // options without the user re-picking it from the dropdown.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
@@ -894,7 +897,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
           speed_mode: speedMode === "auto" ? undefined : speedMode,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
-          transformer_cache: transformerCache === "off" ? undefined : transformerCache,
+          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         });
       } catch (err) {
         dismissLoadToast();
@@ -1125,7 +1129,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model (GGUF compiles near-losslessly, dense stays eager). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto compiles every model at load: a clip takes minutes to denoise, so the one-time compile always pays for itself within a single run. eager = fused kernels, no compile. max adds TF32 + fused QKV."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -1137,9 +1141,36 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           ["max", "Max"],
         ]}
       />
+      {/* The dense transformer_quant fast path only engages on a full-pipeline load; a
+          GGUF / single-file checkpoint already carries its own precision, so gate the
+          control and otherwise show why it is unavailable. */}
+      {!status?.loaded || status.model_kind === "pipeline" ? (
+        <AdvancedSelect
+          label="Precision"
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by quantising the transformer onto low-precision tensor cores, and keeps plain bf16 when the device or memory plan can't take it. Off always runs bf16."
+          badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
+          value={transformerQuant}
+          onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          options={[
+            ["auto", "Auto (fastest for GPU)"],
+            ["none", "Off (bf16)"],
+            ["fp8", "FP8"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+            ["mxfp8", "MXFP8 (Blackwell)"],
+          ]}
+        />
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Precision
+          </span>
+          <span className="text-xs text-muted-foreground/60">Full-pipeline models only</span>
+        </div>
+      )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (small quality cost)."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -1153,11 +1184,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Leave off for few-step distilled models."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per clip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
         options={[
+          ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
         ]}

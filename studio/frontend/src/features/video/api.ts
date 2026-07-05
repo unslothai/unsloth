@@ -46,6 +46,8 @@ export interface VideoStatus {
   speed_optims: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
+  transformer_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
   // Per-family generation defaults + shape constraints; null when unloaded.
@@ -102,6 +104,9 @@ export interface VideoLoadRequest {
     | "aiter";
   transformer_cache?: "off" | "fbcache";
   transformer_cache_threshold?: number;
+  // Dense DiT precision on full-pipeline loads (omit for the hardware-ladder auto;
+  // "none" pins plain bf16). GGUF / single-file checkpoints carry their own precision.
+  transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
 }
 
 export interface VideoGenerateRequest {

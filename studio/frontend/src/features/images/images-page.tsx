@@ -489,6 +489,9 @@ function formatResolvedValue(key: string, value: string | boolean | null): strin
   if (value === null || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
+  // Deferred speed auto: the dense pipe stays exact/eager and compiles on the
+  // 3rd image of the session (the tooltip carries the full reason).
+  if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
 }
 
@@ -1044,7 +1047,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "auto",
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [transformerCache, setTransformerCache] = useState<"off" | "fbcache">("off");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced
   // options without the user re-picking it from the dropdown.
@@ -1527,7 +1530,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-          transformer_cache: transformerCache === "off" ? undefined : transformerCache,
+          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         });
       } catch (err) {
         dismissLoadToast();
@@ -1913,7 +1916,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     <>
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model (GGUF compiles, dense stays eager). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -1930,8 +1933,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
-          label="Dtype"
-          hint="Transformer compute dtype. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
+          label="Precision"
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
@@ -1947,14 +1950,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) : (
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-            Dtype
+            Precision
           </span>
           <span className="text-xs text-muted-foreground/60">GGUF models only</span>
         </div>
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (small quality cost)."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -1981,11 +1984,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Leave off for few-step distilled models."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
         options={[
+          ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
         ]}
