@@ -281,9 +281,7 @@ class TestCudaRepairSkips:
         import contextlib
 
         def _with(url):
-            with patch.dict(
-                stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False
-            ):
+            with patch.dict(stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False):
                 stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                 return stack_mod._explicit_cuda_torch_index_url()
 

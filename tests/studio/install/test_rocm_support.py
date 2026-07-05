@@ -786,9 +786,9 @@ class TestEnsureRocmTorch:
             _args = [str(a) for a in _call.args]
             if "--index-url" in _args:
                 _url = _args[_args.index("--index-url") + 1]
-                assert "rocm7.2" not in _url or "torch" not in " ".join(_args), (
-                    "torch must not be reinstalled when the pin already matches"
-                )
+                assert "rocm7.2" not in _url or "torch" not in " ".join(
+                    _args
+                ), "torch must not be reinstalled when the pin already matches"
         # A torch reinstall would pass torch>=... as a positional; assert none did.
         assert not any(
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
@@ -2990,9 +2990,7 @@ class TestStrixRocm71Override:
         # families with the <2.11 _grouped_mm bug (gfx120X-all / gfx1151 / gfx1150)
         # are pushed to 2.11 -- a bare gfx* would also floor gfx110X-all/gfx90a/
         # gfx908, which the automatic AMD path intentionally leaves bare.
-        assert (
-            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)' in source
-        ), (
+        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)' in source, (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
             "it (rocm7.2|gfx120x-all|gfx1151|gfx1150), not a bare gfx* or the whole URL"
         )
