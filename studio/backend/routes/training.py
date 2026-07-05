@@ -1234,6 +1234,21 @@ async def start_diffusion_training(
     # user's loaded chat/Images model, and never surfaces as a confusing mid-load 401.
     _preflight_gated_base(config.get("base_model", ""), config.get("hf_token"))
 
+    # Preflight the dataset too: a missing/empty/uncaptionable data_dir otherwise
+    # fails inside the spawned trainer AFTER the user's chat/Images model was
+    # evicted. Same discovery the trainer runs, so the two cannot disagree.
+    from core.training import diffusion_train_common as _dtc
+
+    try:
+        await asyncio.to_thread(
+            _dtc.discover_image_caption_pairs,
+            config["data_dir"],
+            instance_prompt = config.get("instance_prompt") or None,
+            caption_column = config.get("caption_column") or "text",
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+
     # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
     # loads its own pipeline.
     _free_gpu_for_diffusion_training()
@@ -1636,12 +1651,24 @@ async def set_diffusion_dataset_caption(
         sidecar = image_path.with_suffix(".txt")
         if caption:
             sidecar.write_text(caption, encoding = "utf-8")
-        else:
-            # Blank clears the sidecar; also drop a stale .caption so the image reads as
-            # uncaptioned afterwards.
-            sidecar.unlink(missing_ok = True)
             image_path.with_suffix(".caption").unlink(missing_ok = True)
-        return _image_record(folder, image_path, _load_metadata_captions(folder))
+            return _image_record(folder, image_path, _load_metadata_captions(folder))
+        # Blank must actually clear. Unlinking alone would resurface this image's
+        # metadata.jsonl / captions.jsonl caption (the fallback source), so when one
+        # exists write an EMPTY sidecar instead: both the record reader and the
+        # trainer's discovery treat an existing sidecar as authoritative even when
+        # empty, which makes it a tombstone. No metadata caption -> plain cleanup.
+        meta = _load_metadata_captions(folder)
+        try:
+            rel = image_path.relative_to(folder).as_posix()
+        except ValueError:
+            rel = image_path.name
+        if image_path.name in meta or rel in meta:
+            sidecar.write_text("", encoding = "utf-8")
+        else:
+            sidecar.unlink(missing_ok = True)
+        image_path.with_suffix(".caption").unlink(missing_ok = True)
+        return _image_record(folder, image_path, meta)
 
     return await asyncio.to_thread(write)
 
