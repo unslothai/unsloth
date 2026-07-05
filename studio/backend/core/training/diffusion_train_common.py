@@ -577,6 +577,42 @@ def _plan_cache_variants(
     return plan
 
 
+# Host-memory budget for the AUTOMATIC latent cache. The cache holds two fp32 posterior
+# tensors (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA
+# host. At 1024px an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times
+# that, so a few thousand images x cache_variants can exhaust host or pinned RAM with no
+# fallback. Over this budget the default falls back to per-step VAE encoding. A fixed
+# constant (rather than a psutil RAM fraction) keeps the gate dependency-free and identical
+# across hosts; it is deliberately conservative, well under a typical training host's RAM.
+_LATENT_CACHE_BUDGET_BYTES = 4 * 1024 ** 3  # 4 GiB
+
+# Returned by the cache builders when the estimated cache exceeds the budget: the caller
+# keeps the VAE resident and encodes each step's latents in-loop. A distinct sentinel from
+# ``None`` (which means a stop was requested mid-build) so the two are not conflated.
+LATENT_CACHE_OVER_BUDGET: Any = object()
+
+
+def _latent_cache_forced() -> bool:
+    """The user explicitly forced the latent cache on, bypassing the size gate. This is the
+    explicit opt-in counterpart to ``UNSLOTH_DIFFUSION_NO_LATENT_CACHE`` (the explicit
+    opt-out); only the automatic default is size-gated, so an explicit choice is honoured
+    verbatim in either direction."""
+    return os.environ.get("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "") in ("1", "true")
+
+
+def _latent_cache_over_budget(
+    per_variant_bytes: int, total_variants: int, budget_bytes: Optional[int] = None
+) -> bool:
+    """True when a cache of ``total_variants`` entries, each two fp32 tensors totalling
+    ``per_variant_bytes``, is estimated to exceed ``budget_bytes``. ``per_variant_bytes`` is
+    measured from a real encoded latent, so the estimate tracks the actual per-family tensor
+    shape (SDXL 4-channel vs. a packed 16-channel DiT latent) rather than a guess. The budget
+    is read from the module constant at call time when not given, so tests can override it."""
+    if budget_bytes is None:
+        budget_bytes = _LATENT_CACHE_BUDGET_BYTES
+    return per_variant_bytes * max(0, total_variants) > budget_bytes
+
+
 def _apply_perf_flags(
     cfg: "DiffusionLoraConfig",
     device: str,
