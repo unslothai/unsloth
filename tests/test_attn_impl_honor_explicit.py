@@ -24,7 +24,23 @@ def test_explicit_sdpa_is_honored_even_when_not_marked_supported():
     assert config.get("_attn_implementation") == "sdpa"
 
 
-def test_explicit_flex_is_honored_even_when_not_marked_supported():
+def test_explicit_flex_is_honored_when_supported():
+    config = {}
+    result = _disable_flash_attention_if_needed(
+        config,
+        attn_implementation = "flex_attention",
+        supports_sdpa = True,
+        supports_flex_attention = True,
+        would_use_flash_attention = True,
+        disable_reason = "unit test forces flash disabled",
+    )
+    assert result == "flex_attention"
+    assert config.get("_attn_implementation") == "flex_attention"
+
+
+def test_explicit_flex_falls_back_when_not_supported():
+    # flex_attention is False for known-broken/excluded configs (e.g. gpt_oss),
+    # so an explicit flex request must not select that backend - it falls back.
     config = {}
     result = _disable_flash_attention_if_needed(
         config,
@@ -32,6 +48,22 @@ def test_explicit_flex_is_honored_even_when_not_marked_supported():
         supports_sdpa = True,
         supports_flex_attention = False,
         would_use_flash_attention = True,
+        disable_reason = "unit test forces flash disabled",
+    )
+    assert result == "sdpa"
+
+
+def test_synthesized_config_sdpa_is_not_treated_as_explicit():
+    # The language loader seeds the config with attn_implementation="sdpa"; when the
+    # caller passes nothing, that synthesized value must not override the flex fallback
+    # for a model that supports flex but not sdpa.
+    config = {"attn_implementation": "sdpa"}
+    result = _disable_flash_attention_if_needed(
+        config,
+        attn_implementation = None,
+        supports_sdpa = False,
+        supports_flex_attention = True,
+        would_use_flash_attention = False,
         disable_reason = "unit test forces flash disabled",
     )
     assert result == "flex_attention"

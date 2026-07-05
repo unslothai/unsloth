@@ -608,6 +608,12 @@ def _disable_flash_attention_if_needed(
     if disable_reason is None:
         return attn_implementation
 
+    # Only an implementation passed by the caller counts as an explicit request.
+    # Values read from the config are synthesized by the loaders (the language path
+    # seeds the config with attn_implementation="sdpa") or come from Transformers
+    # defaults, so they must not be treated as a deliberate user choice.
+    explicit_request = attn_implementation
+
     requested_attn_implementation = attn_implementation
     if requested_attn_implementation is None:
         requested_attn_implementation = _config_get(config, "_attn_implementation", None)
@@ -617,10 +623,15 @@ def _disable_flash_attention_if_needed(
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
 
-    # The disable reason is flash-specific: honor an explicit non-flash request
-    # instead of downgrading it, even when the supports_* flags below wouldn't pick it.
-    if requested_attn_implementation in ("sdpa", "flex_attention"):
-        return _set_attn_impl(config, requested_attn_implementation)
+    # The disable reason is flash-specific: honor an explicit non-flash request from
+    # the caller instead of downgrading it. SDPA is universally available so it is
+    # always honored; flex_attention is honored only when it is actually usable,
+    # since supports_flex_attention already rejects excluded/broken/unavailable
+    # configs (e.g. gpt_oss) that would otherwise select a known-broken backend.
+    if explicit_request == "sdpa":
+        return _set_attn_impl(config, "sdpa")
+    if explicit_request == "flex_attention" and supports_flex_attention:
+        return _set_attn_impl(config, "flex_attention")
 
     if supports_sdpa:
         fallback_attn_implementation = "sdpa"
