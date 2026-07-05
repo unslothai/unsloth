@@ -383,7 +383,9 @@ def fake_runtime(monkeypatch):
     diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
     # Instruction-editing pipeline (Qwen-Image-Edit): its own pipeline IS the loaded one.
     diffusers.QwenImageEditPlusPipeline = _FakePipeline
-    # Ideogram 4, so its guidance_scale/guidance_schedule pairing is exercisable.
+    # Ideogram 4, so its guidance_scale/guidance_schedule pairing is exercisable. It loads
+    # only as a full pipeline (two DiTs), assembled per-component by load_ideogram4_pipeline
+    # -- stub that to a fake pipe so the guidance path is reachable without real weights.
     diffusers.Ideogram4Pipeline = _FakePipeline
     diffusers.Ideogram4Transformer2DModel = _FakeTransformer
     # SDXL: a U-Net family. Its single-file checkpoint is the whole pipeline, so the
@@ -393,6 +395,11 @@ def fake_runtime(monkeypatch):
     diffusers.UNet2DConditionModel = _FakeTransformer
     diffusers.StableDiffusionXLImg2ImgPipeline = _FakeImg2ImgPipeline
     diffusers.StableDiffusionXLInpaintPipeline = _FakeInpaintPipeline
+
+    monkeypatch.setattr(
+        "core.inference.diffusion.load_ideogram4_pipeline",
+        lambda repo_id, dtype, hf_token = None: _FakePipe(),
+    )
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -1285,13 +1292,30 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 
 def _load_ideogram(backend, tmp_path):
-    (tmp_path / "model.gguf").write_bytes(b"weights")
-    backend.load_pipeline(
-        str(tmp_path),
-        gguf_filename = "model.gguf",
-        base_repo = "ideogram-ai/ideogram-4-fp8",
-        family_override = "ideogram-4",
-    )
+    # Ideogram 4 loads only as a full pipeline (its two DiTs are assembled per-component
+    # by the stubbed load_ideogram4_pipeline); a local pipeline dir is enough here.
+    (tmp_path / "model_index.json").write_text("{}")
+    backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
+
+
+def test_ideogram_rejects_single_file_and_gguf_kinds(fake_runtime, tmp_path):
+    # Ideogram 4 needs two DiTs assembled per-component, so there is no transformer-only
+    # single-file or GGUF load: the explicit kinds must be rejected up front (before a
+    # load evicts a working model), not assembled into a pipeline missing its second DiT.
+    backend = DiffusionBackend()
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    with pytest.raises(ValueError, match = "full diffusers pipeline"):
+        backend.load_pipeline(
+            str(tmp_path), gguf_filename = "model.gguf", family_override = "ideogram-4"
+        )
+    (tmp_path / "model.safetensors").write_bytes(b"x")
+    with pytest.raises(ValueError, match = "full diffusers pipeline"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.safetensors",
+            model_kind = "single_file",
+            family_override = "ideogram-4",
+        )
 
 
 def test_generate_ideogram_defaults_keep_recommended_schedule(fake_runtime, tmp_path):

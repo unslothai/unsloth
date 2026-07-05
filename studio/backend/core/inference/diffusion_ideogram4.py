@@ -320,6 +320,29 @@ def load_ideogram4_text_encoder(
     return model
 
 
+def ideogram4_repo_is_fp8(repo_id: str, hf_token: Optional[str] = None) -> bool:
+    """True when ``repo_id``'s transformer ships the vendor fp8 layout (a ``*.weight_scale``
+    shard key).
+
+    Those weights dequantize to a WIDER resident dtype, so the on-disk bytes undershoot
+    the bf16 footprint -- memory planning uses this to reserve the real size for a LOCAL
+    mirror of the fp8 base (whose path cannot string-match ``base_repo``; the bnb-4bit
+    ``-nf4`` mirrors carry no ``_scale`` marker and correctly stay compressed). Reads shard
+    HEADERS only (metadata, not tensor bodies). Any failure (no transformer shards, no
+    reader) resolves to False so the caller falls back to the file-size estimate.
+    """
+    try:
+        shard_paths = _transformer_shard_paths(repo_id, "transformer", hf_token or None)
+        import safetensors
+    except Exception:  # noqa: BLE001 -- treat an unreadable / absent transformer as not fp8
+        return False
+    for path in shard_paths:
+        with safetensors.safe_open(path, "pt") as handle:
+            if any(key.endswith("_scale") for key in handle.keys()):
+                return True
+    return False
+
+
 def load_ideogram4_transformer(
     repo_id: str,
     subfolder: str,
