@@ -538,6 +538,30 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
+    # A leading Llama-3 ``<|python_tag|>`` call owns the turn the same way the
+    # bare-JSON / Mistral / attribute-form leading calls do: XML or Mistral
+    # markup quoted in a ``.call(...)`` string argument (or in trailing prose)
+    # is not promoted over it. tool_healing does not know the ``<|python_tag|>``
+    # form, so without this gate it parses a ``<function=...>`` / ``<tool_call>``
+    # literal quoted inside the call and executes the wrong tool. Any foreign
+    # signal BEFORE the tag keeps the normal document order.
+    py_tag = content.find(_LLAMA3_PYTHON_TAG)
+    if py_tag >= 0:
+        first_other = None
+        for sig in ("<tool_call>", "<|tool_call>", "<function=", _MISTRAL_TRIGGER):
+            p = content.find(sig)
+            if p >= 0 and (first_other is None or p < first_other):
+                first_other = p
+        attr = _ATTR_FUNC_OPEN_RE.search(content)
+        if attr is not None and (first_other is None or attr.start() < first_other):
+            first_other = attr.start()
+        if first_other is None or py_tag < first_other:
+            calls = _parse_llama3_python_tag(
+                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+            )
+            if calls:
+                return calls
+
     # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
     # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
     # ``<|"|>`` quoted-string handling the GGUF path relies on).
