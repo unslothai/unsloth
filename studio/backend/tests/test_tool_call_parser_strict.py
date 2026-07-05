@@ -395,8 +395,7 @@ class TestParserLinearity:
 
 
 class TestLlamaBuiltinChainAndNesting:
-    """Llama-3 ``<|python_tag|>NAME.call(...)`` built-in form: ``; ``-chaining and
-    nested-tag isolation."""
+    """Llama-3 ``.call`` built-ins: ``; `` chaining and nested-tag isolation."""
 
     def test_semicolon_chained_builtin_calls_all_parse(self):
         # Only the first call is anchored to <|python_tag|>; the rest chain via ';'.
@@ -723,9 +722,7 @@ def test_bare_json_function_alias_parses_and_strips_symmetrically():
 
 
 class TestMistralOuterOverXmlLiteral:
-    """A well-formed [TOOL_CALLS] call whose JSON arguments quote tool XML must
-    execute the OUTER Mistral call; the literal is argument data. The reverse
-    direction (XML outer, [TOOL_CALLS] literal in its arguments) keeps the XML."""
+    """Quoted tool XML inside a [TOOL_CALLS] call's arguments is data; the outer call executes. Reverse order keeps the XML."""
 
     def test_mistral_v11_arg_quoting_function_xml(self):
         text = (
@@ -755,9 +752,7 @@ class TestMistralOuterOverXmlLiteral:
 
 
 class TestHealerSignalAlignment:
-    """The passthrough healer buffers only formats its parser can promote; a
-    Mistral or Llama text call must stream through instead of being held until
-    finalization and flushed as prose."""
+    """The healer buffers only promotable formats; Mistral/Llama text calls stream through."""
 
     def test_heal_signals_subset_of_promotable_formats(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
@@ -863,9 +858,7 @@ class TestGlmEmbeddedClosePair:
 
 
 class TestPythonTagLiteralInsideMistralArgs:
-    """A python_tag LITERAL (spelled-out text, not the stripped special token)
-    inside a leading Mistral call's arguments is data: the outer [TOOL_CALLS]
-    call must execute, not the rehearsed inner literal."""
+    """A python_tag LITERAL inside a leading Mistral call's arguments is data; the outer call executes."""
 
     def test_mistral_arg_quoting_python_tag_call(self):
         text = (
@@ -879,9 +872,7 @@ class TestPythonTagLiteralInsideMistralArgs:
 
 
 class TestBareJsonOuterOverXmlLiteral:
-    """A leading bare-JSON call whose string arguments quote tool XML must
-    execute the OUTER call (sibling of the Mistral-outer guard); XML before
-    the JSON keeps the normal order."""
+    """Quoted tool XML inside a leading bare-JSON call is data; XML before the JSON keeps normal order."""
 
     def test_bare_json_code_arg_quoting_function_xml(self):
         text = (
@@ -908,9 +899,7 @@ class TestBareJsonOuterOverXmlLiteral:
 
 
 class TestMagistralThinkRehearsal:
-    """A tool call rehearsed inside a leading [THINK]...[/THINK] block (any
-    format) is reasoning, not a call: the real call AFTER the think block must
-    win, and parse must agree with the display strip that drops the block."""
+    """A call rehearsed inside [THINK]...[/THINK] is reasoning; the real call after wins, and parse agrees with strip."""
 
     def test_function_xml_rehearsal_in_think_is_not_promoted(self):
         text = (
@@ -989,10 +978,7 @@ class TestGlmKeyWithoutValue:
 
 
 class TestDisabledBareJsonLiteralNotPromoted:
-    """When the leading bare-JSON object is ordinary content (its name is not
-    an enabled tool), the tool literals quoted inside its strings are data:
-    nothing inside the object may be promoted, while a real call AFTER the
-    object still parses."""
+    """A leading non-enabled-name object is content: nothing inside promotes, and a call after it still parses."""
 
     def test_literal_inside_disabled_json_stays_data(self):
         text = (
@@ -1047,9 +1033,7 @@ class TestDeepSeekMarkerInsideLeadingEnvelopes:
 
 
 class TestMistralLiteralInsideLeadingJson:
-    """The Mistral trigger is foreign to a JSON envelope: a [TOOL_CALLS]
-    literal quoted inside the leading object's strings must not be promoted
-    over the outer call by the earlier Mistral parser."""
+    """A [TOOL_CALLS] literal quoted inside a leading JSON object must not be promoted over it."""
 
     def test_outer_json_call_wins_over_mistral_literal(self):
         text = '{"name": "python", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
@@ -1064,9 +1048,7 @@ class TestMistralLiteralInsideLeadingJson:
 
 
 class TestGemmaWrappedWhitespace:
-    """Sampling drift puts whitespace around ``call``/``:`` in wrapped Gemma
-    calls; rejecting those in tool_healing lost the call entirely (no
-    fallback re-parses the wrapped form)."""
+    """Whitespace drift around ``call``/``:`` in wrapped Gemma calls must still parse (no fallback exists)."""
 
     def test_space_after_call_colon_parses(self):
         text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}<tool_call|>'
@@ -1107,9 +1089,7 @@ class TestDisabledJsonBeforeDeepSeekCall:
 
 
 class TestGemmaDottedArgumentKeys:
-    """Gemma emits dotted argument keys (user.name:...) for namespaced
-    schemas; the key-quoting scanner must accept dots like the parser's
-    key/name charset, or json.loads fails and the whole call is lost."""
+    """Dotted Gemma keys (namespaced schemas) must survive key-quoting or the call is lost."""
 
     def test_dotted_key_parses(self):
         text = '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, query:<|"|>x<|"|>}<tool_call|>'
@@ -1143,9 +1123,7 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
 
 
 class TestLeadingMistralCallOwnsTheTurn:
-    """A LEADING parseable Mistral call wins in document order: literal XML in
-    trailing prose after the call must not be promoted over it by the earlier
-    shared XML pass. XML leading keeps the normal order."""
+    """A leading Mistral call wins in document order over literal XML in trailing prose."""
 
     def test_leading_mistral_wins_over_trailing_xml_literal(self):
         text = (
@@ -1231,9 +1209,7 @@ class TestEarliestEnvelopeWinsAcrossDeepSeekKimi:
 
 
 class TestNamelessLeadingJsonAnswerIsData:
-    """A nameless leading object that parses as real JSON (a structured
-    answer) is an envelope too: markup quoted inside its strings must stay
-    data, while a real call AFTER the answer still parses."""
+    """A nameless leading JSON answer is an envelope: quoted markup stays data, and a call after it parses."""
 
     def test_xml_literal_inside_json_answer_stays_data(self):
         text = '{"answer": "use <function=web_search><parameter=query>x</parameter></function>"}'

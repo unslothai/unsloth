@@ -298,8 +298,7 @@ LLAMA3_2_BARE_JSON_TEMPLATE = """
 
 
 def test_detect_safetensors_features_llama3_2_bare_json_keeps_tools_on():
-    """Llama-3.2 emits bare JSON ``{"name":..., "parameters":...}`` -- the
-    parser now handles that path, so the pill must stay enabled."""
+    """Llama-3.2 bare JSON is supported, so the pill stays enabled."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
@@ -319,9 +318,7 @@ MINICPM5_ATTRIBUTE_TEMPLATE = """
 
 
 def test_detect_safetensors_features_attribute_function_form_keeps_tools_on():
-    """MiniCPM-5 / MiniMax-M2 emit the attribute form ``<function name="...">``;
-    the parser supports it, so the marker whitelist must include that form (not
-    only the legacy ``<function=``) or the pill is wrongly suppressed."""
+    """The attribute form ``<function name="...">`` must be whitelisted or the pill is wrongly suppressed."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "openbmb/MiniCPM-5")
@@ -330,8 +327,7 @@ def test_detect_safetensors_features_attribute_function_form_keeps_tools_on():
 
 
 def test_detect_safetensors_features_unknown_format_suppresses_tools():
-    """A template that advertises tools but uses no known marker must
-    be suppressed so the UI does not enable an unsupported pill."""
+    """Tools advertised with no known marker must be suppressed."""
     from routes.inference import _detect_safetensors_features
 
     tpl = (

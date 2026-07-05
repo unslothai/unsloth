@@ -1805,20 +1805,14 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
 
 
 def _streamed_content(text: str, frag: int = 4) -> list[str]:
-    """Stream a content string token-by-token across many deltas, the way
-    llama-server emits a generation. ``frag`` controls the chunk size so the
-    BUFFERING state machine sees the call shape grow incrementally."""
+    """Stream content token-by-token like llama-server; ``frag`` sets the chunk size."""
     chunks = [_sse({"content": text[i : i + frag]}) for i in range(0, len(text), frag)]
     chunks.append(_done())
     return chunks
 
 
 def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
-    """Llama-3.2 GGUF emits a wrapper-less ``{"name":..,"parameters":..}`` call
-    with no XML signal. The BUFFERING scan only knew the XML signals, so the
-    bare object streamed out raw AND the signal-gated safety net never fired the
-    tool. It must instead be held while incomplete, drained silently when
-    balanced, and executed -- with nothing leaking to the visible stream."""
+    """A wrapper-less bare-JSON call must be held while incomplete, drained silently, and executed with nothing leaking."""
 
     bare_call = '{"name": "web_search", "parameters": {"query": "weather in Sydney"}}'
     first_stream = _streamed_content(bare_call)
@@ -1858,9 +1852,7 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
 
 
 def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypatch):
-    """Markerless JSON whose "name" is not an enabled tool (a person record
-    ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call to
-    a disabled tool and dropped."""
+    """Markerless JSON with a non-enabled name is the answer, not a phantom call."""
 
     answer = '{"name": "Alice", "parameters": {"age": 30}}'
     first_stream = _streamed_content(answer)
@@ -1944,11 +1936,7 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monk
 
 
 def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkeypatch):
-    """A truncated ordinary JSON answer whose name is NOT an enabled tool
-    (``{"name":"Alice","parameters":{"age": 30`` cut off) must still be shown. The
-    end-of-stream resolver and the no-tool DRAINING fallback previously routed any
-    ``{...,"name",...}`` to suppression regardless of the name, dropping the visible
-    answer; both are now gated on the enabled tool names."""
+    """A truncated JSON answer with a non-enabled name must still be shown (resolvers are gated on enabled names)."""
 
     truncated = '{"name": "Alice", "parameters": {"age": 30'
     stream = _streamed_content(truncated)
@@ -2002,9 +1990,7 @@ def test_gguf_truncated_enabled_name_json_is_still_suppressed(monkeypatch):
 
 
 def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
-    """An oversized (> _MAX_BARE_JSON_BUFFER) still-open JSON answer whose name is
-    not an enabled tool must stream as content, not be drained as a phantom call.
-    The oversized branch previously gated only on the presence of a ``"name"`` key."""
+    """An oversized still-open JSON answer with a non-enabled name streams as content, not a phantom drain."""
 
     cap = 16384
     big = "A" * (cap + 5000)
@@ -2145,9 +2131,7 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
 
 
 def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
-    """A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER (~16 KiB)
-    must DRAIN rather than stream the raw JSON prefix, yet still execute once the
-    full object is parsed by the safety net."""
+    """An oversized bare-JSON call drains rather than streams, and still executes via the safety net."""
 
     cap = 16384
     big = "A" * (cap + 5000)
@@ -2179,8 +2163,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
 
 def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
-    """After a complete bare-JSON call executes, the assistant message kept for
-    the next llama-server request must not carry the raw call as content."""
+    """After a bare-JSON call executes, the kept assistant message must not carry the raw call as content."""
 
     import copy
 
@@ -2268,10 +2251,7 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
-    """F4 (GGUF parallel of F3): with Auto-Heal OFF, a truncated ENABLED-name
-    bare-JSON fragment that did not parse must stay visible; with Auto-Heal ON it is
-    suppressed. The drain bare-JSON strip is gated on auto_heal_tool_calls, matching
-    the XML strip in the same branch."""
+    """Auto-Heal OFF keeps a truncated enabled-name fragment visible; ON suppresses it (strip gated on auto_heal_tool_calls)."""
 
     trunc = '{"name":"web_search","parameters":{"query":"weather'
 
@@ -2304,10 +2284,7 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
 
 
 def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
-    """The reserved re-prompt slots (``_MAX_REPROMPTS``) must not extend the real
-    tool-call budget. A model that makes a valid tool call every turn must stop after
-    ``max_tool_iterations`` executed rounds, then get the final-answer nudge -- not run
-    ``max_tool_iterations + _MAX_REPROMPTS`` tool rounds."""
+    """Re-prompt slots must not extend the tool budget: stop after ``max_tool_iterations`` executed rounds."""
     # More tool-call streams than the budget: if re-prompt slots leaked into the budget (the bug) the
     # loop would run 2+3=5 rounds; honouring it stops after 2, then a tool-less final-answer pass.
     streams = [

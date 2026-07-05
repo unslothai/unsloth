@@ -284,13 +284,7 @@ class TestParser:
 
 
 class TestParserMultiFormat:
-    """Parser coverage for Llama-3 / Mistral / Gemma 4 emission formats.
-
-    Each model family upstream of GGUF emits a different tool-call
-    shape. The shared parser must turn all of them into the same
-    OpenAI ``{name, arguments}`` shape so the safetensors / MLX
-    agentic loop is family-agnostic.
-    """
+    """Shared-parser coverage: every family's emission maps to the same OpenAI shape."""
 
     # Llama-3
 
@@ -1512,9 +1506,7 @@ def test_leading_json_answer_is_not_dropped():
 
 
 def _reprompt_loop(*, auto_heal_tool_calls):
-    """Drive a single restricted tool (search_knowledge_base) with an intent-only
-    first turn so the plan-without-action nudge is exercised. Returns the captured
-    per-turn conversations and the collected events."""
+    """Drive one restricted tool with an intent-only first turn to exercise the nudge; returns conversations and events."""
     captured: list[list] = []
 
     def fake_single_turn(messages, active_tools = None):
@@ -2367,14 +2359,7 @@ class TestLoopBehaviour:
 
 
 class TestLoopRePrompt:
-    """Re-prompt-on-plan-without-action parity with the GGUF path.
-
-    When the model emits forward-looking intent ("Let me search for
-    that") without actually calling a tool, the loop must nudge it to
-    act instead of silently terminating. Up to ``_MAX_REPROMPTS`` (3)
-    re-prompts per request, drawn from extra iteration slots so the
-    caller's tool-call budget is preserved.
-    """
+    """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``_MAX_REPROMPTS`` extra slots."""
 
     def test_intent_signal_triggers_reprompt(self):
         # Turn 1: intent signal, no tool call.
@@ -2485,9 +2470,7 @@ class TestLoopRePrompt:
 
 
 class TestLoopCanonicalHealKey:
-    """Per-tool canonical heal key (``code`` for python, ``command`` for
-    terminal, ``query`` for everything else). Mirrors GGUF after the
-    PR-5615 follow-up that ported this mapping over."""
+    """Per-tool canonical heal key (``code``/``command``/``query``), mirroring GGUF."""
 
     def test_python_bare_string_heals_to_code(self):
         loop, exec_fn = _make_loop(
@@ -2526,8 +2509,7 @@ class TestLoopCanonicalHealKey:
 
 
 class TestGGUFSafetensorsHealingParity:
-    """Pin parity between the GGUF agentic loop and the safetensors /
-    MLX loop so a regression on either side breaks CI."""
+    """Pin GGUF vs safetensors/MLX loop parity so a regression on either side breaks CI."""
 
     def test_gguf_imports_shared_signal_markers(self):
         # The GGUF BUFFERING state machine must wake on every emission
@@ -3101,22 +3083,7 @@ class TestGptOssNameDetection:
 
 # Routes-level python_tag strip (multi-line; stop on next sentinel)
 class TestRoutesPythonTagStrip:
-    """Earlier revisions of ``_TOOL_XML_RE`` in
-    ``studio.backend.routes.inference`` used either ``[^\\n<]*`` (5615 --
-    leaked the tail of any tool call whose argument contained a literal
-    ``<`` like ``code="if x < 10"``) or ``[^\\n]*`` (5620 round one --
-    single-line only, so the second line of
-    ``python.call(code="line1\\nline2")`` leaked). The current pattern
-    ``(?:[^<]|<(?!\\|))*`` consumes any character that is not a Llama-3
-    ``<|`` sentinel start, so multi-line code, embedded JSON, and bare
-    ``<`` characters in code all stay inside the strip.
-
-    The fully resolved strip is also exposed via
-    ``strip_tool_markup(text, final=True)`` in the parser; the
-    streaming path's routes-level strip is the regression-prone one
-    because it runs on every cumulative emission while content is
-    still arriving.
-    """
+    """``_TOOL_XML_RE`` must consume multi-line code, embedded JSON, and bare ``<`` (earlier ``[^\n<]*`` / ``[^\n]*`` revisions leaked tails); the streaming route-level strip is the regression-prone path."""
 
     def _strip(self, text: str) -> str:
         # Import inside the test so a routes-module import error does

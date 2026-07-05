@@ -25,8 +25,7 @@ from routes.inference import (
 
 
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
-    """Mirror sf_tool_stream's reasoning loop: diff each cumulative snapshot, feed the delta through
-    the extractor, and reset (flushing first) on ``tool_start`` / empty ``status`` so turns split independently."""
+    """Mirror sf_tool_stream's reasoning loop: diff cumulative snapshots, reset (flushing) on turn end."""
     prev_text = ""
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = True, reasoning_prefilled = prefilled

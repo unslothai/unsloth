@@ -8502,8 +8502,7 @@ class LlamaCppBackend:
             cumulative_display += content_buffer
 
         def _looks_like_enabled_bare_json(text: str, enabled_tool_names: set) -> bool:
-            """True when ``text`` opens with a markerless bare-JSON call whose name is an ENABLED tool;
-            an ordinary JSON answer returns False so it streams as content (parser/safetensors parity)."""
+            """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
             probe = strip_llama3_leading_sentinels(text.lstrip())
             if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
                 return False
