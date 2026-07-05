@@ -398,6 +398,40 @@ def test_strips_bare_kimi_call_without_section_wrapper():
     assert cleaned == "pre  post"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Prose that merely names a Kimi/DeepSeek marker (no real call follows) must
+        # survive: the call-shaped lookahead only fires on a real call or a bare EOF
+        # fragment, so an answer discussing the protocol is never truncated.
+        "See <|tool_call_begin|> in the docs. More prose after it.",
+        "The <|tool_calls_section_begin|> marker opens a batch. Read on.",
+        "DeepSeek uses <｜tool▁calls▁begin｜> to start a call block, then continues.",
+    ],
+)
+def test_deepseek_kimi_false_alarm_prose_is_kept(text):
+    # Regression for the route arm truncating a prose answer that references a marker
+    # without a following call (parser _TOOL_ALL_PATS already had this lookahead).
+    assert _TOOL_XML_RE.sub("", text) == text
+
+
+def test_deepseek_kimi_real_calls_still_strip_after_false_alarm_fix():
+    # The lookahead must not weaken real-call stripping: closed, truncated, and bare
+    # EOF-fragment forms all still get removed.
+    closed = (
+        "answer <|tool_call_begin|>functions.get_w:0<|tool_call_argument_begin|>"
+        '{"a":1}<|tool_call_end|> tail'
+    )
+    assert _TOOL_XML_RE.sub("", closed) == "answer  tail"
+    eof_fragment = "prefix <|tool_call_begin|>"
+    assert _TOOL_XML_RE.sub("", eof_fragment) == "prefix "
+    deepseek = (
+        "reply <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_x<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    assert _TOOL_XML_RE.sub("", deepseek) == "reply "
+
+
 # ── Llama-3 <|python_tag|> arm bounds on REAL sentinels only ──────
 
 

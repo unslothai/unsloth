@@ -1681,15 +1681,21 @@ _TOOL_XML_RE = _re.compile(
     # (stopping at any ``<|`` truncated on literal ``<|x|>`` tokens in values).
     # The last arms cover DeepSeek envelopes (all opener variants), Kimi section
     # blocks, and bare Kimi calls. Name class ``[\w.\-]`` mirrors the parser.
+    # Those three arms carry a call-shaped lookahead (matching the parser's
+    # ``_TOOL_ALL_PATS``): a prose answer that merely mentions a marker
+    # (``See <|tool_call_begin|> in the docs``) is only stripped when a real
+    # call actually follows the marker, or the marker is a bare fragment at EOF.
     r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*</function>'
     r'|<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
-    r"|" + _DS_OPEN_SRC + r".*?(?:<｜tool▁calls▁end｜>|\Z)"
-    r"|<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)"
-    r"|<\|tool_call_begin\|>.*?(?:<\|tool_call_end\|>|\Z)"
+    r"|"
+    + _DS_OPEN_SRC
+    + r"(?=\s*(?:<｜tool▁call▁begin｜>|function)|\s*$).*?(?:<｜tool▁calls▁end｜>|\Z)"
+    r"|<\|tool_calls_section_begin\|>(?=\s*<\|tool_call_begin\|>|\s*$).*?(?:<\|tool_calls_section_end\|>|\Z)"
+    r"|<\|tool_call_begin\|>(?=\s*[A-Za-z_][\w.\-]*:\d|\s*$).*?(?:<\|tool_call_end\|>|\Z)"
     # ``</param>`` is the attribute-form alias of ``</parameter>`` (the parser accepts
     # both); strip a tail-only orphan close of either spelling.
     r"|</(?:parameter|param)>\s*\Z",
