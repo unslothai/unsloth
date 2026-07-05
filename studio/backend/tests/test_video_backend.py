@@ -814,8 +814,13 @@ def test_wan_a14b_step_cache_applies_to_both_dits(fake_runtime):
     assert status["transformer_cache"] == "fbcache"
 
 
-def test_wan_a14b_attention_applies_to_both_dits(fake_runtime):
-    # An explicit attention backend must be set on both experts.
+def test_wan_a14b_attention_applies_to_both_dits(fake_runtime, monkeypatch):
+    # An explicit attention backend must be set on both experts. The fake runtime is a
+    # CPU target, where the NVIDIA gate correctly drops explicit kernels; pin the gate
+    # open so the explicit-set path itself is what this test exercises.
+    from core.inference import diffusion_attention as attn_mod
+
+    monkeypatch.setattr(attn_mod, "_is_cuda_nvidia", lambda target: True)
     backend = VideoBackend()
     backend.load_pipeline(
         "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
