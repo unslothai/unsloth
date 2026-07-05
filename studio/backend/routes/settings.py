@@ -260,6 +260,17 @@ def _embedding_model_response() -> EmbeddingModelResponse:
     )
 
 
+def _ambient_hf_token() -> Optional[str]:
+    """The HF token the loader would use (HF_TOKEN env or the cached login), so a gated
+    repo is scanned rather than failing open. None if unavailable."""
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:
+        return None
+
+
 def _llama_backend_active() -> bool:
     """True when this install embeds via the llama-server (GGUF) backend."""
     from core.rag import config as rag_config
@@ -381,8 +392,12 @@ def update_embedding_model(
         # type check for offline/local repos HF cannot verify); local paths and
         # unreachable scans fail open inside evaluate_file_security.
         from utils.security import evaluate_file_security, security_load_subdirs
+
+        # Fall back to the loader's own token so a gated/private repo is actually scanned
+        # (a token-less scan fails open for exactly the repo that would still load).
+        scan_token = hf_token or _ambient_hf_token()
         if evaluate_file_security(
-            model, hf_token = hf_token, load_subdirs = security_load_subdirs(model, hf_token)
+            model, hf_token = scan_token, load_subdirs = security_load_subdirs(model, scan_token)
         ).blocked:
             raise HTTPException(
                 status_code = 409,

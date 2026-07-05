@@ -83,7 +83,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
 def test_load_sink_refuses_flagged_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     import core.rag.embeddings as embeddings
-    with pytest.raises(RuntimeError):
+
+    with pytest.raises(embeddings.UnsafeEmbeddingModelError):
         embeddings._guard_model_security("attacker/malicious-embed")
 
 
@@ -91,3 +92,35 @@ def test_load_sink_allows_clean_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import core.rag.embeddings as embeddings
     embeddings._guard_model_security("acme/clean-embed")  # no raise
+
+
+def test_sink_threads_ambient_token_into_scan(monkeypatch):
+    # A gated repo set via env/default has no request token; the guard must feed the
+    # loader's own token to the scan, or it fails open for the repo that still loads.
+    seen = {}
+    mod = _types.ModuleType("utils.security")
+    mod.security_load_subdirs = lambda name, token = None: seen.setdefault("subdirs_token", token) or ()
+    mod.evaluate_file_security = lambda *a, **k: seen.setdefault("scan_token", k.get("hf_token")) or _Decision(False)
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+    import core.rag.embeddings as embeddings
+
+    monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: "hf_ambient")
+    embeddings._guard_model_security("acme/gated-embed")
+    assert seen["scan_token"] == "hf_ambient"
+    assert seen["subdirs_token"] == "hf_ambient"
+
+
+def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):
+    # The ST encode fallback must re-raise a security block, not swap to llama-server.
+    import core.rag.embeddings as embeddings
+
+    def _boom(*a, **k):
+        raise embeddings.UnsafeEmbeddingModelError("flagged")
+
+    monkeypatch.setattr(embeddings, "_st_encode", _boom)
+    monkeypatch.setattr(
+        embeddings, "_switch_to_llama_fallback",
+        lambda err: pytest.fail("security block must not fall back to llama-server"),
+    )
+    with pytest.raises(embeddings.UnsafeEmbeddingModelError):
+        embeddings._SentenceTransformersBackend().encode(["hi"])

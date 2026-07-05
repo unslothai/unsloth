@@ -63,6 +63,23 @@ def _install_torchao_stub_once() -> None:
     install_torchao_windows_rocm_stub()
 
 
+class UnsafeEmbeddingModelError(RuntimeError):
+    """Raised when the embedding model repo is flagged unsafe. A distinct type so the
+    llama-server fallback paths re-raise it instead of masking a security block as a
+    routine ST failure."""
+
+
+def _ambient_hf_token() -> str | None:
+    """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
+    the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:
+        return None
+
+
 def _guard_model_security(name: str) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
@@ -71,11 +88,15 @@ def _guard_model_security(name: str) -> None:
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
-        blocked = evaluate_file_security(name, load_subdirs = security_load_subdirs(name)).blocked
+
+        token = _ambient_hf_token()
+        blocked = evaluate_file_security(
+            name, hf_token = token, load_subdirs = security_load_subdirs(name, token)
+        ).blocked
     except Exception:
         return
     if blocked:
-        raise RuntimeError(
+        raise UnsafeEmbeddingModelError(
             f"Embedding model {name!r} is flagged as unsafe by Hugging Face's security "
             "scan; refusing to load. Set a different RAG embedding model."
         )
@@ -178,6 +199,8 @@ class _SentenceTransformersBackend:
     ):
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
+        except UnsafeEmbeddingModelError:
+            raise  # a security block must hard-fail, not fall back to llama-server
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
             # ST loaded but this encode blew up; swap the process to the llama-server
             # embedder (so later encodes stay in one space) and retry.
@@ -241,6 +264,8 @@ def _build_st_backend_or_fallback():
     try:
         backend.warm(model_name = None)
         return backend
+    except UnsafeEmbeddingModelError:
+        raise  # a security block must hard-fail, not fall back to llama-server
     except Exception as st_err:  # noqa: BLE001 - any ST/torch import or load failure
         fallback = _try_make_llama_backend()
         if fallback is None:
