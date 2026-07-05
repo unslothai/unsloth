@@ -8335,6 +8335,7 @@ class LlamaCppBackend:
         preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
+        nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
@@ -8861,8 +8862,11 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
+                        # ``nudge_tool_calls`` None keeps the default-on loop
+                        # behavior; explicit False disables the re-prompt.
                         if (
                             auto_heal_tool_calls
+                            and (nudge_tool_calls is None or nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS

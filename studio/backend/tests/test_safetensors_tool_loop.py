@@ -1468,6 +1468,48 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the web for that." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
+    def test_explicit_nudge_off_is_not_reprompted(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            nudge_tool_calls = False,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the web for that." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_rag_autoinject_counts_as_executed_tool(self, monkeypatch):
+        # Autoinject already ran a KB search outside the controller; a short
+        # post-retrieval intent must not trigger a spurious re-prompt.
+        import core.inference.tools as tools_mod
+
+        def fake_autoinject(conversation, rag_scope):
+            return {
+                "events": [
+                    {"type": "tool_start", "tool_name": "search_knowledge_base"},
+                    {"type": "tool_end", "tool_name": "search_knowledge_base"},
+                ],
+                "messages": [{"role": "tool", "content": "kb result"}],
+            }
+
+        monkeypatch.setattr(tools_mod, "build_rag_autoinject", fake_autoinject)
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the docs."],
+                ["SHOULD NOT APPEAR"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert any(e.get("type") == "tool_start" for e in events)
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the docs." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
     def test_no_reprompt_after_a_tool_already_executed(self):
         loop, exec_fn = _make_loop(
             turns = [

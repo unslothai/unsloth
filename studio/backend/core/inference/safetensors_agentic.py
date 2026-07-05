@@ -152,6 +152,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
@@ -191,6 +192,9 @@ def run_safetensors_tool_loop(
         for _ev in _auto["events"]:
             yield _ev
         conversation.extend(_auto["messages"])
+    # Autoinject already ran a knowledge-base search outside the controller, so
+    # it counts as an executed tool for the plan-without-action gate.
+    rag_autoinjected = bool(_auto)
 
     unrestricted_tools = not tools
     tool_controller = ToolLoopController(
@@ -460,14 +464,18 @@ def run_safetensors_tool_loop(
             if not safety_tc:
                 # Re-prompt on plan-without-action (GGUF loop parity): the
                 # model described what it will do without acting. Fires at
-                # most once per request, only before any tool has executed,
-                # and only on short forward-looking replies while tools are
-                # active with Auto-Heal on.
+                # most once per request, only before any tool has executed
+                # (RAG autoinject counts as executed), and only on short
+                # forward-looking replies while tools are active with
+                # Auto-Heal on and the nudge not explicitly disabled
+                # (None keeps the default-on loop behavior).
                 stripped_answer = content_accum.strip()
                 if (
                     auto_heal_tool_calls
+                    and (nudge_tool_calls is None or nudge_tool_calls)
                     and active_tools
                     and reprompt_count < MAX_ACT_REPROMPTS
+                    and not rag_autoinjected
                     and not any(record.executed for record in tool_controller.history)
                     and is_short_intent_without_action(stripped_answer)
                 ):
