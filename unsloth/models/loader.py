@@ -209,7 +209,7 @@ DISABLE_COMPILE_MODEL_NAMES = [
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the
 # flash-linear-attention Triton kernels (unsloth_zoo/_vendored/fla), so no install is
 # needed; transformers uses the much slower pure PyTorch path only when they can't be enabled.
-FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear")
+FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
 _fla_advised = False
 
 
