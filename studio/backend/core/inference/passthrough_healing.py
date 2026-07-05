@@ -351,7 +351,11 @@ class StreamToolCallHealer:
                     return events
             # HOLD: handle the FIRST complete block per pass so events keep
             # document order (a later declared call must not overtake an
-            # earlier undeclared one flushing as text).
+            # earlier undeclared one flushing as text). A "block" may be one
+            # markup call OR a whole Mistral [TOOL_CALLS] array whose per-item
+            # spans are contiguous; the whole contiguous run is drained here so
+            # later calls in the same array are not stranded as text once the
+            # residue no longer begins with a signal.
             parsed, spans = parse_tool_calls_from_text(
                 self._buffer,
                 id_offset = self._id_offset,
@@ -372,26 +376,34 @@ class StreamToolCallHealer:
                     self._holding = False
                     continue
                 return events
-            start, end = spans[0]
-            promoted = _promote(
-                [parsed[0]],
-                self._allowed,
-                id_offset = self._id_offset,
-                tool_schemas = self._tool_schemas,
-            )
-            if promoted:
-                if start:
-                    events.append(("text", self._buffer[:start]))
-                events.append(("tool_call", promoted[0]))
-                self._id_offset += 1
-                # Drop exactly the promoted markup span; everything else
-                # (leading text, later blocks) stays and is rescanned.
-                self._buffer = self._buffer[end:]
-            else:
-                # Undeclared or unusable name: its markup is DATA, flush it
-                # (and anything before it) verbatim, then rescan the rest.
-                events.append(("text", self._buffer[:end]))
-                self._buffer = self._buffer[end:]
+            pos = 0
+            run_end = spans[0][1]
+            for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
+                # Stop at the first gap (prose between blocks) or an incomplete
+                # trailing block: leave it for the next pass so it can re-hold
+                # and stream incrementally instead of flushing as text early.
+                if order and start != run_end:
+                    break
+                promoted = _promote(
+                    [call],
+                    self._allowed,
+                    id_offset = self._id_offset,
+                    tool_schemas = self._tool_schemas,
+                )
+                if promoted:
+                    # Flush any leading text, then drop the promoted markup span.
+                    if self._buffer[pos:start]:
+                        events.append(("text", self._buffer[pos:start]))
+                    events.append(("tool_call", promoted[0]))
+                    self._id_offset += 1
+                else:
+                    # Undeclared or unusable name: its markup is DATA, flush it
+                    # (and anything before it) verbatim.
+                    events.append(("text", self._buffer[pos:end]))
+                pos = end
+                run_end = end
+            # Everything past the drained run (later blocks) stays and is rescanned.
+            self._buffer = self._buffer[run_end:]
             self._holding = False
 
     def finalize(self) -> list:

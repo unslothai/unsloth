@@ -280,6 +280,56 @@ class TestStreamHealer:
         assert [c["id"] for c in calls] == ["call_0", "call_1"]
         assert _events_text(events).strip() == "then"
 
+    def test_mistral_array_multiple_calls_all_promoted_in_stream(self):
+        # A canonical Mistral [TOOL_CALLS] array carries several calls under a
+        # SINGLE signal. Draining only the first call would leave the residue
+        # starting at ",{...}]" (no signal), so later calls in the same array
+        # must be promoted in the same pass, not flushed as raw text.
+        healer = StreamToolCallHealer({"get_weather", "get_time"})
+        array = (
+            '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
+            '{"name":"get_time","arguments":{"tz":"UTC"}}]'
+        )
+        events = healer.feed(array) + healer.finalize()
+        calls = _events_calls(events)
+        assert [c["function"]["name"] for c in calls] == ["get_weather", "get_time"]
+        assert [c["id"] for c in calls] == ["call_0", "call_1"]
+        assert _events_text(events) == ""
+
+    def test_mistral_array_multiple_calls_promoted_char_by_char(self):
+        healer = StreamToolCallHealer({"get_weather", "get_time"})
+        array = (
+            '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
+            '{"name":"get_time","arguments":{"tz":"UTC"}}]'
+        )
+        events = []
+        for ch in array:
+            events += healer.feed(ch)
+        events += healer.finalize()
+        calls = _events_calls(events)
+        assert [c["function"]["name"] for c in calls] == ["get_weather", "get_time"]
+        assert _events_text(events) == ""
+
+    def test_mistral_array_undeclared_middle_kept_as_text_others_promoted(self):
+        # A mid-array element for a tool that is not declared must survive as
+        # text while the declared neighbours on either side still promote in
+        # document order.
+        healer = StreamToolCallHealer({"a", "c"})
+        array = (
+            '[TOOL_CALLS][{"name":"a","arguments":{}},'
+            '{"name":"b","arguments":{}},{"name":"c","arguments":{}}]'
+        )
+        events = healer.feed(array) + healer.finalize()
+        assert [c["function"]["name"] for c in _events_calls(events)] == ["a", "c"]
+        assert '"b"' in _events_text(events)
+
+    def test_mistral_array_then_trailing_prose(self):
+        healer = StreamToolCallHealer({"a", "b"})
+        array = '[TOOL_CALLS][{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+        events = healer.feed(f"{array} all done") + healer.finalize()
+        assert [c["function"]["name"] for c in _events_calls(events)] == ["a", "b"]
+        assert "all done" in _events_text(events)
+
     def test_incomplete_call_healed_at_finalize(self):
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed('<tool_call>{"name":"Bash","arguments":{"cmd":"ls"}}')
