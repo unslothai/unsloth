@@ -1,1 +1,0 @@
-- GPU: diffusers; CPU/MPS: sd.cpp

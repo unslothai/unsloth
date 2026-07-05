@@ -1,1 +1,0 @@
-- `increasing performance and speed`
