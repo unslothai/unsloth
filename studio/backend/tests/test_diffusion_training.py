@@ -321,6 +321,13 @@ def client(monkeypatch):
 
     monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = False))
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
+    # The dataset preflight runs the trainer's discovery against _BODY's fake
+    # data_dir; stub it here so wiring tests pass, and let the dedicated preflight
+    # tests below re-point it at a real tmp dataset.
+    monkeypatch.setattr(
+        "core.training.diffusion_train_common.discover_image_caption_pairs",
+        lambda data_dir, **kw: [("img.png", "caption")],
+    )
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"

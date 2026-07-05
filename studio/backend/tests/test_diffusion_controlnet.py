@@ -239,6 +239,9 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
     b = DiffusionBackend()
     st = _state()
+    # The pipe cache only commits while ``st`` is the CURRENT load (an unload racing
+    # from_pipe must not repopulate the cache), so mirror the loaded invariant.
+    b._state = st
     resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
     p1 = b._controlnet_pipe(st, resolved, threading.Event())
     assert isinstance(p1, _FakeCNPipe) and isinstance(p1.controlnet, _FakeCNModel)
@@ -259,3 +262,18 @@ def test_controlnet_pipe_rejects_family_without_classes():
     st.family.controlnet_pipeline_class = None
     with pytest.raises(ValueError, match = "not supported"):
         b._controlnet_pipe(st, dc.ResolvedControlNet("x", "y", False), threading.Event())
+
+def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
+    # An unload that lands while from_pipe is assembling must not let the wrapper
+    # repopulate the cache around the torn-down base pipe.
+    import threading
+
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    b = DiffusionBackend()
+    st = _state()  # never committed to b._state: the load is already gone
+    resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        b._controlnet_pipe(st, resolved, threading.Event())
+    assert b._cn_pipes == {}
