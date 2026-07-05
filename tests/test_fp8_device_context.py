@@ -28,7 +28,11 @@ class _FakeDeviceModule:
 class _FakeTorch:
     Tensor = object
 
-    def __init__(self, cuda_device_count: int, xpu_device_count: int = 0) -> None:
+    def __init__(
+        self,
+        cuda_device_count: int,
+        xpu_device_count: int = 0,
+    ) -> None:
         self.cuda = _FakeDeviceModule(cuda_device_count)
         self.xpu = _FakeDeviceModule(xpu_device_count)
 
