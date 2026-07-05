@@ -46,6 +46,23 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _ensure_export_supported() -> None:
+    """Reject a mutating export request up front (HTTP 400) when the host can't export.
+
+    Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
+    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
+    """
+    from utils.hardware import export_capability
+
+    cap = export_capability()
+    if not cap.get("export_supported", True):
+        raise HTTPException(
+            status_code = 400,
+            detail = cap.get("export_unsupported_message")
+            or "Export is not supported on this platform.",
+        )
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
@@ -58,6 +75,7 @@ async def load_checkpoint(
     a clear error instead of tearing down the user's other running workloads.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -266,6 +284,7 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
@@ -275,6 +294,7 @@ async def export_merged_model(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            compressed_method = request.compressed_method,
         )
 
         if not success:
@@ -304,6 +324,7 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
@@ -342,7 +363,10 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
+        # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
+        imatrix_file = request.imatrix_path or (True if request.imatrix else None)
         success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
             save_directory = request.save_directory,
@@ -352,6 +376,7 @@ async def export_gguf(
             hf_token = request.hf_token,
             private = request.private,
             gguf_shard_size = request.gguf_shard_size,
+            imatrix_file = imatrix_file,
         )
 
         if not success:
@@ -381,6 +406,7 @@ async def export_lora_adapter(
     Wraps ExportBackend.export_lora_adapter.
     """
     try:
+        _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
@@ -389,6 +415,8 @@ async def export_lora_adapter(
             repo_id = request.repo_id,
             hf_token = request.hf_token,
             private = request.private,
+            gguf = request.gguf,
+            gguf_outtype = request.gguf_outtype,
         )
 
         if not success:
