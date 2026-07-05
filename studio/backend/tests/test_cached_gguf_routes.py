@@ -749,15 +749,26 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
     # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
     # out (they'd 400 in validate_load).
-    for arch in ("sdxl", "sd1", "sd3", "wan", "lumina2", "hidream", "cosmos"):
+    for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid"):
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
         assert task not in ("text-generation", "text-to-image")
+    # Video archs the video backend loads surface with the Video-picker task,
+    # which is neither chat nor an image task (unsloth LTX-2.x GGUFs ship
+    # general.architecture "ltxv"; community Wan GGUFs ship "wan").
+    for arch in ("ltxv", "wan"):
+        task = models_route._arch_to_task(arch)
+        assert task == models_route._VIDEO_GEN_TASK
+        assert task not in ("text-generation", "text-to-image")
     # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
-    # classified here as some image task (loadable OR unsupported), never chat.
+    # classified here as some non-chat task (image, video, or unsupported).
     from core.inference.llama_cpp import LlamaCppBackend
 
-    classified = models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+    classified = (
+        models_route._DIFFUSION_GGUF_ARCHS
+        | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+        | models_route._VIDEO_GGUF_ARCHS
+    )
     missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 

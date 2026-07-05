@@ -290,6 +290,35 @@ def test_install_never_attempted_for_builtin_backends(monkeypatch):
     assert run.calls == []
 
 
+def test_install_failure_logs_pip_stderr(monkeypatch):
+    # A CalledProcessError's str() hides the pip reason; the warning must surface the
+    # captured stderr (decoding bytes) so a fallback to native is diagnosable.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(
+            returncode = 1, cmd = cmd, stderr = b"ERROR: No matching distribution found"
+        )
+
+    _stub_subprocess(monkeypatch, _boom)
+
+    warnings: list[str] = []
+
+    class _Logger:
+        def info(self, *a, **k):
+            pass
+
+        def warning(self, msg, *args):
+            warnings.append(msg % args if args else msg)
+
+    att._ensure_attention_backend_installed("sage", _Logger())
+    assert warnings and "No matching distribution found" in warnings[-1]
+
+
 def test_install_failure_falls_back_to_native(monkeypatch):
     # pip failing (no wheel for this platform) must not break the load: the apply
     # path proceeds, set_attention_backend raises on the missing package, and the

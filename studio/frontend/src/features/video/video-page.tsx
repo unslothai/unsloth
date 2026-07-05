@@ -618,13 +618,29 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     setResolutionIdx((idx) => (idx < resolutionPresets.length ? idx : 0));
   }, [resolutionPresets.length]);
+  const loadedFamily = status?.loaded ? status.family : null;
+  const familyDefaultFrames = status?.defaults?.num_frames;
+  const prevFamilyRef = useRef<string | null>(null);
   useEffect(() => {
+    const familyChanged = loadedFamily !== prevFamilyRef.current;
+    prevFamilyRef.current = loadedFamily;
     setNumFrames((cur) => {
+      // A newly loaded family brings its own default clip length (121 frames for
+      // LTX-2); without this the pre-load fallback (25 frames, still on the new
+      // lattice) silently sticks and every default run is a ~1s clip.
+      if (familyChanged && loadedFamily && familyDefaultFrames) {
+        const best = durationOptions.reduce((a, b) =>
+          Math.abs(b.frames - familyDefaultFrames) < Math.abs(a.frames - familyDefaultFrames)
+            ? b
+            : a,
+        );
+        return best?.frames ?? cur;
+      }
       if (durationOptions.some((o) => o.frames === cur)) return cur;
       // Prefer the ~3s preset (index 2) as a sensible default, else the first.
       return durationOptions[2]?.frames ?? durationOptions[0]?.frames ?? cur;
     });
-  }, [durationOptions]);
+  }, [durationOptions, loadedFamily, familyDefaultFrames]);
 
   // Fetch (once) the object URL for a record's MP4; cached across remounts. Same
   // auth-protected blob pattern the images gallery uses.
@@ -634,7 +650,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     try {
       const url = await fetchGalleryVideoObjectUrl(video.url);
       galleryCache.srcById.set(video.id, url);
-      setSrcById((prev) => ({ ...prev, [video.id]: url }));
+      // The URL is cached above either way; skip the state update after unmount
+      // (matches the other async callbacks in this file).
+      if (isMounted.current) {
+        setSrcById((prev) => ({ ...prev, [video.id]: url }));
+      }
     } catch {
       // Leave it without a src; the card shows a placeholder.
     } finally {
@@ -926,7 +946,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         const prevQuant = quant;
         quantRevert.current = { prev: prevQuant };
         setQuant(meta.ggufVariant);
-        const dq = defaultsFor(id);
+        // Include the picked filename: the variant (distilled vs dev) lives there,
+        // not in the repo id.
+        const dq = defaultsFor(`${id}/${meta.ggufFilename}`);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
         void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename }).then((started) => {
@@ -1063,7 +1085,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       setSelectedId(res.video.id);
       void ensureSrc(res.video);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      const msg = err instanceof Error ? err.message : "Video generation failed";
+      // The user's own Cancel comes back as the backend's 409 sentinel; not an error.
+      if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;

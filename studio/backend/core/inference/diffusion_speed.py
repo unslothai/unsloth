@@ -218,7 +218,7 @@ def apply_speed_optims(
     # and the UNSLOTH_DISABLE_FP16_ACCUM kill switch.
     if on_cuda:
         applied["fp16_accum"] = _enable_fp16_accumulation(
-            family, logger, dtype = getattr(target, "dtype", None), speed_mode = speed_mode
+            family, logger, dtype = getattr(target, "dtype", None), speed_mode = mode
         )
 
     # --- the compile lever, remapped per tier ----------------------------------------

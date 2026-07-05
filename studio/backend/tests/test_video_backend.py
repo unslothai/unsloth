@@ -418,6 +418,38 @@ def test_validate_rejects_unknown_and_untrusted():
         backend.validate_load_request("unsloth/LTX-2.3-GGUF", model_kind = "gguf")
 
 
+def test_validate_gates_base_repo_and_local_paths(tmp_path):
+    backend = VideoBackend()
+    # An arbitrary remote base_repo must not reach from_pretrained via a GGUF pick.
+    with pytest.raises(ValueError, match = "base_repo"):
+        backend.validate_load_request(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = "evil/companions",
+        )
+    # The family base and local dirs stay allowed.
+    fam = backend.validate_load_request(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "x.gguf",
+        model_kind = "gguf",
+        base_repo = "Lightricks/LTX-2",
+    )
+    assert fam.name == "ltx-2"
+    # A local dir without the picked checkpoint fails BEFORE the GPU handoff.
+    with pytest.raises(ValueError):
+        backend.validate_load_request(
+            str(tmp_path), gguf_filename = "missing.gguf", family_override = "ltx-2"
+        )
+    # A path-shaped repo id that does not exist fails validation too.
+    with pytest.raises(ValueError, match = "does not exist"):
+        backend.validate_load_request(
+            str(tmp_path / "nope" / "model.gguf"),
+            gguf_filename = "model.gguf",
+            family_override = "ltx-2",
+        )
+
+
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     backend = VideoBackend()
     status = _load_gguf(backend, tmp_path)
@@ -898,6 +930,30 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     assert "offload moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
 
 
+def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):
+    # If the first expert quantises but the second does not, the pipe is left at
+    # mismatched precision with no way back (in-place mutation), so the load must
+    # fail cleanly rather than run mixed with quant reported off.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    outcomes = iter(["int8", None])
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, *, mode, family, logger = None: next(outcomes),
+    )
+
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError, match = "1/2 experts"):
+        backend.load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+        )
+    assert backend.status()["loaded"] is False
+
+
 def test_wan_ti2v_dense_quant_applies_to_single_dit(fake_runtime, monkeypatch):
     # A single-DiT pipeline load quantises exactly one transformer.
     import core.inference.video as video_mod
@@ -945,3 +1001,36 @@ def test_wan_validate_trusted_repos(fake_runtime):
             model_kind = "pipeline",
             transformer_quant = "bogus",
         )
+
+
+def test_wan_a14b_refuses_single_file_loads(fake_runtime):
+    # A single gguf/safetensors checkpoint carries only one of the A14B's two experts;
+    # the pipeline would pull the other dense bf16 from the base repo outside the
+    # memory plan, so validate refuses it up front (before any download).
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = "dual-expert"):
+        backend.validate_load_request(
+            "QuantStack/Wan2.2-T2V-A14B-GGUF",
+            gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+        )
+    # The single-DiT 5B family still accepts GGUF.
+    fam = backend.validate_load_request(
+        "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        gguf_filename = "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+    )
+    assert fam.name == "wan2.2-ti2v-5b"
+
+
+def test_second_dit_view_write_through():
+    # Attribute writes on the proxy must land on the real pipe (a helper's side
+    # effect would otherwise vanish with the temporary view); a ``transformer``
+    # write mirrors the read property onto the second expert.
+    from core.inference.video import _SecondDiTView
+
+    pipe = types.SimpleNamespace(transformer = "t1", transformer_2 = "t2", flag = None)
+    view = _SecondDiTView(pipe)
+    assert view.transformer == "t2"
+    view.transformer = "t2-compiled"
+    assert pipe.transformer_2 == "t2-compiled" and pipe.transformer == "t1"
+    view.flag = "set"
+    assert pipe.flag == "set"
