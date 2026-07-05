@@ -1410,6 +1410,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         tol_ok as _pg_tol_ok,
                         TOL_KILL as _PG_TOL_KILL,
                     )
+                    # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
+                    # entirely for softcap models (e.g. gemma2) before building any layout.
+                    _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
                         _pg_enabled_fn()
                         and pixel_values is None
@@ -1417,18 +1420,25 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and mm_token_type_ids is None
                         and _pg_num_gen is not None
                         and _pg_num_gen >= 2
+                        and not getattr(_pg_cfg, "attn_logit_softcapping", None)
                     )
                 except Exception:
                     _pg_engage = False
             if _pg_engage:
                 try:
                     _pg_pad = self.processing_class.pad_token_id
+                    # sliding-window models lose the per-sequence window in the packed stream, so
+                    # cap the PG span (P+max(R)) at the window, mirroring the packed _pk_sw guard.
+                    _pg_sw = getattr(getattr(unwrapped_model, "config", None), "sliding_window", None)
+                    if not (isinstance(_pg_sw, int) and _pg_sw > 0):
+                        _pg_sw = None
                     _pg_layout = _pg_build_layout(
                         input_ids,
                         logits_to_keep,
                         _pg_pad,
                         _pg_num_gen,
                         left_pad_tokens_per_prompt,
+                        max_segment_cap = _pg_sw,
                     )
                     _pg_unsafe = getattr(
                         unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
@@ -1461,6 +1471,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     logit_softcapping,
                                     temperature,
                                 )
+                                # release the [1, T, H] hidden before the full-row verify forward
+                                _pg_hidden = None
                         device_synchronize()
                         # override scatter width to the loss window [B, logits_to_keep+max_left_pad]
                         _pg_W = logits_to_keep + max_left_pad

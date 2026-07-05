@@ -215,6 +215,7 @@ def build_group_layout(
     left_pad_tokens_per_prompt,
     *,
     apply_tokr_gate = True,
+    max_segment_cap = None,
 ):
     """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
 
@@ -238,6 +239,13 @@ def build_group_layout(
     groups = _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
     if groups is None:
         return None
+
+    # sliding-window guard: a suffix token attends over prefix_len + its own suffix_len, so a
+    # group's PG attention span is P + max(R). Fall back if that exceeds the local window.
+    if max_segment_cap is not None:
+        for gm in groups:
+            if gm["P"] + max(gm["R_list"]) > max_segment_cap:
+                return None
 
     tok_r = _tok_r(groups)
     if apply_tokr_gate and tok_r < tokr_threshold():

@@ -336,6 +336,9 @@ def get_block_mask(
             KV_LEN = seg.T_pad,
             device = device,
         )
+    # FIFO bound: GRPO lengths change nearly every step, so evict the oldest to cap GPU pins.
+    if len(_BLOCK_MASK_CACHE) >= 8:
+        _BLOCK_MASK_CACHE.pop(next(iter(_BLOCK_MASK_CACHE)))
     _BLOCK_MASK_CACHE[key] = bm
     return bm
 
