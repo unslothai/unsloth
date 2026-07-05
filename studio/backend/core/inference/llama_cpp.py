@@ -9019,14 +9019,57 @@ class LlamaCppBackend:
         return not any(bad in tag for bad in ("iq1", "iq2", "q2_k"))
 
     @staticmethod
-    def _trim_leading_word(wav_bytes: bytes, sample_rate: int) -> bytes:
+    def _leading_voiced_ms(wav_bytes: bytes, sample_rate: int) -> Optional[float]:
+        """Length in ms of the first voiced run at the very start of a clip (onset
+        to the first silence gap). Used to CALIBRATE how long the spoken speaker
+        name is on a low quant: synthesize the name once and measure it here so the
+        trim can key off the real name length instead of guessing. Returns None if
+        no clear leading word is present."""
+        try:
+            import io
+
+            import numpy as np
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes), dtype = "float32")
+            mono = data.mean(axis = 1) if data.ndim > 1 else data
+            frame = max(1, int(sr * 0.02))
+            n = mono.size // frame
+            if n < 4:
+                return None
+            energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
+            peak = float(energy.max())
+            if peak <= 0:
+                return None
+            voiced = energy > peak * 0.06
+            if not voiced.any():
+                return None
+            onset = int(np.argmax(voiced))
+            if onset > int(0.5 / 0.02):  # first sound must be near the start
+                return None
+            end = onset
+            while end < n and voiced[end]:
+                end += 1
+            return (end - onset) * 20.0
+        except Exception:
+            return None
+
+    @staticmethod
+    def _trim_leading_word(
+        wav_bytes: bytes, sample_rate: int, expected_ms: Optional[float] = None
+    ) -> bytes:
         """Slice the leading spoken speaker name off Orpheus audio on low quants.
+
         The name is ONE short word at the very start, set off by the colon's pause.
-        We only cut when we can see that exact shape: a brief leading voiced run
-        (name-length) right at the beginning, followed by a real silence gap, all
-        inside the first fraction of a second. If the name blends into the reply
-        (no gap between them) or the shape doesn't match, we return the audio
-        unchanged -- keeping a stray name is far better than clipping the reply."""
+        When ``expected_ms`` is given (this voice's name length, measured by
+        calibrating on the loaded model -- see ``_orpheus_name_length_ms``), we ONLY
+        cut a leading voiced run whose length MATCHES it. So a genuine short first
+        word like "Yes," -- which the model synthesizes on the sentences where it
+        does NOT read the name -- is left alone instead of being clipped, because
+        its length won't match the measured name. Without a calibration we fall back
+        to a broad plausible-name window. Either way, no clear "short word + real
+        pause at the very start" -> return the audio unchanged (a stray name beats a
+        clipped reply)."""
         try:
             import io
 
@@ -9049,28 +9092,34 @@ class LlamaCppBackend:
                 return max(1, int((ms / 1000.0) / 0.02))
 
             onset = int(np.argmax(voiced))
-            # The name must start near the very beginning; if the first sound only
-            # shows up late, it's the reply itself -- don't touch it.
-            if onset > f(400):
+            # The name must start near the very beginning.
+            if onset > f(500):
                 return wav_bytes
-            # End of the leading (name) voiced run.
+            # End + length of the leading (name) voiced run.
             name_end = onset
             while name_end < n and voiced[name_end]:
                 name_end += 1
-            name_len = name_end - onset
-            # A spoken name is short. If the leading run is long, it's the reply
-            # (name merged into the first word) -- leave it alone.
-            if name_len < f(100) or name_len > f(600):
-                return wav_bytes
+            name_ms = (name_end - onset) * 20.0
+            # Length gate. With a calibrated name length, require the leading run to
+            # match it (tight window) so a real first word of a different length is
+            # never cut. Otherwise use a broad plausible-name window.
+            if expected_ms and expected_ms > 0:
+                if not (0.6 * expected_ms <= name_ms <= 1.5 * expected_ms):
+                    return wav_bytes
+                span_cap = f(expected_ms) + f(600)
+            else:
+                if not (100.0 <= name_ms <= 600.0):
+                    return wav_bytes
+                span_cap = f(900)
             # Require a real pause right after the name.
             gap_end = name_end
             while gap_end < n and not voiced[gap_end]:
                 gap_end += 1
             if gap_end - name_end < f(80):
                 return wav_bytes  # no clear pause -> not a name we can safely cut
-            # The whole name+pause must sit in the first ~900 ms, with real speech
-            # after it. Back off ~40 ms so the reply's first consonant isn't clipped.
-            if gap_end > onset + f(900) or gap_end >= n:
+            # The name + pause must sit near the start, with real speech after it.
+            # Back off ~40 ms so the reply's first consonant isn't clipped.
+            if gap_end > onset + span_cap or gap_end >= n:
                 return wav_bytes
             cut = max(name_end + 1, gap_end - f(40))
             trimmed = mono[cut * frame:]
@@ -9081,6 +9130,36 @@ class LlamaCppBackend:
             return buf.getvalue()
         except Exception:
             return wav_bytes
+
+    def _orpheus_name_length_ms(self, voice: str, audio_type: str) -> Optional[float]:
+        """Measured spoken length (ms) of this voice's name on the loaded low quant,
+        so the trim knows EXACTLY how much to cut instead of guessing. Calibrated
+        once per (model, voice) by synthesizing a short throwaway line with the
+        "{voice}:" prefix and measuring the leading voiced run (the spoken name).
+        Cached and keyed by the loaded quant, so a model/quant swap re-calibrates; a
+        failed measurement is stored as 0.0 so the trim falls back to its broad
+        heuristic instead of re-calibrating every sentence."""
+        cache = getattr(self, "_orpheus_name_ms", None)
+        if cache is None:
+            cache = {}
+            self._orpheus_name_ms = cache
+        key = f"{self._hf_variant or ''}|{self._gguf_path or ''}|{voice}"
+        if key in cache:
+            return cache[key] or None
+        ms: Optional[float] = None
+        try:
+            wav, sr = self.generate_audio_response(
+                "Okay, sounds good.", audio_type, voice = voice, _calibration = True
+            )
+            measured = self._leading_voiced_ms(wav, sr)
+            if measured is not None and 120.0 <= measured <= 700.0:
+                ms = measured
+        except Exception as e:
+            logger.debug("Orpheus name calibration failed for %s: %s", voice, e)
+        cache[key] = ms or 0.0
+        if ms:
+            logger.info("Orpheus name length calibrated: voice=%s ~%.0fms", voice, ms)
+        return ms
 
     def generate_audio_response(
         self,
@@ -9093,10 +9172,15 @@ class LlamaCppBackend:
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
+        _calibration: bool = False,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
         Returns (wav_bytes, sample_rate).
+
+        _calibration: internal. Skips the low-quant name-trim so this call can be
+        used to MEASURE the spoken name length (see _orpheus_name_length_ms) without
+        recursing back into calibration.
         """
         if audio_type not in self._TTS_PROMPTS:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
@@ -9123,10 +9207,10 @@ class LlamaCppBackend:
             v = voice if voice in self._ORPHEUS_VOICES else "tara"
             # A colon inside the CONTENT reads to Orpheus like a "name: text"
             # speaker tag (that's the format it was trained on for voice select),
-            # so a colon mid-reply can flip or garble the voice. Swap content
-            # colons for commas so the ONLY colon Orpheus sees is our intended
+            # so a colon mid-reply can flip or garble the voice. Drop content colons
+            # (replace with a space) so the ONLY colon Orpheus sees is our intended
             # "{voice}:" speaker prefix -- the voice stays stable across the reply.
-            clean = text.replace(":", ",")
+            clean = text.replace(":", " ")
             prompt_text = f"{v}: {clean}"
             trim_name = not self._orpheus_voice_prefix_ok()
 
@@ -9166,6 +9250,10 @@ class LlamaCppBackend:
             wav_bytes, sample_rate = LlamaCppBackend._codec_mgr.decode(
                 audio_type, device, token_ids = token_ids, text = data.get("content", "")
             )
-        if trim_name:
-            wav_bytes = self._trim_leading_word(wav_bytes, sample_rate)
+        if trim_name and not _calibration:
+            # Calibrate the exact spoken-name length for this voice (once, cached),
+            # then trim only a leading run that matches it -- so real short first
+            # words aren't clipped.
+            expected = self._orpheus_name_length_ms(v, audio_type)
+            wav_bytes = self._trim_leading_word(wav_bytes, sample_rate, expected)
         return wav_bytes, sample_rate
