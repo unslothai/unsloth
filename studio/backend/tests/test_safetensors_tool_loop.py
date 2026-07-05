@@ -1530,6 +1530,28 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search the docs." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
+    def test_no_reprompt_after_a_denied_tool_confirmation(self, monkeypatch):
+        # An explicit user denial must not be answered with a nudge to call
+        # the tool again (which would raise another confirmation prompt).
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "appr-1")
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
+        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "deny")
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["I'll search again."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            confirm_tool_calls = True,
+            session_id = "sess",
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search again." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
     def test_no_reprompt_after_a_tool_already_executed(self):
         loop, exec_fn = _make_loop(
             turns = [

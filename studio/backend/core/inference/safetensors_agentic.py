@@ -206,6 +206,7 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    tool_denied = False
 
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
@@ -465,7 +466,8 @@ def run_safetensors_tool_loop(
                 # Re-prompt on plan-without-action (GGUF loop parity): the
                 # model described what it will do without acting. Fires at
                 # most once per request, only before any tool has executed
-                # (RAG autoinject counts as executed), and only on short
+                # (RAG autoinject counts as executed), never after the user
+                # denied a tool confirmation, and only on short
                 # forward-looking replies while tools are active with
                 # Auto-Heal on and the nudge explicitly requested. Unlike the
                 # GGUF loop (where the re-prompt predates the flag, so None
@@ -478,6 +480,7 @@ def run_safetensors_tool_loop(
                     and active_tools
                     and reprompt_count < MAX_ACT_REPROMPTS
                     and not rag_autoinjected
+                    and not tool_denied
                     and not any(record.executed for record in tool_controller.history)
                     and is_short_intent_without_action(stripped_answer)
                 ):
@@ -647,6 +650,7 @@ def run_safetensors_tool_loop(
                         "result": TOOL_REJECTED_MESSAGE,
                         "provenance": decision.provenance,
                     }
+                    tool_denied = True
                     denied_message = {
                         "role": "tool",
                         "name": decision.tool_name,
