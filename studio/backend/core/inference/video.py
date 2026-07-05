@@ -406,7 +406,11 @@ class VideoBackend:
         files: list[tuple[str, int]] = []
         for sibling in info.siblings or []:
             name, size = sibling.rfilename, sibling.size or 0
-            if not name.endswith((".safetensors", ".json", ".model", ".txt")):
+            # .jinja: tokenizer/chat_template.jinja ships as a standalone file in the
+            # LTX-2 and HunyuanVideo-1.5 repos (not embedded in tokenizer_config.json)
+            # and apply_chat_template needs it at generation time, so a snapshot
+            # without it loads fine and then crashes the first generation.
+            if not name.endswith((".safetensors", ".json", ".model", ".txt", ".jinja")):
                 continue
             if "/" not in name and name.endswith(".safetensors"):
                 continue

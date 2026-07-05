@@ -459,6 +459,7 @@ _LTX2_SIBLINGS = [
     _sibling("text_encoder/diffusion_pytorch_model-00002-of-00002.safetensors", 25),
     _sibling("vae/diffusion_pytorch_model.safetensors", 3),
     _sibling("tokenizer/tokenizer.model", 1),
+    _sibling("tokenizer/chat_template.jinja", 1),
     _sibling("assets/example.mp4", 500),
 ]
 
@@ -473,7 +474,10 @@ def test_base_download_files_scopes_pipeline_pull():
     assert "assets/example.mp4" not in files
     assert files["text_encoder/model-00001-of-00002.safetensors"] == 25
     assert files["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"] == 20
-    assert sum(files.values()) == 10 + 1 + 20 + 18 + 25 + 25 + 3 + 1
+    # The standalone chat template must survive the whitelist: apply_chat_template
+    # reads it at generation time and it is not embedded in tokenizer_config.json.
+    assert "tokenizer/chat_template.jinja" in files
+    assert sum(files.values()) == 10 + 1 + 20 + 18 + 25 + 25 + 3 + 1 + 1
 
 
 def test_base_download_files_gguf_drops_transformer():
