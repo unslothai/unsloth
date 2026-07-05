@@ -493,8 +493,21 @@ def run_safetensors_tool_loop(
                 if _GEMMA_BARE_TC_RE.match(stripped):
                     detect_state = _state_draining
                     continue
+                # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet:
+                # keep buffering the variable-length name instead of leaking
+                # ``call:longname`` as visible content. Tool names can exceed 32
+                # chars (OpenAI allows 64, MCP names longer), so the fixed cap
+                # below flushed real long-named calls raw. The prefix regex
+                # self-terminates once the text becomes ordinary prose, and the
+                # ``{`` drains via the branch above; bound generously like the
+                # bare-JSON path right above.
+                if _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None:
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
+                    detect_state = _state_draining
+                    continue
                 if len(stripped) < _MAX_BUFFER_CHARS:
-                    continue  # "call:" prefix / "call:partialname" -- keep buffering
+                    continue  # bare "call:" prefix still forming
 
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING

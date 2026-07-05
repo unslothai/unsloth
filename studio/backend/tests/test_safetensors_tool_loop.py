@@ -1490,6 +1490,38 @@ def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
     assert not any("call" in t for t in contents), contents
 
 
+def test_long_gemma_tool_name_is_not_streamed_as_content():
+    # A tool name longer than the small buffer cap (OpenAI allows 64 chars, MCP
+    # names are longer) must still be held: the ``call:NAME`` prefix keeps
+    # buffering until ``{`` instead of leaking ``call:longname`` as visible text
+    # before the end-of-turn parser executes it.
+    long_name = "mcp__github__list_repository_issues"  # 35 chars
+    turns = iter([list('call:%s{repo:"octo/hello"}' % long_name), ["Done."]])
+
+    def _gen(_messages):
+        try:
+            chunks = next(turns)
+        except StopIteration:
+            return
+        acc = ""
+        for c in chunks:
+            acc += c
+            yield acc
+
+    exec_fn = FakeExecuteTool(["RESULT"])
+    loop = run_safetensors_tool_loop(
+        single_turn = _gen,
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": long_name}}],
+        execute_tool = exec_fn,
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [(long_name, {"repo": "octo/hello"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("call:" in t for t in contents), contents
+
+
 def test_leading_json_answer_is_not_dropped():
     # A leading ``{...}`` that is NOT a tool call must still surface as content:
     # the bare-JSON hold can only ever delay it to end-of-object, never drop it.
