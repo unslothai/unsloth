@@ -1426,10 +1426,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_unsafe = getattr(
                         unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                     )
-                    # cap the single flattened forward at one padded mini-batch's token budget
-                    # (B rows x seq_len). A larger batch falls back to the chunked padded loop rather
-                    # than building a [1, sum L] forward bigger than the padded [B, seq_len] mini-batch.
-                    _pk_cap = B * seq_len
+                    # cap the single flattened forward at one padded mini-batch's token budget.
+                    # B is the number of chunks, so the padded loop forwards batch_size rows at a
+                    # time; a larger batch falls back to the chunked padded loop rather than building
+                    # a [1, sum L] forward bigger than the padded [batch_size, seq_len] mini-batch.
+                    _pk_cap = batch_size * seq_len
                     if (
                         _pk_T >= 2
                         and _pk_T <= _pk_cap
