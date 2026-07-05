@@ -1407,5 +1407,81 @@ class TestGptOssNameDetection:
         assert is_gpt_oss_model_name(cast(str, None)) is False
 
 
+# ────────────────────────────────────────────────────────────────────
+# Plan-without-action re-prompt (GGUF loop parity)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPlanWithoutActionReprompt:
+    def test_short_intent_is_reprompted_and_tool_executes(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the final answer."],
+            ],
+            exec_results = ["result-1"],
+        )
+        events = _collect_events(loop)
+        assert [c[0] for c in exec_fn.calls] == ["web_search"]
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("Here is the final answer." in t for t in texts)
+
+    def test_reprompt_fires_at_most_once(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["Let me look into it first."],
+                ["SHOULD NOT APPEAR"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("Let me look into it first." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_long_prose_answer_is_not_reprompted(self):
+        long_answer = "I'll keep explaining the details of the topic. " * 60
+        loop, exec_fn = _make_loop(
+            turns = [
+                [long_answer],
+                ["SHOULD NOT APPEAR"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_disabled_auto_heal_is_not_reprompted(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            auto_heal_tool_calls = False,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the web for that." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_no_reprompt_after_a_tool_already_executed(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Now I'll refine the search."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            exec_results = ["result-1"],
+        )
+        events = _collect_events(loop)
+        assert [c[0] for c in exec_fn.calls] == ["web_search"]
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

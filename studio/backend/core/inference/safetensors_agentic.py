@@ -23,10 +23,13 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     BUDGET_EXHAUSTED_NUDGE,
+    MAX_ACT_REPROMPTS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
+    is_short_intent_without_action,
     parse_tool_calls_from_text,
+    reprompt_to_act_message,
     strip_tool_markup,
 )
 from core.inference.tool_loop_controller import (
@@ -198,6 +201,7 @@ def run_safetensors_tool_loop(
     kb_search_count = 0
     final_attempt_done = False
     next_call_id = 0
+    reprompt_count = 0
 
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
@@ -215,7 +219,9 @@ def run_safetensors_tool_loop(
     _state_streaming = 1
     _state_draining = 2
 
-    for iteration in range(max_tool_iterations + 1):
+    # Reserve extra iterations for plan-without-action re-prompts so they do
+    # not consume the caller's tool-call budget (GGUF loop parity).
+    for iteration in range(max_tool_iterations + 1 + MAX_ACT_REPROMPTS):
         if cancel_event is not None and cancel_event.is_set():
             return
 
@@ -452,6 +458,44 @@ def run_safetensors_tool_loop(
                     allow_incomplete = auto_heal_tool_calls,
                 )
             if not safety_tc:
+                # Re-prompt on plan-without-action (GGUF loop parity): the
+                # model described what it will do without acting. Fires at
+                # most once per request, only before any tool has executed,
+                # and only on short forward-looking replies while tools are
+                # active with Auto-Heal on.
+                stripped_answer = content_accum.strip()
+                if (
+                    auto_heal_tool_calls
+                    and active_tools
+                    and reprompt_count < MAX_ACT_REPROMPTS
+                    and not any(record.executed for record in tool_controller.history)
+                    and is_short_intent_without_action(stripped_answer)
+                ):
+                    reprompt_count += 1
+                    logger.info(
+                        "Re-prompt %d/%d: model responded without calling tools (%d chars)",
+                        reprompt_count,
+                        MAX_ACT_REPROMPTS,
+                        len(stripped_answer),
+                    )
+                    conversation.append({"role": "assistant", "content": stripped_answer})
+                    available_tool_names = [
+                        (tool.get("function") or {}).get("name")
+                        for tool in active_tools
+                        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+                    ]
+                    available_tool_names = [name for name in available_tool_names if name]
+                    tool_hint = " or ".join(available_tool_names) or "an available tool"
+                    conversation.append(
+                        {
+                            "role": "user",
+                            "content": reprompt_to_act_message(tool_hint),
+                        }
+                    )
+                    # Empty status clears the badge AND resets the route's
+                    # per-turn text cursor before the re-prompted turn streams.
+                    yield {"type": "status", "text": ""}
+                    continue
                 # Final answer: if a literal tool marker in prose was stripped
                 # during streaming but did not parse as a real call, restore the
                 # raw cumulative text for core callers. Route-level cleanup can
@@ -646,8 +690,9 @@ def run_safetensors_tool_loop(
         if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
             continue
-        if iteration + 1 >= max_tool_iterations and not final_attempt_done:
-            # Budget exhausted; nudge a final plain answer.
+        if iteration + 1 >= max_tool_iterations + reprompt_count and not final_attempt_done:
+            # Budget exhausted; nudge a final plain answer. Re-prompted turns
+            # do not count against the tool budget.
             final_attempt_done = True
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 

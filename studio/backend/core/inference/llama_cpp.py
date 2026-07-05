@@ -49,10 +49,14 @@ from utils.subprocess_compat import (
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
+    MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
+    REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
     TOOL_XML_SIGNALS,
+    is_short_intent_without_action as _is_short_intent_without_action,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    reprompt_to_act_message as _reprompt_to_act_message,
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
@@ -202,25 +206,9 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
-# ── Pre-compiled patterns for plan-without-action re-prompt ──
-# Forward-looking intent signals: the model is describing what it *will*
-# do rather than giving a final answer.
-_INTENT_SIGNAL = re.compile(
-    r"(?i)("
-    # Direct intent ("I'll ...", "Let me ...", straight + curly apostrophes).
-    # Excludes "I can"/"I should"/"I want to"/"let's" (common in answers).
-    # Negative lookahead drops negated forms ("I will not") so a refusal
-    # doesn't trigger a re-prompt.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
-    r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
-    r"|"
-    # "Now I" / "Next I" patterns
-    r"\b(?:now i|next i)\b"
-    r")"
-)
-_MAX_REPROMPTS = 1
+# Plan-without-action re-prompt: intent signal, caps, and the re-prompt
+# message live in core.inference.tool_call_parser (shared with the
+# safetensors loop) and are imported above under their old aliases.
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -231,7 +219,6 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
-_REPROMPT_MAX_CHARS = 2000
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
     r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
     re.I,
@@ -240,11 +227,6 @@ _FINAL_ANSWER_SIGNAL = re.compile(
     r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
     re.I,
 )
-
-
-def _is_short_intent_without_action(text: str) -> bool:
-    stripped = text.strip()
-    return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
 
 
 def _should_suppress_forced_no_tool_output(text: str) -> bool:
@@ -8478,8 +8460,8 @@ class LlamaCppBackend:
         # When the model describes what it intends to do (forward-looking
         # language) without calling a tool, re-prompt once. Only triggers on
         # responses signaling intent/planning -- a direct answer like "4" or
-        # "Hello!" won't match. Pattern compiled at module level
-        # (_INTENT_SIGNAL).
+        # "Hello!" won't match. Pattern shared with the safetensors loop
+        # (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
         _forced_tool_call_pending = False
 
@@ -8909,12 +8891,7 @@ class LlamaCppBackend:
                             conversation.append(
                                 {
                                     "role": "user",
-                                    "content": (
-                                        "You have access to enabled tools. If a tool is needed to satisfy "
-                                        "the user's request or complete the action you described, call "
-                                        f"{tool_hint} now. If no tool is needed, provide the final answer "
-                                        "and follow the user's requested format."
-                                    ),
+                                    "content": _reprompt_to_act_message(tool_hint),
                                 }
                             )
                             # Accumulate tokens and timing from this iteration.

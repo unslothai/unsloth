@@ -7,6 +7,8 @@ Tolerates missing closing tags in either ``<tool_call>{json}</tool_call>``
 or ``<function=name><parameter=k>v...`` shape.
 """
 
+import re
+
 from core import tool_healing as _tool_healing
 
 
@@ -78,6 +80,43 @@ RAG_SEARCH_CAP_NUDGE = (
     "Do not search again. Answer the question using the passages already "
     "retrieved above; if they do not contain the answer, say so plainly."
 )
+
+
+# ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
+# Forward-looking intent signals: the model is describing what it *will*
+# do rather than giving a final answer.
+INTENT_SIGNAL = re.compile(
+    r"(?i)("
+    # Direct intent ("I'll ...", "Let me ...", straight + curly apostrophes).
+    # Excludes "I can"/"I should"/"I want to"/"let's" (common in answers).
+    # Negative lookahead drops negated forms ("I will not") so a refusal
+    # doesn't trigger a re-prompt.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
+    r"|"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
+    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    r"|"
+    # "Now I" / "Next I" patterns
+    r"\b(?:now i|next i)\b"
+    r")"
+)
+MAX_ACT_REPROMPTS = 1
+REPROMPT_MAX_CHARS = 2000
+
+
+def is_short_intent_without_action(text: str) -> bool:
+    stripped = text.strip()
+    return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
+
+
+def reprompt_to_act_message(tool_hint: str) -> str:
+    """The user message appended when re-prompting a plan-without-action turn."""
+    return (
+        "You have access to enabled tools. If a tool is needed to satisfy "
+        "the user's request or complete the action you described, call "
+        f"{tool_hint} now. If no tool is needed, provide the final answer "
+        "and follow the user's requested format."
+    )
 
 
 def has_tool_signal(text: str) -> bool:
