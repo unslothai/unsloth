@@ -841,6 +841,14 @@ class InferenceOrchestrator:
                 if resp.get("success"):
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
+                    # A load always spawns a fresh subprocess, so the worker now holds
+                    # only this model. Mirror that exactly instead of accumulating the
+                    # names of models unloaded by earlier loads: a lingering stale name
+                    # would otherwise pass unload_model's "model_name not in self.models"
+                    # guard, so its unload command reaches the worker, whose absent-name
+                    # fallback then unloads its *active* model -- tearing down the current
+                    # model when asked to unload an already-gone one.
+                    self.models = {}
                     self.models[self.active_model_name] = {
                         "is_vision": model_info.get("is_vision", False),
                         "is_lora": model_info.get("is_lora", False),

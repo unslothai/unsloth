@@ -421,6 +421,55 @@ def test_unload_of_stale_name_does_not_touch_active_model(monkeypatch):
     assert "current" in o.models
 
 
+def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkeypatch):
+    # A load always spawns a fresh subprocess holding only the new model, so
+    # self.models must mirror that instead of accumulating the previous model's name.
+    # Otherwise switching A -> B (without an explicit unload of A first, e.g. the
+    # concurrent-load race the stale-name guard targets) leaves 'A' in self.models,
+    # so a later unload('A') passes the "model_name not in self.models" guard, reaches
+    # the worker, and its absent-name fallback unloads the *active* model B.
+    import types
+
+    from utils import transformers_version as _tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+
+    monkeypatch.setattr(_tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: None)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+    monkeypatch.setattr(orch_mod.time, "sleep", lambda *_a, **_k: None)
+
+    def _load(name):
+        monkeypatch.setattr(
+            o,
+            "_wait_response",
+            lambda expected, timeout = 300.0: {
+                "type": "loaded",
+                "success": True,
+                "model_info": {"identifier": name, "display_name": name},
+            },
+        )
+        assert o.load_model(types.SimpleNamespace(identifier = name, gguf_variant = None)) is True
+
+    _load("modelA")
+    _load("modelB")  # switch to B without unloading A first
+
+    # self.models mirrors the single live model; the swapped-out name is gone.
+    assert o.active_model_name == "modelB"
+    assert set(o.models) == {"modelB"}
+
+    # A stale unload of the swapped-out model must not reach the worker (whose
+    # absent-name fallback would unload the active model B).
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("stale unload reached the worker"))
+    assert o.unload_model("modelA") is True
+    assert o.active_model_name == "modelB"
+    assert "modelB" in o.models
+
+
 def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
     # Item #5: /unload must hold the same lifecycle gate as /load so a concurrent load
     # can't swap the backend subprocess/queues mid-unload.
