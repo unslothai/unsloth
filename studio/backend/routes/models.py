@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -58,25 +59,51 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
+# Hub repo id shape ("owner/name", no leading separator); anything else is
+# treated as a local filesystem path.
+_HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
+
+
 def _is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
     EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
     (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
     None are usable chat models; the probe can be cached as a side effect of
     installing the prebuilt llama-server and otherwise sorts smallest, so it
-    would be auto-selected."""
+    would be auto-selected. A local-path embedder is matched by exact resolved
+    path only: a generic basename like "model" must not substring-hide
+    unrelated chat models."""
     from core.rag import config as rag_config
 
-    needles = (
-        rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
-        rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+    needles = [
         # The validation probe's repo (matches the cached repo id) and its exact
         # filename (matches the on-disk path). The filename carries the .gguf so
         # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
         "ggml-org/models",
         "stories260k.gguf",
-    )
-    return any(v and any(n in v.lower() for n in needles) for v in values)
+    ]
+    exact_paths: list[str] = []
+    for model in (
+        rag_config.effective_embedding_model(),
+        rag_config.effective_gguf_repo(),
+    ):
+        if _HF_REPO_ID_RE.match(model):
+            needles.append(model.split("/")[-1].lower())
+        else:
+            resolved = _safe_resolve(Path(model).expanduser())
+            if resolved:
+                exact_paths.append(resolved.lower())
+    for v in values:
+        if not v:
+            continue
+        low = v.lower()
+        if any(n in low for n in needles):
+            return True
+        if exact_paths:
+            resolved = _safe_resolve(Path(v).expanduser())
+            if resolved and resolved.lower() in exact_paths:
+                return True
+    return False
 
 
 def _safe_resolve(path: Path) -> Optional[str]:
@@ -1175,6 +1202,7 @@ def _build_browse_allowlist() -> list[Path]:
         legacy_hf_cache_dir,
         well_known_model_dirs,
     )
+    from utils.paths.external_media import linux_run_media_mount_roots
     from storage.studio_db import list_scan_folders
 
     candidates: list[Path] = []
@@ -1190,6 +1218,8 @@ def _build_browse_allowlist() -> list[Path]:
             candidates.append(resolved)
 
     _add(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         _add(hf_default_cache_dir())
@@ -1309,6 +1339,8 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
     """Resolve a requested browse path by walking from trusted allowlist roots."""
+    from storage.studio_db import contains_sensitive_path_component
+
     requested_path = _normalize_browse_request_path(path)
     resolved_roots: list[Path] = []
     seen_roots: set[str] = set()
@@ -1359,8 +1391,18 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                         "under your home folder."
                     ),
                 )
+            if contains_sensitive_path_component(str(resolved_child)):
+                raise HTTPException(
+                    status_code = 403,
+                    detail = "Credential or configuration directories are not browseable.",
+                )
             current = resolved_child
 
+        if contains_sensitive_path_component(str(current)):
+            raise HTTPException(
+                status_code = 403,
+                detail = "Credential or configuration directories are not browseable.",
+            )
         if not current.is_dir():
             raise HTTPException(
                 status_code = 400,
@@ -1408,7 +1450,8 @@ async def browse_folders(
     then hidden (if ``show_hidden=true``).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
-    from storage.studio_db import list_scan_folders
+    from utils.paths.external_media import linux_run_media_mount_roots
+    from storage.studio_db import contains_sensitive_path_component, list_scan_folders
 
     # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist()
@@ -1460,6 +1503,8 @@ async def browse_folders(
             name = child.name
             is_hidden = name.startswith(".")
             if is_hidden and not show_hidden:
+                continue
+            if contains_sensitive_path_component(name):
                 continue
             entries.append(
                 BrowseEntry(
@@ -1514,6 +1559,8 @@ async def browse_folders(
 
     # Home first -- the safe fallback when everything else is cold.
     _add_sug(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add_sug(p)
     # The HF cache root the process is actually using.
     try:
         _add_sug(hf_default_cache_dir())

@@ -99,6 +99,7 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $ShortcutsOnly = $false
+    $WithLlamaCppDir = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
@@ -115,6 +116,14 @@ function Install-UnslothStudio {
                     return (Exit-InstallFailure "--package requires an argument.")
                 }
                 $PackageName = $argList[$i]
+            }
+            "--with-llama-cpp-dir" {
+                $i++
+                if ($i -ge $argList.Count) {
+                    Write-Host "[ERROR] --with-llama-cpp-dir requires a path argument." -ForegroundColor Red
+                    return (Exit-InstallFailure "--with-llama-cpp-dir requires a path argument.")
+                }
+                $WithLlamaCppDir = $argList[$i]
             }
         }
     }
@@ -2476,6 +2485,13 @@ exit 0
     }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+    if ($WithLlamaCppDir) {
+        if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
+            Write-Host "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
+            return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
+        }
+        $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
+    }
     $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
     # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
     # resolved and built the venv with, instead of re-probing the system (which
@@ -2491,6 +2507,7 @@ exit 0
         } else {
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
+        Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }

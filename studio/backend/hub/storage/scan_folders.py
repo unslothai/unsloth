@@ -16,37 +16,14 @@ from datetime import datetime, timezone
 
 from storage.studio_db import get_connection
 from hub.utils.paths import normalize_path
+from utils.paths.external_media import is_linux_run_media_path
+from utils.paths.sensitive import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
+)
 
 
 _schema_lock = threading.Lock()
 _schema_ready = False
-_SENSITIVE_PATH_COMPONENTS = {
-    ".aws",
-    ".azure",
-    ".config",
-    ".docker",
-    ".gcloud",
-    ".gnupg",
-    ".huggingface",
-    ".kaggle",
-    ".kube",
-    ".modelscope",
-    ".ngc",
-    ".local",
-    ".mozilla",
-    ".pki",
-    ".thunderbird",
-    ".ssh",
-    ".1password",
-    ".bitwarden",
-    ".password-store",
-    "1password",
-    "bitwarden",
-    "keychains",
-    "keyrings",
-    "mozilla",
-    "thunderbird",
-}
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -76,8 +53,7 @@ def _denied_path_prefixes() -> list[str]:
 
 
 def _contains_sensitive_path_component(path: str) -> bool:
-    parts = os.path.normpath(path).split(os.sep)
-    return any(part.lower() in _SENSITIVE_PATH_COMPONENTS for part in parts)
+    return _shared_contains_sensitive_path_component(path)
 
 
 def contains_sensitive_path_component(path: str) -> bool:
@@ -142,6 +118,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()

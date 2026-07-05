@@ -22,7 +22,15 @@ logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
-from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.paths import (
+    ensure_dir,
+    project_workspaces_root,
+    studio_db_path,
+)
+from utils.paths.external_media import is_linux_run_media_path
+from utils.paths.sensitive import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
+)
 from utils.training_runs import extract_project_name
 
 
@@ -59,6 +67,14 @@ def _denied_path_prefixes() -> list[str]:
         pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
         return [os.path.normcase(p) for p in [win, pf, pf86]]
     return []
+
+
+def _contains_sensitive_path_component(path: str) -> bool:
+    return _shared_contains_sensitive_path_component(path)
+
+
+def contains_sensitive_path_component(path: str) -> bool:
+    return _contains_sensitive_path_component(path)
 
 
 _schema_lock = threading.Lock()
@@ -896,6 +912,8 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    if _contains_sensitive_path_component(normalized):
+        raise ValueError("Credential or configuration directories are not allowed")
 
     # Windows: normcase for the denylist check but store original casing
     # so consumers see the native drive-letter casing (e.g. C:\Models).
@@ -903,6 +921,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()
@@ -1685,6 +1705,43 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.commit()
         rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def upsert_app_setting_map_entry(
+    key: str, entry_key: str, entry_value: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
+    app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
+    sub-entries cannot drop each other's updates."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], {}) if row else {}
+        if not isinstance(current, dict):
+            current = {}
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(current), now),
+        )
+        conn.commit()
+        return current
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
