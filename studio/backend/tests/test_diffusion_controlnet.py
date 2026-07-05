@@ -231,12 +231,24 @@ def _state():
     )
 
 
+def _allow_cn_security(monkeypatch):
+    """Stub the Hub malware preflight to allow the load (hermetic, no network)."""
+    import utils.security
+
+    monkeypatch.setattr(
+        utils.security,
+        "evaluate_file_security",
+        lambda name, hf_token = None, **kw: types.SimpleNamespace(blocked = False, reason = ""),
+    )
+
+
 def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     import threading
 
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
     b = DiffusionBackend()
     st = _state()
     # The pipe cache only commits while ``st`` is the CURRENT load (an unload racing
@@ -250,6 +262,64 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1
     assert b._cn_models["flux-union-pro"] is p1.controlnet
+
+
+def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
+    # A bare owner/name ControlNet is accepted by resolve_controlnet without the base
+    # trust gate, so the load path must run the Hub malware preflight: a flagged remote
+    # repo must raise BEFORE from_pretrained downloads/deserializes it.
+    import threading
+
+    import utils.security
+    from core.inference.diffusion import DiffusionBackend
+
+    loaded = {"called": False}
+
+    class _TrapModel(_FakeCNModel):
+        @classmethod
+        def from_pretrained(cls, path, torch_dtype = None, token = None):
+            loaded["called"] = True
+            return super().from_pretrained(path, torch_dtype = torch_dtype, token = token)
+
+    mod = _fake_diffusers()
+    mod.FluxControlNetModel = _TrapModel
+    monkeypatch.setitem(sys.modules, "diffusers", mod)
+    monkeypatch.setattr(
+        utils.security,
+        "evaluate_file_security",
+        lambda name, hf_token = None, **kw: types.SimpleNamespace(
+            blocked = True, reason = "Hugging Face security scan flagged unsafe files: evil.bin"
+        ),
+    )
+    b = DiffusionBackend()
+    st = _state()
+    b._state = st
+    resolved = dc.ResolvedControlNet("evil/cn", "evil/cn", is_local = False)
+    with pytest.raises(ValueError, match = "security scan flagged"):
+        b._controlnet_pipe(st, resolved, threading.Event())
+    assert loaded["called"] is False
+
+
+def test_controlnet_pipe_skips_scan_for_local_dir(monkeypatch, tmp_path):
+    # A local dir the user picked has no Hub scan; the preflight must not block it even
+    # if the (unused) scan stub would say blocked.
+    import threading
+
+    import utils.security
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    monkeypatch.setattr(
+        utils.security,
+        "evaluate_file_security",
+        lambda name, hf_token = None, **kw: types.SimpleNamespace(blocked = True, reason = "x"),
+    )
+    b = DiffusionBackend()
+    st = _state()
+    b._state = st
+    resolved = dc.ResolvedControlNet("my-cn", str(tmp_path), is_local = True)
+    p = b._controlnet_pipe(st, resolved, threading.Event())
+    assert isinstance(p, _FakeCNPipe)
 
 
 def test_controlnet_pipe_rejects_family_without_classes():

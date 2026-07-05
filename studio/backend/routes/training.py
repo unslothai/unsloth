@@ -1182,10 +1182,28 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
 
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
-    body: DiffusionTrainingStartRequest, current_subject: str = Depends(get_current_subject)
+    body: DiffusionTrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Start an SDXL LoRA training job from an image + caption dataset."""
     from core.training.diffusion_training_service import get_diffusion_training_service
+
+    # When Studio is driven as an inference API (API-key auth), refuse to start training
+    # while a request is in flight: _free_gpu_for_diffusion_training() below unloads the
+    # chat backends to reclaim VRAM, which would kill the stream. Mirrors start_training so
+    # a diffusion start cannot silently drop an active API inference request.
+    if via_api_key is True:
+        from core.inference.llama_keepwarm import other_inference_request_count
+        if other_inference_request_count(current_request_counted = False) > 0:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Cannot start diffusion (Images) training over the API while an inference "
+                    "request is in progress. Wait for it to finish, or start training from the "
+                    "Studio UI."
+                ),
+            )
 
     # Interlock: refuse while an LLM training run holds the GPU (symmetric with the
     # diffusion check in start_training), so the two trainers never contend for VRAM.
@@ -1660,7 +1678,11 @@ async def get_diffusion_dataset_image(
 
         thumbs_dir = folder / _THUMBS_DIRNAME
         thumbs_dir.mkdir(exist_ok = True)
-        thumb_path = thumbs_dir / f"{image_path.stem}_{size}.jpg"
+        # Key on the full filename (stem + extension), not the stem: two images that
+        # share a stem but differ by extension (sample.png / sample.jpg) would otherwise
+        # collide on one cache file, and an mtime-newer cache built for the first would
+        # be served for the second, showing the wrong image in the labeling grid.
+        thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
             return thumb_path
@@ -1745,7 +1767,10 @@ async def delete_diffusion_dataset_image(
             image_path.with_suffix(ext).unlink(missing_ok = True)
         thumbs_dir = folder / _THUMBS_DIRNAME
         if thumbs_dir.is_dir():
-            for t in thumbs_dir.glob(f"{image_path.stem}_*.jpg"):
+            # Thumbs are keyed on the full filename (stem + extension), so match that
+            # here too; a stem-only glob would leave this image's thumbs behind and
+            # could delete a same-stem sibling's (sample.png vs sample.jpg).
+            for t in thumbs_dir.glob(f"{image_path.name}_*.jpg"):
                 t.unlink(missing_ok = True)
         return {"deleted": image_path.name}
 
