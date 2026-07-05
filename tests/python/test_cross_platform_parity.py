@@ -218,9 +218,7 @@ class TestTorchIndexOverrideParity:
         # gate. Otherwise CVD=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128 studio update
         # (the GPU-less CI case) would bail before repairing.
         text = STACK_PY.read_text(encoding = "utf-8")
-        m = re.search(
-            r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL
-        )
+        m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
         body = m.group(0)
         # The CVD hide-gate return must be guarded by the CUDA-pin flag.
@@ -229,7 +227,7 @@ class TestTorchIndexOverrideParity:
             "override the CVD hide gate"
         )
         assert re.search(
-            r'if not _cuda_pinned and _cvd is not None', body
+            r"if not _cuda_pinned and _cvd is not None", body
         ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
 
     def test_cpu_repair_pins_supported_torch_range(self):
@@ -238,9 +236,7 @@ class TestTorchIndexOverrideParity:
         # --index-url can resolve outside the repo's supported <2.11 range or pull
         # an ABI-mismatched companion. It must use the bounded CPU/CUDA spec.
         text = STACK_PY.read_text(encoding = "utf-8")
-        m = re.search(
-            r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL
-        )
+        m = re.search(r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cpu_torch"
         body = m.group(0)
         assert "_CPU_TORCH_PKG_SPEC" in body, (
