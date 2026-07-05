@@ -727,6 +727,30 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
     assert status["transformer_quant"] == "int8"
 
 
+def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):
+    # If the first expert quantises but the second does not, the pipe is left at
+    # mismatched precision with no way back (in-place mutation), so the load must
+    # fail cleanly rather than run mixed with quant reported off.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    outcomes = iter(["int8", None])
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, *, mode, family, logger = None: next(outcomes),
+    )
+
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError, match = "1/2 experts"):
+        backend.load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+        )
+    assert backend.status()["loaded"] is False
+
+
 def test_wan_ti2v_dense_quant_applies_to_single_dit(fake_runtime, monkeypatch):
     # A single-DiT pipeline load quantises exactly one transformer.
     import core.inference.video as video_mod

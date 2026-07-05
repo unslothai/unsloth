@@ -62,11 +62,12 @@ from .diffusion_speed import (
     restore_backend_flags,
     snapshot_backend_flags,
 )
-from .diffusion_auto_policy import build_resolved_record
+from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
 from .diffusion_transformer_quant import (
     dense_transformer_supported,
     normalize_transformer_quant,
     quantize_transformer,
+    select_transformer_quant_scheme,
 )
 from .video_families import (
     VIDEO_CANCELLED_MSG,
@@ -561,6 +562,43 @@ class VideoBackend:
             companion_dense_mib = companion_mib,
             requested_mode = normalize_memory_mode(memory_mode),
         )
+        # Parity with the image dense-quant path: the bf16-table plan can force offload
+        # a quantised DiT would not need (offload also disables quant entirely). Re-plan
+        # with the scheme's steady factor and keep the resident placement when it fits;
+        # if quantisation later fails, the load falls back to this bf16 plan.
+        bf16_plan = plan
+        quant_replanned = False
+        if (
+            kind == "pipeline"
+            and plan.offload_policy != "none"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and dense_transformer_supported(target)
+            and components is not None
+        ):
+            scheme_preview = select_transformer_quant_scheme(
+                target, transformer_quant, family = fam.name
+            )
+            factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
+            if factor is not None:
+                quant_mib = int(
+                    (components[0] * factor + components[1] + components[2]) * mib_per_gb
+                )
+                replanned = plan_diffusion_memory(
+                    target = target,
+                    device_memory = device_memory,
+                    model_dense_mib = quant_mib,
+                    runtime_headroom_mib = runtime_mib,
+                    companion_dense_mib = None,
+                    requested_mode = normalize_memory_mode(memory_mode),
+                )
+                if replanned.offload_policy == "none":
+                    logger.info(
+                        "video.transformer_quant: %s fits resident (%d MiB steady); "
+                        "dropping the bf16 plan's '%s' offload",
+                        scheme_preview, quant_mib, plan.offload_policy,
+                    )
+                    plan = replanned
+                    quant_replanned = True
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
@@ -638,11 +676,23 @@ class VideoBackend:
                 )
                 if scheme is not None:
                     engaged.append(scheme)
-            # Report the scheme only if it engaged on every DiT; a partial quant (one expert
-            # dense, one quantised) would run the schedule at mismatched precision, so treat
-            # anything short of full coverage as not engaged.
-            if engaged and len(engaged) == len(views):
+            # Quant must engage on every DiT or none: the first expert is mutated in
+            # place, so a second-expert failure cannot fall back to dense (the schedule
+            # would run at mismatched precision with quant reported off). Fail the load
+            # cleanly instead; a full miss (nothing engaged) stays best-effort dense.
+            if engaged and len(engaged) < len(views):
+                del pipe
+                clear_gpu_cache()
+                raise RuntimeError(
+                    f"transformer_quant={engaged[0]} engaged on only "
+                    f"{len(engaged)}/{len(views)} experts; retry without quant."
+                )
+            if engaged:
                 transformer_quant_engaged = engaged[0]
+        # The quant-sized plan is only valid when quant actually engaged; a dense
+        # fallback must keep the conservative bf16 placement.
+        if quant_replanned and transformer_quant_engaged is None:
+            plan = bf16_plan
 
         # ── optimisation layers, in the image backend's order: speed profile
         # (compile must precede placement), attention (compile traces it),
@@ -686,6 +736,19 @@ class VideoBackend:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
         offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
+        if offload_policy == "group" and len(views) > 1:
+            # Group offload streams only ``pipe.transformer``; the second expert would
+            # otherwise sit resident (~57 GB bf16 on the A14B) and defeat the tier.
+            # model/sequential offload hook every top-level module, so only group needs
+            # this. Applied through the view so the helper streams transformer_2.
+            from .diffusion_memory import _apply_group_offload
+
+            for view in views[1:]:
+                if not _apply_group_offload(view, device, logger):
+                    logger.warning(
+                        "video.memory: group offload did not engage on the second "
+                        "expert; it stays resident"
+                    )
         if not vae_tiling:
             # Decode of a whole clip is the video memory peak; tiling is near-free
             # in quality and keeps the decode bounded, so it is always on.

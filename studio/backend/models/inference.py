@@ -2412,6 +2412,9 @@ class GalleryVideo(BaseModel):
     duration_s: float = Field(..., description = "Clip duration in seconds")
     steps: int = Field(..., description = "Denoising steps")
     guidance: float = Field(..., description = "Guidance scale")
+    guidance_2: Optional[float] = Field(
+        None, description = "Second-expert guidance scale (dual-expert families), if sent"
+    )
     seed: int = Field(..., description = "Seed used")
     has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
     model: Optional[str] = Field(None, description = "Model repo id that produced it")

@@ -194,6 +194,7 @@ async def generate_video(
                 "duration_s": result["duration_s"],
                 "steps": result["steps"],
                 "guidance": result["guidance"],
+                "guidance_2": request.guidance_2,
                 "seed": result["seed"],
                 "has_audio": result["has_audio"],
                 "model": result["repo_id"],
