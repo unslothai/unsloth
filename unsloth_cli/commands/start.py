@@ -1165,9 +1165,7 @@ def write_opencode_config(
             # A string permission ("deny"/"ask"/"allow") is a global user rule left in the
             # config file as-is; carry the same prompting guarantee inline (never weaker
             # than that rule) so a permissive project config still prompts.
-            session_permission = {
-                t: "deny" if permission == "deny" else "ask" for t in tools
-            }
+            session_permission = {t: "deny" if permission == "deny" else "ask" for t in tools}
         else:
             permission = permission if isinstance(permission, dict) else {}
             # An absent tool inherits the "*" catch-all when present, else OpenCode's
