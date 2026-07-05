@@ -25,6 +25,7 @@ _CHAT_TURN_END_TOKENS = (
     "<end_of_turn>",  # Gemma
     "<turn|>",  # Gemma-4
     "<|end|>",  # Phi
+    "<|end_of_turn|>",  # OpenChat / Starling (barred, distinct from Gemma's)
 )
 # gpt-oss/harmony uses <|end|> as an intra-message channel delimiter (not the turn
 # end) and has a dedicated streamer, so its eos is left untouched.
@@ -37,6 +38,28 @@ def _eos_id_set(eos_token_id) -> set:
     if eos_token_id is not None:
         return {int(eos_token_id)}
     return set()
+
+
+def _collect_template_text(chat_template) -> str:
+    """Flatten a tokenizer ``chat_template`` into one scannable string.
+
+    Usually the template is a single jinja string, but multi-variant models
+    (e.g. Hermes-3: a ``default`` plus a ``tool_use`` template) expose it as a
+    ``{name: template}`` dict -- or, as stored in tokenizer_config.json, a list
+    of ``{"name": ..., "template": ...}`` dicts. Scanning only the ``str`` case
+    would skip turn-end detection for those valid models, so gather every string
+    leaf (variant names are harmless: they never contain the markers).
+    """
+    if isinstance(chat_template, str):
+        return chat_template
+    if isinstance(chat_template, dict):
+        values = chat_template.values()
+    elif isinstance(chat_template, (list, tuple)):
+        values = chat_template
+    else:
+        return ""
+    parts = [_collect_template_text(v) for v in values]
+    return "\n".join(p for p in parts if p)
 
 
 def resolve_chat_turn_end_eos_ids_using(template_tokenizer, id_tokenizer) -> list:
@@ -52,8 +75,8 @@ def resolve_chat_turn_end_eos_ids_using(template_tokenizer, id_tokenizer) -> lis
     original tokenizer, so resolving ids on the mapped tokenizer would store the wrong
     (doc-eos) id and let generation run past the real turn marker."""
     ids = _eos_id_set(getattr(id_tokenizer, "eos_token_id", None))
-    template = getattr(template_tokenizer, "chat_template", None) or ""
-    if not isinstance(template, str) or any(h in template for h in _HARMONY_MARKERS):
+    template = _collect_template_text(getattr(template_tokenizer, "chat_template", None))
+    if not template or any(h in template for h in _HARMONY_MARKERS):
         return sorted(ids)
     unk = getattr(id_tokenizer, "unk_token_id", None)
     for marker in _CHAT_TURN_END_TOKENS:

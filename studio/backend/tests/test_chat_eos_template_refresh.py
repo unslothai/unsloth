@@ -11,12 +11,28 @@ the ChatML <|im_end|> boundary and loops (the exact bug this PR fixes).
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from core.inference import inference as inf_mod  # noqa: E402
-from core.inference.inference import InferenceBackend  # noqa: E402
+# These tests GENUINELY construct InferenceBackend, which pulls the full inference
+# stack (unsloth -> unsloth_zoo -> torch/bitsandbytes). The lightweight backend CI
+# job (studio-backend-ci.yml `pytest` matrix) installs torch/transformers but NOT
+# unsloth/unsloth_zoo, so importing the backend raises PackageNotFoundError for
+# unsloth_zoo; without a module-level guard that error aborts collection for the
+# ENTIRE session (exit 2) instead of skipping just this file. A broken CUDA /
+# bitsandbytes setup surfaces the same "backend unavailable" state as a
+# RuntimeError during the identical import chain, so treat that as skippable too.
+try:
+    from core.inference import inference as inf_mod  # noqa: E402
+    from core.inference.inference import InferenceBackend  # noqa: E402
+except (ImportError, RuntimeError) as exc:  # pragma: no cover - env-dependent
+    pytest.skip(
+        f"full inference backend unavailable ({type(exc).__name__}: {exc})",
+        allow_module_level = True,
+    )
 
 _CHATML = "{% for m in messages %}<|im_start|>{{m.role}}\n{{m.content}}<|im_end|>{% endfor %}"
 _GEMMA = "{% for m in messages %}<start_of_turn>{{m.role}}\n{{m.content}}<end_of_turn>{% endfor %}"
@@ -162,3 +178,37 @@ def test_turn_end_eos_refresh_resolves_marker_id_on_original_not_remapped(monkey
 
     # The real <|im_end|>=7 (original vocab) must be recovered, not the remapped 2.
     assert model_info["chat_turn_end_eos_ids"] == [2, 7]
+
+
+class _FakeProcessor:
+    """A ProcessorMixin-like container: carries the chat_template itself and
+    wraps the real text tokenizer as ``.tokenizer`` (the vision layout)."""
+
+    def __init__(self, chat_template, tokenizer):
+        self.chat_template = chat_template
+        self.tokenizer = tokenizer
+
+
+def test_resolve_chat_eos_reads_vision_processor_template():
+    # Vision model: the chat_template lives on the processor (Gemma vision ends
+    # turns with <end_of_turn>), while the unwrapped inner tokenizer ships no
+    # template. Unwrapping to the inner tokenizer before resolving would inspect
+    # the wrong object and cache only the document eos, leaving the vision path to
+    # run past the turn. _resolve_chat_eos must read the marker from the processor
+    # while resolving its id on the inner tokenizer, and repair generation_config.
+    from types import SimpleNamespace
+
+    inner_tok = _FakeTokenizer(1, chat_template = "", token_ids = {"<end_of_turn>": 107})
+    processor = _FakeProcessor(_GEMMA, inner_tok)
+    model = SimpleNamespace(generation_config = SimpleNamespace(eos_token_id = 1))
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "unsloth/gemma-3-4b-it"
+    model_info = {"model": model, "tokenizer": processor, "processor": processor, "is_vision": True}
+    backend.models = {backend.active_model_name: model_info}
+
+    backend._resolve_chat_eos(backend.active_model_name)
+
+    assert model_info["chat_turn_end_eos_ids"] == [1, 107]
+    # generation_config repaired so the vision .generate() path stops at the turn.
+    assert model.generation_config.eos_token_id == [1, 107]

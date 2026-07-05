@@ -29,7 +29,6 @@ from core.inference.runtime_context import runtime_context_length
 from core.inference.message_content import content_to_text
 from core.inference.chat_eos import (
     chat_eos_repair,
-    resolve_chat_turn_end_eos_ids,
     resolve_chat_turn_end_eos_ids_using,
 )
 from io import StringIO
@@ -229,12 +228,20 @@ class InferenceBackend:
         """
         info = self.models.get(model_name) or {}
         model = info.get("model")
-        tokenizer = info.get("tokenizer")
-        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)  # unwrap processors
+        container = info.get("tokenizer")
+        tokenizer = getattr(container, "tokenizer", container)  # unwrap processors
         if model is None or tokenizer is None:
             return
+        # Vision models store the chat_template on the ProcessorMixin (the same
+        # object _generate_vision_response calls apply_chat_template on), while the
+        # unwrapped inner tokenizer often has none. Read the turn-end markers from
+        # whichever object actually carries a template but resolve their ids on the
+        # generation tokenizer; otherwise the processor's turn-end token is missed
+        # and the vision path (which relies on this cache / generation_config) runs
+        # past the assistant boundary.
+        template_source = container if getattr(container, "chat_template", None) else tokenizer
         try:
-            turn_end_ids = resolve_chat_turn_end_eos_ids(tokenizer)
+            turn_end_ids = resolve_chat_turn_end_eos_ids_using(template_source, tokenizer)
         except Exception as e:  # never block a load on eos resolution
             logger.warning("Chat turn-end eos resolution failed for %s: %s", model_name, e)
             return

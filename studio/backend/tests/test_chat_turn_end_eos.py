@@ -102,6 +102,36 @@ def test_missing_marker_maps_to_unk_and_is_skipped():
     assert resolve_chat_turn_end_eos_ids(tok) == [7]
 
 
+def test_starling_barred_end_of_turn_from_template():
+    # OpenChat/Starling end turns with the BARRED <|end_of_turn|> (distinct from
+    # Gemma's unbarred <end_of_turn>). eos synced to </s>=2, turn marker at 32000.
+    starling = "GPT4 Correct Assistant: hi<|end_of_turn|>"
+    tok = _FakeTokenizer(2, chat_template = starling, token_ids = {"<|end_of_turn|>": 32000})
+    assert resolve_chat_turn_end_eos_ids(tok) == [2, 32000]
+
+
+def test_dict_chat_template_scans_all_variants():
+    # Hermes-3 style: chat_template is a {name: template} dict. Turn-end detection
+    # must scan every variant, not bail because the container is not a plain str.
+    tmpl = {"default": "{{ messages }}", "tool_use": _CHATML}
+    tok = _FakeTokenizer(2, chat_template = tmpl, token_ids = {"<|im_end|>": 5})
+    assert resolve_chat_turn_end_eos_ids(tok) == [2, 5]
+
+
+def test_list_of_dicts_chat_template_scans_all_variants():
+    # tokenizer_config.json stores multi-templates as a list of {name, template}.
+    tmpl = [{"name": "default", "template": _CHATML}]
+    tok = _FakeTokenizer(2, chat_template = tmpl, token_ids = {"<|im_end|>": 5})
+    assert resolve_chat_turn_end_eos_ids(tok) == [2, 5]
+
+
+def test_dict_harmony_template_left_untouched():
+    # A multi-variant container whose variant is harmony must still be left alone.
+    tmpl = {"default": "<|start|>assistant<|channel|>analysis<|message|>...<|end|>"}
+    tok = _FakeTokenizer(200002, chat_template = tmpl, token_ids = {"<|end|>": 200007})
+    assert resolve_chat_turn_end_eos_ids(tok) == [200002]
+
+
 # ---- chat_eos_repair ------------------------------------------------------
 
 
