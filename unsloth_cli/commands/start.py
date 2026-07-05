@@ -5,6 +5,7 @@
 
 import atexit
 import contextlib
+import copy
 import json
 import os
 import re
@@ -1054,20 +1055,19 @@ def write_openclaw_config(
         tools = config.get("tools")
         exec_policy = tools.get("exec") if isinstance(tools, dict) else None
         exec_policy = exec_policy if isinstance(exec_policy, dict) else {}
-        # tools.exec.mode is OpenClaw's normalized policy knob and cannot be combined with
-        # explicit security/ask (the config is rejected outright), so a mode-based policy
-        # governs approval on its own; leave it alone. host=sandbox defaults to
-        # security=deny, and host=node routes to a paired node; both are user-set (--yolo
-        # only ever writes host=gateway), so leave a non-gateway host untouched rather than
-        # broadening its routing. Only rewrite a gateway-routed policy whose effective
-        # security+ask is the permissive yolo default (an omitted host defaults to the
-        # gateway when no sandbox runs).
-        host = exec_policy.get("host")
+        # Match ONLY the exact fingerprint --yolo writes (host=gateway, security=full,
+        # ask=off, all explicit, no mode); anything else is left untouched. host=auto or an
+        # omitted host resolves to security=deny under an active sandbox, so treating those
+        # as the permissive gateway default would broaden a fresh sandboxed config from
+        # deny to allowlist. host=node and host=sandbox are user-set (--yolo only writes
+        # gateway). tools.exec.mode is OpenClaw's normalized knob (it cannot be combined
+        # with security/ask, and OpenClaw never rewrites our security/ask write into it),
+        # so a mode is always a deliberate user policy; never clobber it.
         permissive = (
             "mode" not in exec_policy
-            and host in (None, "gateway", "auto")
-            and exec_policy.get("security", "full") == "full"
-            and exec_policy.get("ask", "off") == "off"
+            and exec_policy.get("host") == "gateway"
+            and exec_policy.get("security") == "full"
+            and exec_policy.get("ask") == "off"
         )
         if permissive:
             exec_policy = _subdict(_subdict(config, "tools"), "exec")
@@ -1153,29 +1153,52 @@ def write_opencode_config(
         session_permission = {t: "allow" for t in tools}
         config["permission"] = dict(session_permission)
     else:
-        # OpenCode defaults an unset permission to "allow" (runs without asking), so a
-        # non-yolo run must WRITE an "ask" policy for the tools --yolo opened, not just
-        # drop the allow entries (which would fall back to that permissive default). A
-        # stricter value (deny/ask) the user set is kept. A string ("deny") or "*"
-        # catch-all is a global user rule: leave it in place, and only flip a tool that is
-        # EXPLICITLY "allow" (do not default an absent tool to allow when a catch-all,
-        # which the tool inherits, governs it).
+        # OpenCode defaults an unset permission to "allow" (runs without asking) and
+        # OPENCODE_CONFIG loads BELOW project opencode.json, so a non-yolo run must carry a
+        # non-permissive policy INLINE (OPENCODE_CONFIG_CONTENT outranks project config) or
+        # a permissive project config still auto-approves the tools --yolo opened. The
+        # inline value per tool is the stricter of "ask" and the tool's effective value in
+        # our own config: a plain "allow" (or an absent tool defaulting to allow) becomes
+        # "ask" (a prompt, never a silent auto-approve); a "deny", "ask", or granular
+        # object value a user set is carried through VERBATIM so it is never weakened.
+        # (We cannot read the project config, so a project-only "deny" is softened to a
+        # prompt; that keeps the no-silent-approve contract without hard-blocking.)
         permission = config.get("permission")
         if isinstance(permission, str):
             # A string permission ("deny"/"ask"/"allow") is a global user rule left in the
-            # config file as-is; carry the same prompting guarantee inline (never weaker
-            # than that rule) so a permissive project config still prompts.
-            session_permission = {t: "deny" if permission == "deny" else "ask" for t in tools}
+            # config file as-is; "deny" rides inline verbatim, anything looser floors to
+            # "ask".
+            session_permission = {t: permission if permission == "deny" else "ask" for t in tools}
         else:
             permission = permission if isinstance(permission, dict) else {}
             # An absent tool inherits the "*" catch-all when present, else OpenCode's
-            # "allow" default. Only an EFFECTIVE "allow" is tightened to "ask"; a "deny"
-            # (per-tool or via a deny catch-all) is a stricter user rule and stays. The
-            # catch-all itself is never rewritten, so other tools keep inheriting it.
+            # "allow" default. The catch-all itself is never rewritten, so other tools keep
+            # inheriting it.
             default = permission.get("*", "allow")
-            session_permission = {
-                t: "deny" if permission.get(t, default) == "deny" else "ask" for t in tools
-            }
+
+            def _has_allow(value):
+                # A granular object maps glob -> "allow"/"ask"/"deny"; it is permissive if
+                # any pattern (at any depth) resolves to "allow".
+                if isinstance(value, dict):
+                    return any(_has_allow(v) for v in value.values())
+                return value == "allow"
+
+            def _inline(value):
+                # Carry a "deny" string or a granular object that grants nothing
+                # ("ask"/"deny" only) inline VERBATIM so a per-tool user rule is not
+                # collapsed to a blanket "ask". An object that grants "allow" anywhere is
+                # permissive: floor it to the string "ask", which fully replaces (not
+                # deep-merges) a project object, so no inline "allow" pattern can leak
+                # through. A plain "allow" or an absent tool also floors to "ask".
+                if isinstance(value, dict):
+                    # Copy so the returned inline dict never aliases config["permission"].
+                    return copy.deepcopy(value) if not _has_allow(value) else "ask"
+                return "deny" if value == "deny" else "ask"
+
+            session_permission = {t: _inline(permission.get(t, default)) for t in tools}
+            # Tighten a tool whose EFFECTIVE value is "allow" (set explicitly or inherited
+            # from an "allow" catch-all) to "ask" in the file too; a deny/object/ask value
+            # (per-tool or via a deny catch-all) is a stricter user rule and stays put.
             to_ask = [t for t in tools if permission.get(t, default) == "allow"]
             if to_ask:
                 permission = _subdict(config, "permission")

@@ -1697,14 +1697,17 @@ def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     assert approvals["defaults"] == {"security": "full", "ask": "off", "askFallback": "full"}
 
 
-def test_no_yolo_openclaw_writes_prompting_policy(fake_studio, tmp_path):
+def test_no_yolo_openclaw_leaves_fresh_config_untouched(fake_studio, tmp_path):
+    # A fresh non-yolo run only undoes state a prior --yolo wrote; with no yolo
+    # fingerprint present it must not synthesize an exec policy. An omitted policy can
+    # resolve to a sandbox default of security=deny, so writing allowlist here would
+    # BROADEN it. The reset is scoped to the exact yolo write, verified by the
+    # yolo-then-plain round trip below.
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     state = tmp_path / "agents" / "openclaw"
     config = json.loads((state / "openclaw.json").read_text())
-    # OpenClaw's default for an omitted policy is permissive, so a non-yolo run must
-    # write an explicit prompting policy, not leave exec unset.
-    assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
+    assert "exec" not in config.get("tools", {})
     assert not (state / "exec-approvals.json").exists()
 
 
@@ -1796,14 +1799,15 @@ def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
     assert remaining["agents"] == {"main": {"allowlist": ["git status"]}}
 
 
-def test_openclaw_non_yolo_preserves_foreign_exec_keys(tmp_path):
-    # A permissive policy (no security, ask=off) is tightened to prompting, but foreign
-    # keys like timeout are left untouched.
+def test_openclaw_non_yolo_leaves_partial_policy_untouched(tmp_path):
+    # A policy that lacks the full yolo fingerprint (here no host and no security) is not
+    # our --yolo write, so a non-yolo run leaves it as-is rather than assuming ask=off
+    # means permissive: an omitted host/security can resolve to a sandbox deny default.
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"timeout": 30, "ask": "off"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
-    assert config["tools"]["exec"] == {"timeout": 30, "security": "allowlist", "ask": "on-miss"}
+    assert config["tools"]["exec"] == {"timeout": 30, "ask": "off"}
 
 
 def test_openclaw_non_yolo_leaves_no_permissive_values(tmp_path):
@@ -1910,6 +1914,62 @@ def test_opencode_non_yolo_ask_policy_wins_over_project_config(fake_studio):
     assert inline["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
 
 
+def test_opencode_non_yolo_preserves_granular_object_deny(tmp_path):
+    # OpenCode allows granular object values, e.g. permission = {"bash": {"*": "deny"}}.
+    # Since OPENCODE_CONFIG_CONTENT outranks project config, collapsing that dict to a
+    # plain "ask" inline would weaken the deny; carry the object through verbatim instead.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"bash": {"read *": "deny", "git *": "ask"}}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    # The granular deny/ask object is kept in the file (only an explicit "allow" is
+    # tightened) and rides inline unchanged; the two other tools floor to "ask".
+    assert config["permission"]["bash"] == {"read *": "deny", "git *": "ask"}
+    assert session == {"edit": "ask", "bash": {"read *": "deny", "git *": "ask"}, "webfetch": "ask"}
+    # The inline object must not alias the file's, so a later edit of one cannot corrupt the
+    # other.
+    assert session["bash"] is not config["permission"]["bash"]
+
+
+def test_opencode_non_yolo_floors_permissive_object_to_ask(tmp_path):
+    # A granular object that grants "allow" anywhere is permissive. OpenCode deep-merges an
+    # inline object into the project object (so an inline "allow" pattern would leak
+    # through), and evaluates globs last-match-wins, so carrying it verbatim would silently
+    # auto-approve. Floor it to the string "ask", which fully REPLACES a project object.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"bash": {"*": "allow", "git push *": "deny"}}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert session == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+
+
+def test_opencode_non_yolo_floors_permissive_object_catch_all(tmp_path):
+    # A permissive granular "*" catch-all inherited by absent tools must also floor to
+    # "ask", not propagate an "allow"-bearing object to every tool.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"*": {"*": "allow"}}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert session == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+
+
+def test_opencode_non_yolo_carries_own_deny_inline_over_project(fake_studio, tmp_path):
+    # A deny the user left in our own session config (reused no-launch dir) must not be
+    # softened. It rides inline verbatim so a permissive project config cannot re-open it,
+    # while the tools it does not name floor to "ask".
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents = True, exist_ok = True)
+    config_path.write_text(json.dumps({"permission": {"bash": "deny"}}))
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    content_line = next(
+        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
+    )
+    inline = json.loads(
+        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
+    )
+    # bash stays denied inline (never weakened to ask); edit/webfetch floor to ask.
+    assert inline["permission"] == {"edit": "ask", "bash": "deny", "webfetch": "ask"}
+
+
 def test_openclaw_non_yolo_leaves_mode_policy(tmp_path):
     # tools.exec.mode is OpenClaw's normalized knob and cannot be combined with explicit
     # security/ask (the config is rejected), so a mode-based policy must be left as-is.
@@ -1939,6 +1999,45 @@ def test_openclaw_non_yolo_preserves_node_host(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
     assert config["tools"]["exec"] == {"host": "node"}
+
+
+def test_openclaw_non_yolo_preserves_auto_host_permissive(tmp_path):
+    # host=auto (or omitted) with security=full/ask=off is NOT the --yolo write: under an
+    # active sandbox, auto resolves to security=deny. --yolo only ever writes host=gateway,
+    # so the reset must not treat auto/None as the permissive gateway default and broaden a
+    # sandboxed deny to allowlist.
+    for exec_policy in (
+        {"host": "auto", "security": "full", "ask": "off"},
+        {"security": "full", "ask": "off"},
+    ):
+        path = tmp_path / "openclaw.json"
+        path.write_text(json.dumps({"tools": {"exec": dict(exec_policy)}}))
+        start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+        config = json.loads(path.read_text())
+        assert config["tools"]["exec"] == exec_policy
+
+
+def test_openclaw_non_yolo_resets_only_gateway_yolo_fingerprint(tmp_path):
+    # The reset fires on exactly the host=gateway + security=full + ask=off write --yolo
+    # makes, and nothing else.
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps({"tools": {"exec": {"host": "gateway", "security": "full", "ask": "off"}}})
+    )
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
+
+
+def test_openclaw_non_yolo_preserves_full_mode(tmp_path):
+    # OpenClaw never normalizes our security=full/ask=off yolo write into mode:"full"
+    # (verified against the binary: doctor --fix and config get leave security/ask as-is),
+    # so a mode:"full" is always a deliberate user policy, not stale yolo state; leave it.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"mode": "full"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"mode": "full"}
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():
