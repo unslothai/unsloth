@@ -216,6 +216,12 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
             timeout = 600,
             check = True,
         )
+        # The wheel just landed in site-packages, but the import system caches each
+        # directory's listing; the very next find_spec / import in this same process can
+        # still miss the freshly installed package when the install lands within the
+        # directory mtime's resolution -- silently falling back to native on the first
+        # use. Invalidate the finder caches so set_attention_backend picks it up now.
+        importlib.invalidate_caches()
     except Exception as exc:  # noqa: BLE001 — no wheel / no network -> native fallback
         if logger is not None:
             # A failed pip install raises CalledProcessError whose str() shows only the
