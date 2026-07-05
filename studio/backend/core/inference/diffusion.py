@@ -473,11 +473,17 @@ class DiffusionBackend:
         base: str,
         base_files: list[str],
         hf_token: Optional[str],
-    ) -> None:
+    ) -> Optional[str]:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
         WITHOUT the lock and honoring ``_cancel_event``, so load_pipeline's
         from_single_file / from_pretrained hit the cache and the heavy download can
-        be preempted by an unload/eviction. Raises ``RuntimeError("Cancelled")``."""
+        be preempted by an unload/eviction. Raises ``RuntimeError("Cancelled")``.
+
+        Returns the base repo's local snapshot dir when the prefetched set includes
+        the pipeline manifest, so from_pretrained can load from disk instead of
+        re-sweeping the hub (its own sweep also pulls files the scoped list skips,
+        e.g. the 24 GB packaged root singles in each FLUX.1 repo); None otherwise
+        (estimate failure, config-only base, local repo) -> hub id as before."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         # GGUF transformer (hub repos only; a local path is already on disk).
@@ -486,12 +492,16 @@ class DiffusionBackend:
                 repo_id, gguf_filename, hf_token, cancel_event = self._cancel_event
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
+        snapshot_root: Optional[str] = None
         for rfilename in base_files:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
-            hf_hub_download_with_xet_fallback(
+            local = hf_hub_download_with_xet_fallback(
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
+            if rfilename == "model_index.json":
+                snapshot_root = str(Path(local).parent)
+        return snapshot_root
 
     def validate_load_request(
         self,
@@ -708,7 +718,7 @@ class DiffusionBackend:
                     self._loading.expected_bytes = expected
             # Download outside the lock so unload()/an eviction can preempt the
             # multi-GB pull; load_pipeline below then assembles from the cache.
-            self._prefetch_files(
+            kwargs["_base_local_dir"] = self._prefetch_files(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
                 base,
@@ -921,6 +931,7 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
+        _base_local_dir: Optional[str] = None,
     ) -> dict[str, Any]:
         # A blank / whitespace-only token must degrade to anonymous access, not be passed
         # as an explicit credential (from_single_file / from_pretrained / the Hub client
@@ -1102,6 +1113,7 @@ class DiffusionBackend:
                             transformer_quant,
                             transformer_quant_fast_accum,
                             fam = fam,
+                            base_local_dir = _base_local_dir,
                             prequant_path = transformer_prequant_path,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
@@ -1142,7 +1154,12 @@ class DiffusionBackend:
                             pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
-                            pipe = pipeline_cls.from_pretrained(repo_id, **pipe_kwargs)
+                            # The prefetched snapshot dir keeps from_pretrained off the
+                            # hub: its own snapshot sweep re-downloads files the scoped
+                            # prefetch skipped (packaged root singles, 24 GB per FLUX.1).
+                            pipe = pipeline_cls.from_pretrained(
+                                _base_local_dir or repo_id, **pipe_kwargs
+                            )
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline
                         # (U-Net + VAE + both text encoders), not a transformer-only file,
@@ -1183,7 +1200,9 @@ class DiffusionBackend:
                             pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
-                            pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+                            pipe = pipeline_cls.from_pretrained(
+                                _base_local_dir or base, **pipe_kwargs
+                            )
 
                 # Resolve the effective speed mode: GGUF models default to the
                 # near-lossless `default` profile (compile is ~2.2x and sits below
@@ -1508,6 +1527,7 @@ class DiffusionBackend:
         *,
         fam: Optional[DiffusionFamily] = None,
         prequant_path: Optional[str] = None,
+        base_local_dir: Optional[str] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -1555,7 +1575,7 @@ class DiffusionBackend:
                 )
                 if transformer is not None:
                     pipe = self._assemble_pipe(
-                        pipeline_cls, base, transformer, dtype, hf_token, device
+                        pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir
                     )
                     return pipe, scheme
 
@@ -1563,7 +1583,9 @@ class DiffusionBackend:
         transformer = transformer_cls.from_pretrained(
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
-        pipe = self._assemble_pipe(pipeline_cls, base, transformer, dtype, hf_token, device)
+        pipe = self._assemble_pipe(
+            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir
+        )
         scheme = quantize_transformer(
             pipe,
             target,
@@ -1584,13 +1606,14 @@ class DiffusionBackend:
         dtype: Any,
         hf_token: Optional[str],
         device: str,
+        base_local_dir: Optional[str] = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
         if hf_token:
             pipe_kwargs["token"] = hf_token
-        pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+        pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
 
