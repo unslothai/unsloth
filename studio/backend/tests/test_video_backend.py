@@ -528,3 +528,34 @@ def test_base_download_files_ltx23_keeps_only_shared_components():
     assert not any(
         n.startswith(("vae/", "connectors/", "latent_upsampler/", "transformer/")) for n in names
     )
+
+
+def test_predownload_base_honors_cancel_between_files(monkeypatch):
+    # A warm-cache sweep returns each file instantly without consulting the event,
+    # so the loop must check it explicitly or an unload mid-predownload is ignored.
+    backend = VideoBackend()
+    backend._cancel_event.set()
+    calls: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **kw: (calls.append(fn), f"/cache/{fn}")[1],
+    )
+
+    class _Api:
+        def __init__(self, token = None):
+            pass
+
+        def model_info(self, repo, files_metadata = True):
+            return types.SimpleNamespace(
+                siblings = [
+                    _sibling("model_index.json", 1),
+                    _sibling("vae/diffusion_pytorch_model.safetensors", 2),
+                ]
+            )
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend._predownload_base("base/repo", None, "pipeline")
+    assert calls == []
