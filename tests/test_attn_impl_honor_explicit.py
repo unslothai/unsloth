@@ -121,6 +121,23 @@ def test_resolver_downgrades_non_explicit_sdpa_when_not_supported():
     assert result == "eager"
 
 
+def test_resolver_downgrades_explicit_sdpa_for_sdpa_excluded_model():
+    # gpt_oss is in _SDPA_EXCLUDED_MODELS (sdpa is known-broken) and _FLASH_EXCLUDED_MODELS
+    # (flash disabled). Honoring an explicit sdpa request must not re-enable that broken
+    # backend: it downgrades to eager, mirroring how an explicit flex request falls back
+    # for _FLEX_EXCLUDED_MODELS. supports_sdpa=True proves the exclusion overrides even a
+    # model that otherwise advertises SDPA support.
+    config = {"model_type": "gpt_oss"}
+    result = resolve_attention_implementation(
+        model_class = None,
+        config = config,
+        requested_attn_implementation = "sdpa",
+        supports_sdpa = True,
+    )
+    assert result == "eager"
+    assert config.get("_attn_implementation") == "eager"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-q"]))

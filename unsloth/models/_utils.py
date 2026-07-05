@@ -623,12 +623,15 @@ def _disable_flash_attention_if_needed(
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
 
+    model_type = _config_get(config, "model_type", "")
+
     # The disable reason is flash-specific: honor an explicit non-flash request from
-    # the caller instead of downgrading it. SDPA is universally available so it is
-    # always honored; flex_attention is honored only when it is actually usable,
-    # since supports_flex_attention already rejects excluded/broken/unavailable
-    # configs (e.g. gpt_oss) that would otherwise select a known-broken backend.
-    if explicit_request == "sdpa":
+    # the caller instead of downgrading it. SDPA is honored unless the model is in
+    # _SDPA_EXCLUDED_MODELS (sdpa is known-broken there, e.g. gpt_oss); flex_attention
+    # is honored only when it is actually usable, since supports_flex_attention already
+    # rejects the excluded/broken/unavailable configs. This keeps an explicit request
+    # from selecting a backend the repo marks as wrong.
+    if explicit_request == "sdpa" and not _is_sdpa_excluded(model_type.lower()):
         return _set_attn_impl(config, "sdpa")
     if explicit_request == "flex_attention" and supports_flex_attention:
         return _set_attn_impl(config, "flex_attention")
@@ -645,7 +648,6 @@ def _disable_flash_attention_if_needed(
             if _is_flash_attention_requested(requested_attn_implementation)
             else "flash_attention_2"
         )
-        model_type = _config_get(config, "model_type", "")
         warning_key = (
             model_type,
             logged_attn_implementation,
@@ -861,11 +863,15 @@ def resolve_attention_implementation(
 
     # A caller who explicitly passes requested_attn_implementation="sdpa" keeps it even
     # on a conservatively unsupported model, mirroring _disable_flash_attention_if_needed
-    # which honors an explicit sdpa request unconditionally. Only a synthesized/default
-    # sdpa (requested_attn_implementation is None, so the value came from the model
-    # resolution above or the config) downgrades to eager.
-    explicit_sdpa_request = requested_attn_implementation == "sdpa"
-    if not supports_sdpa and final_attn_impl == "sdpa" and not explicit_sdpa_request:
+    # which honors an explicit sdpa request. The one exception is a model in
+    # _SDPA_EXCLUDED_MODELS (e.g. gpt_oss): sdpa is known-broken there, so an explicit
+    # request must not re-enable it - it still downgrades to eager, just like flex falls
+    # back for _FLEX_EXCLUDED_MODELS. A synthesized/default sdpa (requested is None, so
+    # the value came from the model resolution above or the config) also downgrades.
+    honor_explicit_sdpa = (
+        requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(model_type)
+    )
+    if not supports_sdpa and final_attn_impl == "sdpa" and not honor_explicit_sdpa:
         print(
             f"Unsloth: {(model_type_name or 'model').title()} does not support SDPA - switching to fast eager."
         )
