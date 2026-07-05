@@ -485,7 +485,7 @@ def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
         _target(dtype = "float16"),
         is_gguf = True,
         family = _family(),
-        speed_mode = "max",
+        speed_mode = "MAX",
     )
     assert applied["fp16_accum"] is True
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is True

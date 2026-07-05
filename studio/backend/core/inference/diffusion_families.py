@@ -376,7 +376,9 @@ IDEOGRAM4_FAMILY_NAME = "ideogram-4"
 # assemble, and remote-code execution is out of the question for a load path.
 _EXCLUDED_MODELS: tuple[tuple[str, str], ...] = (
     (
-        "hunyuanimage",
+        # "-3" scoped: the reason is 3.0-specific, and a future HunyuanImage 2.x with a
+        # diffusers pipeline must fall through to normal (unknown-family) handling.
+        "hunyuanimage-3",
         "HunyuanImage-3.0 has no diffusers pipeline (it is an 80B autoregressive MoE "
         "that requires trust_remote_code), so Studio does not support it.",
     ),
@@ -387,7 +389,7 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
     """The stated reason ``repo_id`` is unsupported, or None when it is simply unknown."""
     needle = (repo_id or "").lower()
     for token, reason in _EXCLUDED_MODELS:
-        if token in needle:
+        if _token_in_needle(token, needle):
             return reason
     return None
 

@@ -1,1 +1,0 @@
-- Completed CPU sd.cpp vs diffusers benchmark.
