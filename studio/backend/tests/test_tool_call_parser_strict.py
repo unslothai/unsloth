@@ -874,13 +874,11 @@ class TestEnabledNameJsonAnswerIsContent:
 
     def test_answer_survives_strip(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
-
         ans = '{"name":"web_search","result":"no call"}'
         assert strip_leading_bare_json_call(ans, {"web_search"}) == ans
 
     def test_answer_does_not_route_to_draining(self):
         from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
-
         assert not _looks_like_enabled_bare_json(
             '{"name":"web_search","result":"no call"}', {"web_search"}
         )
@@ -895,6 +893,5 @@ class TestEnabledNameJsonAnswerIsContent:
 
     def test_arguments_string_call_still_strips(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
-
         call = '{"name":"web_search","arguments":"{\\"q\\":\\"x\\"}"} tail'
         assert strip_leading_bare_json_call(call, {"web_search"}) == "tail"
