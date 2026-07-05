@@ -5,7 +5,6 @@
 
 import atexit
 import contextlib
-import copy
 import json
 import os
 import re
@@ -1082,26 +1081,26 @@ def write_openclaw_config(
             state = _read_json_object(approvals)
             if state is not None:
                 defaults = state.get("defaults")
-                changed = False
-                if isinstance(defaults, dict):
-                    for field, yolo_value in (
-                        ("security", "full"),
-                        ("ask", "off"),
-                        ("askFallback", "full"),
-                    ):
-                        if defaults.get(field) == yolo_value:
-                            del defaults[field]
-                            changed = True
+                # Strip the defaults only when they are exactly the yolo fingerprint; a
+                # user-managed mixed policy that merely shares a field (e.g. askFallback=full,
+                # whose omitted default is deny) must be kept intact.
+                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+                is_yolo = isinstance(defaults, dict) and all(
+                    defaults.get(k) == v for k, v in yolo_defaults
+                )
+                if is_yolo:
+                    for k, _ in yolo_defaults:
+                        del defaults[k]
                     if not defaults:
                         del state["defaults"]
-                if changed and set(state) <= {"version"}:
-                    # Nothing left but our own yolo payload: remove it.
-                    approvals.unlink()
-                    typer.echo(f"Removed {approvals}")
-                elif changed:
-                    # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
-                    _write_private_json(approvals, state)
-                    typer.echo(f"Updated {approvals}")
+                    if set(state) <= {"version"}:
+                        # Nothing left but our own yolo payload: remove it.
+                        approvals.unlink()
+                        typer.echo(f"Removed {approvals}")
+                    else:
+                        # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
+                        _write_private_json(approvals, state)
+                        typer.echo(f"Updated {approvals}")
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -1149,60 +1148,24 @@ def write_opencode_config(
     tools = ("edit", "bash", "webfetch")
     if yolo:
         # OpenCode has no --yolo flag; auto-approve is the config `permission` block
-        # (singular). Allow the prompting tools so tool calls don't block on the TUI.
+        # (singular). Allow the prompting tools so tool calls don't block on the TUI. This
+        # rides inline (OPENCODE_CONFIG_CONTENT) so --yolo works even over a project config.
         session_permission = {t: "allow" for t in tools}
         config["permission"] = dict(session_permission)
     else:
-        # OpenCode defaults an unset permission to "allow" (runs without asking) and
-        # OPENCODE_CONFIG loads BELOW project opencode.json, so a non-yolo run must carry a
-        # non-permissive policy INLINE (OPENCODE_CONFIG_CONTENT outranks project config) or
-        # a permissive project config still auto-approves the tools --yolo opened. The
-        # inline value per tool is the stricter of "ask" and the tool's effective value in
-        # our own config: a plain "allow" (or an absent tool defaulting to allow) becomes
-        # "ask" (a prompt, never a silent auto-approve); a "deny", "ask", or granular
-        # object value a user set is carried through VERBATIM so it is never weakened.
-        # (We cannot read the project config, so a project-only "deny" is softened to a
-        # prompt; that keeps the no-silent-approve contract without hard-blocking.)
+        # Undo only what --yolo wrote: our yolo sets an explicit per-tool "allow" for these
+        # three tools, so flip exactly those explicit allows back to "ask". A "deny"/"ask",
+        # a granular object, a string, or a "*" catch-all is the user's own rule and is left
+        # untouched. We do NOT carry a permission inline for a non-yolo session: since
+        # OPENCODE_CONFIG_CONTENT outranks the project opencode.json we cannot read, any
+        # value forced there would override the user's project rules (weakening a project
+        # deny, or auto-approving through a granular object's permissive default). Clearing
+        # our own persisted yolo state is the fix; the project's own permissions are honored.
+        session_permission: dict = {}
         permission = config.get("permission")
-        if isinstance(permission, str):
-            # A string permission ("deny"/"ask"/"allow") is a global user rule left in the
-            # config file as-is; "deny" rides inline verbatim, anything looser floors to
-            # "ask".
-            session_permission = {t: permission if permission == "deny" else "ask" for t in tools}
-        else:
-            permission = permission if isinstance(permission, dict) else {}
-            # An absent tool inherits the "*" catch-all when present, else OpenCode's
-            # "allow" default. The catch-all itself is never rewritten, so other tools keep
-            # inheriting it.
-            default = permission.get("*", "allow")
-
-            def _has_allow(value):
-                # A granular object maps glob -> "allow"/"ask"/"deny"; it is permissive if
-                # any pattern (at any depth) resolves to "allow".
-                if isinstance(value, dict):
-                    return any(_has_allow(v) for v in value.values())
-                return value == "allow"
-
-            def _inline(value):
-                # Carry a "deny" string or a granular object that grants nothing
-                # ("ask"/"deny" only) inline VERBATIM so a per-tool user rule is not
-                # collapsed to a blanket "ask". An object that grants "allow" anywhere is
-                # permissive: floor it to the string "ask", which fully replaces (not
-                # deep-merges) a project object, so no inline "allow" pattern can leak
-                # through. A plain "allow" or an absent tool also floors to "ask".
-                if isinstance(value, dict):
-                    # Copy so the returned inline dict never aliases config["permission"].
-                    return copy.deepcopy(value) if not _has_allow(value) else "ask"
-                return "deny" if value == "deny" else "ask"
-
-            session_permission = {t: _inline(permission.get(t, default)) for t in tools}
-            # Tighten a tool whose EFFECTIVE value is "allow" (set explicitly or inherited
-            # from an "allow" catch-all) to "ask" in the file too; a deny/object/ask value
-            # (per-tool or via a deny catch-all) is a stricter user rule and stays put.
-            to_ask = [t for t in tools if permission.get(t, default) == "allow"]
-            if to_ask:
-                permission = _subdict(config, "permission")
-                for tool in to_ask:
+        if isinstance(permission, dict):
+            for tool in tools:
+                if permission.get(tool) == "allow":
                     permission[tool] = "ask"
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
@@ -1495,10 +1458,10 @@ def opencode(
         # changing the user's default model. Key lives in the config, not the env.
         session_permission = write_opencode_config(base, key, entry, config_path, yolo = yolo)
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin
-        # AND the permission policy (yolo's allow, or non-yolo's ask) would silently lose
-        # to a repo config allowing edit/bash/webfetch. Carry both in OPENCODE_CONFIG_CONTENT,
-        # which outranks project config, so a non-yolo session prompts even over a permissive
-        # project config; the API key stays in the private file, never in the printed env.
+        # would silently lose to a repo config. Carry it in OPENCODE_CONFIG_CONTENT, which
+        # outranks project config; the API key stays in the private file, never the env.
+        # Only --yolo carries a permission here (its allow must win over a project config);
+        # a non-yolo session returns no permission, so the project's own rules are honored.
         inline_config: dict = {"model": f"unsloth/{entry['id']}"}
         if session_permission:
             inline_config["permission"] = session_permission
