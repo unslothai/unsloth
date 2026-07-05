@@ -691,6 +691,10 @@ class DiffusionBackend:
             if self._load_token != token:
                 return
             logger.error("diffusion.load_failed: %s", exc)
+            # Free the debris of a failed construction (e.g. a load-time OOM): _state was
+            # never committed, and the next load's _unload_locked early-returns on a None
+            # state, so nothing else releases the reserved VRAM.
+            clear_gpu_cache()
             # Redact native paths: this error is surfaced verbatim via the
             # load-progress poll, and Studio can run as a shared server.
             from utils.native_path_leases import redact_native_paths
@@ -1971,7 +1975,8 @@ class DiffusionBackend:
                 gen = _GenState(total_steps = steps)
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
-                    now = time.time()
+                    # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
+                    now = time.monotonic()
                     gen.step = step_index + 1
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
