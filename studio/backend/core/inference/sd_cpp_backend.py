@@ -1096,6 +1096,13 @@ class SdCppDiffusionBackend:
             state.server.stop()
         if pending is not None and pending is not (state.server if state else None):
             pending.stop()
+        # Wait for a signalled one-shot generation to actually exit before reporting
+        # unloaded: callers (the GPU arbiter, training cleanup) treat this return as
+        # "the device is free", but a one-shot sd-cli child killed by the cancel above
+        # unwinds under _generate_lock. A bare acquire is the exit barrier (never taken
+        # while holding _lock; same pattern as DiffusionBackend.unload).
+        with self._generate_lock:
+            pass
         return self.status()
 
     def status(self) -> dict[str, Any]:
