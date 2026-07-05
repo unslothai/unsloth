@@ -351,7 +351,6 @@ class VideoBackend:
             root = Path(repo_id).expanduser()
             if root.is_dir():
                 from .diffusion_families import resolve_local_gguf_child
-
                 try:
                     resolve_local_gguf_child(root, gguf_filename or "")
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
@@ -669,7 +668,9 @@ class VideoBackend:
                     logger.info(
                         "video.transformer_quant: %s fits resident (%d MiB steady); "
                         "dropping the bf16 plan's '%s' offload",
-                        scheme_preview, quant_mib, plan.offload_policy,
+                        scheme_preview,
+                        quant_mib,
+                        plan.offload_policy,
                     )
                     plan = replanned
                     quant_replanned = True
@@ -860,7 +861,6 @@ class VideoBackend:
             # model/sequential offload hook every top-level module, so only group needs
             # this. Applied through the view so the helper streams transformer_2.
             from .diffusion_memory import _apply_group_offload
-
             for view in views[1:]:
                 if not _apply_group_offload(view, device, logger):
                     logger.warning(
