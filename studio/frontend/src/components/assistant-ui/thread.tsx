@@ -2836,6 +2836,18 @@ const VoiceEngine: FC = () => {
       if (n < 5) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
     };
 
+    // First message of a thread: the append + delayed-startRun coalescing path
+    // can't reliably drive a brand-new thread -- its runtime remounts on the first
+    // send, so the captured handle goes stale and the run never fires (the bubble
+    // shows but gets no reply). Use the normal composer.send() for the very first
+    // utterance; it creates the thread and runs. Coalescing kicks in from turn 2 on.
+    if (thread.getState().messages.length === 0) {
+      composer.send();
+      composer.setText("");
+      setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
+      return;
+    }
+
     let appended = false;
     try {
       auiRef.current.thread().append({

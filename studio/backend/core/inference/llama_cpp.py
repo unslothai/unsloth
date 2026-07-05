@@ -7367,6 +7367,16 @@ class LlamaCppBackend:
                 elif now - last_chunk_at >= stall_timeout_s:
                     raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
                 continue
+            except httpx.RequestError:
+                # A barge-in cancel closes the upstream response mid-read, which
+                # surfaces here as a RequestError (e.g. ReadError / WinError 10038).
+                # That is an expected cancellation, not a failure -- stop cleanly,
+                # same as the top-of-loop cancel check above, so a GeneratorExit
+                # never has to propagate up the async streaming wrapper (which was
+                # logging "coroutine ignored GeneratorExit" on every interruption).
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                raise
 
     @staticmethod
     def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
