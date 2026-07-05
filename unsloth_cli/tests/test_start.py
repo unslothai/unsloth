@@ -1692,12 +1692,16 @@ def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
     assert yolo.exit_code == 0, yolo.output
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
     assert json.loads(config_path.read_text())["permission"] == {
-        "edit": "allow", "bash": "allow", "webfetch": "allow"
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
     }
     plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert plain.exit_code == 0, plain.output
     assert json.loads(config_path.read_text())["permission"] == {
-        "edit": "ask", "bash": "ask", "webfetch": "ask"
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
     }
 
 
@@ -1821,7 +1825,10 @@ def test_openclaw_non_yolo_keeps_mixed_approval_defaults(tmp_path):
     # non-yolo run leaves it intact rather than stripping the shared field.
     path = tmp_path / "openclaw.json"
     approvals = path.parent / "exec-approvals.json"
-    mixed = {"version": 1, "defaults": {"security": "allowlist", "ask": "on-miss", "askFallback": "full"}}
+    mixed = {
+        "version": 1,
+        "defaults": {"security": "allowlist", "ask": "on-miss", "askFallback": "full"},
+    }
     approvals.write_text(json.dumps(mixed))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     assert json.loads(approvals.read_text()) == mixed
