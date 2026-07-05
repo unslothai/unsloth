@@ -98,6 +98,8 @@ def _transcode_webm(path: Path) -> bytes:
     buf = io.BytesIO()
     try:
         with av.open(str(path)) as src, av.open(buf, "w", format = "webm") as dst:
+            if not src.streams.video:
+                raise RuntimeError("WebM export failed: the clip has no video stream.")
             in_v = src.streams.video[0]
             rate = in_v.average_rate or 24
             out_v = dst.add_stream("libvpx-vp9", rate = rate)
@@ -133,6 +135,8 @@ def _transcode_gif(path: Path) -> bytes:
     frames: list[Any] = []
     try:
         with av.open(str(path)) as src:
+            if not src.streams.video:
+                raise RuntimeError("GIF export failed: the clip has no video stream.")
             in_v = src.streams.video[0]
             rate = float(in_v.average_rate or 24)
             # Full-rate GIFs are enormous and stutter in chat apps; ~12 fps is
