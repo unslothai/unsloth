@@ -120,9 +120,7 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
 
 
 def _detect_load_family(
-    repo_id: str,
-    gguf_filename: Optional[str],
-    family_override: Optional[str],
+    repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
     """Family detection shared by validate_load_request and the load worker: the
     repo id first, then the picked filename -- a local directory or generically
@@ -660,9 +658,7 @@ class VideoBackend:
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         if kind == "pipeline":
             model_dense_mib = (
-                int(sum(components) * mib_per_gb * dtype_scale)
-                if components is not None
-                else None
+                int(sum(components) * mib_per_gb * dtype_scale) if components is not None else None
             )
             companion_mib = None
         else:
