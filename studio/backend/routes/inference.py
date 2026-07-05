@@ -12076,6 +12076,21 @@ async def openai_image_generations(
         # isn't loaded; the global handler turns this into the OpenAI envelope.
         raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
 
+    # An edit-only model (Qwen-Image-Edit, FLUX Kontext) needs an input image this API
+    # cannot supply; refuse up front with a 400 instead of letting the backend's
+    # ValueError surface as a sanitized 500.
+    workflows = status.get("workflows") or []
+    if workflows and "txt2img" not in workflows:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "The loaded image model is edit-only (it requires an input image); "
+                "load a text-to-image model to use this endpoint.",
+                status = 400,
+                param = "model",
+            ),
+        )
+
     # Fall back to the resolved base repo so a local-path load (whose repo_id is a
     # filesystem path) still gets the right per-model steps/guidance.
     steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))

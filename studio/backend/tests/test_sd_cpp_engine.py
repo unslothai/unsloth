@@ -323,6 +323,22 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
         )
 
 
+def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch):
+    # A leftover file at the target path must not satisfy the post-run output check
+    # when the run itself produced nothing: the target is cleared before the run.
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    out.write_bytes(b"stale")
+    _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
+    with pytest.raises(RuntimeError, match = "no image"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(out),
+        )
+    assert not out.exists()
+
+
 def test_generate_raises_when_binary_missing():
     e = SdCppEngine(binary = None)
     with pytest.raises(RuntimeError, match = "not found"):
