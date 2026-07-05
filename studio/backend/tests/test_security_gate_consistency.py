@@ -108,5 +108,7 @@ def test_rag_embedding_path_runs_the_malware_gate():
     offenders = []
     for rel in ("routes/settings.py", "core/rag/embeddings.py"):
         if "evaluate_file_security(" not in (_BACKEND / rel).read_text():
-            offenders.append(f"{rel} loads/persists an embedding model without evaluate_file_security")
+            offenders.append(
+                f"{rel} loads/persists an embedding model without evaluate_file_security"
+            )
     assert not offenders, "\n".join(offenders)

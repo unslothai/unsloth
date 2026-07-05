@@ -71,10 +71,7 @@ def _guard_model_security(name: str) -> None:
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
-
-        blocked = evaluate_file_security(
-            name, load_subdirs = security_load_subdirs(name)
-        ).blocked
+        blocked = evaluate_file_security(name, load_subdirs = security_load_subdirs(name)).blocked
     except Exception:
         return
     if blocked:

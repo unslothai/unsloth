@@ -381,7 +381,6 @@ def update_embedding_model(
         # type check for offline/local repos HF cannot verify); local paths and
         # unreachable scans fail open inside evaluate_file_security.
         from utils.security import evaluate_file_security, security_load_subdirs
-
         if evaluate_file_security(
             model, hf_token = hf_token, load_subdirs = security_load_subdirs(model, hf_token)
         ).blocked:
@@ -392,11 +391,7 @@ def update_embedding_model(
                     "cannot be used as the embedding model."
                 ),
             )
-    if (
-        model != default_embedding_model()
-        and not payload.force
-        and not is_local_gguf
-    ):
+    if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
         # A GGUF-named repo on the llama-server backend is loaded from its .gguf

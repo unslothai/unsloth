@@ -57,7 +57,9 @@ def client(monkeypatch):
 def test_flagged_repo_is_blocked_even_with_force(client, monkeypatch):
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
-    r = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed", "force": True})
+    r = c.put(
+        "/embedding-model", json = {"embedding_model": "attacker/malicious-embed", "force": True}
+    )
     assert r.status_code == 409
     assert "model" not in saved  # force must not persist a flagged repo
 
@@ -81,7 +83,6 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
 def test_load_sink_refuses_flagged_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     import core.rag.embeddings as embeddings
-
     with pytest.raises(RuntimeError):
         embeddings._guard_model_security("attacker/malicious-embed")
 
@@ -89,5 +90,4 @@ def test_load_sink_refuses_flagged_model(monkeypatch):
 def test_load_sink_allows_clean_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import core.rag.embeddings as embeddings
-
     embeddings._guard_model_security("acme/clean-embed")  # no raise
