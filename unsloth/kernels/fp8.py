@@ -337,12 +337,16 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Per-tensor scale: the normal forward stashes the un-expanded scalar,
         # which repeat_interleave cannot grow to (m, n). Scale directly.
         return (weight.to(torch.float32) * weight_scale.float()).to(out_dtype)
-    if m % block_size[0] != 0 or n % block_size[1] != 0:
+    if m % block_size[0] != 0 or n % block_size[1] != 0 or block_size[0] != block_size[1]:
+        # Uneven tiling, or rectangular blocks. The triton kernel uses a single
+        # BLOCK_SIZE for both axes and derives the column scale stride from it, so
+        # it mis-indexes the scale when block_size[0] != block_size[1]. Expand the
+        # per-block scales in torch, which handles both dimensions independently.
         s_full = weight_scale.repeat_interleave(block_size[0], 0)[:m]
         s_full = s_full.repeat_interleave(block_size[1], 1)[:, :n]
         return (weight.to(torch.float32) * s_full).to(out_dtype)
-    # Even tiling: block-quant dequant with the real block size (weight_dequant
-    # would silently default to 128 and dequantize wrongly for other sizes).
+    # Even tiling with square blocks: block-quant dequant with the real block size
+    # (weight_dequant would silently default to 128 and dequantize wrongly).
     return weight_dequant_block(weight, weight_scale, block_size = block_size[0], dtype = out_dtype)
 
 
@@ -352,7 +356,12 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         m, n = weight.shape
 
         if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            # Upcast (e.g. e8m0) returns a fresh tensor and drops any Python
+            # attribute, so carry block_size across the cast for the lookup below.
+            _scale_block_size = getattr(weight_scale, "block_size", None)
             weight_scale = weight_scale.to(torch.float32)  # e8m0 scales break triton dtype mapping
+            if _scale_block_size is not None:
+                weight_scale.block_size = _scale_block_size
 
         # Original scale, saved for backward before any transformation
         original_weight_scale = weight_scale
