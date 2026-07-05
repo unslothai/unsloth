@@ -68,6 +68,7 @@ class _FakeBackend:
         model_path,
         *,
         gguf_filename = None,
+        base_repo = None,
         family_override = None,
         model_kind = None,
     ):
