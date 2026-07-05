@@ -1,1 +1,0 @@
-- Goal: beat ComfyUI via `sd.cpp`

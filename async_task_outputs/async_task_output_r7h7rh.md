@@ -1,9 +1,0 @@
-- Decision: corrected benchmark scope because previous comparison used ComfyUI GGUF default, not ComfyUI best; fair baseline is ComfyUI `fp8` + `--fast` + compile where available.
-- Decision: ComfyUI 0.26.0 exposes `fp8_e4m3fn`, `fp8_e4m3fn_fast`, `fp8_e5m2`; no dynamic `int8`; `nvfp4` only via prequantized file.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/comfy_bench.py`: added UNETLoader-based `flux.1-fp8`, `qwen-image-fp8`, and `qwen-image-nvfp4` benchmark workflows.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/outputs/FINAL_engine_comparison.md`: updated final table/verdict to best-vs-best: FLUX ComfyUI `1.00s` vs ours `0.518s`; Qwen ComfyUI `6.01s` vs ours `1.78s`.
-- Commands/results: started ComfyUI `--fast` on port `8234`; confirmed UNETLoader sees fp8/nvfp4 files; downloaded `flux1-schnell-fp8.safetensors` `17.24 GB`, `qwen_image_fp8_e4m3fn.safetensors` `20.43 GB`, `qwen_image_nvfp4.safetensors` `19.77 GB`.
-- Bench results: ComfyUI fp8 no compile FLUX `1.00s`/`25.2GB`, Qwen `6.01s`/`49.4GB`; fp8+compile FLUX `1.01s`/`62.9GB`, Qwen `6.06s`/`81.3GB`; nvfp4+compile Qwen `14.16s`/`101.1GB`.
-- Errors: compound restart/kill commands exited `144` due `pkill`; resolved by standalone launch and individual kill; ComfyUI procs remaining `0`.
-- COMPLETED: corrected FLUX.1 and Qwen best-vs-best GPU comparison and writeup.
-- PENDING: optional fp8 best-vs-best rerun for Z-Image and FLUX.2-klein.
