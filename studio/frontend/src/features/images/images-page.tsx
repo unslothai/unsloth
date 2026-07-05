@@ -10,11 +10,19 @@ import {
   ImageAdd02Icon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
+  PencilEdit02Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -238,21 +246,68 @@ const PAGE_SIZE = 50;
 
 // Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share
 // the seed + timestamp, so they get a "_<n>" suffix past the first one.
-function exportFilename(image: GalleryImage): string {
+type ImageExportFormat = "png" | "jpeg" | "webp";
+
+function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
   const d = new Date(image.created_at * 1000);
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp =
     `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
     `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   const suffix = image.batch_index > 0 ? `_${image.batch_index}` : "";
-  return `Unsloth_${stamp}_${image.seed}${suffix}.png`;
+  const ext = format === "jpeg" ? "jpg" : format;
+  return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-function downloadImage(src: string, image: GalleryImage) {
+function saveBlobUrl(href: string, filename: string) {
   const link = document.createElement("a");
-  link.href = src;
-  link.download = exportFilename(image);
+  link.href = href;
+  link.download = filename;
   link.click();
+}
+
+// PNG saves the stored bytes verbatim (keeps the embedded recipe metadata);
+// JPEG / WebP re-encode client-side from the already-fetched object URL. JPEG
+// has no alpha, so it is flattened onto white first.
+async function downloadImage(
+  src: string,
+  image: GalleryImage,
+  format: ImageExportFormat = "png",
+) {
+  if (format === "png") {
+    saveBlobUrl(src, exportFilename(image, format));
+    return;
+  }
+  try {
+    const el = new Image();
+    el.decoding = "async";
+    el.src = src;
+    await el.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = el.naturalWidth;
+    canvas.height = el.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas 2d context unavailable");
+    if (format === "jpeg") {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.drawImage(el, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, `image/${format}`, 0.95),
+    );
+    if (!blob) throw new Error(`could not encode ${format}`);
+    const url = URL.createObjectURL(blob);
+    try {
+      saveBlobUrl(url, exportFilename(image, format));
+    } finally {
+      // Give the click a tick to start before revoking.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    }
+  } catch {
+    // Conversion failed (decode/encode); fall back to the original PNG bytes.
+    saveBlobUrl(src, exportFilename(image, "png"));
+  }
 }
 
 function formatTimestamp(epochSeconds: number): string {
@@ -1959,10 +2014,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               Create is the generation workspace; Train is the LoRA training workspace. */}
           <Tabs value={pageMode} onValueChange={(v) => setPageMode(v as "create" | "train")}>
             <TabsList className="h-[34px]">
-              <TabsTrigger value="create" className="w-[64px]">
+              {/* Same icons as the sidebar's New Chat / Train entries, so the
+                  two workspaces read as the same actions everywhere. */}
+              <TabsTrigger value="create" className="w-[84px] gap-1.5">
+                <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
                 Create
               </TabsTrigger>
-              <TabsTrigger value="train" className="w-[64px]">
+              <TabsTrigger value="train" className="w-[84px] gap-1.5">
+                <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" />
                 Train
               </TabsTrigger>
             </TabsList>
@@ -2551,15 +2610,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     Size/seed live in the Recipe popover, so no separate chip here. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="gap-1.5"
-                    onClick={() => downloadImage(selectedSrc, selected)}
-                  >
-                    <HugeiconsIcon icon={Download01Icon} className="size-4" />
-                    Download
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild={true}>
+                      <Button size="sm" variant="ghost" className="gap-1.5">
+                        <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                        Download
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => void downloadImage(selectedSrc, selected, "png")}
+                      >
+                        PNG (original, keeps recipe)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void downloadImage(selectedSrc, selected, "jpeg")}
+                      >
+                        JPEG (smaller)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void downloadImage(selectedSrc, selected, "webp")}
+                      >
+                        WebP
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button
                     size="sm"
                     variant="ghost"

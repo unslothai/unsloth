@@ -496,3 +496,24 @@ def test_routes_require_auth():
     app.include_router(video_router, prefix = "/api/inference")
     unauth = TestClient(app)
     assert unauth.get("/api/inference/video/status").status_code in (401, 403)
+
+
+def test_export_endpoint_validation(client, monkeypatch):
+    # Unknown format is a 400 before any work happens.
+    resp = client.get("/api/inference/video/gallery/x/export?format=avi")
+    assert resp.status_code == 400
+    # Unknown id is a 404.
+    resp = client.get("/api/inference/video/gallery/does-not-exist/export?format=gif")
+    assert resp.status_code == 404
+    # A missing codec surfaces as 501 with the transcoder's message.
+    def _boom(video_id, fmt):
+        raise RuntimeError("WebM export needs the 'av' package (PyAV).")
+    monkeypatch.setattr(gallery_module, "transcode", _boom)
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    video = client.post("/api/inference/video/generate", json = {"prompt": "a"}).json()["video"]
+    resp = client.get(f"/api/inference/video/gallery/{video['id']}/export?format=webm")
+    assert resp.status_code == 501
+    assert "PyAV" in resp.json()["detail"]

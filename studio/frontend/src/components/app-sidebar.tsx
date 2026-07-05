@@ -79,10 +79,10 @@ import {
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
-  TestTube01Icon,
   Video01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   exportConversationRawJsonl,
   exportConversationCsv,
@@ -168,13 +168,6 @@ function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/chat")) return "chat";
   return null;
 }
-
-// TestTube01Icon's last 2 paths are interior bubbles; slice to the first
-// 3 (outline + cap + liquid line) to drop them. Original export untouched.
-const TestTubeOutlineIcon = TestTube01Icon.slice(
-  0,
-  3,
-) as typeof TestTube01Icon;
 
 function runStatusDotClass(status: TrainingRunSummary["status"]): string {
   switch (status) {

@@ -229,3 +229,16 @@ export async function fetchGalleryVideoObjectUrl(url: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   return URL.createObjectURL(await res.blob());
 }
+
+/** Server-side transcode for the Download menu (WebM / GIF). The backend 501s
+ *  with a readable message when the codec for that format is unavailable. */
+export async function fetchGalleryVideoExport(
+  id: string,
+  format: "webm" | "gif",
+): Promise<Blob> {
+  const res = await authFetch(
+    `/api/inference/video/gallery/${id}/export?format=${format}`,
+  );
+  if (!res.ok) throw new Error(await readFastApiError(res));
+  return res.blob();
+}

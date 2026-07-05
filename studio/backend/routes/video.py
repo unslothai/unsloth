@@ -287,6 +287,38 @@ async def get_gallery_video_file(
     )
 
 
+@router.get("/video/gallery/{video_id}/export")
+async def export_gallery_video(
+    video_id: str,
+    format: str = "webm",
+    current_subject: str = Depends(get_current_subject),
+):
+    """Download-menu transcodes: WebM (VP9) or GIF, re-encoded on demand from the
+    stored MP4 (which the /file route serves verbatim). 501 with a clear message
+    when the codec/deps for the requested format are missing."""
+    from core.inference import video_gallery
+
+    fmt = format.strip().lower()
+    if fmt not in ("webm", "gif"):
+        raise HTTPException(
+            status_code = 400, detail = "Unsupported format. Use webm or gif."
+        )
+    try:
+        data = await asyncio.to_thread(video_gallery.transcode, video_id, fmt)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc)) from exc
+    if data is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    from fastapi.responses import Response
+
+    return Response(
+        content = data,
+        media_type = "video/webm" if fmt == "webm" else "image/gif",
+        # Transcodes are deterministic per id+format; let the browser cache them.
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
 @router.delete("/video/gallery/{video_id}")
 async def delete_gallery_video(video_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery

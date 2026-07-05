@@ -14,6 +14,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -56,6 +62,7 @@ import {
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
+  fetchGalleryVideoExport,
   fetchGalleryVideoObjectUrl,
   generateVideo,
   getVideoGallery,
@@ -133,21 +140,43 @@ const galleryCache: {
 const PAGE_SIZE = 50;
 
 // Export filename, e.g. Unsloth_video_20260624-143005_123.mp4.
-function exportFilename(video: GalleryVideo): string {
+type VideoExportFormat = "mp4" | "webm" | "gif";
+
+function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"): string {
   const d = new Date(video.created_at);
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp = Number.isNaN(d.getTime())
     ? "unknown"
     : `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
       `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-  return `Unsloth_video_${stamp}_${video.seed}.mp4`;
+  return `Unsloth_video_${stamp}_${video.seed}.${format}`;
 }
 
-function downloadVideo(src: string, video: GalleryVideo) {
+function saveBlobUrl(href: string, filename: string) {
   const link = document.createElement("a");
-  link.href = src;
-  link.download = exportFilename(video);
+  link.href = href;
+  link.download = filename;
   link.click();
+}
+
+// MP4 saves the already-fetched original bytes; WebM / GIF are transcoded by
+// the backend on demand (501 with a readable reason when the codec is absent).
+async function downloadVideo(
+  src: string,
+  video: GalleryVideo,
+  format: VideoExportFormat = "mp4",
+) {
+  if (format === "mp4") {
+    saveBlobUrl(src, exportFilename(video, format));
+    return;
+  }
+  const blob = await fetchGalleryVideoExport(video.id, format);
+  const url = URL.createObjectURL(blob);
+  try {
+    saveBlobUrl(url, exportFilename(video, format));
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 }
 
 function formatTimestamp(iso: string): string {
@@ -510,6 +539,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // Autoplay replays per selected clip (3 total plays, then pause). Reset on
+  // every selection change so a new generation or pick gets its own 3 plays.
+  const playCountRef = useRef(0);
+  useEffect(() => {
+    playCountRef.current = 0;
+  }, [selectedId]);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     Object.fromEntries(galleryCache.srcById),
   );
@@ -660,6 +695,29 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     void loadGallery();
   }, [loadGallery]);
+
+  // WebM/GIF go through a server-side transcode that can take a few seconds
+  // (and 501s with a readable reason when the codec is missing), so wrap the
+  // helper with progress + error toasts; MP4 saves instantly.
+  const handleDownload = useCallback(
+    async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
+      if (format === "mp4") {
+        void downloadVideo(src, video, format);
+        return;
+      }
+      const toastId = toast.loading(`Converting to ${format.toUpperCase()}…`);
+      try {
+        await downloadVideo(src, video, format);
+        toast.dismiss(toastId);
+      } catch (err) {
+        toast.dismiss(toastId);
+        toast.error(
+          err instanceof Error ? err.message : `Failed to export ${format}`,
+        );
+      }
+    },
+    [],
+  );
 
   const handleDelete = useCallback(async (id: string) => {
     try {
@@ -1341,16 +1399,27 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
-                {/* The first video element in the app. autoPlay + loop + muted + playsInline
-                    so it plays inline without a gesture; controls let the user scrub/unmute. */}
+                {/* The first video element in the app. autoPlay + muted + playsInline so
+                    it plays inline without a gesture; controls let the user scrub/unmute.
+                    Instead of a bare `loop`, onEnded replays up to 3 total plays then
+                    pauses -- an endlessly looping clip is distracting once you've seen
+                    it. The counter resets per selection (`key` remounts the element). */}
                 <video
                   key={selected.id}
                   src={selectedSrc}
                   controls
                   autoPlay
-                  loop
                   muted
                   playsInline
+                  onPlay={() => {
+                    playCountRef.current += 1;
+                  }}
+                  onEnded={(e) => {
+                    if (playCountRef.current < 3) {
+                      e.currentTarget.currentTime = 0;
+                      void e.currentTarget.play();
+                    }
+                  }}
                   className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
                 />
                 {selected.has_audio && (
@@ -1362,15 +1431,31 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="gap-1.5"
-                    onClick={() => downloadVideo(selectedSrc, selected)}
-                  >
-                    <HugeiconsIcon icon={Download01Icon} className="size-4" />
-                    Download
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild={true}>
+                      <Button size="sm" variant="ghost" className="gap-1.5">
+                        <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                        Download
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => void handleDownload(selectedSrc, selected, "mp4")}
+                      >
+                        MP4 (original{selected.has_audio ? ", keeps audio" : ""})
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void handleDownload(selectedSrc, selected, "webm")}
+                      >
+                        WebM (web embeds)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void handleDownload(selectedSrc, selected, "gif")}
+                      >
+                        GIF (preview, no audio)
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button
                     size="sm"
                     variant="ghost"

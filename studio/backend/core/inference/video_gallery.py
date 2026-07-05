@@ -71,6 +71,98 @@ def video_path(video_id: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
+def transcode(video_id: str, fmt: str) -> Optional[bytes]:
+    """Re-encode a stored MP4 for the Download menu: "webm" (VP9, web embeds)
+    or "gif" (shareable preview). Returns the encoded bytes, or None when the
+    id doesn't resolve. Raises RuntimeError when the codec/deps are missing so
+    the route can 501 with a clear message. MP4 downloads never come through
+    here -- the /file route streams the original bytes."""
+    path = video_path(video_id)
+    if path is None:
+        return None
+    normalized = fmt.strip().lower()
+    if normalized == "webm":
+        return _transcode_webm(path)
+    if normalized == "gif":
+        return _transcode_gif(path)
+    raise ValueError(f"Unsupported export format '{fmt}'. Use webm or gif.")
+
+
+def _transcode_webm(path: Path) -> bytes:
+    import io
+
+    try:
+        import av
+    except Exception as exc:  # noqa: BLE001 -- no PyAV -> no transcode
+        raise RuntimeError("WebM export needs the 'av' package (PyAV).") from exc
+    buf = io.BytesIO()
+    try:
+        with av.open(str(path)) as src, av.open(buf, "w", format = "webm") as dst:
+            in_v = src.streams.video[0]
+            rate = in_v.average_rate or 24
+            out_v = dst.add_stream("libvpx-vp9", rate = rate)
+            out_v.width = in_v.codec_context.width
+            out_v.height = in_v.codec_context.height
+            out_v.pix_fmt = "yuv420p"
+            # Realtime-oriented settings: VP9's default "good" profile encodes a
+            # few frames per second; cpu-used 8 + row-mt is many times faster at
+            # a small quality cost, right for a download button.
+            out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
+            for frame in src.decode(in_v):
+                for packet in out_v.encode(frame.reformat(format = "yuv420p")):
+                    dst.mux(packet)
+            for packet in out_v.encode():
+                dst.mux(packet)
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- surface as "encoder unavailable"
+        raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
+    # Audio is intentionally dropped: Opus muxing needs a 48 kHz resample chain
+    # and most exported clips are silent; the original MP4 keeps the audio.
+    return buf.getvalue()
+
+
+def _transcode_gif(path: Path) -> bytes:
+    import io
+
+    try:
+        import av
+        from PIL import Image
+    except Exception as exc:  # noqa: BLE001 -- missing deps -> no transcode
+        raise RuntimeError("GIF export needs the 'av' and 'Pillow' packages.") from exc
+    frames: list[Any] = []
+    try:
+        with av.open(str(path)) as src:
+            in_v = src.streams.video[0]
+            rate = float(in_v.average_rate or 24)
+            # Full-rate GIFs are enormous and stutter in chat apps; ~12 fps is
+            # the sweet spot, achieved by skipping source frames.
+            step = max(1, round(rate / 12))
+            for i, frame in enumerate(src.decode(in_v)):
+                if i % step:
+                    continue
+                frames.append(
+                    frame.to_image().convert("P", palette = Image.Palette.ADAPTIVE)
+                )
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"
+        raise RuntimeError(f"GIF export failed to decode the clip: {exc}") from exc
+    if not frames:
+        raise RuntimeError("GIF export decoded no frames.")
+    duration_ms = max(20, int(1000 * step / rate))
+    buf = io.BytesIO()
+    frames[0].save(
+        buf,
+        format = "GIF",
+        save_all = True,
+        append_images = frames[1:],
+        duration = duration_ms,
+        loop = 0,
+    )
+    return buf.getvalue()
+
+
 def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
