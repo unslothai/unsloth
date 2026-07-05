@@ -545,7 +545,11 @@ def test_predownload_base_honors_cancel_between_files(monkeypatch):
         def __init__(self, token = None):
             pass
 
-        def model_info(self, repo, files_metadata = True):
+        def model_info(
+            self,
+            repo,
+            files_metadata = True,
+        ):
             return types.SimpleNamespace(
                 siblings = [
                     _sibling("model_index.json", 1),
