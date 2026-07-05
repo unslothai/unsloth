@@ -901,7 +901,14 @@ def _signal_inside_leading_wrapperless_gemma(
         end = _gemma_body_brace_end(content, m.end() - 1)
         if end is None:
             return False
-        return m.end() - 1 < first <= end
+        if m.end() - 1 < first <= end:
+            return True
+        # The enabled call CLOSES before the signal: the closed leading call
+        # still owns the turn in document order -- the signal is data in a
+        # later call's strings or a trailing example (same inside-or-after
+        # rule as the closed bare-JSON/Mistral envelopes). Markerless form,
+        # so this ownership claim stays gated on an enabled name.
+        return enabled_tool_names is not None and end < first
 
 
 def _disabled_gemma_call_end_containing_signal(
