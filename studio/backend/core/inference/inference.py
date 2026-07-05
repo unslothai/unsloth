@@ -27,10 +27,7 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.runtime_context import runtime_context_length
 from core.inference.message_content import content_to_text
-from core.inference.presence_penalty import (
-    apply_presence_penalty,
-    _make_presence_penalty_processor,
-)
+from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
 import structlog
 from loggers import get_logger
