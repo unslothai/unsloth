@@ -75,12 +75,21 @@ def test_auto_stays_native_off_nvidia(monkeypatch):
 
 
 def test_explicit_backend_honored_regardless_of_speed(monkeypatch):
-    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
     # Pin a high capability so the arch-gated flash4 isn't dropped by the runtime check.
     monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
     assert select_attention_backend(_target(), "sage", speed_active = False) == "sage"
     assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
     assert select_attention_backend(_target(), "cudnn", speed_active = False) == "_native_cudnn"
+
+
+def test_explicit_backend_dropped_off_nvidia_cuda(monkeypatch):
+    # Explicit cuDNN/flash/sage on ROCm / MPS / CPU passes diffusers' set-time check
+    # and crashes at the first generation, so selection drops to the native default.
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
+    for alias in ("sage", "flash", "flash4", "cudnn"):
+        assert select_attention_backend(_target(device = "mps"), alias, speed_active = True) is None
 
 
 def test_explicit_native_returns_none():
