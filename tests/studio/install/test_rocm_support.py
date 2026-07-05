@@ -715,6 +715,105 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_rocm_pin_mismatch_over_installed_rocm_reinstalls(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A rocm7.2 pin over an already-installed OLDER +rocm6.4 build must reinstall,
+        even though has_hip_torch is True (the ROCm analogue of the CUDA cuXXX mismatch)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        # HIP marker present (has_hip_torch=True) + installed +rocm6.4 wheel.
+        mock_probe.stdout = b"6.4.12345\n2.10.0+rocm6.4\n"
+        env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "rocm7.2" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
+    def test_gfx_pin_over_installed_pre211_rocm_reinstalls(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A gfx* pin (2.11 line) over an installed pre-2.11 +rocm6.4 build reinstalls."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"6.4.12345\n2.10.0+rocm6.4\n"
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
+                        _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_rocm_pin_matches_installed_no_torch_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A rocm7.2 pin over an already-matching +rocm7.2 build must NOT reinstall torch
+        (no false reinstall of a correct ROCm venv)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.2.12345\n2.11.0+rocm7.2\n"
+        env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        # No torch reinstall: any pip_install call must not target a torch index.
+        for _call in mock_pip.call_args_list:
+            _args = [str(a) for a in _call.args]
+            if "--index-url" in _args:
+                _url = _args[_args.index("--index-url") + 1]
+                assert "rocm7.2" not in _url or "torch" not in " ".join(_args), (
+                    "torch must not be reinstalled when the pin already matches"
+                )
+        # A torch reinstall would pass torch>=... as a positional; assert none did.
+        assert not any(
+            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+        )
+
+    def test_rocm_pin_family_mismatch_helper(self):
+        """_rocm_pin_family_mismatch: exact rocm compare, else the 2.11 line."""
+        f = stack_mod._rocm_pin_family_mismatch
+        base = "https://download.pytorch.org/whl"
+        # Exact rocm version comparison.
+        assert f(f"{base}/rocm7.2", "2.11.0+rocm7.2") is False
+        assert f(f"{base}/rocm7.2", "2.10.0+rocm6.4") is True
+        assert f(f"{base}/rocm6.4", "2.10.0+rocm6.4") is False
+        # gfx pin (2.11 line) vs installed release line.
+        assert f("https://repo.amd.com/rocm/whl/gfx1151", "2.10.0+rocm6.4") is True
+        assert f("https://repo.amd.com/rocm/whl/gfx1151", "2.11.0+rocm7.13.0") is False
+        # rocm7.2 pin vs unreadable installed rocm version -> compare on 2.11 line.
+        assert f(f"{base}/rocm7.2", "2.10.0") is True
+        assert f(f"{base}/rocm7.2", "2.11.0") is False
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_probe_timeout_triggers_reinstall(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
@@ -2887,10 +2986,15 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         # The 2.11 constraint block must switch on $_torch_index_leaf, not on the
         # full $TORCH_INDEX_URL (which the earlier, buggy version matched with
-        # */gfx* and would false-positive on a mirror base path).
-        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx*)' in source, (
-            "the torch>=2.11 constraint must match the index leaf (rocm7.2|gfx*), "
-            "not the whole URL"
+        # */gfx* and would false-positive on a mirror base path). Only the gfx
+        # families with the <2.11 _grouped_mm bug (gfx120X-all / gfx1151 / gfx1150)
+        # are pushed to 2.11 -- a bare gfx* would also floor gfx110X-all/gfx90a/
+        # gfx908, which the automatic AMD path intentionally leaves bare.
+        assert (
+            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)' in source
+        ), (
+            "the torch>=2.11 constraint must match the specific gfx leaves that need "
+            "it (rocm7.2|gfx120x-all|gfx1151|gfx1150), not a bare gfx* or the whole URL"
         )
 
     def test_amd_rocm_mirror_env_var_respected(self):

@@ -2115,15 +2115,23 @@ exit 0
         if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
             $_pinRocm211 = ([int]$Matches[1] -gt 7) -or ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -ge 2)
         }
-        if ($_pinLeaf -like 'gfx*' -or $_pinRocm211) {
+        # Only the gfx families the AMD arch map above pins to torch 2.11 need the
+        # floor here (gfx120X-all, gfx1151, gfx1150 -- the _grouped_mm bug arches).
+        # Other per-arch indexes (gfx110X-all, gfx90a, gfx908) publish <2.11 wheels
+        # and the automatic path leaves them bare, so an override to one of those
+        # must NOT force a 2.11 floor the normal path intentionally avoids (which
+        # would fail resolution or drag in mismatched companions).
+        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150') -contains $_pinLeaf
+        if ($_pinGfx211 -or $_pinRocm211) {
             $ROCmIndexUrl = $TorchIndexUrl
             $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
             $PinnedRocmVisionSpec = "torchvision>=0.26.0,<0.27.0"
             $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
             substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
-        } elseif ($_pinLeaf -like 'rocm*') {
-            # Older rocm (<=7.1) ships torch <2.11; route via the ROCm path with the
-            # default floor so the pinned family resolves its own wheels.
+        } elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
+            # Other gfx per-arch indexes and older rocm (<=7.1) ship torch <2.11;
+            # route via the ROCm path with bare specs so the pinned family resolves
+            # its own wheels (matches the automatic path's bare floor for these).
             $ROCmIndexUrl = $TorchIndexUrl
         }
     }
