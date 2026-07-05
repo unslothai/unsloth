@@ -1011,10 +1011,10 @@ class VideoBackend:
                 vae_tiling = vae_tiling,
                 memory_mode = plan.requested_mode,
                 speed_mode = effective_speed,
-                # Only the optimisations that actually engaged: apply_speed_optims
-                # returns every flag with True/False, and iterating the dict raw
-                # would report disabled ones as active in /video/status.
-                speed_optims = tuple(k for k, v in (speed_optims or {}).items() if v),
+                # Already filtered above to only the optimisations that engaged;
+                # apply_speed_optims returns every flag True/False and the view
+                # loop keeps just the True names.
+                speed_optims = speed_optims,
                 backend_flags = backend_flags,
                 attention_backend = attention_engaged,
                 transformer_cache = cache_engaged,

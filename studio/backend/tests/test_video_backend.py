@@ -404,6 +404,25 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert status["loaded"] is False
 
 
+def test_load_records_engaged_speed_optims(fake_runtime, tmp_path, monkeypatch):
+    # Regression: the load tail once re-ran the already-filtered speed_optims
+    # tuple through ``.items()`` as if it were still the raw applied dict, so
+    # every real-GPU load (where at least channels_last engages) crashed with
+    # 'tuple' object has no attribute 'items'. Fake runtime forces every optim
+    # False, so this only reproduces when one is made to engage.
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(
+        video_mod,
+        "apply_speed_optims",
+        lambda *a, **k: {"channels_last": True, "cudnn_benchmark": False},
+    )
+    backend = VideoBackend()
+    status = _load_gguf(backend, tmp_path)
+    assert status["loaded"] is True
+    assert status["speed_optims"] == ["channels_last"]
+
+
 def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     # A distilled GGUF pick defaults to the few-step no-CFG schedule.
     (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
