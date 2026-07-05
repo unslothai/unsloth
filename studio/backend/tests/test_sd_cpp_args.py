@@ -166,10 +166,18 @@ def test_build_appends_offload_and_extra_args_last():
 
 def test_build_negative_prompt_and_batch():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
-    params = SdCppGenParams(prompt = "x", negative_prompt = "blurry", batch_count = 3)
+    params = SdCppGenParams(prompt = "x", negative_prompt = "blurry")
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--negative-prompt") == "blurry"
-    assert _pair(cmd, "--batch-count") == "3"
+    # A CLI batch would silently drop every image after the first (the runner only
+    # collects the literal --output path), so the builder rejects it outright.
+    with pytest.raises(ValueError, match = "single-image"):
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            files,
+            SdCppGenParams(prompt = "x", batch_count = 3),
+            output_path = "/o.png",
+        )
 
 
 def test_build_omits_unset_optional_params():
