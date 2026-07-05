@@ -2575,13 +2575,14 @@ class FastLlamaModel:
                     fast_inference = fast_inference,
                 )
             elif not fast_inference:
+                auto_model_class = kwargs.pop("auto_model", AutoModelForCausalLM)
                 if user_config is not None:
                     # Transformers 5.x @strict model init rejects extra kwargs next
                     # to config=; set the override on the config and pass the single
                     # config object through so user overrides reach the actual load.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
-                    model = AutoModelForCausalLM.from_pretrained(
+                    model = auto_model_class.from_pretrained(
                         model_name,
                         config = model_config,
                         device_map = device_map,
@@ -2591,7 +2592,7 @@ class FastLlamaModel:
                         **kwargs,
                     )
                 else:
-                    model = AutoModelForCausalLM.from_pretrained(
+                    model = auto_model_class.from_pretrained(
                         model_name,
                         device_map = device_map,
                         # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
