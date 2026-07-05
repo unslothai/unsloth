@@ -519,7 +519,6 @@ def test_final_strip_keeps_prose_mentioning_bare_markers():
     # A false-alarm marker in a normal answer must not lose everything after
     # it; only text that looks like that family's call start drops.
     from core.inference.tool_call_parser import strip_tool_markup
-
     for text in (
         "See [TOOL_CALLS] docs for details. More prose after.",
         "<|python_tag|> is the Llama marker. Explanation continues.",
@@ -532,7 +531,6 @@ def test_final_strip_keeps_prose_mentioning_bare_markers():
 
 def test_final_strip_still_drops_truncated_marker_calls():
     from core.inference.tool_call_parser import strip_tool_markup
-
     for text in (
         '[TOOL_CALLS][{"name":"web_search","argu',
         '[TOOL_CALLS]web_search[ARGS]{"q":"x',
@@ -560,8 +558,7 @@ def test_chained_bare_json_strip_consumes_all_calls():
     )
     # The chain stops at a non-call answer object, which stays visible.
     call_then_answer = (
-        '{"name":"web_search","parameters":{"q":"x"}};'
-        '{"name":"web_search","result":"data"}'
+        '{"name":"web_search","parameters":{"q":"x"}};{"name":"web_search","result":"data"}'
     )
     assert (
         strip_leading_bare_json_call(call_then_answer, enabled_tool_names = enabled)

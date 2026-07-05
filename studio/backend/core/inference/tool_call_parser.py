@@ -718,24 +718,21 @@ def _mistral_region_end(text: str, idx: int) -> int | None:
 
 
 def _xml_signal_inside_leading_mistral(content: str) -> bool:
-    """True when the first foreign tool signal is argument data of an earlier
-    Mistral ``[TOOL_CALLS]`` call (inside its balanced body, or anywhere after a
-    LEADING parseable call, which owns the turn in document order). A signal
-    BEFORE the trigger keeps the normal order."""
+    """True when a parseable Mistral call is the first tool emission in document order: it owns the turn, so later XML (quoted in its arguments or in trailing prose) is not promoted over it. A signal BEFORE the trigger keeps normal order."""
     trig = content.find(_MISTRAL_TRIGGER)
     if trig < 0:
         return False
-    lead = 0
-    n = len(content)
-    while lead < n and content[lead] in " \t\n\r":
-        lead += 1
-    if trig == lead and _mistral_region_end(content, trig) is not None:
-        return True
     first_xml = _first_foreign_tool_signal(content)
-    if first_xml is None or first_xml < trig:
+    if first_xml is not None and first_xml < trig:
         return False
-    end = _mistral_region_end(content, trig)
-    return end is not None and first_xml < end
+    # Only plain prose precedes the trigger: a visible preface must not hand
+    # the turn to a later XML literal (preamble-tolerant, like the
+    # wrapperless-Gemma guard). Prose that merely mentions the marker has no
+    # parseable region and keeps the normal order.
+    return _mistral_region_end(content, trig) is not None
+
+
+_ATTR_FUNC_OPEN_RE = re.compile(r'<function\s+name="')
 
 
 def _first_foreign_tool_signal(content: str) -> int | None:
@@ -746,7 +743,7 @@ def _first_foreign_tool_signal(content: str) -> int | None:
         p = content.find(sig)
         if p >= 0 and (first is None or p < first):
             first = p
-    attr = re.search(r'<function\s+name="', content)
+    attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None and (first is None or attr.start() < first):
         first = attr.start()
     # DeepSeek/Kimi markers are foreign to a JSON envelope too: their pre-pass
@@ -895,16 +892,11 @@ def parse_tool_calls_from_text(
     # it must never be promoted; the parse path must agree with the display strip.
     content = _strip_mistral_reasoning(content)
 
-    # XML quoted inside a leading Mistral call's arguments is data, so the
-    # Mistral parser takes the outer call first.
-    if _xml_signal_inside_leading_mistral(content):
-        calls = _parse_mistral_tool_calls(
-            content, id_offset = id_offset, allow_incomplete = allow_incomplete
-        )
-        if calls:
-            return calls
-
-    # Same principle for a leading bare-JSON call: quoted markup stays data.
+    # A leading bare-JSON value is decided FIRST: a string argument quoting
+    # tool markup (XML or a Mistral trigger) must stay data, so the bare-JSON
+    # parser takes the outer call before any other pass can promote the
+    # literal. This must precede the Mistral guard, whose preamble tolerance
+    # would otherwise claim a trigger quoted inside the leading object.
     if _xml_signal_inside_leading_bare_json(content):
         calls = _parse_llama3_bare_json(
             content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
@@ -925,7 +917,9 @@ def parse_tool_calls_from_text(
             enabled_tool_names = enabled_tool_names,
         )
 
-    # And for a leading enabled wrapper-less Gemma call (markerless, name-gated).
+    # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral
+    # guard: its body reads as plain prose to the preamble tolerance below, so
+    # a [TOOL_CALLS] literal quoted inside it would otherwise steal the turn.
     if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
         calls = _parse_gemma_tool_calls(
             content,
@@ -936,7 +930,9 @@ def parse_tool_calls_from_text(
         if calls:
             return calls
 
-    # A DISABLED wrapper-less Gemma call is prose: drop the span, parse the tail.
+    # A DISABLED wrapper-less Gemma call is prose: drop the span, parse the tail
+    # BEFORE the Mistral guard, whose preamble tolerance would otherwise parse
+    # a trigger quoted inside the dropped example.
     _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
     if _prose_end is not None:
         return parse_tool_calls_from_text(
@@ -945,6 +941,16 @@ def parse_tool_calls_from_text(
             allow_incomplete = allow_incomplete,
             enabled_tool_names = enabled_tool_names,
         )
+
+    # A [TOOL_CALLS] call that is the first tool emission in document order
+    # owns the turn: XML quoted in its arguments or in trailing prose is not
+    # promoted over it, and a plain-prose preface does not forfeit ownership.
+    if _xml_signal_inside_leading_mistral(content):
+        calls = _parse_mistral_tool_calls(
+            content, id_offset = id_offset, allow_incomplete = allow_incomplete
+        )
+        if calls:
+            return calls
 
     # DeepSeek/Kimi markers are unique, so try them first -- unless an outer
     # envelope opens before the first marker (then the marker is argument data).
@@ -966,8 +972,28 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # Qwen/Hermes, Qwen3.5 XML and Gemma 4: shared tool_healing parser
-    # (strict/Auto-Heal contract the GGUF path relies on).
+    # A leading MiniCPM/MiniMax attribute-form call owns the turn the same
+    # way: tool_healing does not know the <function name="..."> wrapper, so
+    # without this gate a <tool_call> literal quoted inside its parameter
+    # would be promoted over the outer call. Any other signal before the
+    # attribute opener keeps the normal order.
+    attr = _ATTR_FUNC_OPEN_RE.search(content)
+    if attr is not None:
+        first_other = None
+        for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>", _MISTRAL_TRIGGER):
+            p = content.find(sig)
+            if p >= 0 and (first_other is None or p < first_other):
+                first_other = p
+        if first_other is None or attr.start() < first_other:
+            calls = _parse_function_xml(
+                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+            )
+            if calls:
+                return calls
+
+    # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
+    # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
+    # ``<|"|>`` quoted-string handling the GGUF path relies on).
     calls = _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
@@ -1077,12 +1103,29 @@ def _inside_open_parameter(text: str, pos: int) -> bool:
         last_param_open = m.start()
     if last_param_open < 0:
         return False
-    last_close = max(
-        text.rfind("</parameter>", 0, pos),
-        text.rfind("</param>", 0, pos),
-        text.rfind("</function>", 0, pos),
-    )
-    return last_param_open > last_close
+    # The parameter's OWN close tag decides: while it closes after ``pos`` the
+    # position is argument data, even across several literal function closes
+    # (a code/search value can quote ``</function>`` more than once). Only an
+    # unclosed parameter (heal mode) falls back to the first function close.
+    own_closes = [
+        c
+        for c in (
+            text.find("</parameter>", last_param_open),
+            text.find("</param>", last_param_open),
+        )
+        if c >= 0
+    ]
+    if own_closes:
+        return min(own_closes) > pos
+    func_closes = [
+        c
+        for c in (
+            text.find("</function>", last_param_open),
+            text.find("</tool_call>", last_param_open),
+        )
+        if c >= 0
+    ]
+    return not func_closes or pos < min(func_closes)
 
 
 def _parse_function_xml(
@@ -1926,6 +1969,12 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
 def _bare_json_call_shaped(obj) -> bool:
     """The shape gate ``_parse_llama3_bare_json`` applies to a decoded object."""
     if not isinstance(obj, dict):
+        return False
+    # The parser requires a TOP-LEVEL name; a nested one (e.g. inside a
+    # "result" value of an ordinary JSON answer) is data, and stripping such
+    # an answer in the name-agnostic mode would delete visible content.
+    name = obj.get("name") or obj.get("function") or ""
+    if not isinstance(name, str) or not name:
         return False
     if "parameters" in obj:
         return isinstance(obj.get("parameters"), dict)

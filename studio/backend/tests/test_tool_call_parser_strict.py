@@ -1470,3 +1470,116 @@ class TestEnabledNameJsonAnswerIsContent:
         from core.inference.tool_call_parser import strip_leading_bare_json_call
         call = '{"name":"web_search","arguments":"{\\"q\\":\\"x\\"}"} tail'
         assert strip_leading_bare_json_call(call, {"web_search"}) == "tail"
+
+
+class TestAttributeFormLeadingContainment:
+    """A leading attribute-form call owns the turn: markup quoted inside its
+    parameter is data, not a call for the shared XML parser to promote."""
+
+    def test_quoted_tool_call_inside_param_stays_data(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            '<function name="web_search"><param name="query">find '
+            '<tool_call>{"name":"delete","arguments":{}}</tool_call></param></function>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "delete"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        assert "delete" in json.loads(calls[0]["function"]["arguments"])["query"]
+
+    def test_real_xml_call_before_attribute_form_keeps_order(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            '<tool_call>{"name":"delete","arguments":{}}</tool_call> Example: '
+            '<function name="web_search"><param name="q">x</param></function>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "delete"})
+        assert calls[0]["function"]["name"] == "delete"
+
+
+class TestParameterKeepsMultipleLiteralCloses:
+    """A parameter that provably closes with its own tag keeps every literal
+    function close inside it as data (regression: the first literal close was
+    treated as ending the parameter, truncating the value)."""
+
+    def test_two_literal_closes_in_one_parameter(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            '<function name="web_search"><param name="query">'
+            "a </function> b </function> c </param></function>"
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "query": "a </function> b </function> c"
+        }
+
+    def test_strip_removes_the_whole_call(self):
+        from core.inference.tool_call_parser import strip_tool_markup
+        text = (
+            '<function name="web_search"><param name="query">'
+            "a </function> b </function> c </param></function> after"
+        )
+        assert strip_tool_markup(text, final=True) == "after"
+
+    def test_unclosed_parameter_still_heals_at_function_close(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        calls = parse_tool_calls_from_text(
+            "<function=web_search><parameter=query>val</function>",
+            enabled_tool_names={"web_search"},
+        )
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "val"}
+
+
+class TestMistralPreambleOwnership:
+    """A visible preface before the first Mistral call must not hand the turn
+    to a later XML literal: the Mistral call is first in document order."""
+
+    def test_v11_named_form_after_preface(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            'pref [TOOL_CALLS]web_search[ARGS]{"query":"cats"} Note '
+            "<function=evil><parameter=x>1</parameter></function>"
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_array_form_after_preface(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            'pref [TOOL_CALLS][{"name":"web_search","arguments":{"query":"cats"}}] Note '
+            "<function=evil><parameter=x>1</parameter></function>"
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_xml_call_before_trigger_keeps_order(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            "<function=evil><parameter=x>1</parameter></function> then "
+            '[TOOL_CALLS][{"name":"web_search","arguments":{}}]'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        assert calls[0]["function"]["name"] == "evil"
+
+    def test_prose_mention_without_call_shape_keeps_order(self):
+        from core.inference.tool_call_parser import parse_tool_calls_from_text
+        text = (
+            "See [TOOL_CALLS] docs for details. "
+            "<function=evil><parameter=x>1</parameter></function>"
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names={"evil"})
+        assert [c["function"]["name"] for c in calls] == ["evil"]
+
+
+class TestBareJsonStripRequiresTopLevelName:
+    """The strip's shape gate requires the parser's TOP-LEVEL name in every
+    mode: a JSON answer with only a nested name is content, even name-agnostic."""
+
+    def test_nested_name_answer_survives_name_agnostic_strip(self):
+        from core.inference.tool_call_parser import strip_leading_bare_json_call
+        ans = '{"parameters":{},"result":{"name":"web_search"}}'
+        assert strip_leading_bare_json_call(ans) == ans
+        assert strip_leading_bare_json_call(ans, {"web_search"}) == ans
+
+    def test_real_call_still_strips_name_agnostic(self):
+        from core.inference.tool_call_parser import strip_leading_bare_json_call
+        assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"q":"x"}}') == ""
