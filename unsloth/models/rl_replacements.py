@@ -71,7 +71,7 @@ except Exception:
 # One-time PrefixGrouper gate: only import the kernel plumbing when the env gate is on;
 # any import failure degrades to "PrefixGrouper off".
 _pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None
-UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "0").lower() not in (
+UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in (
     "0",
     "false",
     "no",
@@ -2021,7 +2021,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 # One-time PrefixGrouper gate, same shape as the module-top constants above.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
-    "UNSLOTH_GRPO_PREFIX_GROUPER_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER', '0').lower() not in ('0', 'false', 'no', 'off')\n"
+    "UNSLOTH_GRPO_PREFIX_GROUPER_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER', '1').lower() not in ('0', 'false', 'no', 'off')\n"
     "if UNSLOTH_GRPO_PREFIX_GROUPER_ON:\n"
     "    try:\n"
     "        from unsloth.utils.prefix_grouper import build_group_layout as _pg_build_layout, prefix_grouper_enabled as _pg_enabled_fn, verify_on as _pg_verify_on, tol_ok as _pg_tol_ok, TOL_KILL as _PG_TOL_KILL\n"

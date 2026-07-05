@@ -46,7 +46,7 @@ SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 # PrefixGrouper FlexAttention kernel, resolved once when the env gate is on. Kept out of
 # the default import path so PG-off users never load torch flex_attention.
 _flex_shared_prefix_attention = None
-if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "0").lower() not in ("0", "false", "no", "off"):
+if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
     try:
         from .prefix_grouper_kernel import (
             flex_shared_prefix_attention as _flex_shared_prefix_attention,

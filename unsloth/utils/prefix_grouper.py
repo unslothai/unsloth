@@ -40,7 +40,7 @@ verbatim over the gathered predicting-position hidden states, so fp32 accumulati
 logit_scale/softcapping/temperature are all preserved.
 
 Env:
-  UNSLOTH_GRPO_PREFIX_GROUPER=1            engage (default off => this module unused)
+  UNSLOTH_GRPO_PREFIX_GROUPER=1            engage (default ON; set 0 to disable). Auto-off under vLLM.
   UNSLOTH_GRPO_PREFIX_GROUPER_TOKR=1.3     tok_r auto-gate threshold (env-overridable)
   UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY=1     first-step self-verify (default ON)
   UNSLOTH_GRPO_PREFIX_GROUPER_TOL=0.7      self-verify PASS band (nats)
@@ -66,7 +66,7 @@ def env_on(name: str, default: str = "0") -> bool:
 
 # One-time env reads (process constants, matching the one-time gates in rl_replacements).
 # The helpers below keep their callable signatures since unsloth_zoo imports and calls them.
-_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "0")
+_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
