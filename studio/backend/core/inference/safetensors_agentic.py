@@ -68,12 +68,9 @@ def _active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
-# Unrestricted mode ships no tool list, so any bare identifier may be the NAME of
-# a ``NAME[ARGS]`` rehearsal (optionally part-way into ``[ARGS``, including the bare
-# ``[`` boundary); the complete ``NAME[ARGS]`` is caught as a match before this
-# prefix check runs. The ``[`` and each ``ARGS`` letter must stay individually
-# optional so a chunk split right after ``NAME[`` is held, not streamed, matching
-# the restricted-mode ``startswith`` check.
+# Unrestricted mode has no tool list, so any bare identifier may open a NAME[ARGS]
+# rehearsal; the ``[`` and each ``ARGS`` letter stay individually optional so a chunk
+# split right after ``NAME[`` is held, matching the restricted-mode startswith check.
 _UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[(?:A(?:R(?:G(?:S)?)?)?)?)?")
 
 
@@ -171,8 +168,7 @@ def _earliest_tool_signal(
                 if best < 0 or name_start < best:
                     best = name_start
                 break
-            # Bare/prose ``[ARGS]`` (no active name in front): skip it and keep
-            # looking so a later real call in the same chunk is still detected.
+            # Bare/prose [ARGS]: skip it so a later real call in the same chunk is still found.
             from_idx = p + len("[ARGS]")
     return best
 
@@ -220,17 +216,14 @@ def strip_tool_markup_streaming(
         return text
 
     def _seg(segment: str, is_last: bool) -> str:
-        # Balanced-brace strip first (any JSON nesting depth), then XML regexes. The
-        # open-ended tail arms in _TOOL_ALL_PATS are end-of-text anchored, so run them
-        # only on the last segment: a bare ``foo[ARGS]`` before <think> is prose, not a
-        # truncated call. Rehearsal strip is name-gated, keeping inactive-name examples.
+        # Balanced-brace strip first, then XML regexes; EOS-anchored tail arms run only on the
+        # last segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal strip is name-gated.
         segment = _strip_bracket_tag_calls(segment, enabled_tool_names = enabled_tool_names)
         patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
         return apply_tool_strip_patterns(segment, patterns, enabled_tool_names = enabled_tool_names)
 
-    # Preserve <think>/[THINK] verbatim: stripping a call rehearsed inside a block
-    # would emit a shorter cumulative text that grows back once the block closes,
-    # corrupting append-by-length consumers and the visible reasoning.
+    # Preserve think blocks verbatim: stripping a rehearsed call inside one shrinks then
+    # regrows the cumulative text, corrupting append-by-length consumers.
     return strip_outside_think(text, _seg)
 
 
@@ -253,9 +246,8 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
 
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
 _TOOL_CALL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w-]+)"')
-# Mistral ``[TOOL_CALLS]name{json}`` / ``[TOOL_CALLS]name[CALL_ID]id[ARGS]{json}`` and
-# rehearsal ``name[ARGS]{json}``, aligned with the parser regexes so the provisional
-# render-html card fires for the bracket-tag serializations too, not only XML.
+# Mistral name/v11 and rehearsal forms, aligned with the parser so the provisional
+# render-html card fires for bracket-tag serializations too.
 _MISTRAL_RENDER_NAME_RE = re.compile(
     r"\[TOOL_CALLS\]\s*([\w-]+)(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?=\{)"
 )
@@ -300,10 +292,8 @@ def _detect_render_html_tool_start(content: str) -> bool:
         if mm:
             candidates.append((mt, mm.group(1)))
         else:
-            # Array / single-object shape: ``[TOOL_CALLS] [{"name":...}]``. A bare
-            # ``"name"`` search can latch onto an argument key before the real tool
-            # name (``[{"arguments":{"name":"render_html"},"name":"python"}]``), so
-            # resolve the first call through the parser, which reads top-level names.
+            # Array shape: a bare ``"name"`` search can latch onto an argument key, so resolve the
+            # first call through the parser (it reads top-level names).
             arr_calls = parse_tool_calls_from_text(content[mt:])
             if arr_calls:
                 candidates.append((mt, (arr_calls[0].get("function") or {}).get("name") or ""))
@@ -406,16 +396,11 @@ def run_safetensors_tool_loop(
         conversation.extend(_auto["messages"])
 
     unrestricted_tools = not tools
-    # Gate that tells a genuine ``NAME[ARGS]`` rehearsal from an inactive-name example
-    # in prose, keeping parse / display strip symmetric with the streaming guard.
-    # ``None`` in unrestricted mode keeps the any-name behaviour. Built from the ORIGINAL
-    # tools list so a spent one-shot tool still reads as a tool name, not prose.
+    # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
+    # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
     _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
-    # Rehearsal DETECTION must recognise the same names the strip gate does -- the
-    # ORIGINAL tool list, including a spent one-shot (render_html) that
-    # ``active_tools()`` drops after it runs. Otherwise its repeat ``render_html[ARGS]
-    # {...}`` is stripped from display yet never detected/drained, so it is not routed
-    # to the repeat nudge and the turn ends as a blank continuation.
+    # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
+    # one-shot), else its repeat is stripped but never drained and the turn ends blank.
     _detect_tools = [] if unrestricted_tools else list(tools or [])
     tool_controller = ToolLoopController(
         tools = None if unrestricted_tools else tools,
@@ -531,8 +516,8 @@ def run_safetensors_tool_loop(
 
             if detect_state == _state_streaming:
                 candidate = cumulative_display + delta
-                # Earliest genuine boundary: a bare ``[ARGS]`` in prose is skipped, and a
-                # real ``NAME[ARGS]`` is pulled back to NAME so the name is not flushed.
+                # Earliest genuine boundary: bare [ARGS] in prose is skipped; a real NAME[ARGS] is
+                # pulled back to NAME so the name is not flushed.
                 signal_pos = _earliest_tool_signal(
                     candidate, tool_xml_signals, _detect_tools, unrestricted = unrestricted_tools
                 )
@@ -575,9 +560,8 @@ def run_safetensors_tool_loop(
                     tool_protocol_active = tool_protocol_active,
                     enabled_tool_names = _enabled_names_gate,
                 )
-                # Hold a trailing bare active-tool-name (split rehearsal NAME whose
-                # [ARGS] has not arrived) so it is not streamed before the call drains;
-                # released once more prose follows, or by the end-of-stream flush.
+                # Hold a trailing bare active-tool-name (split rehearsal) until its [ARGS] arrives;
+                # released by later prose or the end-of-stream flush.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
                         cleaned, _detect_tools, unrestricted = unrestricted_tools
@@ -605,11 +589,8 @@ def run_safetensors_tool_loop(
                 if sig.startswith(stripped):
                     is_prefix = True
                     break
-                # Bracket-tag forms arrive mid-buffer (``name[ARGS]{...}``,
-                # ``[TOOL_CALLS]...``), so also do a substring check (mirrors the GGUF
-                # loop). ``[ARGS]`` counts only as a ``NAME[ARGS]`` rehearsal with an
-                # active NAME; a bare/inactive-name ``foo[ARGS]`` in prose is gated out
-                # like the STREAMING state, so prose is not drained into a no-op.
+                # Bracket-tag forms arrive mid-buffer, so substring-check too (mirrors GGUF); [ARGS]
+                # counts only with an active NAME so prose is not drained into a no-op.
                 if sig == "[ARGS]":
                     if (
                         _earliest_tool_signal(
@@ -626,8 +607,7 @@ def run_safetensors_tool_loop(
                     is_match = True
                     break
 
-            # Rehearsal split across chunks (``web_search`` then ``[ARGS]{...}``): hold
-            # the bare name prefix until the ``[ARGS]`` arm arrives and matches above.
+            # Split rehearsal: hold the bare name until its [ARGS] arrives and matches above.
             is_rehearsal_prefix = False
             if (
                 not is_match
@@ -671,8 +651,7 @@ def run_safetensors_tool_loop(
                         "provenance": _tool_event_provenance(provisional = True),
                     }
             elif is_prefix and (is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS):
-                # A rehearsal prefix is self-bounded (stops matching past ``NAME[ARGS]``),
-                # so the _MAX_BUFFER_CHARS cap must not cut it short for MCP names >31 chars.
+                # A rehearsal prefix is self-bounded; the buffer cap must not cut long MCP names short.
                 continue
             else:
                 detect_state = _state_streaming
@@ -683,8 +662,7 @@ def run_safetensors_tool_loop(
                     tool_protocol_active = tool_protocol_active,
                     enabled_tool_names = _enabled_names_gate,
                 )
-                # Same trailing-name hold as STREAMING: this first flush out of BUFFERING
-                # must not emit a bare name whose ``[ARGS]`` arrives next chunk.
+                # Same trailing-name hold as STREAMING for this first flush out of BUFFERING.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
                         cleaned, _detect_tools, unrestricted = unrestricted_tools
@@ -701,8 +679,8 @@ def run_safetensors_tool_loop(
             return
 
         if detect_state == _state_buffering:
-            # Buffer never resolved: gate ``[ARGS]`` on an active tool name so a
-            # whole-turn prose answer with a literal ``foo[ARGS]{...}`` is not parsed.
+            # Buffer never resolved: [ARGS] is name-gated so a prose answer with a literal
+            # ``foo[ARGS]{...}`` is not parsed.
             stripped = content_buffer.lstrip()
             if (
                 stripped
@@ -731,8 +709,7 @@ def run_safetensors_tool_loop(
                 return
 
         if detect_state == _state_streaming:
-            # No tool mid-stream: check for late tool XML. ``[ARGS]`` is name-gated so an
-            # inactive-name ``foo[ARGS]`` in prose is not parsed into a no-op extra turn.
+            # No tool mid-stream: late-XML check; [ARGS] name-gated to avoid a no-op extra turn.
             safety_tc = None
             saw_tool_signal = tool_protocol_active and _has_genuine_tool_signal(
                 content_accum,
@@ -755,9 +732,8 @@ def run_safetensors_tool_loop(
                 if saw_tool_signal and content_accum:
                     yield {"type": "content", "text": content_accum}
                 else:
-                    # Release any rehearsal tail held during streaming: the turn ended
-                    # as a plain answer (no ``[ARGS]`` followed), so the held token is
-                    # real prose and must not be dropped.
+                    # Turn ended as a plain answer (no [ARGS] followed): the held rehearsal tail is real
+                    # prose, release it.
                     final_clean = strip_tool_markup_streaming(
                         cumulative_display,
                         auto_heal_tool_calls = auto_heal_tool_calls,

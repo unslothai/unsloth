@@ -890,10 +890,8 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
 
     def test_display_strip_gates_on_declared_tools(self):
-        # A final answer literally containing NAME[ARGS]{json} must be gated on
-        # the declared tools, as the GGUF/safetensors paths already do: foo is
-        # not a declared tool, so its markup is prose and must survive in the
-        # delivered text, while the declared web_search rehearsal is stripped.
+        # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
+        # ``foo`` markup is prose and survives, the declared web_search rehearsal strips.
         def _run_gen():
             yield {
                 "type": "content",

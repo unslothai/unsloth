@@ -40,8 +40,8 @@ def test_prefill_mode_off_when_thinking_disabled():
 
 
 def test_prefill_mode_off_for_reasoning_effort_none():
-    # enable_thinking_effort models turn thinking off via reasoning_effort="none";
-    # prefilled mode would otherwise capture the whole answer as reasoning_content.
+    # enable_thinking_effort turns thinking off via reasoning_effort="none"; prefilled mode
+    # would capture the whole answer as reasoning_content.
     assert (
         _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "none")
         is False

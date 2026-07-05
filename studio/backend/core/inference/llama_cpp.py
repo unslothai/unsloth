@@ -255,9 +255,8 @@ def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
-# ``NAME[ARGS]`` rehearsal name (word chars + hyphen, like the parser and the
-# safetensors ``_rehearsal_name_start``); ``[CALL_ID]...[ARGS]`` is the Mistral shape,
-# not a rehearsal, so it is excluded via the lookbehind.
+# Rehearsal NAME chars (word + hyphen, matching the parser); the lookbehind excludes the
+# Mistral [CALL_ID]...[ARGS] shape.
 _GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
 
 
@@ -8469,16 +8468,11 @@ class LlamaCppBackend:
         _reasoning_started_at: Optional[float] = None
         _reasoning_summary_emitted = False
 
-        # Gate that tells a genuine ``NAME[ARGS]`` rehearsal from an inactive-name
-        # example in prose, keeping parse / display strip symmetric with the streaming
-        # guard. Built from the ORIGINAL tools list so a spent one-shot tool still reads
-        # as a tool name, not prose. ``None`` = no gate.
+        # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
+        # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = no gate.
         _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
-        # Rehearsal DETECTION must recognise the same names the strip gate does -- the
-        # ORIGINAL tool list, including a spent one-shot (render_html) that
-        # ``active_tools()`` drops after it runs. Otherwise its repeat ``render_html
-        # [ARGS]{...}`` is stripped from display yet never detected/drained, so it is not
-        # routed to the repeat nudge and the turn ends as a blank continuation.
+        # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
+        # one-shot), else its repeat is stripped but never drained and the turn ends blank.
         _detect_tools = list(tools or [])
 
         def _reasoning_summary_event(started_at: float) -> dict:
@@ -8502,18 +8496,15 @@ class LlamaCppBackend:
                 return text
 
             def _seg(segment: str, is_last: bool) -> str:
-                # Balanced-brace strip first (any JSON nesting depth), then XML regexes.
-                # The open-ended tail arms in _TOOL_ALL_PATS are end-of-text anchored, so
-                # run them only on the last segment: a bare ``foo[ARGS]`` before <think>
-                # is prose, not a truncated call. Rehearsal strip is name-gated.
+                # Balanced-brace strip first, then XML regexes; EOS-anchored tail arms run only on the
+                # last segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal strip is name-gated.
                 segment = _strip_bracket_tag_calls(segment, enabled_tool_names = _enabled_names_gate)
                 patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
                 return apply_tool_strip_patterns(
                     segment, patterns, enabled_tool_names = _enabled_names_gate
                 )
 
-            # Preserve <think>/[THINK] reasoning verbatim (a rehearsed call inside a
-            # reasoning block must not be deleted from the streamed text).
+            # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
             return strip_outside_think(text, _seg)
 
         def _build_metadata_event(usage, timings, finish_reason):
@@ -8853,10 +8844,9 @@ class LlamaCppBackend:
                                             in_thinking = False
                                         cumulative_display += token
                                         cleaned = _strip_tool_markup_streaming(cumulative_display)
-                                        # Hold a trailing bare active-tool-name (split
-                                        # rehearsal NAME whose [ARGS] has not arrived) so
-                                        # it is not streamed before the call drains;
-                                        # released by later prose or the end-of-stream flush.
+                                        # Hold a trailing bare active-tool-name (split rehearsal)
+                                        # until its [ARGS] arrives; released by later prose or
+                                        # the end-of-stream flush.
                                         _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
                                         _emit = (
                                             cleaned[: len(cleaned) - _hold] if _hold else cleaned
@@ -8875,11 +8865,8 @@ class LlamaCppBackend:
                                         if not stripped_buf:
                                             continue
 
-                                        # Most signals `startswith`; bracket tags arrive
-                                        # mid-buffer (`web_search[ARGS]{...}`), so also
-                                        # substring-check. ``[ARGS]`` counts only as a
-                                        # ``NAME[ARGS]`` rehearsal (matched via the regex),
-                                        # not a bare substring.
+                                        # Bracket tags arrive mid-buffer, so substring-check too;
+                                        # ``[ARGS]`` counts only as a regex-matched NAME[ARGS].
                                         is_prefix = False
                                         is_match = False
                                         for sig in _tool_xml_signals:
@@ -8890,10 +8877,8 @@ class LlamaCppBackend:
                                                 is_prefix = True
                                                 break
                                             if sig == "[ARGS]":
-                                                # ``NAME[ARGS]`` with an active NAME only;
-                                                # a bare/inactive-name ``foo[ARGS]`` in
-                                                # prose is gated out like the safetensors
-                                                # loop, not drained/parsed.
+                                                # Active NAME[ARGS] only; inactive-name prose
+                                                # is gated out, not drained/parsed.
                                                 if (
                                                     _gguf_rehearsal_signal_pos(
                                                         stripped_buf, _detect_tools
@@ -8906,9 +8891,8 @@ class LlamaCppBackend:
                                                 is_match = True
                                                 break
 
-                                        # Rehearsal split across chunks (``web_search``
-                                        # then ``[ARGS]{...}``): hold the bare name prefix
-                                        # until the ``[ARGS]`` arm arrives and matches above.
+                                        # Split rehearsal: hold the bare name until
+                                        # its [ARGS] arrives and matches above.
                                         is_rehearsal_prefix = False
                                         if (
                                             not is_match
@@ -8939,9 +8923,8 @@ class LlamaCppBackend:
                                             is_rehearsal_prefix
                                             or len(stripped_buf) < _MAX_BUFFER_CHARS
                                         ):
-                                            # A rehearsal prefix is self-bounded, so the
-                                            # _MAX_BUFFER_CHARS cap must not cut it short
-                                            # for MCP names >31 chars.
+                                            # A rehearsal prefix is self-bounded; the buffer
+                                            # cap must not cut long MCP names short.
                                             pass  # keep buffering
                                         else:
                                             # Not a tool -- flush buffer
@@ -8952,9 +8935,8 @@ class LlamaCppBackend:
                                             cleaned = _strip_tool_markup(
                                                 cumulative_display,
                                             )
-                                            # Same trailing-name hold as STREAMING: this
-                                            # first flush out of BUFFERING must not emit a
-                                            # bare name whose [ARGS] arrives next chunk.
+                                            # Same trailing-name hold as STREAMING for this
+                                            # first flush out of BUFFERING.
                                             _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
                                             _emit = (
                                                 cleaned[: len(cleaned) - _hold]
@@ -9108,9 +9090,8 @@ class LlamaCppBackend:
                                         "text": forced_visible_text,
                                     }
                         elif not _suppress_visible_output:
-                            # Release any rehearsal tail held during streaming: the turn
-                            # ended as a plain answer (no ``[ARGS]`` followed), so the held
-                            # token is real prose and must not be dropped.
+                            # Turn ended as a plain answer (no [ARGS] followed): the held
+                            # rehearsal tail is real prose, release it.
                             _final_clean = _strip_tool_markup_streaming(cumulative_display)
                             if len(_final_clean) > len(_last_emitted):
                                 yield {"type": "content", "text": _final_clean}

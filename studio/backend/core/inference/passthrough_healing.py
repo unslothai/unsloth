@@ -43,12 +43,9 @@ def nudge_enabled(request_flag: Optional[bool]) -> bool:
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
-# The healer buffers ONLY on signals whose formats its parser can promote.
-# This is deliberately narrower than the loops' TOOL_XML_SIGNALS: loop-only
-# signals (e.g. the bare ``[ARGS]`` rehearsal marker, which is gated on active
-# tool names by the loops) would put legitimate prose such as
-# ``Use foo[ARGS] in templates`` into the holding state and stall the stream
-# until finalization without ever producing a promotable call.
+# Buffer only on signals the healer's parser can promote -- narrower than the loops'
+# TOOL_XML_SIGNALS: loop-only signals like the bare ``[ARGS]`` rehearsal marker (name-gated
+# in the loops) would hold legitimate prose until finalization without ever promoting.
 _HEAL_SIGNALS = ("<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]")
 
 

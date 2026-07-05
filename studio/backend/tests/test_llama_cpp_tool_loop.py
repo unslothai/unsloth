@@ -2053,13 +2053,12 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
         )
     )
 
-    # No tool executed for the inactive name. Only ONE stream is supplied, so a spurious
-    # disabled-``foo`` no-op + re-prompt would exhaust the streams and error.
+    # No tool executed for the inactive name; a spurious no-op re-prompt would exhaust the
+    # single supplied stream and error.
     assert calls == [], calls
     assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
-    # The inactive ``foo[ARGS]{...}`` is prose: the strip is name-gated too, so the
-    # WHOLE sentence (rehearsal markup and all) survives in the visible content.
+    # The inactive ``foo[ARGS]{...}`` is prose: the name-gated strip keeps the whole sentence.
     assert any('foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts), content_texts
 
 
@@ -2088,8 +2087,7 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
         )
     )
 
-    # The real call runs (not consumed by the inactive one, and ``foo`` itself is not
-    # executed as a phantom disabled call).
+    # The real call runs; ``foo`` is not executed as a phantom disabled call.
     assert calls == [("web_search", {"query": "cats"})], calls
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     # The inactive rehearsal is preserved as prose; the active one is stripped.
@@ -2098,11 +2096,8 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
 
 
 def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools():
-    # The GGUF loop feeds rehearsal detection the ORIGINAL tool list (_detect_tools),
-    # so a spent one-shot (render_html, dropped from active_tools after it runs) is
-    # still detected when the model re-emits ``render_html[ARGS]{...}`` -- matching the
-    # strip gate. With only the post-removal active tools the repeat is missed and
-    # stripped to a blank continuation.
+    # Rehearsal detection is fed the ORIGINAL tool list, so a spent one-shot's re-emitted
+    # repeat is still detected (matching the strip gate) instead of blanking the turn.
     from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
 
@@ -2114,11 +2109,8 @@ def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools(
 
 
 def test_gguf_rehearsal_prefix_and_tail_hold_recognise_spent_one_shot():
-    # The GGUF BUFFERING prefix check (~8641) and the STREAMING/flush tail-holds
-    # (~8585, ~8683) must use the ORIGINAL tool list (_detect_tools), so a spent
-    # one-shot's split repeat (bare ``render_html`` then ``[ARGS]{...}``) is held, not
-    # flushed as visible assistant text. With only the post-removal active tools the
-    # bare name is not recognised and leaks.
+    # The BUFFERING prefix check and STREAMING/flush tail-holds use the ORIGINAL tool list,
+    # so a spent one-shot's split repeat is held rather than leaked as visible text.
     from core.inference.llama_cpp import _held_rehearsal_tail_len, _is_rehearsal_prefix
 
     active_only = [{"type": "function", "function": {"name": "web_search"}}]

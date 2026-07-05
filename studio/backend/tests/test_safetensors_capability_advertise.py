@@ -458,8 +458,7 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_preserve_thinking"] is True
 
 
-# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor so safetensors/MLX
-# reach GGUF reasoning-block parity for enable_thinking models.
+# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor (GGUF reasoning parity).
 class TestSafetensorsReasoningPrefillGate:
     # A minimal Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."
@@ -515,8 +514,7 @@ class TestSafetensorsReasoningPrefillGate:
         assert _sf_reasoning_prefill_mode(feats, False, self._QWEN_TPL) is True
 
     def test_g8_gemma_bespoke_channel_excluded(self):
-        # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
-        # (would otherwise swallow the whole answer as reasoning). Regression guard.
+        # G8: gemma's <|think|> format has no close tag -> NOT prefilled (would swallow the answer).
         from routes.inference import _sf_reasoning_prefill_mode
         assert _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
 

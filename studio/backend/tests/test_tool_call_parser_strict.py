@@ -209,8 +209,7 @@ class TestEnabledToolNameGate:
         return [c["function"]["name"] for c in calls]
 
     def test_inactive_rehearsal_before_active_call_does_not_swallow_it(self):
-        # P1: an inactive ``foo[ARGS]{...}`` preceding a real ``web_search[ARGS]{...}``
-        # must not consume the real call -- only web_search is parsed, with its args.
+        # P1: an inactive ``foo[ARGS]{...}`` before a real call must not consume the real call.
         text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert self._names(calls) == ["web_search"]
