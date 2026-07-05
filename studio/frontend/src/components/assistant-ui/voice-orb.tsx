@@ -4,10 +4,10 @@
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
 import {
+  AudioLinesIcon,
   LoaderCircleIcon,
   MicIcon,
   SparklesIcon,
-  XIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
@@ -67,14 +67,14 @@ export const ORB_IDLE_GRADIENT =
 // shape reads as pressed into the surface) and shows a one-word caption below.
 const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   listening: { label: "Listening", icon: "mic" },
-  hearing: { label: "Hearing you", icon: "bars-fast" },
+  hearing: { label: "Hearing you", icon: "wave" },
   loading: { label: "Warming up", icon: "spinner" },
   thinking: { label: "Thinking", icon: "dots" },
   synthesizing: { label: "Generating", icon: "sparkle" },
-  speaking: { label: "Speaking", icon: "bars" },
+  speaking: { label: "Speaking", icon: "wave" },
 };
 
-type IconKind = "mic" | "bars" | "bars-fast" | "dots" | "spinner" | "sparkle";
+type IconKind = "mic" | "wave" | "dots" | "spinner" | "sparkle";
 
 // Deboss: near-black fill with a faint highlight below and a dark cut above, so
 // the glyph looks carved into the sphere rather than sitting on top of it.
@@ -82,34 +82,9 @@ const HOLE = "#08080b";
 const DEBOSS =
   "drop-shadow(0 1px 0.5px rgba(255,255,255,0.22)) drop-shadow(0 -1px 1.5px rgba(0,0,0,0.6))";
 
-// Equalizer bars (speaking / hearing). `fast` tightens the cadence so "hearing
-// you" reads livelier than the outgoing "speaking".
-const Bars: FC<{ fast?: boolean }> = ({ fast }) => (
-  <div style={{ display: "flex", alignItems: "center", gap: 5, height: 36 }}>
-    {[0, 1, 2, 3].map((i) => (
-      <motion.span
-        key={i}
-        style={{
-          width: 6,
-          height: 36,
-          borderRadius: 3,
-          background: HOLE,
-          transformOrigin: "center",
-          filter: DEBOSS,
-        }}
-        animate={{ scaleY: [0.32, 1, 0.32] }}
-        transition={{
-          duration: fast ? 0.6 : 0.9,
-          repeat: Infinity,
-          ease: "easeInOut",
-          delay: i * (fast ? 0.08 : 0.13),
-        }}
-      />
-    ))}
-  </div>
-);
-
-// Three dots that jump left-to-right in sequence (thinking).
+// Three dots that jump left-to-right in sequence (thinking). This is a vertical
+// translate, not a scale, so the dots never grow or shrink independently -- their
+// size stays locked to the ball's breathe.
 const Dots: FC = () => (
   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
@@ -124,8 +99,13 @@ const Dots: FC = () => (
 );
 
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
-  if (icon === "bars") return <Bars />;
-  if (icon === "bars-fast") return <Bars fast />;
+  // Soundwave (hearing / speaking): a static glyph -- the ball's own pulse
+  // (faster/harder for speaking) supplies the motion, and the icon rides it, so
+  // it grows and shrinks exactly with the sphere instead of on its own scaleY.
+  if (icon === "wave")
+    return (
+      <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+    );
   if (icon === "dots") return <Dots />;
   if (icon === "spinner")
     return (
@@ -139,24 +119,19 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     );
   if (icon === "sparkle")
     return (
+      // Rotate-only twinkle: no scale, so it never grows/shrinks on its own.
       <motion.div
-        animate={{ scale: [0.9, 1.08, 0.9], rotate: [-6, 6, -6] }}
-        transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+        animate={{ rotate: [-8, 8, -8] }}
+        transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
         style={{ display: "grid", placeItems: "center" }}
       >
         <SparklesIcon size={44} strokeWidth={2.3} color={HOLE} style={{ filter: DEBOSS }} />
       </motion.div>
     );
-  // mic
-  return (
-    <motion.div
-      animate={{ scale: [1, 1.06, 1] }}
-      transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
-      style={{ display: "grid", placeItems: "center" }}
-    >
-      <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
-    </motion.div>
-  );
+  // mic (listening): a resting state, so the icon gets NO independent animation.
+  // It rides the ball's breathe scale only, so it grows and shrinks in perfect
+  // sync with the sphere -- reading as carved into the surface, not floating.
+  return <MicIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
 };
 
 export const VoiceOrb: FC = () => {
@@ -167,7 +142,6 @@ export const VoiceOrb: FC = () => {
   const setVoiceOrbCollapsed = useChatRuntimeStore((s) => s.setVoiceOrbCollapsed);
   const showOverlay = Boolean(orbState) && !collapsed;
   const overlayRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
 
   const cfg = orbState ? orbConfig[orbState] : null;
   const meta = orbState ? orbMeta[orbState] : null;
@@ -187,15 +161,6 @@ export const VoiceOrb: FC = () => {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [showOverlay, setVoiceOrbCollapsed]);
-
-  // On open, move focus to the close button so keyboard focus starts inside the
-  // overlay. (We deliberately do NOT trap focus with a focusin listener: bouncing
-  // focus fought other focus managers, e.g. Radix tooltips, and could spin into a
-  // focus war that lagged the whole UI.)
-  useEffect(() => {
-    if (!showOverlay) return;
-    closeRef.current?.focus();
-  }, [showOverlay]);
 
   return (
     <>
@@ -230,23 +195,6 @@ export const VoiceOrb: FC = () => {
             : "pointer-events-none opacity-0",
         )}
       >
-        {showOverlay && (
-          <button
-            ref={closeRef}
-            type="button"
-            onClick={() => setVoiceOrbCollapsed(true)}
-            aria-label="Back to chat"
-            title="Back to chat (voice keeps running)"
-            className={cn(
-              "pointer-events-auto absolute right-4 top-4 flex size-9 items-center justify-center",
-              "rounded-full text-foreground/90 transition-colors",
-              "hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <XIcon className="size-5" strokeWidth={2.5} />
-          </button>
-        )}
-
         {/* Original sphere: a single radial-gradient ball with a soft glow that
             breathes/pulses via the CSS keyframes. The state icon is a near-black
             deboss ("door hole") carved into the surface. It lives INSIDE the ball,

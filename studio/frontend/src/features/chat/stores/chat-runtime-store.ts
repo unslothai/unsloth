@@ -51,6 +51,7 @@ const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
 const CHAT_MIC_DEVICE_ID_KEY = "unsloth_chat_mic_device_id";
 const CHAT_VOICE_PARALLEL_KEY = "unsloth_chat_voice_parallel";
 const CHAT_VOICE_VARIANT_KEY = "unsloth_chat_voice_variant";
+const CHAT_VOICE_NAME_KEY = "unsloth_chat_voice_name";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -714,6 +715,10 @@ type ChatRuntimeStore = {
   voiceMode: "off" | "configuring" | "active";
   /** The LoRA/GGUF model ID the user has chosen for the voice slot. Persisted to localStorage. */
   selectedVoiceModelId: string | null;
+  /** Named speaker for Orpheus (snac) TTS -- tara/leo/jess/etc. Orpheus randomizes
+   *  the voice unless a speaker is pinned, so this is sent with every synth call.
+   *  Persisted so the choice sticks across reloads. */
+  selectedVoiceName: string;
   /** Speech-to-text engine for voice dictation: the browser Web Speech API, or
    *  backend Whisper (works in Edge/Brave/Tauri where the browser API can't). Persisted. */
   sttEngine: "browser" | "whisper";
@@ -779,6 +784,7 @@ type ChatRuntimeStore = {
   hydratePersistedSettings: () => Promise<void>;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
   setSelectedVoiceModelId: (id: string | null) => void;
+  setSelectedVoiceName: (name: string) => void;
   setSttEngine: (engine: "browser" | "whisper") => void;
   setSelectedSttModelId: (id: string | null) => void;
   setSelectedMicDeviceId: (id: string | null) => void;
@@ -1216,6 +1222,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   voiceMode: "off" as const,
   selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
+  selectedVoiceName: loadString(CHAT_VOICE_NAME_KEY, "tara") || "tara",
   sttEngine:
     loadString(CHAT_STT_ENGINE_KEY, "browser") === "whisper" ? "whisper" : "browser",
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
@@ -1280,6 +1287,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setVoiceOrbState: (voiceOrbState) => set({ voiceOrbState }),
   setVoiceOrbCollapsed: (voiceOrbCollapsed) => set({ voiceOrbCollapsed }),
   setEnsureVoiceSlotLoaded: (ensureVoiceSlotLoaded) => set({ ensureVoiceSlotLoaded }),
+  setSelectedVoiceName: (selectedVoiceName) =>
+    set(() => {
+      saveString(CHAT_VOICE_NAME_KEY, selectedVoiceName);
+      return { selectedVoiceName };
+    }),
   setSelectedVoiceModelId: (selectedVoiceModelId) =>
     set(() => {
       saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");

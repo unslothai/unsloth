@@ -753,6 +753,15 @@ export const Thread: FC<{
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
 
+  // Force the docked composer (and suppress the centered welcome) only once the
+  // full orb is ACTIVE -- including its warmup -- so the empty-thread orb view
+  // always has a bottom input bar above it (z-40) instead of the orb-covered
+  // welcome composer. Deliberately NOT keyed on merely "configuring": pressing the
+  // Voice toggle should leave you in the normal chat/welcome with a grey mini orb;
+  // opening the full orb is exclusively the mini-orb button's job.
+  const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
+  const effectiveHideWelcome = hideWelcome || voiceActive;
+
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
@@ -975,7 +984,7 @@ export const Thread: FC<{
               hideComposer ? "pt-4" : "pt-[48px]",
             )}
           >
-            {!hideWelcome && (
+            {!effectiveHideWelcome && (
               <AuiIf
                 condition={({ thread }) => thread.isEmpty && !thread.isLoading}
               >
@@ -994,7 +1003,7 @@ export const Thread: FC<{
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
             instead of butting against the footer. */}
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
               <div
                 ref={spacerRef}
                 className={cn(
@@ -1009,7 +1018,7 @@ export const Thread: FC<{
               />
             </AuiIf>
 
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
               <ThreadPrimitive.ViewportFooter
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
@@ -1038,7 +1047,7 @@ export const Thread: FC<{
           <VoiceOrb />
 
           {!hideComposer && (
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
@@ -2650,6 +2659,12 @@ const VOICE_SILENCE_DEBOUNCE_MS = 1500;
 // or stray blip produces one fragment that doesn't sustain, so it's ignored;
 // real "wait, stop" speech keeps adding words and cuts the model off.
 const VOICE_BARGE_IN_DEBOUNCE_MS = 300;
+// Voice coalescing window: after a finished utterance is appended as a user
+// bubble, wait this long for another utterance before generating. Utterances that
+// arrive within the window fold into the SAME prompt (several bubbles, one reply)
+// instead of stacking as separate turns. Tunable: lower = snappier single turns,
+// higher = groups slower/longer multi-part barge-ins.
+const VOICE_COALESCE_MS = 650;
 
 const VoiceEngine: FC = () => {
   const aui = useAui();
@@ -2658,6 +2673,10 @@ const VoiceEngine: FC = () => {
   // Barge-in debounce: timer that confirms sustained speech, and the latest
   // transcript so the timer can check whether it grew across the window.
   const bargeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Coalesce debounce: after appending a spoken utterance as a user bubble, this
+  // fires the single run once the user pauses; reset each time another utterance
+  // folds into the same prompt.
+  const voiceCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestTranscriptRef = useRef("");
   // voiceModeRef is only written in toggle/activate — never in the render body.
   const voiceModeRef = useRef(_voiceMode);
@@ -2784,16 +2803,14 @@ const VoiceEngine: FC = () => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
-    // User spoke a full utterance while the model was still talking: newest
-    // speech wins, so cut the TTS before sending.
+    const text = composer.getState().text.trim();
+    // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
+    // This utterance supersedes whatever the model was saying.
     if (isSpeakingRef.current) stop();
-    if (!composer.getState().text.trim()) {
+    if (!text) {
       resumeListen();
       return;
     }
-    // Serialize turns: cancel any in-flight run first so rapid/barge-in submits
-    // supersede instead of piling up concurrent runs (a heap of responses the
-    // loop then can't prioritize). One run, one reply, latest wins.
     const thread = auiRef.current.thread();
     if (thread.getState().isRunning) {
       try {
@@ -2802,18 +2819,62 @@ const VoiceEngine: FC = () => {
         // Run may have ended between the check and here.
       }
     }
-    composer.send();
-    composer.setText("");
-    const DEFERRED_CLEAR_MAX = 5;
+    // Voice coalescing: several barge-ins in a row should read as ONE prompt --
+    // a user bubble each, then a single reply -- NOT a stack of separate turns
+    // like the text-chat prompt queue. Append this utterance WITHOUT running,
+    // clear that queue, keep the mic live, and (re)arm the coalesce debounce; the
+    // single run fires only once the user has actually paused. Another utterance
+    // arriving first appends another bubble and resets the debounce, folding into
+    // the same prompt.
+    resetPromptQueue();
     const DEFERRED_CLEAR_MS = 50;
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
       if (!fresh.getState().text) return;
       fresh.setText("");
-      if (n < DEFERRED_CLEAR_MAX) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
+      if (n < 5) setTimeout(() => deferredClear(n + 1), DEFERRED_CLEAR_MS);
     };
+
+    let appended = false;
+    try {
+      auiRef.current.thread().append({
+        role: "user",
+        content: [{ type: "text", text }],
+        createdAt: new Date(),
+        startRun: false,
+      } as never);
+      appended = true;
+    } catch {
+      // Runtime without append({startRun:false}) support -- fall back below.
+    }
+
+    if (!appended) {
+      // Fallback: old immediate-send behavior (text is still in the composer).
+      composer.send();
+      composer.setText("");
+      setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
+      return;
+    }
+
+    composer.setText("");
     setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
+    // Keep listening so the user can chain more utterances into this same prompt.
+    resumeListen();
+    if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
+    voiceCoalesceTimerRef.current = setTimeout(() => {
+      voiceCoalesceTimerRef.current = null;
+      if (voiceModeRef.current !== "active") return;
+      const t = auiRef.current.thread();
+      if (t.getState().isRunning) return;
+      const msgs = t.getState().messages;
+      const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+      try {
+        t.startRun({ parentId: lastId });
+      } catch {
+        // startRun unsupported -- the bubbles are already shown; nothing to do.
+      }
+    }, VOICE_COALESCE_MS);
   }, [resumeListen, stop]);
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
@@ -3040,6 +3101,10 @@ const VoiceEngine: FC = () => {
         clearTimeout(bargeTimerRef.current);
         bargeTimerRef.current = null;
       }
+      if (voiceCoalesceTimerRef.current) {
+        clearTimeout(voiceCoalesceTimerRef.current);
+        voiceCoalesceTimerRef.current = null;
+      }
       stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
@@ -3047,10 +3112,29 @@ const VoiceEngine: FC = () => {
     // "configuring": dropdown appears via store; mic stays off.
   }, [stop, primeAudio]);
 
+  // When voice mode turns off, make sure no loop-owned dictation session lingers.
+  // Otherwise the manual Dictate button (un-hidden the instant voice is off) shows
+  // its red pulsing "stop dictation" square because the composer still thinks it's
+  // recording. stopDictation can lag a frame or a late re-arm can slip in, so retry
+  // until the session actually clears.
+  useEffect(() => {
+    if (voiceMode !== "off") return;
+    let n = 0;
+    const clear = () => {
+      if (voiceModeRef.current !== "off") return;
+      const c = auiRef.current.composer();
+      if (!c.getState().dictation) return;
+      c.stopDictation();
+      if (n++ < 8) setTimeout(clear, 60);
+    };
+    clear();
+  }, [voiceMode]);
+
   useEffect(() => {
     return () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (bargeTimerRef.current) clearTimeout(bargeTimerRef.current);
+      if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
       if (streamPollRef.current) clearInterval(streamPollRef.current);
     };
   }, []);

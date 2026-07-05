@@ -76,6 +76,11 @@ export function useTtsPlayer(
   // response (or a queued sentence) can detect it was superseded and skip late
   // playback + state updates.
   const requestIdRef = useRef(0);
+  // Aborts in-flight /api/audio/speech synth fetches on stop()/barge-in, so the
+  // backend voice slot stops grinding through stale sentences and is free to
+  // synthesize the new turn immediately (llama-server cancels a slot when its
+  // request connection closes).
+  const synthAbortRef = useRef<AbortController | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   // Resolver for the sentence currently awaiting playback, so stop() can unwind
   // the speak loop immediately (pause() doesn't fire "ended").
@@ -83,12 +88,15 @@ export function useTtsPlayer(
   const onPlaybackEndRef = useRef(onPlaybackEnd);
   onPlaybackEndRef.current = onPlaybackEnd;
 
-  // Streaming session state: synth jobs per sentence index, how many produced,
-  // which is playing, and whether the LLM has finished.
+  // Streaming session state. `sentences` holds every known sentence text (grows
+  // as the reply streams); `jobs`/`launched` track synth jobs actually fired --
+  // only a small lookahead window ahead of `playIndex` is launched, so the backend
+  // never backs up with stale sentences and barge-in leaves almost nothing queued.
   const streamRef = useRef<{
     reqId: number;
+    sentences: string[];
     jobs: Array<Promise<Blob | null>>;
-    produced: number;
+    launched: number;
     playIndex: number;
     final: boolean;
   } | null>(null);
@@ -137,6 +145,10 @@ export function useTtsPlayer(
 
   const stop = useCallback(() => {
     requestIdRef.current += 1;
+    // Cancel any in-flight synth so the voice slot stops on stale sentences and
+    // is free for the next turn; then arm a fresh controller for that turn.
+    synthAbortRef.current?.abort();
+    synthAbortRef.current = new AbortController();
     stopTts();
     stopSynth();
     setIsSpeaking(false);
@@ -192,11 +204,14 @@ export function useTtsPlayer(
   // so TTS heals itself instead of silently 400ing for the rest of the session.
   const requestSpeechBlob = useCallback(
     async (input: string): Promise<Blob | null> => {
+      const voice =
+        useChatRuntimeStore.getState().selectedVoiceName || "tara";
       const doFetch = () =>
         authFetch("/api/audio/speech", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input, voice: "default" }),
+          body: JSON.stringify({ input, voice }),
+          signal: synthAbortRef.current?.signal,
         });
       try {
         let r = await doFetch();
@@ -318,14 +333,36 @@ export function useTtsPlayer(
     [requestSpeechBlob],
   );
 
-  // Start a streaming session. Sentences fed via feedText are synthesized as they
-  // arrive and played strictly in order, so the first sentence plays without
-  // waiting for the whole reply. Browser voice has no server synth, so it just
-  // waits for endStream and speaks the whole thing.
+  // Launch synth jobs only up to a small lookahead window ahead of the sentence
+  // currently playing -- "always one (or voiceParallelN) ahead", never the whole
+  // reply. This keeps audio close to real time and means a barge-in leaves at most
+  // a couple of stale sentences on the backend instead of a long tail.
+  const pumpSynth = useCallback(() => {
+    const st = streamRef.current;
+    if (!st || requestIdRef.current !== st.reqId || !isTtsModel) return;
+    const lookahead = Math.max(1, useChatRuntimeStore.getState().voiceParallelN);
+    const limit = Math.min(st.sentences.length, st.playIndex + 1 + lookahead);
+    while (st.launched < limit) {
+      st.jobs[st.launched] = synthOne(st.sentences[st.launched] ?? "");
+      st.launched++;
+    }
+  }, [isTtsModel, synthOne]);
+
+  // Start a streaming session. Sentences fed via feedText are synthesized within a
+  // bounded lookahead window and played strictly in order, so the first sentence
+  // plays without waiting for the whole reply. Browser voice has no server synth,
+  // so it just waits for endStream and speaks the whole thing.
   const beginStream = useCallback(() => {
     stop();
     const reqId = requestIdRef.current;
-    streamRef.current = { reqId, jobs: [], produced: 0, playIndex: 0, final: false };
+    streamRef.current = {
+      reqId,
+      sentences: [],
+      jobs: [],
+      launched: 0,
+      playIndex: 0,
+      final: false,
+    };
     if (!isTtsModel) return;
     setIsSpeaking(true);
     void (async () => {
@@ -333,10 +370,12 @@ export function useTtsPlayer(
         if (requestIdRef.current !== reqId) return;
         const st = streamRef.current;
         if (!st || st.reqId !== reqId) return;
-        if (st.playIndex < st.produced) {
+        if (st.playIndex < st.sentences.length) {
+          pumpSynth(); // ensure the current sentence (and window) is launched
           const blob = await st.jobs[st.playIndex];
           if (requestIdRef.current !== reqId) return;
           st.playIndex++;
+          pumpSynth(); // playback advanced -> refill the lookahead window
           if (blob) await playBlob(blob, reqId);
         } else if (st.final) {
           break;
@@ -349,23 +388,24 @@ export function useTtsPlayer(
       streamRef.current = null;
       onPlaybackEndRef.current?.();
     })();
-  }, [stop, isTtsModel, playBlob]);
+  }, [stop, isTtsModel, playBlob, pumpSynth]);
 
-  // Feed the growing assistant text; synthesizes any newly-complete sentences.
+  // Feed the growing assistant text; records newly-complete sentences and lets the
+  // pump launch synth for them within the lookahead window (not all at once).
   const feedText = useCallback(
     (text: string) => {
       const s = streamRef.current;
       if (!s || requestIdRef.current !== s.reqId || !isTtsModel) return;
       const { complete } = splitStreaming(text);
-      while (s.produced < complete.length) {
-        s.jobs[s.produced] = synthOne(complete[s.produced] ?? "");
-        s.produced++;
+      while (s.sentences.length < complete.length) {
+        s.sentences.push(complete[s.sentences.length] ?? "");
       }
+      pumpSynth();
     },
-    [isTtsModel, synthOne],
+    [isTtsModel, pumpSynth],
   );
 
-  // Finish the session: flush the final (incl. trailing) sentences, mark done.
+  // Finish the session: record the final (incl. trailing) sentences, mark done.
   const endStream = useCallback(
     (finalText: string) => {
       const s = streamRef.current;
@@ -377,23 +417,24 @@ export function useTtsPlayer(
         return;
       }
       const all = splitIntoSentences(finalText);
-      while (s.produced < all.length) {
-        s.jobs[s.produced] = synthOne(all[s.produced] ?? "");
-        s.produced++;
+      while (s.sentences.length < all.length) {
+        s.sentences.push(all[s.sentences.length] ?? "");
       }
       s.final = true;
-      if (s.produced === 0) {
+      pumpSynth();
+      if (s.sentences.length === 0) {
         streamRef.current = null;
         setIsSpeaking(false);
         onPlaybackEndRef.current?.();
       }
     },
-    [isTtsModel, synthOne, speak],
+    [isTtsModel, pumpSynth, speak],
   );
 
   useEffect(() => {
     return () => {
       requestIdRef.current += 1;
+      synthAbortRef.current?.abort();
       stopTts();
       stopSynth();
     };

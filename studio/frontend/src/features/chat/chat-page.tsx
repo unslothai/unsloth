@@ -14,6 +14,7 @@ import {
   rememberedLoadSettingsKey,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
+import { VoiceNamePicker } from "@/components/assistant-ui/voice-name-picker";
 import { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
 import { authFetch } from "@/features/auth";
 import { STANDALONE_TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
@@ -2945,7 +2946,7 @@ export function ChatPage({
         )}
         <div
           className={cn(
-            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
+            "absolute top-0 left-0 right-[10px] z-40 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
             isMobile ? "pl-12 pr-1.5" : "pl-2",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
@@ -2998,6 +2999,7 @@ export function ChatPage({
                 className="!h-[34px]"
               />
             )}
+            {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"

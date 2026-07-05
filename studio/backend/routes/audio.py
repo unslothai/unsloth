@@ -99,17 +99,22 @@ async def create_speech(
     voice_backend = get_voice_llama_backend()
     llama_backend = get_llama_cpp_backend()
 
+    # Named speaker for the GGUF voice slot (Orpheus). "default"/blank -> tara.
+    voice_name = (payload.voice or "").strip().lower() or "tara"
+
     if qwen_tts_backend.is_loaded:
         gen = lambda: qwen_tts_backend.generate_audio_response(text = text)
     elif voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
         gen = lambda: voice_backend.generate_audio_response(
             text = text,
             audio_type = voice_backend._audio_type,
+            voice = voice_name,
         )
     elif llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
+            voice = voice_name,
         )
     else:
         backend = get_inference_backend()

@@ -8965,6 +8965,11 @@ class LlamaCppBackend:
         ),
     }
 
+    # orpheus-3b-0.1-ft speaker names. Orpheus is a named-voice model: the prompt
+    # "voice: text" pins the speaker. Without the prefix it free-runs a random
+    # voice every utterance, which is why the voice kept changing. Fallback: tara.
+    _ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe")
+
     _codec_mgr = None  # Shared AudioCodecManager instance
     # Serializes codec decode across concurrent --parallel synths: llama-server
     # parallelizes token generation, but the codec (SNAC/BiCodec) is one shared
@@ -8999,6 +9004,7 @@ class LlamaCppBackend:
         self,
         text: str,
         audio_type: str,
+        voice: str = "tara",
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 50,
@@ -9025,8 +9031,15 @@ class LlamaCppBackend:
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
 
+        # Orpheus (snac) pins its speaker via a "voice: " prefix; without it the
+        # model randomizes the voice each call. Other codecs carry no such prefix.
+        prompt_text = text
+        if audio_type == "snac":
+            v = voice if voice in self._ORPHEUS_VOICES else "tara"
+            prompt_text = f"{v}: {text}"
+
         payload: dict = {
-            "prompt": tpl.format(text = text),
+            "prompt": tpl.format(text = prompt_text),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,
