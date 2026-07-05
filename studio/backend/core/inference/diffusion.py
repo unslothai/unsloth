@@ -1826,6 +1826,17 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+            # resolve_controlnet accepts a bare owner/name repo without the non-GGUF base
+            # trust gate, and from_pretrained below downloads and deserializes it. A
+            # malicious pickle .bin would execute on load, so run the same Hub malware
+            # preflight the chat/export loaders use before any remote ControlNet load. A
+            # local dir the user picked has no Hub scan and is exempt (fail-open there).
+            if not getattr(resolved_cn, "is_local", False):
+                from utils.security import evaluate_file_security
+
+                _cn_fs = evaluate_file_security(resolved_cn.path, hf_token = state.hf_token or None)
+                if _cn_fs.blocked:
+                    raise ValueError(_cn_fs.reason)
             import torch
 
             # state.dtype is the display string saved at load ("bfloat16"), NOT a
