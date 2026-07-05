@@ -3507,13 +3507,25 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
         return {target_modules}
 
     is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
-    # The auto regex always lists every projection leaf (q/k/v/o and gate/up/down),
-    # so key detection on the mlp/ffn/experts path segment, absent from an
-    # attention-only regex, not on the proj names.
+    # Key detection on the mlp/ffn/experts path segment (absent from an
+    # attention-only regex), never on q/k/v/o leaves alone.
     targets_mlp_path = any(
         tag in target_modules for tag in ("mlp", "ffn", "feed_forward", "experts")
     )
-    if is_regex and targets_mlp_path and "proj" in target_modules:
+    if not is_regex or not targets_mlp_path:
+        return set()
+    # Explicit expert leaves scope the target set to exactly those leaves.
+    named = {name for name in _MOE_BROAD_MLP_TARGETS if name in target_modules}
+    if named:
+        return named
+    # A generic projection under an mlp path (e.g. ".*mlp.*proj"): any proj
+    # occurrence that is not an attention leaf name.
+    if re.search(r"(?<![qkvo]_)(?<!out_)(?<!in_)proj", target_modules):
+        return set(_MOE_BROAD_MLP_TARGETS)
+    # The auto regex on fused-expert models lists only attention Linears as
+    # leaves; its mlp tag block is the remaining MLP-intent signal. A regex
+    # like "(mlp|self_attn).(q_proj|o_proj)" has neither and stays attention-only.
+    if "mlp|feed_forward|ffn|dense" in target_modules:
         return set(_MOE_BROAD_MLP_TARGETS)
 
     return set()
