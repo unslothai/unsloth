@@ -225,7 +225,6 @@ class VideoBackend:
             root = Path(repo_id).expanduser()
             if root.is_dir():
                 from .diffusion_families import resolve_local_gguf_child
-
                 try:
                     resolve_local_gguf_child(root, gguf_filename or "")
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
