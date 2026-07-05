@@ -227,6 +227,13 @@ class _SecondDiTView:
         # ``transformer`` / ``_pipe``), so everything else delegates to the real pipe.
         return getattr(object.__getattribute__(self, "_pipe"), name)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Writes must land on the real pipe, or a helper's side effect (for example
+        # reassigning the transformer it optimised) would vanish with the view.
+        # ``transformer`` mirrors the read property onto the second expert.
+        pipe = object.__getattribute__(self, "_pipe")
+        setattr(pipe, "transformer_2" if name == "transformer" else name, value)
+
 
 def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     """The pipe view(s) to pass through the ``getattr(pipe, "transformer")`` helpers so
@@ -283,6 +290,14 @@ class VideoBackend:
             )
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
+        if kind in ("gguf", "single_file") and fam.is_moe:
+            # A single checkpoint carries only one expert; the pipeline would then pull
+            # the other expert dense bf16 from the base repo, outside the memory plan.
+            raise ValueError(
+                f"'{fam.name}' is a dual-expert model: a single {kind} file covers only "
+                f"one of its two transformers. Load the diffusers pipeline repo "
+                f"('{fam.base_repo}') instead."
+            )
         # Reject a malformed transformer_quant scheme cheaply, before the GPU handoff
         # (normalize_transformer_quant raises ValueError on an unknown scheme). It applies
         # only on pipeline-kind loads (the dense DiT from the base repo); an ignored value

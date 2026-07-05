@@ -188,7 +188,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # total ~114.3; UMT5 text encoder 11.4; VAE 0.5. The two-expert DiT total is the
         # memory headline (~114 GB bf16-resident before offload).
         bf16_components_gb = (114.3, 11.4, 0.5),
-        gguf_repo = "QuantStack/Wan2.2-T2V-A14B-GGUF",
+        # No gguf_repo: community GGUFs ship the two experts as separate files, and a
+        # single-file load covers only one (validate_load_request refuses it).
     ),
 )
 

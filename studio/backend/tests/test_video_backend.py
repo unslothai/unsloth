@@ -774,3 +774,36 @@ def test_wan_validate_trusted_repos(fake_runtime):
             model_kind = "pipeline",
             transformer_quant = "bogus",
         )
+
+
+def test_wan_a14b_refuses_single_file_loads(fake_runtime):
+    # A single gguf/safetensors checkpoint carries only one of the A14B's two experts;
+    # the pipeline would pull the other dense bf16 from the base repo outside the
+    # memory plan, so validate refuses it up front (before any download).
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = "dual-expert"):
+        backend.validate_load_request(
+            "QuantStack/Wan2.2-T2V-A14B-GGUF",
+            gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+        )
+    # The single-DiT 5B family still accepts GGUF.
+    fam = backend.validate_load_request(
+        "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        gguf_filename = "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+    )
+    assert fam.name == "wan2.2-ti2v-5b"
+
+
+def test_second_dit_view_write_through():
+    # Attribute writes on the proxy must land on the real pipe (a helper's side
+    # effect would otherwise vanish with the temporary view); a ``transformer``
+    # write mirrors the read property onto the second expert.
+    from core.inference.video import _SecondDiTView
+
+    pipe = types.SimpleNamespace(transformer = "t1", transformer_2 = "t2", flag = None)
+    view = _SecondDiTView(pipe)
+    assert view.transformer == "t2"
+    view.transformer = "t2-compiled"
+    assert pipe.transformer_2 == "t2-compiled" and pipe.transformer == "t1"
+    view.flag = "set"
+    assert pipe.flag == "set"
