@@ -38,14 +38,15 @@ export const orbConfig = {
     duration: "2s",
     shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
   },
-  // Teal quick pulse: Whisper is turning your captured speech into text. Its own
-  // hue + pencil icon so "transcribing" reads as clearly distinct from the LLM
-  // writing its reply (amber) below.
+  // Fuchsia quick pulse: Whisper is turning your captured speech into text. A
+  // magenta hue -- the farthest from the idle/listening green on the palette -- so
+  // "transcribing" never reads as "ready", and its pencil icon plus this colour
+  // keep it distinct from the amber "generating LLM response" below.
   transcribing: {
-    gradient: "radial-gradient(circle at 40% 35%, #5eead4, #0d9488)",
+    gradient: "radial-gradient(circle at 40% 35%, #e879f9, #c026d3)",
     animation: "voice-orb-pulse",
     duration: "1.1s",
-    shadow: "0 0 30px 7px rgba(45,212,191,0.35)",
+    shadow: "0 0 30px 7px rgba(217,70,239,0.4)",
   },
   // Amber pulse: the LLM is writing its reply, nothing playing yet. The typing
   // dots are the classic "assistant is generating a response" indicator.
