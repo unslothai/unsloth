@@ -683,11 +683,20 @@ RUN set -eux \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
  && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \
- && mkdir -p /root/.ipython/profile_default/startup \
- && cp /opt/unsloth-nb/unsloth_ipython_startup.py /root/.ipython/profile_default/startup/00-unsloth-nb.py \
+ && mkdir -p /opt/unsloth-nb/ipython/profile_default/startup \
+ && cp /opt/unsloth-nb/unsloth_ipython_startup.py /opt/unsloth-nb/ipython/profile_default/startup/00-unsloth-nb.py \
+ && chmod -R a+rX /opt/unsloth-nb/ipython \
  && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
 # Shim dir AHEAD of the venv bin so `!pip`/`!uv` resolve to the shim, not the real tool.
 ENV PATH=/opt/unsloth-nb/bin:${PATH}
+# Load the notebook startup hook (sidecar activation + %pip/%uv magic re-point)
+# for EVERY kernel, whatever uid runs it. IPYTHONDIR (inherited by any user via
+# ENV) points IPython at this shared profile, so the hook still loads when the
+# container is started with `--user <uid>` and $HOME is not /root -- unlike a
+# /root/.ipython startup dir, which only a root kernel reads. Kernel-writable
+# state (history.sqlite) still lands under each user's own path, so a read-only
+# profile dir is fine.
+ENV IPYTHONDIR=/opt/unsloth-nb/ipython
 
 # Pre-clone unslothai/notebooks so JupyterLab opens with the notebooks already
 # present (no git clone or wget needed). Baked here as a READ-ONLY template

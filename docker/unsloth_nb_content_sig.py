@@ -48,15 +48,32 @@ def _text(cell):
     return src.replace("\r\n", "\n").replace("\r", "\n")
 
 
+# Package-manager command fragments that mark a cell as the generated install
+# cell rather than substantive tutorial code.
+_INSTALL_MARKERS = (
+    "pip install",
+    "pip3-autoremove",
+    "uv pip install",
+    "conda install",
+    "apt-get install",
+    "apt install",
+)
+
+
 def _is_install_code(cell):
     if cell.get("cell_type") != "code":
         return False
     t = _text(cell)
     low = t.lower()
-    if "pip install" in low or "pip3-autoremove" in low:
+    if any(m in low for m in _INSTALL_MARKERS):
         return True
-    first = t.lstrip().split("\n", 1)[0].strip().lower()
-    return first.startswith("%%capture") or first.startswith("%%bash")
+    # A %%capture / %%bash cell is boilerplate ONLY when it also carries an
+    # install command. A bare %%capture (e.g. wrapping training to silence
+    # output) or a %%bash cell doing real tutorial setup is substantive: hashing
+    # it keeps the boot refresh from silently skipping an upstream fix to that
+    # cell (a false SAME). The install markers above already catch the generated
+    # install cell, which begins with %%capture.
+    return False
 
 
 def _is_boilerplate_md(cell):

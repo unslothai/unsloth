@@ -21,7 +21,7 @@ are not intercepted -- the driven `unsloth-run` handles those by parsing the
 notebook directly.
 """
 
-import os, re, sys, subprocess, tempfile
+import os, re, sys, tempfile
 
 REAL = {"pip": "/opt/unsloth-venv/bin/pip", "uv": "/opt/unsloth-venv/bin/uv"}
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
@@ -75,6 +75,11 @@ _VALUE_FLAGS = {
 # requirements file pulls real requirements. An index-url / find-links /
 # constraint / target value is an option, not something to install.
 _REQ_FILE_FLAGS = {"-r", "--requirement"}
+# Constraint files are not install targets, but pip applies their pins during
+# resolution, so a `-c constraints.txt` that pins torch/transformers/etc. can
+# still downgrade or reinstall a baked package when another target pulls it in.
+# Filter protected packages out of them the same way as requirement files.
+_CONSTRAINT_FILE_FLAGS = {"-c", "--constraint"}
 
 
 def _canon(token):
@@ -95,6 +100,15 @@ def _canon(token):
     if _dref:
         return _dref.group(1).lower().replace("_", "-") or None
     if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
+        # A VCS / URL install can still name a protected package via the legacy
+        # `#egg=NAME` (or `&egg=NAME`) fragment, e.g.
+        # `git+https://github.com/unslothai/unsloth.git#egg=unsloth`. Pull that
+        # name out so _KEEP can drop it; otherwise the shim would exec the URL
+        # and reinstall a baked package into the venv. A non-protected egg name
+        # is returned too, but the caller keeps it as a normal target either way.
+        _egg = re.search(r"[#&]egg=([A-Za-z0-9][A-Za-z0-9._-]*)", token)
+        if _egg:
+            return _egg.group(1).lower().replace("_", "-") or None
         return None  # vcs / url / local path -> let it pass through
     # strip extras and any version/marker tail
     name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
@@ -107,7 +121,66 @@ def _version_pin(token):
     return m.group(1) if m else None
 
 
-def _filter_requirements_file(path):
+def _parse_include(stripped):
+    """If `stripped` is an `-r`/`--requirement`/`-c`/`--constraint` include,
+    return (flag, target_path, inline_comment_or_None); else (None, None, None)."""
+    body, sep, comment = stripped.partition(" #")
+    body = body.rstrip()
+    comment = ("#" + comment) if sep else None
+    for flag in ("-r", "--requirement", "-c", "--constraint"):
+        target = None
+        if body == flag or body.startswith(flag + " "):
+            target = body[len(flag):].strip()
+        elif body.startswith(flag + "="):
+            target = body[len(flag) + 1:].strip()
+        elif not flag.startswith("--") and body.startswith(flag) and len(body) > len(flag):
+            target = body[len(flag):].strip()  # attached short form, e.g. `-rextras.txt`
+        else:
+            continue
+        return flag, (target or None), comment
+    return None, None, None
+
+
+def _rewrite_include(line, stripped, src_dir, depth):
+    """Rewrite a nested `-r`/`-c` include so pip still resolves it and its
+    protected specs are filtered too.
+
+    pip resolves a nested include against the directory of the file it is
+    READING; our filtered copy lives under /tmp, so a relative include would
+    look in /tmp and fail. Recursively filter the included file (dropping
+    protected packages there too, closing the multi-level bypass) and point the
+    parent at that filtered copy. URLs and unreadable/absolute-unfiltered files
+    fall back to an absolutised path so they still resolve. Returns
+    (new_line, changed, recorded, dropped)."""
+    flag, target, comment = _parse_include(stripped)
+    if not target:
+        return line, False, None, []
+    newline_char = "\n" if line.endswith("\n") else ""
+
+    def _emit(new_target):
+        rebuilt = flag + " " + new_target
+        if comment:
+            rebuilt += " " + comment
+        return rebuilt + newline_char
+
+    # A URL include cannot be filtered locally; leave it verbatim.
+    if "://" in target:
+        return line, False, None, []
+    abs_target = target if os.path.isabs(target) else os.path.join(src_dir, target)
+    # Recursively filter the included file. Guard against cyclic / deep includes.
+    if depth < 8:
+        f_path, f_rec, f_drp = _filter_requirements_file(abs_target, _depth = depth + 1)
+        if f_path != abs_target:
+            # The include was rewritten (protected specs dropped and/or its own
+            # nested includes absolutised); point at the filtered copy.
+            return _emit(f_path), True, f_rec, f_drp
+    # Nothing to filter inside; just make sure the path still resolves from /tmp.
+    if not os.path.isabs(target):
+        return _emit(abs_target), True, None, []
+    return line, False, None, []
+
+
+def _filter_requirements_file(path, _depth = 0):
     """Strip baked/protected packages out of a `-r` requirements file.
 
     Returns (path_to_use, recorded_transformers_version, dropped_specs). The same
@@ -115,19 +188,35 @@ def _filter_requirements_file(path):
     line, so a notebook `pip install -r reqs.txt` cannot overwrite the cu128 torch
     / vLLM / transformers stack with versions pinned inside the file. When nothing
     is protected, or the file cannot be read/written, the original path is returned
-    unchanged. Comments, blank lines, option lines and nested `-r`/`-c` includes are
-    kept verbatim (nested includes are passed through, i.e. filtered one level).
+    unchanged. Comments, blank lines and option lines are kept verbatim; a nested
+    `-r`/`-c` include is recursively filtered too (protected specs dropped at every
+    level).
     """
     try:
         with open(path, encoding = "utf-8") as f:
             lines = f.readlines()
     except OSError:
         return path, None, []  # remote URL / unreadable -> let the real tool handle it
+    src_dir = os.path.dirname(os.path.abspath(path))
     out, dropped, recorded, changed = [], [], None, False
     for line in lines:
         stripped = line.strip()
-        if not stripped or stripped.startswith(("#", "-")):
-            out.append(line)  # comment / blank / option / nested include -> keep
+        if not stripped or stripped.startswith("#"):
+            out.append(line)  # comment / blank -> keep
+            continue
+        if stripped.startswith("-"):
+            # Option or nested include. Recursively filter a nested `-r`/`-c`
+            # include (so protected specs deep in the include tree cannot slip
+            # past _KEEP) and repoint it so it still resolves from /tmp.
+            new_line, rewrote, inc_rec, inc_drp = _rewrite_include(
+                line, stripped, src_dir, _depth
+            )
+            out.append(new_line)
+            if rewrote:
+                changed = True
+            if inc_rec and not recorded:
+                recorded = inc_rec
+            dropped.extend(inc_drp)
             continue
         spec = stripped.split(" #", 1)[0].strip()  # drop any inline comment
         name = _canon(spec)
@@ -200,6 +289,14 @@ def main():
                 if _req_rec and not recorded:
                     recorded = _req_rec
                 dropped.extend(_req_drp)
+            elif prev_flag in _CONSTRAINT_FILE_FLAGS:
+                # Strip protected pins from the constraint file so it cannot
+                # downgrade the baked stack, but a constraint is not an install
+                # target and its transformers pin is not an install request, so
+                # do not set has_target / recorded here.
+                _c_path, _c_rec, _c_drp = _filter_requirements_file(tok)
+                keep_args.append(_c_path)
+                dropped.extend(_c_drp)
             else:
                 keep_args.append(tok)
             skip_next = False
@@ -220,6 +317,10 @@ def main():
                     if _req_rec and not recorded:
                         recorded = _req_rec
                     dropped.extend(_req_drp)
+                elif _flag in _CONSTRAINT_FILE_FLAGS:
+                    _c_path, _c_rec, _c_drp = _filter_requirements_file(_val)
+                    keep_args.append(_flag + "=" + _c_path)
+                    dropped.extend(_c_drp)
                 else:
                     keep_args.append(tok)  # option with inline value, not a target
                 continue

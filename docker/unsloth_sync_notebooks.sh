@@ -183,6 +183,15 @@ while IFS= read -r -d '' f; do
             unchanged=$((unchanged + 1))
             continue
         fi
+    elif [ -n "${LAST[$rel]:-}" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" = "1" ]; then
+        # We previously wrote this notebook and the user has since DELETED it.
+        # With the opt-out set, honor the deletion instead of restoring it from
+        # the fresh clone when upstream advances (otherwise the deletion only
+        # held until the next remote refresh). Keep the record so it stays known
+        # as managed-but-deleted.
+        printf '%s  %s\n' "${LAST[$rel]}" "$rel" >> "$TMPSTATE"
+        kept=$((kept + 1))
+        continue
     fi
     mkdir -p "$(dirname "$dst")" 2>/dev/null || true
     if cp -a "$f" "$dst" 2>/dev/null; then
