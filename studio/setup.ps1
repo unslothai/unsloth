@@ -2618,7 +2618,24 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # false -- name-inferred Adrenalin hosts still get ROCm torch below.)
             # Without this an unpinned ROCm venv compares "rocm" != "cpu" and is
             # needlessly rebuilt, and an installer-managed setup exits as stale.
-            $expectedTorchTag = "rocm"
+            # But only the arches the install path below maps to a repo.amd.com
+            # wheel index (the $archFamilyMap set) actually get ROCm torch; an
+            # unmapped/unknown arch (e.g. name-inferred RDNA 2 gfx103X) or an
+            # unreadable arch -- even with $HasROCm -- falls back to CPU torch
+            # there (see the $archFamily null branch below). For those, expect
+            # "cpu" so a correct CPU venv is not marked stale and rebuilt on every
+            # update (or aborted under installer-managed setup).
+            $_rocmWheelArches = @(
+                "gfx1201", "gfx1200",           # RDNA 4
+                "gfx1151", "gfx1150",           # RDNA 3.5 (Strix Halo/Point)
+                "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
+                "gfx90a", "gfx908"              # MI200 / MI100
+            )
+            if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
+                $expectedTorchTag = "rocm"
+            } else {
+                $expectedTorchTag = "cpu"
+            }
         } else {
             $expectedTorchTag = "cpu"
         }

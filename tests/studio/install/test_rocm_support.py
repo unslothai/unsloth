@@ -2876,6 +2876,23 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         assert "TORCH_CONSTRAINT" in source and "2.11" in source
 
+    def test_torch_constraint_211_matches_leaf_not_whole_url(self):
+        """The 2.11 constraint case must match the index LEAF, not the whole URL.
+
+        A custom UNSLOTH_PYTORCH_MIRROR whose base path contains a gfx/rocm7.2
+        segment (e.g. https://mirror.local/gfx-cache) with a cu*/cpu family must
+        not be pushed to the torch 2.11 line -- same leaf-only reasoning the
+        UNSLOTH_TORCH_BACKEND classification uses.
+        """
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        # The 2.11 constraint block must switch on $_torch_index_leaf, not on the
+        # full $TORCH_INDEX_URL (which the earlier, buggy version matched with
+        # */gfx* and would false-positive on a mirror base path).
+        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx*)' in source, (
+            "the torch>=2.11 constraint must match the index leaf (rocm7.2|gfx*), "
+            "not the whole URL"
+        )
+
     def test_amd_rocm_mirror_env_var_respected(self):
         """install.sh must honour UNSLOTH_AMD_ROCM_MIRROR for air-gapped installs."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")

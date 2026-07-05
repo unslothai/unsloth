@@ -115,6 +115,12 @@ _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.11.0",
 )
 
+# CPU torch repair specs (see _ensure_cpu_torch). Same bounds/reasoning as the
+# CUDA spec above: the /cpu index now also publishes torch 2.11+, so a bare trio
+# from the exclusive --index-url would resolve outside the repo's supported
+# <2.11 range (and can pick a torchvision built against a different torch major).
+_CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC
+
 # torchao's C++ extensions are built against ONE exact torch release; a newer
 # torch makes torchao skip its cpp kernels ("Skipping import of cpp extensions
 # due to incompatible torch version ...") and fall back to slow Python. Because
@@ -1126,18 +1132,23 @@ def _ensure_cuda_torch() -> None:
     # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         return
+    # An explicit CUDA wheel-index pin (headless / container / CI cross-install)
+    # commits to CUDA wheels and, like install.sh's get_torch_index_url override,
+    # skips ALL host-GPU probing -- so it must clear BOTH the CUDA_VISIBLE_DEVICES
+    # hide gate and the NVIDIA-presence gate below, not just the latter. Otherwise
+    # `CUDA_VISIBLE_DEVICES=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128 studio update`
+    # (the exact GPU-less CI case this override targets) would still bail here.
+    _cuda_pinned = _explicit_cuda_torch_index_url() is not None
     # CUDA_VISIBLE_DEVICES="" / "-1" deliberately hides the NVIDIA GPU (for
     # example a mixed AMD+NVIDIA host that runs ROCm torch on the AMD card);
-    # never force CUDA wheels over that choice.
+    # never force CUDA wheels over that choice unless a CUDA index is pinned.
     _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if _cvd is not None and _cvd.strip() in ("", "-1"):
+    if not _cuda_pinned and _cvd is not None and _cvd.strip() in ("", "-1"):
         return
     # Only NVIDIA hosts should carry CUDA torch. _has_usable_nvidia_gpu()
     # covers the /proc/driver/nvidia/gpus fallback when nvidia-smi is absent.
-    # An explicit CUDA wheel-index pin (headless / container / CI cross-install)
-    # commits to CUDA wheels regardless of whether a GPU is visible here, so it
-    # overrides the GPU-presence gate.
-    if not _has_usable_nvidia_gpu() and _explicit_cuda_torch_index_url() is None:
+    # The explicit CUDA pin overrides the GPU-presence gate too.
+    if not _cuda_pinned and not _has_usable_nvidia_gpu():
         return
 
     # Classify the installed torch: "hip" (ROCm build -- the poisoning
@@ -1267,14 +1278,18 @@ def _ensure_cpu_torch() -> None:
         f"   torch is a GPU build but an explicit CPU index is pinned -- "
         f"reinstalling CPU torch from {pin}"
     )
-    # The pytorch.org /cpu index is curated, so a bare trio resolves consistently.
+    # Pin to the supported torch<2.11 family (same bounds as the CUDA/ROCm repair
+    # specs). The /cpu index now also serves torch 2.11+, so a bare trio off the
+    # exclusive --index-url could resolve outside the supported range or drag in
+    # an ABI-mismatched torchvision/torchaudio.
+    _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
     pip_install(
         "CPU torch repair",
         "--force-reinstall",
         "--no-cache-dir",
-        "torch",
-        "torchvision",
-        "torchaudio",
+        _torch_pkg,
+        _vision_pkg,
+        _audio_pkg,
         "--index-url",
         pin,
         constrain = False,

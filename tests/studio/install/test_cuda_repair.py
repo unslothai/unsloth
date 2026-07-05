@@ -148,6 +148,22 @@ class TestCudaRepairFires:
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
 
+    def test_cvd_hidden_but_explicit_cuda_pin_repairs(self):
+        # CUDA_VISIBLE_DEVICES=-1 hides the GPU, but an explicit cu* pin skips ALL
+        # host-GPU probing (like install.sh's get_torch_index_url override), so the
+        # CVD hide gate must not suppress the repair. This is the exact GPU-less CI
+        # case the override targets: CVD=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128.
+        for _cvd in ("-1", ""):
+            mock_pip = _run_cuda_repair(
+                nvidia = False,
+                backend = "cuda",
+                cvd = _cvd,
+                index_family = "cu128",
+                torch_state = "hip",
+            )
+            assert mock_pip.call_count == 1
+            assert "cu128" in _index_url(mock_pip)
+
 
 # No-op cases.
 

@@ -210,3 +210,52 @@ class TestTorchIndexOverrideParity:
         assert (
             "TorchIndexPinned" in text
         ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
+
+    def test_cuda_pin_overrides_cvd_hide_gate(self):
+        # A pinned cu* index skips ALL host-GPU probing (parity with install.sh's
+        # get_torch_index_url override), so the Python CUDA repair must let the pin
+        # clear the CUDA_VISIBLE_DEVICES hide gate, not just the NVIDIA-presence
+        # gate. Otherwise CVD=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128 studio update
+        # (the GPU-less CI case) would bail before repairing.
+        text = STACK_PY.read_text(encoding = "utf-8")
+        m = re.search(
+            r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL
+        )
+        assert m, "could not locate _ensure_cuda_torch"
+        body = m.group(0)
+        # The CVD hide-gate return must be guarded by the CUDA-pin flag.
+        assert "_cuda_pinned" in body, (
+            "_ensure_cuda_torch should compute a CUDA-pin flag so the pin can "
+            "override the CVD hide gate"
+        )
+        assert re.search(
+            r'if not _cuda_pinned and _cvd is not None', body
+        ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
+
+    def test_cpu_repair_pins_supported_torch_range(self):
+        # The explicit-CPU repair must not install a bare torch trio: the /cpu
+        # index now also serves torch 2.11+, so a bare install off the exclusive
+        # --index-url can resolve outside the repo's supported <2.11 range or pull
+        # an ABI-mismatched companion. It must use the bounded CPU/CUDA spec.
+        text = STACK_PY.read_text(encoding = "utf-8")
+        m = re.search(
+            r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL
+        )
+        assert m, "could not locate _ensure_cpu_torch"
+        body = m.group(0)
+        assert "_CPU_TORCH_PKG_SPEC" in body, (
+            "_ensure_cpu_torch should install the bounded _CPU_TORCH_PKG_SPEC, "
+            "not a bare torch/torchvision/torchaudio trio"
+        )
+
+    def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
+        # The stale-venv check must only expect ROCm torch for arches the install
+        # path actually maps to a repo.amd.com wheel index. An unmapped arch
+        # (name-inferred RDNA 2 gfx103X) or an unreadable arch installs CPU torch,
+        # so expecting "rocm" there marks a correct CPU venv stale and rebuilds it
+        # every update (or aborts under installer-managed setup).
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "_rocmWheelArches" in text, (
+            "setup.ps1 stale check should restrict the ROCm expected-tag to the "
+            "supported gfx wheel arches"
+        )

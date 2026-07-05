@@ -2482,8 +2482,13 @@ esac
 # torchvision/torchaudio independently and a bare name can resolve a 2.12-built
 # wheel (ABI mismatch). Matches setup.ps1's *FloorMap and _ROCM_TORCH_PKG_SPECS.
 # All other ROCm tags and CUDA stay within <2.11.0.
-case "$TORCH_INDEX_URL" in
-    */rocm7.2|*/gfx*)
+# Match on the FINAL path segment ($_torch_index_leaf, computed above), NOT the
+# whole URL: a custom UNSLOTH_PYTORCH_MIRROR whose base path contains a "gfx" or
+# "rocm7.2" segment (e.g. https://mirror.local/gfx-cache) with a cu*/cpu family
+# must not be treated as an AMD per-arch index and pushed to the 2.11 line. This
+# mirrors the leaf-only backend classification just above.
+case "$_torch_index_leaf" in
+    rocm7.2|gfx*)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
