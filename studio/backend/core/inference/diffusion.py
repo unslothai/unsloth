@@ -45,7 +45,7 @@ from .diffusion_device import (
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
-from .diffusion_ideogram4 import load_ideogram4_pipeline
+from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     OFFLOAD_NONE,
@@ -555,6 +555,17 @@ class DiffusionBackend:
             raise ValueError(
                 f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
                 f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+            )
+        # A family that assembles MULTIPLE denoisers per-component (Ideogram 4's dual
+        # DiTs) has no transformer-only single-file or GGUF path: those kinds build one
+        # transformer and would assemble a pipeline missing its second DiT (or fail deep
+        # in from_pretrained). Reject them here -- before the route evicts the current
+        # model -- so only a full pipeline load reaches the per-component loader.
+        if kind in ("gguf", "single_file") and fam.pipeline_only:
+            raise ValueError(
+                f"'{fam.name}' loads only as a full diffusers pipeline (it assembles "
+                f"multiple transformers), not from a single-file or GGUF checkpoint; "
+                f"select the pipeline repo."
             )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
@@ -1689,7 +1700,19 @@ class DiffusionBackend:
             # (the family base -- prequant repos like the bnb-4bit exports have
             # different ids and really do stay compressed), plan against the larger
             # of the two estimates.
-            if repo_id and repo_id.strip().lower() == fam.base_repo.lower():
+            is_narrow_base = bool(repo_id) and repo_id.strip().lower() == fam.base_repo.lower()
+            if (
+                not is_narrow_base
+                and fam.name == IDEOGRAM4_FAMILY_NAME
+                and local_repo is not None
+                and local_repo.is_dir()
+            ):
+                # A LOCAL directory mirror of the fp8 base never string-matches base_repo,
+                # so detect the fp8 layout from its transformer shard headers and reserve
+                # the bf16 footprint too (a local nf4 mirror has no fp8 scales and stays
+                # compressed). Header-only read, so this stays cheap and network-free.
+                is_narrow_base = ideogram4_repo_is_fp8(repo_id)
+            if is_narrow_base:
                 table = family_bf16_components_gb(fam, fam.base_repo)
                 if table is not None and model_dense_mib is not None:
                     table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
