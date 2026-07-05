@@ -3653,3 +3653,51 @@ def test_looks_like_enabled_bare_json_accepts_function_alias():
     )
     # A non-tool "function" value is an ordinary JSON answer -> not gated.
     assert not _looks_like_enabled_bare_json('{"function":"Alice","parameters":{}}', enabled)
+
+
+class TestFalseAlarmMarkerProse:
+    def test_leading_marker_prose_streams_intact(self):
+        # An answer that starts with a literal marker is a false alarm: the
+        # drain finds no calls and the full prose must reach the client.
+        text = "[TOOL_CALLS] is the Mistral tool marker. More prose after."
+        loop, exec_fn = _make_loop(turns = [[text]])
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert texts and texts[-1] == text
+
+    def test_chained_bare_json_calls_not_replayed_in_history(self):
+        # Both chained calls execute; the kept content (next-turn assistant
+        # history) must not contain the second call's raw JSON.
+        chained = (
+            '{"name":"web_search","parameters":{"q":"first"}};'
+            '{"name":"python","parameters":{"code":"x"}}'
+        )
+        convs = []
+        turn_iter = iter([[chained], ["Final answer."]])
+
+        def gen(messages, active_tools = None):
+            convs.append([dict(m) for m in messages])
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool(["r1", "r2"])
+        loop = run_safetensors_tool_loop(
+            single_turn = gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            execute_tool = exec_fn,
+        )
+        _collect_events(loop)
+        assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
+        assistant = next(m for m in convs[1] if m["role"] == "assistant")
+        assert '"python"' not in (assistant.get("content") or "")

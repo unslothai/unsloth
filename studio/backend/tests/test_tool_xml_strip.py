@@ -513,3 +513,57 @@ def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
         " Done. The tag </function> closes a call."
     )
     assert strip_tool_markup(text, final = True) == "Done. The tag </function> closes a call."
+
+
+def test_final_strip_keeps_prose_mentioning_bare_markers():
+    # A false-alarm marker in a normal answer must not lose everything after
+    # it; only text that looks like that family's call start drops.
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    for text in (
+        "See [TOOL_CALLS] docs for details. More prose after.",
+        "<|python_tag|> is the Llama marker. Explanation continues.",
+        "The <|tool_call> opener wraps Gemma calls.",
+    ):
+        assert strip_tool_markup(text, final = True) == text
+    # A bare marker at end-of-text is a fragment and still drops.
+    assert strip_tool_markup("Answer text [TOOL_CALLS]", final = True) == "Answer text"
+
+
+def test_final_strip_still_drops_truncated_marker_calls():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    for text in (
+        '[TOOL_CALLS][{"name":"web_search","argu',
+        '[TOOL_CALLS]web_search[ARGS]{"q":"x',
+        '<|python_tag|>{"name":"web_search","par',
+        '<|python_tag|>foo.call(items=["a',
+        "<|tool_call>call:web_search{query:tru",
+    ):
+        assert strip_tool_markup(text, final = True) == ""
+
+
+def test_chained_bare_json_strip_consumes_all_calls():
+    # The loops keep this text as next-turn history: a leftover executed call
+    # would be replayed alongside the structured tool_calls.
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    enabled = {"web_search", "python"}
+    chained = (
+        '{"name":"web_search","parameters":{"q":"first"}};'
+        '{"name":"python","parameters":{"code":"x"}}'
+    )
+    assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
+    assert (
+        strip_leading_bare_json_call(chained + " trailing prose", enabled_tool_names = enabled)
+        == "trailing prose"
+    )
+    # The chain stops at a non-call answer object, which stays visible.
+    call_then_answer = (
+        '{"name":"web_search","parameters":{"q":"x"}};'
+        '{"name":"web_search","result":"data"}'
+    )
+    assert (
+        strip_leading_bare_json_call(call_then_answer, enabled_tool_names = enabled)
+        == '{"name":"web_search","result":"data"}'
+    )
