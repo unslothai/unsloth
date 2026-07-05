@@ -29,22 +29,22 @@
     "clean": "rimraf lib tsconfig.tsbuildinfo unsloth-jupyterlab/labextension"
   },
   "dependencies": {
-    "@codemirror/state": "6.5.4",
-    "@codemirror/view": "6.39.14",
-    "@jupyterlab/application": "4.6.0",
-    "@jupyterlab/apputils": "4.6.0",
-    "@jupyterlab/cells": "4.6.0",
-    "@jupyterlab/codemirror": "4.6.0",
-    "@jupyterlab/mainmenu": "4.6.0",
-    "@jupyterlab/notebook": "4.6.0",
-    "@jupyterlab/theme-dark-extension": "4.6.0",
-    "@lumino/disposable": "2.1.5",
-    "@lumino/widgets": "2.8.0"
+    "@codemirror/state": "^6.0.0",
+    "@codemirror/view": "^6.0.0",
+    "@jupyterlab/application": "^4.5.0",
+    "@jupyterlab/apputils": "^4.5.0",
+    "@jupyterlab/cells": "^4.5.0",
+    "@jupyterlab/codemirror": "^4.5.0",
+    "@jupyterlab/mainmenu": "^4.5.0",
+    "@jupyterlab/notebook": "^4.5.0",
+    "@jupyterlab/theme-dark-extension": "^4.5.0",
+    "@lumino/disposable": "^2.0.0",
+    "@lumino/widgets": "^2.0.0"
   },
   "devDependencies": {
-    "@jupyterlab/builder": "4.5.9",
-    "rimraf": "5.0.10",
-    "typescript": "5.5.4"
+    "@jupyterlab/builder": "^4.5.0",
+    "rimraf": "^5.0.0",
+    "typescript": "~5.5.0"
   },
   "jupyterlab": {
     "extension": true,
