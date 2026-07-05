@@ -1224,6 +1224,16 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
+    # Run the trainers' trust gate here too (both assert the same predicate before
+    # from_pretrained), so an untrusted/typoed base 400s BEFORE freeing GPU residents
+    # instead of tearing down the user's chat/Images model and failing in the child.
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    try:
+        _assert_trusted_base_model(config.get("base_model", ""))
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+
     # Preflight access to a gated base repo with the user's token BEFORE freeing GPU
     # residents, so a missing/insufficient token fails fast (400) without tearing down the
     # user's loaded chat/Images model, and never surfaces as a confusing mid-load 401.
