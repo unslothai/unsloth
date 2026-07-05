@@ -271,10 +271,13 @@ async def get_gallery_video_file(
     path = await asyncio.to_thread(video_gallery.video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    data = await asyncio.to_thread(path.read_bytes)
+    from fastapi.responses import FileResponse
+
+    # FileResponse streams from disk (no whole-clip buffering per request) and
+    # serves HTTP range requests so a direct URL can seek without a full fetch.
     # Immutable content (id is unique per video), so let the browser cache it.
-    return Response(
-        content = data,
+    return FileResponse(
+        path,
         media_type = "video/mp4",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )
