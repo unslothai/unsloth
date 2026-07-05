@@ -1,1 +1,0 @@
-- Goal set: Studio image UI PR stack
