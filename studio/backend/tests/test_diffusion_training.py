@@ -344,6 +344,20 @@ def test_route_start_forwards_extra_training_knobs(client):
     assert client._fake.started_with["lora_target_modules"] == ["to_q", "to_v"]
 
 
+def test_route_start_accepts_zero_max_grad_norm(client):
+    # 0 is the documented "disable clipping" value (the trainer skips clip_grad_norm_);
+    # the request model must not reject it.
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "max_grad_norm": 0.0})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["max_grad_norm"] == 0.0
+
+
+def test_route_start_rejects_nonpositive_snr_gamma(client):
+    # gamma <= 0 zeroes/inverts the min-SNR loss weight; null is the disable value.
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "snr_gamma": 0})
+    assert r.status_code == 422
+
+
 def test_route_start_rejects_uncontained_paths(client):
     # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
