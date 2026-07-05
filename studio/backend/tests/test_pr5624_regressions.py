@@ -999,7 +999,7 @@ def test_leading_json_answer_with_prose_keeps_quoted_gemma_snippet_as_data():
     assert [c["function"]["name"] for c in calls] == ["web_search"], calls
 
     # A leading brace run that is NOT valid JSON gets no exemption.
-    not_json = '{not json} call:web_search{query:cats}'
+    not_json = "{not json} call:web_search{query:cats}"
     calls_nj = parse_tool_calls_from_text(not_json, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in calls_nj] == ["web_search"], calls_nj
 
