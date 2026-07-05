@@ -1,16 +1,16 @@
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
+# it under the terms of the GNU Affero General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# GNU Affero General Public License for more details.
 #
-# You should have received a copy of the GNU Lesser General Public License
+# You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """PrefixGrouper layout builder + completion-logprob extraction for the Unsloth GRPO
@@ -64,21 +64,29 @@ def env_on(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no", "off")
 
 
+# One-time env reads (process constants, matching the one-time gates in rl_replacements).
+# The helpers below keep their callable signatures since unsloth_zoo imports and calls them.
+_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "0")
+_VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
+_TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
+_TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
+
+
 def prefix_grouper_enabled() -> bool:
     """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery)."""
-    return env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "0")
+    return _ENABLED
 
 
 def verify_on() -> bool:
-    return env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
+    return _VERIFY_ON
 
 
 def tokr_threshold() -> float:
-    return float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
+    return _TOKR_THRESHOLD
 
 
 def tol_ok() -> float:
-    return float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
+    return _TOL_OK
 
 
 # Kill band: a diff >= this means the mask/isolation is broken (contamination), so the

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -41,6 +42,17 @@ if HAS_XFORMERS and torch.cuda.is_available():
     if _cc[0] >= 12:
         HAS_XFORMERS = False
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+
+# PrefixGrouper FlexAttention kernel, resolved once when the env gate is on. Kept out of
+# the default import path so PG-off users never load torch flex_attention.
+_flex_shared_prefix_attention = None
+if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "0").lower() not in ("0", "false", "no", "off"):
+    try:
+        from .prefix_grouper_kernel import (
+            flex_shared_prefix_attention as _flex_shared_prefix_attention,
+        )
+    except Exception:
+        _flex_shared_prefix_attention = None
 
 FLASH_VARLEN = "flash_varlen"
 FLASH_DENSE = "flash_dense"
@@ -149,7 +161,11 @@ def run_attention(
     # after transpose(1,2)). Env-gated upstream (this field is only ever set when
     # UNSLOTH_GRPO_PREFIX_GROUPER is on and grouping succeeded), so default is byte-identical.
     if context.prefix_seg_info is not None:
-        from ..utils.prefix_grouper_kernel import flex_shared_prefix_attention
+        flex_shared_prefix_attention = _flex_shared_prefix_attention
+        if flex_shared_prefix_attention is None:
+            # gate flipped on after import (or the one-time load failed): resolve lazily,
+            # preserving the original per-call fallback semantics.
+            from ..utils.prefix_grouper_kernel import flex_shared_prefix_attention
 
         scale = None
         if config.flash_varlen_kwargs:

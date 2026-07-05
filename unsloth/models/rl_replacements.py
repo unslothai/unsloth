@@ -68,6 +68,26 @@ try:
     )
 except Exception:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
+# One-time PrefixGrouper gate: only import the kernel plumbing when the env gate is on;
+# any import failure degrades to "PrefixGrouper off".
+_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None
+UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "0").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+if UNSLOTH_GRPO_PREFIX_GROUPER_ON:
+    try:
+        from ..utils.prefix_grouper import (
+            build_group_layout as _pg_build_layout,
+            prefix_grouper_enabled as _pg_enabled_fn,
+            verify_on as _pg_verify_on,
+            tol_ok as _pg_tol_ok,
+            TOL_KILL as _PG_TOL_KILL,
+        )
+    except Exception:
+        UNSLOTH_GRPO_PREFIX_GROUPER_ON = False
 
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
@@ -1393,24 +1413,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_use = False
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_num_gen = getattr(self, "num_generations", None)
-            # Cheap env check FIRST so the default-off path never imports or runs any PG code
-            # (truly byte-identical when the gate is unset).
-            _pg_engage = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "0").lower() not in (
-                "0",
-                "false",
-                "no",
-                "off",
-            )
+            # One-time env gate + import, hoisted to the module level (mirrored into the
+            # generated cache via RL_PRE_ITEMS); the default-off path runs zero PG code.
+            _pg_engage = UNSLOTH_GRPO_PREFIX_GROUPER_ON
             if _pg_engage:
                 try:
-                    from unsloth.utils.prefix_grouper import (
-                        build_group_layout as _pg_build_layout,
-                        prefix_grouper_enabled as _pg_enabled_fn,
-                        verify_on as _pg_verify_on,
-                        tol_ok as _pg_tol_ok,
-                        TOL_KILL as _PG_TOL_KILL,
-                    )
-
                     # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
                     # entirely for softcap models (e.g. gemma2) before building any layout.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
@@ -1963,6 +1970,16 @@ RL_PRE_ITEMS["grpo_trainer"].append(
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = 'torch.where(_keep, new' in _unsloth_inspect.getsource(_unsloth_zoo_RL['grpo_compute_loss'])\n"
     "except Exception:\n"
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False\n"
+)
+# One-time PrefixGrouper gate, same shape as the module-top constants above.
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
+    "UNSLOTH_GRPO_PREFIX_GROUPER_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER', '0').lower() not in ('0', 'false', 'no', 'off')\n"
+    "if UNSLOTH_GRPO_PREFIX_GROUPER_ON:\n"
+    "    try:\n"
+    "        from unsloth.utils.prefix_grouper import build_group_layout as _pg_build_layout, prefix_grouper_enabled as _pg_enabled_fn, verify_on as _pg_verify_on, tol_ok as _pg_tol_ok, TOL_KILL as _PG_TOL_KILL\n"
+    "    except Exception:\n"
+    "        UNSLOTH_GRPO_PREFIX_GROUPER_ON = False\n"
 )
 
 
