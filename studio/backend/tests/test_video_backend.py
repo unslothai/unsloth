@@ -868,3 +868,73 @@ def test_second_dit_view_write_through():
     assert pipe.transformer_2 == "t2-compiled" and pipe.transformer == "t1"
     view.flag = "set"
     assert pipe.flag == "set"
+
+# ── scoped base-repo download ─────────────────────────────────────────────────
+
+
+def _sibling(name, size):
+    return types.SimpleNamespace(rfilename = name, size = size)
+
+
+_LTX2_SIBLINGS = [
+    _sibling("model_index.json", 10),
+    _sibling("ltx-2-19b-packaged-fp8.safetensors", 170),
+    _sibling("transformer/config.json", 1),
+    _sibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 20),
+    _sibling("transformer/diffusion_pytorch_model-00002-of-00002.safetensors", 18),
+    _sibling("text_encoder/model-00001-of-00002.safetensors", 25),
+    _sibling("text_encoder/model-00002-of-00002.safetensors", 25),
+    _sibling("text_encoder/diffusion_pytorch_model-00001-of-00002.safetensors", 25),
+    _sibling("text_encoder/diffusion_pytorch_model-00002-of-00002.safetensors", 25),
+    _sibling("vae/diffusion_pytorch_model.safetensors", 3),
+    _sibling("tokenizer/tokenizer.model", 1),
+    _sibling("assets/example.mp4", 500),
+]
+
+
+def test_base_download_files_scopes_pipeline_pull():
+    # A pipeline load skips the packaged root checkpoint, the duplicate
+    # text-encoder shard naming, and non-weight assets -- and keeps everything else.
+    info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)
+    files = dict(VideoBackend._base_download_files(info, "pipeline"))
+    assert "ltx-2-19b-packaged-fp8.safetensors" not in files
+    assert "text_encoder/diffusion_pytorch_model-00001-of-00002.safetensors" not in files
+    assert "assets/example.mp4" not in files
+    assert files["text_encoder/model-00001-of-00002.safetensors"] == 25
+    assert files["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"] == 20
+    assert sum(files.values()) == 10 + 1 + 20 + 18 + 25 + 25 + 3 + 1
+
+
+def test_base_download_files_gguf_drops_transformer():
+    # A GGUF/single-file checkpoint replaces the DiT: the base transformer never pulls.
+    info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)
+    names = [n for n, _ in VideoBackend._base_download_files(info, "gguf")]
+    assert not any(n.startswith("transformer/") for n in names)
+    assert "text_encoder/model-00001-of-00002.safetensors" in names
+
+
+def test_load_progress_clamps_overshoot(fake_runtime, monkeypatch):
+    # The cache scan counts blobs a broader previous pull left behind; the reported
+    # counter must never exceed the scoped estimate (no "282 GB of 263 GB").
+    backend = VideoBackend()
+    backend._loading = types.SimpleNamespace(
+        repo_id = "Lightricks/LTX-2", base_repo = None, expected_bytes = 100, error = None
+    )
+    monkeypatch.setattr(VideoBackend, "_cache_bytes", lambda self, repo: 150)
+    progress = backend.load_progress()
+    assert progress["phase"] == "finalizing"
+    assert progress["downloaded_bytes"] == 100
+    assert progress["expected_bytes"] == 100
+
+
+def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
+    # When the scoped pre-download produced a local snapshot, from_pretrained must
+    # receive that dir (keeping diffusers' own broader snapshot sweep off the hub).
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Lightricks/LTX-2",
+        model_kind = "pipeline",
+        _base_local_dir = str(tmp_path),
+    )
+    assert _FakePipeline.last["base"] == str(tmp_path)
+    backend.unload()
