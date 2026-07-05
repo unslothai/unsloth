@@ -2981,9 +2981,21 @@ const VoiceEngine: FC = () => {
   }, []);
 
   // On remount: restore "active" only — "configuring" stays as-is (no mic).
+  // Deferred one tick: on a New Chat the Thread remounts here with _voiceMode still
+  // "active", but the parent's thread-switch reset (which flips voice OFF) runs in
+  // the SAME commit, after this child effect. Starting the mic synchronously would
+  // arm dictation on the fresh chat that voice is being turned off for (voice reads
+  // off, yet the red "stop dictation" square is showing). By deferring and
+  // re-checking _voiceMode, the reset settles first and we skip the restore. The
+  // first-send remount keeps _voiceMode "active", so dictation still resumes there.
   useEffect(() => {
     if (_voiceMode !== "active" || isThreadRunning) return;
-    auiRef.current.composer().startDictation();
+    const id = setTimeout(() => {
+      if (_voiceMode !== "active") return;
+      if (auiRef.current.thread().getState().isRunning || isSpeakingRef.current) return;
+      auiRef.current.composer().startDictation();
+    }, 0);
+    return () => clearTimeout(id);
   }, []); // mount only
 
   // Watch the store: when it transitions from "configuring" → "active"
