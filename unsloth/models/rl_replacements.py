@@ -1497,9 +1497,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         # )
                         if (
                             # (not _pk_force_verify) and
-                            _pk_ok is True
-                            and _pk_T <= _pk_vT
-                            and _pk_maxseg <= _pk_vS
+                            _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS
                         ):
                             _pk_use = True  # already verified for this shape
                         else:
