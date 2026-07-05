@@ -2292,6 +2292,14 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
+      // Curated safetensors rows render ABOVE the recommended rows (and call
+      // getOptionProps), so their keys must lead here or they fall back to the
+      // duplicate ...-option-missing id and drop out of arrow-key navigation.
+      keys.push(
+        ...curatedSafetensorsRows.map((m) =>
+          makeModelOptionKey("curated-safetensors", m.id),
+        ),
+      );
       keys.push(
         ...recommendedRows.map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -2301,6 +2309,7 @@ export function HubModelPicker({
   }, [
     cachedReady,
     chatOnly,
+    curatedSafetensorsRows,
     sortedCustomFolderModels,
     customFoldersCollapsed,
     downloadedCollapsed,
