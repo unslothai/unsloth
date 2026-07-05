@@ -446,7 +446,10 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     assert "sk-unsloth" not in content_line  # key stays in the private file
 
 
-def test_opencode_inline_config_omits_permissions_without_yolo(fake_studio):
+def test_opencode_inline_config_carries_ask_policy_without_yolo(fake_studio):
+    # OPENCODE_CONFIG loads BELOW project opencode.json, so the ask policy must also ride
+    # in OPENCODE_CONFIG_CONTENT (which outranks project config) or a project config
+    # allowing edit/bash/webfetch would still auto-approve a non-yolo session.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     content_line = next(
@@ -455,7 +458,8 @@ def test_opencode_inline_config_omits_permissions_without_yolo(fake_studio):
     inline = json.loads(
         shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
     )
-    assert inline == {"model": f"unsloth/{MODEL['id']}"}
+    assert inline["model"] == f"unsloth/{MODEL['id']}"
+    assert inline["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
 
 
 def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
@@ -1856,6 +1860,85 @@ def test_opencode_non_yolo_preserves_custom_permissions(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
     assert config["permission"] == {"edit": "ask", "bash": "deny", "read": "ask", "webfetch": "ask"}
+
+
+def test_opencode_non_yolo_preserves_string_permission(tmp_path):
+    # A global string rule ("deny") is a user-managed catch-all; it must be left in the
+    # config file untouched, not replaced by a per-tool "ask" block that weakens it.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": "deny"}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["permission"] == "deny"
+    # The inline session policy carried over project config never weakens the "deny".
+    assert session == {"edit": "deny", "bash": "deny", "webfetch": "deny"}
+
+
+def test_opencode_non_yolo_preserves_catch_all_deny(tmp_path):
+    # A "*" deny catch-all governs absent tools; do not override it with per-tool "ask",
+    # but do tighten a tool explicitly set to "allow".
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"*": "deny", "bash": "allow"}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["permission"] == {"*": "deny", "bash": "ask"}
+    assert session == {"edit": "deny", "bash": "ask", "webfetch": "deny"}
+
+
+def test_opencode_non_yolo_tightens_catch_all_allow(tmp_path):
+    # A "*" allow catch-all still auto-approves the yolo tools, so a non-yolo run pins the
+    # three tools to "ask" (keeping the catch-all for other tools).
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"*": "allow"}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["permission"] == {"*": "allow", "edit": "ask", "bash": "ask", "webfetch": "ask"}
+    assert session == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+
+
+def test_opencode_non_yolo_ask_policy_wins_over_project_config(fake_studio):
+    # OPENCODE_CONFIG loads below project opencode.json, so the ask policy must also ride
+    # in OPENCODE_CONFIG_CONTENT to prompt even when a project config allows the tools.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    content_line = next(
+        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
+    )
+    inline = json.loads(
+        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
+    )
+    assert inline["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+
+
+def test_openclaw_non_yolo_leaves_mode_policy(tmp_path):
+    # tools.exec.mode is OpenClaw's normalized knob and cannot be combined with explicit
+    # security/ask (the config is rejected), so a mode-based policy must be left as-is.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"mode": "deny"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"mode": "deny"}
+
+
+def test_openclaw_non_yolo_preserves_sandbox_host(tmp_path):
+    # host=sandbox defaults to security=deny (stricter than the gateway "full" default),
+    # so a non-yolo run must not treat the missing security as permissive nor pop host
+    # (which would broaden routing to the gateway).
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"host": "sandbox"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"host": "sandbox"}
+
+
+def test_openclaw_non_yolo_preserves_node_host(tmp_path):
+    # host=node routes to a paired node and is only ever set by the user (--yolo writes
+    # host=gateway), so a non-yolo run must not pop it and reroute to the gateway.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"host": "node"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"host": "node"}
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():
