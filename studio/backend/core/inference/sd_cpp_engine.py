@@ -375,6 +375,9 @@ class SdCppEngine:
     def _prepare_out(output_path: str) -> Path:
         out = Path(output_path)
         out.parent.mkdir(parents = True, exist_ok = True)
+        # Drop a stale file at the target so the post-run is_file() check proves THIS
+        # run produced the image, not a leftover from an earlier run at the same path.
+        out.unlink(missing_ok = True)
         return out
 
     def _run(

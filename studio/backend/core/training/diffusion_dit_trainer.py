@@ -528,6 +528,13 @@ def run_dit_lora_training(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, which is
     # unsupported for real runs but keeps import/unit tests architecture-agnostic).
+    # Fail fast on pre-Ampere CUDA (T4/V100/RTX 20xx): bf16 compute is required and the
+    # run would otherwise die deep in model load with an opaque dtype error.
+    if device == "cuda" and not torch.cuda.is_bf16_supported():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
+            "this CUDA device does not support bf16."
+        )
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
     use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
 
@@ -585,6 +592,16 @@ def run_dit_lora_training(
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
+    # One lr_sched.step() per optimizer update (cfg.train_steps total), matching the
+    # SDXL trainer: counting micro-steps instead would stretch warmup past the run.
+    from diffusers.optimization import get_scheduler
+
+    lr_sched = get_scheduler(
+        cfg.lr_scheduler,
+        optimizer = optimizer,
+        num_warmup_steps = cfg.lr_warmup_steps,
+        num_training_steps = cfg.train_steps,
+    )
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
@@ -597,10 +614,15 @@ def run_dit_lora_training(
     peak_gb = 0.0
     t_start = time.time()
     done = 0
+    # Honor train_batch_size by folding it into the micro-step count: averaging the
+    # gradient over batch * accum single-image passes is mathematically identical to
+    # true batching with a mean loss, and keeps the QLoRA memory profile flat (one
+    # image's activations at a time). Previously batch_size > 1 silently trained at 1.
+    micro_steps = cfg.gradient_accumulation_steps * cfg.train_batch_size
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
-        for _ in range(cfg.gradient_accumulation_steps):
+        for _ in range(micro_steps):
             i = rng.randrange(len(image_paths))
             px = (
                 _load_pixel_tensor(
@@ -638,8 +660,8 @@ def run_dit_lora_training(
                 )
                 target = noise - latents
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-            (loss / cfg.gradient_accumulation_steps).backward()
-            step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
+            (loss / micro_steps).backward()
+            step_loss += float(loss.detach()) / micro_steps
 
         grad_norm: Optional[float] = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
@@ -647,6 +669,7 @@ def run_dit_lora_training(
             # chart wants (spikes stay visible even when clipping flattens the update).
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         optimizer.step()
+        lr_sched.step()
 
         running_loss += step_loss
         done = opt_step + 1
@@ -665,7 +688,7 @@ def run_dit_lora_training(
                 total_steps = cfg.train_steps,
                 loss = round(step_loss, 5),
                 avg_loss = round(running_loss / done, 5),
-                learning_rate = cfg.learning_rate,
+                learning_rate = lr_sched.get_last_lr()[0],
                 grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
                 samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,

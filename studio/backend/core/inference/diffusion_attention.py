@@ -129,6 +129,11 @@ def select_attention_backend(
         backend = _ALIASES[alias]
         if backend == "native":
             return None
+        # Every explicit kernel here (cuDNN / flash* / sage) is CUDA+NVIDIA-only; on
+        # ROCm / MPS / CPU diffusers accepts the name at set time and the first
+        # generation crashes, so drop to the native default up front.
+        if not _is_cuda_nvidia(target):
+            return None
         # An arch-gated kernel (flash3/flash4) on a card that can't run it would set fine
         # then crash mid-generation, so drop it to the native default up front.
         if not _backend_arch_supported(backend):

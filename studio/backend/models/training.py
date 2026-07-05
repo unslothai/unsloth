@@ -704,10 +704,14 @@ class DiffusionTrainingStartRequest(BaseModel):
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
     )
-    max_grad_norm: float = Field(1.0, gt = 0, description = "Gradient clipping max-norm")
+    max_grad_norm: float = Field(
+        1.0, ge = 0, description = "Gradient clipping max-norm; 0 disables clipping"
+    )
     seed: int = Field(42)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
-    snr_gamma: Optional[float] = Field(5.0, description = "Min-SNR loss weighting; null disables")
+    snr_gamma: Optional[float] = Field(
+        5.0, gt = 0, description = "Min-SNR loss weighting; null disables"
+    )
     gradient_checkpointing: bool = Field(True)
     lr_scheduler: Literal[
         "linear",
