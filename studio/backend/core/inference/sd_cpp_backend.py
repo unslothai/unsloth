@@ -698,9 +698,7 @@ class SdCppDiffusionBackend:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(
-                r for r in (loading.repo_id, loading.base_repo, *loading.asset_repos) if r
-            )
+            return tuple(r for r in (loading.repo_id, loading.base_repo, *loading.asset_repos) if r)
 
     # ── Generate ───────────────────────────────────────────────────────────
 
