@@ -587,10 +587,13 @@ def test_kimi_section_end_inside_arg_string_is_not_a_truncation():
     }
 
 
-def test_closed_envelope_example_before_deepseek_block_runs_real_call():
-    # A CLOSED <tool_call>/<function> example in prose that ends BEFORE a genuine
-    # DeepSeek/Kimi block must not suppress the marker pre-pass: the real call has
-    # to be parsed, not the phantom tool named inside the prose example.
+def test_closed_envelope_before_deepseek_block_owns_turn():
+    # Document order is the contract: a CLOSED <tool_call>/<function> call that
+    # precedes a DeepSeek/Kimi block owns the turn, even when prose frames it as
+    # an example. The parser cannot distinguish "looks like" framing from a real
+    # leading call, and the same rule protects a real leading call followed by a
+    # trailing DS/Kimi syntax example (see
+    # test_leading_xml_call_wins_over_trailing_kimi_example).
     deepseek = (
         "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n"
         "```json\n"
@@ -602,15 +605,14 @@ def test_closed_envelope_example_before_deepseek_block_runs_real_call():
         'A Qwen call looks like <tool_call>{"name":"example_tool","arguments":{}}</tool_call>.\n'
     )
     calls = parse_tool_calls_from_text(prose + deepseek)
-    assert [c["function"]["name"] for c in calls] == ["search_web"], calls
-    assert json.loads(calls[0]["function"]["arguments"]) == {"query": "weather in Paris"}
+    assert [c["function"]["name"] for c in calls] == ["example_tool"], calls
 
     kimi = (
         "<|tool_calls_section_begin|><|tool_call_begin|>functions.lookup:0"
         '<|tool_call_argument_begin|>{"id":7}<|tool_call_end|><|tool_calls_section_end|>'
     )
     calls_k = parse_tool_calls_from_text("Example: <function=demo>{}</function> and now:\n" + kimi)
-    assert [c["function"]["name"] for c in calls_k] == ["lookup"], calls_k
+    assert [c["function"]["name"] for c in calls_k] == ["demo"], calls_k
 
 
 def test_marker_inside_closed_outer_envelope_still_runs_outer_call():
