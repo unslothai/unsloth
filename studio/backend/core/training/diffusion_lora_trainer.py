@@ -50,17 +50,21 @@ from core.training.diffusion_train_common import (  # noqa: F401
     EventCb,
     StopCb,
     DiffusionLoraConfig,
+    LATENT_CACHE_OVER_BUDGET,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _coerce_gradient_checkpointing,
     _config_from_dict,
     _CONFIG_ALIASES,
     _emit,
+    _latent_cache_forced,
+    _latent_cache_over_budget,
     _plan_cache_variants,
     _publish_to_lora_catalog,
     _restore_perf_flags,
     discover_image_caption_pairs,
     get_trainer,
+    PermutationBatchSampler,
     resolve_train_steps,
 )
 
@@ -206,6 +210,9 @@ def _build_sdxl_latent_cache(
 
     cache: list[list[tuple]] = []
     total = len(image_paths)
+    total_variants = sum(len(v) for v in plan)
+    forced = _latent_cache_forced()
+    gated = False
     for i, path in enumerate(image_paths):
         variants = []
         for u_left, u_top, flip in plan[i]:
@@ -217,6 +224,25 @@ def _build_sdxl_latent_cache(
                 dist = vae.encode(pixel_values).latent_dist
             a = _hold(dist.mean * vae_scale)
             b = _hold(dist.std * vae_scale)
+            if not forced and not gated:
+                # Size-gate the automatic cache off the first REAL encoded variant, before
+                # building the rest: thousands of images x variants of two fp32 tensors can
+                # exhaust host/pinned RAM with no fallback. Over budget we bail with the VAE
+                # still resident so the loop encodes latents per step instead.
+                per_variant = a.numel() * a.element_size() + b.numel() * b.element_size()
+                if _latent_cache_over_budget(per_variant, total_variants):
+                    _emit(
+                        on_event,
+                        "warning",
+                        message = (
+                            "Latent cache disabled: estimated "
+                            f"{per_variant * total_variants / 1024 ** 3:.1f} GiB over the "
+                            "budget; encoding latents per step instead. Set "
+                            "UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to keep it."
+                        ),
+                    )
+                    return LATENT_CACHE_OVER_BUDGET
+                gated = True
             variants.append((a, b, tuple(time_ids)))
         cache.append(variants)
         if (i + 1) % 4 == 0 or i + 1 == total:
@@ -422,7 +448,11 @@ def run_diffusion_lora_training(
                 on_event,
                 _check_stop,
             )
-            if latent_cache is None:  # stopped during the cache build; nothing trained yet
+            if latent_cache is LATENT_CACHE_OVER_BUDGET:
+                # The estimated cache exceeded the host-memory budget; keep the VAE resident
+                # and fall through to the in-loop encode path (latent_cache stays None).
+                latent_cache = None
+            elif latent_cache is None:  # stopped during the cache build; nothing trained yet
                 out_dir = Path(cfg.output_dir).expanduser()
                 _emit(
                     on_event,
@@ -433,23 +463,30 @@ def run_diffusion_lora_training(
                     steps_run = 0,
                 )
                 return str(out_dir)
-            try:
-                pipe.vae = None
-            except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
-                pass
-            del vae
-            vae = None
-            gc.collect()
-            if device == "cuda":
-                torch.cuda.empty_cache()
+            else:
+                try:
+                    pipe.vae = None
+                except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
+                    pass
+                del vae
+                vae = None
+                gc.collect()
+                if device == "cuda":
+                    torch.cuda.empty_cache()
         # Variant picks use their own stream so the loop's index/noise draws stay on the same
         # seed-deterministic sequence whether or not the cache is enabled.
         variant_rng = random.Random(cfg.seed + 1)
 
         _emit(on_event, "model_load_completed", compiled = compiled)
 
+        # Permutation-cycle index sampler (shared with the DiT trainer): each dataset image is
+        # visited once per cycle before any repeat, so a short run does not leave part of a
+        # small dataset unseen. Draws from the loop's own rng so the sequence stays
+        # seed-deterministic.
+        index_sampler = PermutationBatchSampler(len(pairs), rng)
+
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            idx = rng.sample(range(len(pairs)), k = min(cfg.train_batch_size, len(pairs)))
+            idx = index_sampler.next_batch(min(cfg.train_batch_size, len(pairs)))
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 

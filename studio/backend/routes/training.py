@@ -1337,7 +1337,11 @@ async def get_diffusion_training_run(
     from core.training.diffusion_training_service import get_diffusion_run
 
     rec = get_diffusion_run(job_id)
-    if rec is None:
+    # A valid-JSON file that is not an object (a truncated / hand-edited [] record) would make
+    # DiffusionTrainingRunDetail(**rec) raise TypeError -- not the ValidationError caught below
+    # -- and 500 the endpoint. Treat any non-dict record as absent, matching the list route's
+    # shape check.
+    if not isinstance(rec, dict):
         raise HTTPException(status_code = 404, detail = "No such training run.")
     try:
         return DiffusionTrainingRunDetail(**rec)
