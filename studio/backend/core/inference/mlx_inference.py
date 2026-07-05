@@ -55,7 +55,7 @@ def _make_mlx_presence_penalty_processor(penalty: float):
             # First call = prompt only; latch its length.
             state["prompt_len"] = int(tokens.shape[0])
             return logits
-        generated = tokens[state["prompt_len"]:]
+        generated = tokens[state["prompt_len"] :]
         if generated.size == 0:
             return logits
         # Scatter-assign is idempotent for duplicate ids: presence applies once per token, on-device.
@@ -415,9 +415,7 @@ class MLXInferenceBackend:
                 )
             )
         if presence_penalty:
-            logits_processors.append(
-                _make_mlx_presence_penalty_processor(float(presence_penalty))
-            )
+            logits_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
         if not logits_processors:
             logits_processors = None
 
@@ -547,9 +545,7 @@ class MLXInferenceBackend:
                 _vlm_processors.extend(
                     make_logits_processors(repetition_penalty = float(repetition_penalty))
                 )
-            _vlm_processors.append(
-                _make_mlx_presence_penalty_processor(float(presence_penalty))
-            )
+            _vlm_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
             vlm_kwargs["logits_processors"] = _vlm_processors
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)

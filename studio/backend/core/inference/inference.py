@@ -27,44 +27,16 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.runtime_context import runtime_context_length
 from core.inference.message_content import content_to_text
+from core.inference.presence_penalty import (
+    apply_presence_penalty,
+    _make_presence_penalty_processor,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
 
 
 logger = get_logger(__name__)
-
-
-def apply_presence_penalty(input_ids, scores, penalty: float, prompt_len: int):
-    """OpenAI/llama.cpp presence penalty: subtract ``penalty`` once per distinct
-    completion token (positions >= prompt_len; prompt excluded, multiplicity
-    ignored, negatives raise). In place; zero is a no-op."""
-    if not penalty:
-        return scores
-    vocab_size = scores.shape[-1]
-    for b in range(input_ids.shape[0]):
-        generated = input_ids[b, prompt_len:]
-        if generated.numel() == 0:
-            continue
-        seen = torch.unique(generated)
-        seen = seen[seen < vocab_size]
-        if seen.numel():
-            scores[b, seen] = scores[b, seen] - penalty
-    return scores
-
-
-def _make_presence_penalty_processor(penalty: float, prompt_len: int):
-    """``LogitsProcessorList`` for ``apply_presence_penalty``; ``None`` at zero penalty (generate call stays byte-identical)."""
-    if not penalty:
-        return None
-    from transformers import LogitsProcessor, LogitsProcessorList
-
-    class _PresencePenaltyLogitsProcessor(LogitsProcessor):
-        @torch.no_grad()
-        def __call__(self, input_ids, scores):
-            return apply_presence_penalty(input_ids, scores, penalty, prompt_len)
-
-    return LogitsProcessorList([_PresencePenaltyLogitsProcessor()])
 
 
 class HarmonyTextStreamer:

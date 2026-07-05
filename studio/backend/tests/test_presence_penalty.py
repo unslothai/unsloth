@@ -7,12 +7,13 @@ looked worse served as safetensors. These tests pin the processor semantics
 frequency, zero a no-op, negatives raise) plus a param-propagation regression
 over route -> orchestrator cmd -> worker gen_kwargs.
 """
+
 import threading
 
 import pytest
 import torch
 
-from core.inference.inference import (
+from core.inference.presence_penalty import (
     apply_presence_penalty,
     _make_presence_penalty_processor,
 )
@@ -122,7 +123,7 @@ def test_processor_composes_with_other_processors():
     scores = torch.zeros(1, 6)
     out = combined(input_ids, scores)
     assert out[0, 0].item() == pytest.approx(100.0)  # other processor ran
-    assert out[0, 2].item() == pytest.approx(-1.0)   # presence ran
+    assert out[0, 2].item() == pytest.approx(-1.0)  # presence ran
 
 
 def test_mlx_presence_penalty_callable():
