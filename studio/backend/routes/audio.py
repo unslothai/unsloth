@@ -205,13 +205,21 @@ async def warmup(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Pre-build and exercise the Whisper pipeline on a short silent clip.
+    Pre-build and exercise the FULL Whisper transcription path, so the first real
+    utterance runs as fast as every later one.
 
-    Whisper always processes a fixed 30-second (padded) mel window, so warming on
-    any clip tunes the exact conv shapes every later utterance uses. On ROCm that
-    moves MIOpen's one-time kernel autotune off the critical path (before the user
-    speaks) instead of freezing the first real transcription. Call it when voice
-    mode starts with the Whisper STT engine; idempotent and cheap once warmed.
+    A warmup on a 1s silent 16 kHz clip is not representative: Whisper emits
+    <no-speech> in ~1 decode step (so the autoregressive decoder / KV-cache kernels
+    never compile) and no resampling happens (so librosa is never imported). The
+    first REAL utterance then pays both costs cold. Here we instead:
+      1. Force ~64 decode tokens on a bit of noise, compiling the full decoder loop
+         (garbage tokens, discarded; the kernel SHAPES match the real greedy call).
+         This is on top of the encoder conv autotune, which any clip already tunes
+         since Whisper pads every <30s input to the same fixed 30s mel window.
+      2. Import librosa and run one resample, since real mic audio arrives at
+         44.1/48 kHz and is resampled to 16 kHz on every transcription -- the first
+         such call otherwise pays librosa's slow import + numba JIT on the hot path.
+    Call it when voice mode starts with the Whisper STT engine; idempotent.
     """
     import numpy as np
 
@@ -219,7 +227,28 @@ async def warmup(
 
     def run() -> None:
         pipe = _get_whisper_pipeline(model)
-        pipe(np.zeros(WHISPER_SAMPLE_RATE, dtype = np.float32))
+        # (1) Full decode-loop warm. Force ~64 new tokens so the decoder / KV-cache
+        # kernels compile now instead of on the first real utterance. Fall back to a
+        # plain pass if forced generation isn't accepted, so the encoder still warms.
+        try:
+            clip = (
+                np.random.default_rng(0).standard_normal(WHISPER_SAMPLE_RATE) * 0.01
+            ).astype(np.float32)
+            pipe(clip, generate_kwargs = {"min_new_tokens": 64, "max_new_tokens": 64})
+        except Exception:
+            pipe(np.zeros(WHISPER_SAMPLE_RATE, dtype = np.float32))
+        # (2) Warm the resample path (librosa import + numba JIT) that real 44.1/48
+        # kHz mic audio triggers, so the first transcription doesn't pay it.
+        try:
+            import librosa
+
+            librosa.resample(
+                np.zeros(48000, dtype = np.float32),
+                orig_sr = 48000,
+                target_sr = WHISPER_SAMPLE_RATE,
+            )
+        except Exception:
+            pass
 
     try:
         await asyncio.to_thread(run)
