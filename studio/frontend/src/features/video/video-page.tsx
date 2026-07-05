@@ -605,7 +605,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     try {
       const url = await fetchGalleryVideoObjectUrl(video.url);
       galleryCache.srcById.set(video.id, url);
-      setSrcById((prev) => ({ ...prev, [video.id]: url }));
+      // The URL is cached above either way; skip the state update after unmount
+      // (matches the other async callbacks in this file).
+      if (isMounted.current) {
+        setSrcById((prev) => ({ ...prev, [video.id]: url }));
+      }
     } catch {
       // Leave it without a src; the card shows a placeholder.
     } finally {
