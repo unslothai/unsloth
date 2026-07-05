@@ -503,6 +503,7 @@ def test_gemma_strip_gate_empty_tools_preserves_prose():
         _gemma_strip_gate([{"function": {"name": "web_search"}}]),
     )
 
+
 def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
     # The call ends at its first non-data close: prose after it survives the
     # strip even when it mentions a literal </function>.

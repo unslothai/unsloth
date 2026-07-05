@@ -1357,6 +1357,7 @@ class TestLeadingJsonArrayAnswerIsData:
         )
         assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
+
 class TestLeadingBareJsonOwnsTurnOverTrailingXml:
     """Document order: a leading closed bare-JSON call owns the turn even when
     tool XML appears AFTER it (inside-or-after, mirroring the Mistral rule)."""
