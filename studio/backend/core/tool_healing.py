@@ -308,6 +308,19 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
     return last_param_start > max(last_param_close, last_func_close)
 
 
+def _func_close_index(content: str, body_start: int, body: str) -> int:
+    """Index in ``body`` of the first ``</function>`` that is not argument
+    data (not inside an open parameter value); -1 when every close is data.
+    Taking the LAST close swallowed prose between the real close and a
+    literal ``</function>`` mentioned later in the answer."""
+    idx = body.find(_FUNC_CLOSE_TAG)
+    while idx >= 0:
+        if not _inside_open_parameter(content, body_start + idx):
+            return idx
+        idx = body.find(_FUNC_CLOSE_TAG, idx + 1)
+    return -1
+
+
 def _trim_param_value(val: str) -> str:
     """Trim only the wrapping newline (not str.strip) so code/diff argument indentation survives."""
     if val.startswith("\n"):
@@ -406,7 +419,7 @@ def parse_tool_calls_from_text(
             body_end = len(content)
         body_end = min(body_end, next_func)
         body = content[body_start:body_end]
-        close_idx = body.rfind(_FUNC_CLOSE_TAG)
+        close_idx = _func_close_index(content, body_start, body)
         if close_idx >= 0:
             span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
             body = body[:close_idx]
@@ -490,14 +503,15 @@ def parse_tool_calls_from_text(
             # </function> close when present, else the scanned body end.
             span_end = body_end
             if not allow_incomplete:
-                close_idx = body.rfind(_FUNC_CLOSE_TAG)
+                close_idx = _func_close_index(content, body_start, body)
                 if close_idx < 0:
                     continue
                 body = body[:close_idx]
                 span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
             else:
-                # Terminate at last </function> so trailing prose doesn't leak into the value; no close -> keep whole body.
-                close_idx = body.rfind(_FUNC_CLOSE_TAG)
+                # Terminate at the real close so trailing prose doesn't leak
+                # into the value; no close -> keep whole body.
+                close_idx = _func_close_index(content, body_start, body)
                 if close_idx >= 0:
                     body = body[:close_idx]
                     span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)

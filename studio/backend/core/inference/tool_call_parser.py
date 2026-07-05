@@ -425,10 +425,7 @@ _FUNC_CLOSE_TAG_RE = re.compile(r"</function>")
 
 
 def _strip_function_xml_calls(text: str, *, final: bool) -> str:
-    """Strip ``<function=NAME>``/``<function name="NAME">`` calls by mirroring the
-    parser: an opener inside an open ``<parameter>`` value is data, and each call
-    closes at its REAL (last) ``</function>``. ``final`` drops a trailing unclosed
-    call; otherwise it stays buffered."""
+    """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open ``<parameter>`` is data and each call closes at its first ``</function>`` that is not parameter data; ``final`` drops a trailing unclosed call."""
     starts = [
         m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
     ]
@@ -443,7 +440,9 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
         next_start = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
         close = None
         for cm in _FUNC_CLOSE_TAG_RE.finditer(text, m.end(), next_start):
-            close = cm  # the call's real close is the LAST </function> before the next call
+            if not _inside_open_parameter(text, cm.start()):
+                close = cm  # first close that is not parameter data = the real close
+                break
         if close is not None:
             pos = close.end()
         elif final:
@@ -780,7 +779,12 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first_xml is None or trig < first_xml):
         first_xml = trig
-    return first_xml is not None and i < first_xml < end
+    # Inside the balanced body the signal is quoted argument data; AFTER the
+    # closed object the leading call still owns the turn in document order
+    # (mirrors the leading-Mistral rule above). A non-call object takes the
+    # decline path: it is dropped and only the tail parsed, so a real call
+    # after it still wins.
+    return first_xml is not None and i < first_xml
 
 
 def _signal_inside_leading_wrapperless_gemma(
