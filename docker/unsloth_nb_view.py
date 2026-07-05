@@ -51,6 +51,10 @@ def clean_section(title):
     # Drop a trailing run of '#', surrounding whitespace and any emoji/symbols
     # that sometimes lead a header; keep ASCII text, digits and a few separators.
     title = title.strip().strip("#").strip()
+    # Strip a leading run of emoji / symbols / punctuation that some domain
+    # headers lead with (e.g. "🐧 AMD Notebooks", "📒 Kaggle Notebooks") so the
+    # folder label is clean text.
+    title = re.sub(r"^[^\w]+", "", title)
     title = title.replace("-", " ").replace("/", " ")
     title = re.sub(r"\s+", " ", title).strip()
     return title
@@ -74,8 +78,13 @@ def parse_readme(readme_path):
     rows = []
     seen_pairs = set()  # (section, filename) already emitted
     section = None
+    # Reset on ANY markdown heading, not just `###`. The catalog uses `#`/`##`
+    # domain headers (e.g. "# AMD Notebooks", "# Kaggle Notebooks") that carry
+    # their own `nb/*.ipynb` link tables directly, with no intervening `###`.
+    # Matching only `###` left `section` stale, so those links were mis-filed
+    # under the previous section instead of getting their own folder.
     for line in text.splitlines():
-        m = re.match(r"^###\s+(.*)$", line)
+        m = re.match(r"^#{1,6}\s+(.*)$", line)
         if m:
             section = clean_section(m.group(1))
             continue
