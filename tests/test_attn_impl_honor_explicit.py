@@ -138,6 +138,53 @@ def test_resolver_downgrades_explicit_sdpa_for_sdpa_excluded_model():
     assert config.get("_attn_implementation") == "eager"
 
 
+@pytest.mark.parametrize("model_type", ["gemma3", "gemma3_text"])
+def test_resolver_downgrades_explicit_sdpa_for_disable_sdpa_model(model_type):
+    # gemma3 / gemma3_text are in DISABLE_SDPA_MODEL_NAMES: the loader forces
+    # supports_sdpa=False because their bundled SDPA modules are wrong. An explicit
+    # sdpa request with flash disabled must NOT re-enable that known-wrong path - it
+    # downgrades to eager, exactly like _SDPA_EXCLUDED_MODELS (gpt_oss). head_dim>256
+    # disables flash to mirror the real flash-disabled scenario.
+    config = {"model_type": model_type, "head_dim": 512}
+    result = resolve_attention_implementation(
+        model_class = None,
+        config = config,
+        requested_attn_implementation = "sdpa",
+        supports_sdpa = False,
+    )
+    assert result == "eager"
+    assert config.get("_attn_implementation") == "eager"
+
+
+def test_resolver_does_not_overmatch_gemma3n_for_explicit_sdpa():
+    # The "gemma3," trailing-comma guard must not match gemma3n: gemma3n is not in
+    # DISABLE_SDPA_MODEL_NAMES, so it stays a conservative (not known-wrong) model and an
+    # explicit sdpa request is still honored. Proves the substring match neither over- nor
+    # under-matches.
+    config = {"model_type": "gemma3n", "head_dim": 512}
+    result = resolve_attention_implementation(
+        model_class = None,
+        config = config,
+        requested_attn_implementation = "sdpa",
+        supports_sdpa = False,
+    )
+    assert result == "sdpa"
+    assert config.get("_attn_implementation") == "sdpa"
+
+
+def test_resolver_downgrades_synthesized_sdpa_for_disable_sdpa_model():
+    # A synthesized/default sdpa (requested is None; the value came from config) on a
+    # DISABLE_SDPA_MODEL_NAMES model must still downgrade to eager.
+    config = {"model_type": "gemma3", "attn_implementation": "sdpa"}
+    result = resolve_attention_implementation(
+        model_class = None,
+        config = config,
+        requested_attn_implementation = None,
+        supports_sdpa = False,
+    )
+    assert result == "eager"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-q"]))
