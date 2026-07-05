@@ -303,9 +303,15 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
         last_param_start = match.start()
     if last_param_start < 0:
         return False
-    last_param_close = content.rfind(_PARAM_CLOSE_TAG, 0, pos)
-    last_func_close = content.rfind(_FUNC_CLOSE_TAG, 0, pos)
-    return last_param_start > max(last_param_close, last_func_close)
+    # The parameter's OWN close tag decides: while it closes after ``pos`` the
+    # position is argument data, even across several literal function closes.
+    # Only an unclosed parameter falls back to the first function close
+    # (mirrors tool_call_parser._inside_open_parameter).
+    own_close = content.find(_PARAM_CLOSE_TAG, last_param_start)
+    if own_close >= 0:
+        return own_close > pos
+    func_close = content.find(_FUNC_CLOSE_TAG, last_param_start)
+    return func_close < 0 or pos < func_close
 
 
 def _func_close_index(content: str, body_start: int, body: str) -> int:
