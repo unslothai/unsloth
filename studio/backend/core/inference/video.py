@@ -415,9 +415,7 @@ class VideoBackend:
                     kwargs.get("hf_token"),
                     cancel_event = self._cancel_event,
                 )
-            kwargs["_base_local_dir"] = self._predownload_base(
-                base, kwargs.get("hf_token"), kind
-            )
+            kwargs["_base_local_dir"] = self._predownload_base(base, kwargs.get("hf_token"), kind)
             self.load_pipeline(**kwargs)
             with self._lock:
                 if self._load_token == token:
