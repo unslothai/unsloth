@@ -1412,6 +1412,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_result = None
             _pg_use = False
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
+            _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
             # One-time env gate + import, hoisted to the module level (mirrored into the
             # generated cache via RL_PRE_ITEMS); the default-off path runs zero PG code.
@@ -1469,35 +1470,35 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if _pg_verified is None:
                             _pg_verified = set()
                         _pg_chunks = max(1, total_rows * multiplier)
-                        with _get_inference_mode_context_manager(model):
-                            with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                                _pg_hidden = unwrapped_model(
-                                    input_ids = _pg_layout.flat_ids,
-                                    position_ids = _pg_layout.position_ids,
-                                    prefix_seg_info = _pg_layout.prefix_seg_info,
-                                    use_cache = False,
-                                ).logits
-                                _pg_result = _pg_layout.extract_logps(
-                                    _pg_hidden,
-                                    lm_head,
-                                    chunked_hidden_states_selective_log_softmax,
-                                    _pg_chunks,
-                                    logit_scale_multiply,
-                                    logit_scale_divide,
-                                    logit_softcapping,
-                                    temperature,
-                                )
-                                # release the [1, T, H] hidden before the full-row verify forward
-                                _pg_hidden = None
-                        device_synchronize()
-                        # override scatter width to the loss window [B, logits_to_keep+max_left_pad]
-                        _pg_W = logits_to_keep + max_left_pad
-                        if _pg_result.shape[1] != _pg_W:
-                            _pg_result = (
-                                _pg_result[:, -_pg_W:]
-                                if _pg_result.shape[1] > _pg_W
-                                else _pg_result
-                            )
+
+                        def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
+                            with _get_inference_mode_context_manager(model):
+                                with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                                    _pg_hidden = unwrapped_model(
+                                        input_ids = _pg_layout.flat_ids,
+                                        position_ids = _pg_layout.position_ids,
+                                        prefix_seg_info = _pg_layout.prefix_seg_info,
+                                        use_cache = False,
+                                    ).logits
+                                    _pg_r = _pg_layout.extract_logps(
+                                        _pg_hidden,
+                                        lm_head,
+                                        chunked_hidden_states_selective_log_softmax,
+                                        _pg_chunks,
+                                        logit_scale_multiply,
+                                        logit_scale_divide,
+                                        logit_softcapping,
+                                        temperature,
+                                    )
+                                    # release the [1, T, H] hidden before any verify forward
+                                    _pg_hidden = None
+                            device_synchronize()
+                            # scatter width = the loss window [B, logits_to_keep+max_left_pad]
+                            _pg_w = logits_to_keep + max_left_pad
+                            if _pg_r.shape[1] > _pg_w:
+                                _pg_r = _pg_r[:, -_pg_w:]
+                            return _pg_r
+
                         # trust needs the verified envelope to cover this batch's lengths too
                         # (re-verify when T or the longest segment grows, like the packed path)
                         _pg_T = int(_pg_layout.flat_ids.shape[1])
@@ -1508,13 +1509,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if (not _pg_verify_on()) or (
                             _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
                         ):
+                            # trusted shape: run the shared-prefix forward now and skip the
+                            # full-row forward below
+                            _pg_result = _pg_run_forward()
                             _pg_use = True
-                            _pg_skip_pk = True  # trusted shape -> no full-row forward needed
+                            _pg_skip_pk = True
+                        else:
+                            # unverified shape: defer the forward until the packed reference is
+                            # known to exist (verify site below), so a declined packed path never
+                            # costs a wasted whole-batch PG forward every step
+                            _pg_forward_fn = _pg_run_forward
                 except Exception as _pg_err:
-                    _pg_hidden = None
                     _pg_result = None
                     _pg_use = False
                     _pg_skip_pk = False
+                    _pg_forward_fn = None
                     if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
                     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
@@ -1746,9 +1755,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # itself self-verified vs per-row) over the completion mask. PASS < tol_ok -> trust
             # the structure; >= TOL_KILL -> mark unsafe forever; borderline -> fall back this
             # shape. Transitively this verifies PrefixGrouper vs the per-row forward.
-            if _pg_result is not None and not _pg_use:
+            if _pg_forward_fn is not None and not _pg_use:
                 if _pk_use and _pk_result is not None:
                     try:
+                        # deferred shared-prefix forward: only runs once the packed reference
+                        # exists, so a declined packed path costs no extra PG forward
+                        _pg_result = _pg_forward_fn()
                         _pg_W2 = logits_to_keep + max_left_pad
                         _pg_cm = create_completion_attention_mask(
                             input_ids[:, -_pg_W2:],
@@ -1790,8 +1802,17 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pg_u.add(_pg_layout.signature)
                                 unwrapped_model._unsloth_prefix_grouper_nograd_unsafe = _pg_u
                             _pg_use = False
-                    except Exception:
+                    except Exception as _pg_err3:
+                        _pg_result = None
                         _pg_use = False
+                        if isinstance(_pg_err3, torch.cuda.OutOfMemoryError):
+                            torch.cuda.empty_cache()
+                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
+                                flush = True,
+                            )
                 # else: no full-row reference available (packing off/failed) -> cannot verify;
                 # fall back to whatever the packed/padded path produces (conservative).
 
