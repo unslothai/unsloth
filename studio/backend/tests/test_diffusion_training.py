@@ -20,7 +20,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.training.diffusion_training_service import DiffusionTrainingService
 from routes.training import router as training_router
 
@@ -275,8 +275,12 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # Default to session (UI) auth: the API-key inference-in-flight guard is a no-op there,
+    # so the wiring tests below behave as before. The guard test flips this override.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     c = TestClient(app)
     c._fake = fake  # type: ignore[attr-defined]
+    c._app = app  # type: ignore[attr-defined]
     return c
 
 
@@ -363,6 +367,37 @@ def test_route_start_conflict_maps_to_409(client):
     client._fake.start = _raise  # type: ignore[assignment]
     r = client.post("/api/train/diffusion/start", json = _BODY)
     assert r.status_code == 409
+
+
+def test_route_start_over_api_with_inference_in_flight_is_409(client, monkeypatch):
+    # An API-key client must not start diffusion training (which frees VRAM by unloading
+    # chat) while an inference request is streaming; it should 409 instead of killing it.
+    client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    monkeypatch.setattr(
+        "core.inference.llama_keepwarm.other_inference_request_count",
+        lambda current_request_counted = False: 1,
+    )
+    freed = {"called": False}
+    import routes.training as tr
+
+    monkeypatch.setattr(
+        tr, "_free_gpu_for_diffusion_training", lambda: freed.__setitem__("called", True)
+    )
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 409
+    # The guard must run BEFORE any GPU is freed, so the live inference stream survives.
+    assert freed["called"] is False
+
+
+def test_route_start_over_api_without_inference_proceeds(client, monkeypatch):
+    # Same API-key path but no inference in flight: the start proceeds normally.
+    client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    monkeypatch.setattr(
+        "core.inference.llama_keepwarm.other_inference_request_count",
+        lambda current_request_counted = False: 0,
+    )
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200
 
 
 def test_route_status_and_stop(client):
