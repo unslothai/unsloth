@@ -30,6 +30,11 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
+      # The "Docker JupyterLab/notebook feature validation" step below runs
+      # tests/validate_studio_features.py, which checks docker/jupyter (the
+      # labextension, overrides.json, login branding) and the docker notebook
+      # helpers. Without docker/** here a docker-only change skips that guard.
+      - 'docker/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
