@@ -1,4 +1,0 @@
-- Decided lock fp8 `use_fast_accum=True`: protects consumer Blackwell 838 TFLOPS path; 2:4 rejected due LPIPS `0.858`, kernel stride error, compile failure.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion_transformer_quant.py`; created `scripts/sparse_accum_probe.py`.
-- Ran tests: `14 passed`; final `172 passed, 4993 deselected, 1 warning`.
-- Push initially rejected; rebased onto `origin/diffusion-phase8-quant`; pushed `ead09c45c`.

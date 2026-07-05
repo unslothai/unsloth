@@ -68,6 +68,7 @@ from .diffusion_speed import (
 from .diffusion_attention import (
     apply_attention_backend,
     select_attention_backend,
+    _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_gguf_compile as gguf_compile
@@ -939,6 +940,23 @@ class DiffusionBackend:
         device, dtype = target.device, target.dtype
 
         import diffusers
+
+        # Pre-install the optional attention kernel BEFORE taking the load locks. The
+        # wheel-only pip install can run up to 600s, and doing it under _lock /
+        # _generate_lock (as the in-lock apply_attention_backend otherwise would) blocks
+        # unload() and cancellation for that whole window. Only an explicit backend pulls
+        # a package -- auto resolves to cuDNN / native, which ship with torch -- and an
+        # explicit backend's resolution ignores the speed tier, so it can run here without
+        # effective_speed. Best-effort: the authoritative resolve + set still happens under
+        # the lock, where the now-satisfied install call is a fast no-op.
+        try:
+            preinstall_backend = select_attention_backend(
+                target, attention_backend, speed_active = True
+            )
+            if preinstall_backend is not None:
+                _ensure_attention_backend_installed(preinstall_backend, logger)
+        except Exception:  # noqa: BLE001 — the locked path re-resolves and validates
+            pass
 
         # Signal an in-flight denoise to abort, then take _generate_lock to WAIT for
         # it to actually exit before allocating the replacement: a load is about to
