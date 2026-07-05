@@ -312,6 +312,13 @@ class _LoadState:
     # Shared eager monkey-patches (diffusion_eager_patches) installed for this load (any
     # non-off speed tier). Uninstalled on unload so a later `off` load is bit-identical.
     eager_patched: bool = False
+    # Deferred speed auto (dense models with speed_mode unset): the load stays fully
+    # eager/bit-identical, and generate() engages the `default` compile profile at the
+    # start of the 3rd generation this session -- repeated use is established by then,
+    # so the one-time compile warmup amortises. Cleared once engaged (or failed).
+    speed_deferred: bool = False
+    # Successful generations on this load; drives the deferred engagement above.
+    generation_count: int = 0
     # Pre-warmed torch.compile cache context (diffusion_compile_cache.CacheContext) when a
     # compiled tier ran, else None. Carries the per-key inductor dir + bundle for save/restore.
     compile_cache_ctx: Any = None
@@ -1247,6 +1254,19 @@ class DiffusionBackend:
                         "(quantized transformer must be compiled; eager is ~30x slower)"
                     )
                     effective_speed = SPEED_DEFAULT
+                # Deferred speed auto for dense models: the load stays eager (a one-off
+                # image should not pay the 25-60s compile warmup, and eager is the
+                # bit-identical reference), but a user starting their 3rd image in one
+                # session has revealed repeated use -- generate() then engages the
+                # `default` profile, where the warmup starts paying back. Only when
+                # the request left speed unset, nothing forced a compiled tier, and
+                # this device/family could actually compile.
+                speed_deferred = (
+                    speed_mode is None
+                    and effective_speed == SPEED_OFF
+                    and transformer_quant_engaged is None
+                    and compile_eligible(target, is_gguf = False, family = fam)
+                )
                 # Opt-in speed optims run BEFORE placement (channels_last / compile
                 # must precede CPU offload). Snapshot the process-wide backend flags
                 # first so unload can restore them: TF32 / cudnn.benchmark are global,
@@ -1440,10 +1460,13 @@ class DiffusionBackend:
                         {
                             "speed_mode": (
                                 speed_mode,
-                                effective_speed,
+                                "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
                                 if transformer_quant_engaged is not None
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
+                                else "auto: exact eager for the first two images; "
+                                "the compile profile engages on the 3rd"
+                                if speed_deferred
                                 else "per-kind default"
                                 if speed_mode is None
                                 else "requested",
@@ -1469,7 +1492,9 @@ class DiffusionBackend:
                             "memory_mode": (
                                 memory_mode,
                                 effective_policy,
-                                "planned from measured free VRAM vs estimated footprint",
+                                "everything fits on the GPU, no offload needed"
+                                if effective_policy == OFFLOAD_NONE
+                                else "planned from measured free VRAM vs estimated footprint",
                             ),
                             "transformer_cache": (
                                 None if cache_auto else transformer_cache,
@@ -1507,6 +1532,7 @@ class DiffusionBackend:
                         cache_quant_active = cache_quant_active,
                         cache_threshold = transformer_cache_threshold,
                         eager_patched = eager_patched,
+                        speed_deferred = speed_deferred,
                         compile_cache_ctx = compile_ctx,
                         hf_token = hf_token,
                         resolved = resolved,
@@ -1978,6 +2004,88 @@ class DiffusionBackend:
             except Exception:  # noqa: BLE001 — reset is best-effort, never fail a generation
                 pass
 
+    def _engage_deferred_speed(self, state: _LoadState) -> None:
+        """Engage the deferred `default` speed profile at the start of the 3rd
+        generation this session.
+
+        The load left the pipe fully eager (bit-identical reference); by the 3rd
+        image repeated use is established, so pay the one-time compile now: eager
+        patches + attention auto upgrade + regional compile -- exactly what an
+        unset-speed GGUF load gets at load time. Runs under _generate_lock (the
+        caller), so no denoise can race the mutation. The flag is cleared FIRST so
+        a failure never retries per generation; unload cleans everything up via the
+        same state fields the load-time path uses (backend flags were snapshotted
+        at load, before any speed layer could mutate them)."""
+        object.__setattr__(state, "speed_deferred", False)
+        from .diffusion_eager_patches import install_compile_safe_patches
+        from .diffusion_arch_patches import install_arch_patches
+
+        target = self._resolve_device_target(state.family)
+        install_compile_safe_patches()
+        install_arch_patches()
+        object.__setattr__(state, "eager_patched", True)
+        attention_engaged = apply_attention_backend(
+            state.pipe,
+            select_attention_backend(target, None, speed_active = True),
+            logger = logger,
+        )
+        object.__setattr__(state, "attention_backend", attention_engaged)
+        gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
+        if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
+            compile_ctx = compile_cache.begin(
+                family = state.family.name,
+                transformer = getattr(state.pipe, "transformer", None),
+                dtype = getattr(target, "dtype", None),
+                quant = state.transformer_quant,
+                attention_backend = attention_engaged,
+                compile_kwargs = {
+                    # Mirrors the load-time fullgraph decision: an engaged or
+                    # still-toggleable step cache OR an offload graph-breaks.
+                    "fullgraph": state.transformer_cache is None
+                    and not state.cache_auto
+                    and state.offload_policy == OFFLOAD_NONE,
+                    "dynamic": True,
+                    "mode": "default",
+                },
+                logger = logger,
+            )
+            object.__setattr__(state, "compile_cache_ctx", compile_ctx)
+        speed_applied = apply_speed_optims(
+            state.pipe,
+            target,
+            is_gguf = gguf_transformer,
+            family = state.family,
+            speed_mode = SPEED_DEFAULT,
+            cache_active = state.transformer_cache is not None or state.cache_auto,
+            offload_active = state.offload_policy != OFFLOAD_NONE,
+            logger = logger,
+        )
+        object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
+        object.__setattr__(
+            state, "speed_optims", tuple(k for k, v in speed_applied.items() if v)
+        )
+        entry = (state.resolved or {}).get("speed_mode")
+        if isinstance(entry, dict):
+            entry["value"] = SPEED_DEFAULT
+            entry["reason"] = (
+                "auto: compiled on the 3rd image this session "
+                "(repeated use amortises the one-time compile)"
+            )
+        att = (state.resolved or {}).get("attention_backend")
+        if isinstance(att, dict) and att.get("source") == "auto":
+            att["value"] = attention_engaged or "native"
+            att["reason"] = (
+                "cuDNN fused attention upgrade"
+                if attention_engaged
+                else "diffusers default"
+            )
+        logger.info(
+            "diffusion.speed: deferred profile engaged on generation 3 "
+            "(optims=%s, attention=%s)",
+            ",".join(state.speed_optims) or "none",
+            attention_engaged or "native",
+        )
+
     def generate(
         self,
         *,
@@ -2042,6 +2150,21 @@ class DiffusionBackend:
                 else:
                     seed = int(seed)
                 generator.manual_seed(seed)
+
+                # Deferred speed auto: by the 3rd image in one session repeated use is
+                # established, so engage the compile profile now -- before the LoRA /
+                # workflow wiring, matching the load-time ordering. Best-effort: a
+                # failure logs, leaves the eager pipe running, and never retries
+                # (the helper clears the flag first).
+                if state.speed_deferred and state.generation_count >= 2:
+                    try:
+                        self._engage_deferred_speed(state)
+                    except Exception as exc:  # noqa: BLE001 — speed is best-effort
+                        logger.warning(
+                            "diffusion.speed: deferred engagement failed, staying "
+                            "eager: %s",
+                            exc,
+                        )
 
                 # Apply/adjust LoRA adapters on the resident pipe (non-fused) before picking
                 # the workflow pipe; from_pipe pipes share the transformer, so it propagates.
@@ -2360,6 +2483,9 @@ class DiffusionBackend:
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 — cache persistence is best-effort
                     pass
+                # Count the finished generation (drives the deferred speed
+                # engagement above); a batch of N images is one generation.
+                object.__setattr__(state, "generation_count", state.generation_count + 1)
                 # Return the PIL images (not yet encoded): the route embeds each
                 # image's recipe and persists it via the gallery.
                 return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}

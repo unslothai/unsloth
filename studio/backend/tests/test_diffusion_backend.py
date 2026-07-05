@@ -458,6 +458,70 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
+def test_dense_speed_auto_defers_compile_to_third_generation(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Dense models with speed unset stay bit-identical eager for the first two
+    # generations; the 3rd engages the `default` profile mid-session (repeated
+    # use amortises the one-time compile), upgrading attention alongside it.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
+    )
+    monkeypatch.setattr(
+        dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend
+    )
+    monkeypatch.setattr(
+        dmod,
+        "select_attention_backend",
+        lambda target, requested, speed_active = False: (
+            "_native_cudnn" if speed_active else None
+        ),
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    assert status["speed_mode"] == "off"
+    assert status["resolved"]["speed_mode"]["value"] == "deferred"
+    assert status["resolved"]["speed_mode"]["source"] == "auto"
+
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    assert backend.status()["speed_mode"] == "off"  # first two stay exact eager
+    backend.generate(prompt = "three")
+    status3 = backend.status()
+    assert status3["speed_mode"] == "default"
+    assert "compiled" in status3["speed_optims"]
+    assert status3["attention_backend"] == "_native_cudnn"
+    assert status3["resolved"]["speed_mode"]["value"] == "default"
+
+    # An explicit "off" is pinned: no deferral, still eager after 3 generations.
+    backend.unload()
+    status_off = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+        speed_mode = "off",
+    )
+    assert status_off["resolved"]["speed_mode"]["value"] == "off"
+    for p in ("a", "b", "c"):
+        backend.generate(prompt = p)
+    assert backend.status()["speed_mode"] == "off"
+    backend.unload()
+
+
 def _tiny_png_b64() -> str:
     import base64
     import io

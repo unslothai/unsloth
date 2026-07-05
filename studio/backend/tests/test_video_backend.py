@@ -140,6 +140,9 @@ class _FakeWanDiT:
     def enable_cache(self, config) -> None:
         self.cache_config = config
 
+    def disable_cache(self) -> None:
+        self.cache_config = None
+
     def set_attention_backend(self, backend) -> None:
         self.attention = backend
 
@@ -767,6 +770,66 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert status["defaults"]["frame_step"] == 4
     assert status["transformer_quant"] is None
     assert _FakeWanPipelineSingle.last["repo"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+
+
+def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
+    # A clip denoise amortises the one-time compile within a single run, so an
+    # UNSET speed on a dense (pipeline) load resolves to `default` -- never `max`,
+    # never `off`. Explicit "off" is still honored verbatim.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["speed_mode"] == "default"
+    assert status["resolved"]["speed_mode"]["source"] == "auto"
+    backend.unload()
+    status_off = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status_off["speed_mode"] == "off"
+    assert status_off["resolved"]["speed_mode"]["source"] == "explicit"
+
+
+def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
+    # Unset step cache is AUTO, decided from the model's default schedule: Wan's
+    # 50-step default engages FBCache at load; the LTX distilled 8-step default
+    # keeps it off. Both are re-checked per generation (toggle test below).
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["transformer_cache"] == "fbcache"
+    assert status["resolved"]["transformer_cache"]["source"] == "auto"
+    backend.unload()
+
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    status2 = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    assert status2["transformer_cache"] is None
+    assert status2["resolved"]["transformer_cache"]["source"] == "auto"
+    backend.unload()
+
+
+def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
+    # The AUTO decision follows the ACTUAL step count of each generation: a
+    # few-step request drops the load-time cache, a many-step request restores
+    # it. An explicit "off" never toggles.
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert backend.status()["transformer_cache"] == "fbcache"
+    backend.generate(prompt = "a sloth", steps = 8)
+    assert backend.status()["transformer_cache"] is None
+    backend.generate(prompt = "a sloth", steps = 30)
+    assert backend.status()["transformer_cache"] == "fbcache"
+    backend.unload()
+
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_cache = "off"
+    )
+    assert backend.status()["transformer_cache"] is None
+    backend.generate(prompt = "a sloth", steps = 30)
+    assert backend.status()["transformer_cache"] is None
+    backend.unload()
 
 
 def test_wan_frame_snapping_4k_plus_1(fake_runtime):
