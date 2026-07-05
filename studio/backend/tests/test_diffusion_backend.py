@@ -1414,9 +1414,7 @@ def test_bad_mode_strings_fail_before_eviction(fake_runtime):
         {"text_encoder_quant": "fp3"},
     ):
         with pytest.raises(ValueError):
-            backend.load_pipeline(
-                "unsloth/Z-Image-GGUF", gguf_filename = "m.gguf", **kwargs
-            )
+            backend.load_pipeline("unsloth/Z-Image-GGUF", gguf_filename = "m.gguf", **kwargs)
         assert backend._state is not None
 
 
