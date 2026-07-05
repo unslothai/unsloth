@@ -1416,7 +1416,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_num_gen = getattr(self, "num_generations", None)
             # One-time env gate + import, hoisted to the module level (mirrored into the
             # generated cache via RL_PRE_ITEMS); the default-off path runs zero PG code.
-            _pg_engage = UNSLOTH_GRPO_PREFIX_GROUPER_ON
+            # Also skip PG when vLLM drives generation (fast_inference=True): the colocated
+            # rollout dominates the step, so the shared-prefix forward saves little end-to-end
+            # and its first-use self-verify (which runs the full-row path too) is net overhead.
+            _pg_engage = UNSLOTH_GRPO_PREFIX_GROUPER_ON and not getattr(self, "use_vllm", False)
             if _pg_engage:
                 try:
                     # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
