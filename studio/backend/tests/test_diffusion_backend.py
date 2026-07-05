@@ -2144,8 +2144,7 @@ def test_prefetch_returns_snapshot_dir_for_manifest(monkeypatch):
     )
     assert root == "/cache/snap"
     assert (
-        backend._prefetch_files("base/repo", None, "base/repo", ["vae/x.safetensors"], None)
-        is None
+        backend._prefetch_files("base/repo", None, "base/repo", ["vae/x.safetensors"], None) is None
     )
 
 
