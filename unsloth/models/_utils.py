@@ -868,8 +868,8 @@ def resolve_attention_implementation(
     # request must not re-enable it - it still downgrades to eager, just like flex falls
     # back for _FLEX_EXCLUDED_MODELS. A synthesized/default sdpa (requested is None, so
     # the value came from the model resolution above or the config) also downgrades.
-    honor_explicit_sdpa = (
-        requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(model_type)
+    honor_explicit_sdpa = requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(
+        model_type
     )
     if not supports_sdpa and final_attn_impl == "sdpa" and not honor_explicit_sdpa:
         print(
