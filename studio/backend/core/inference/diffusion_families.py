@@ -430,10 +430,19 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
     ("flux.1-schnell", 4, 0.0),
+    # Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
+    ("kontext", 28, 2.5),
     ("flux.1", 28, 3.5),
     ("flux.2-klein", 4, 0.0),
+    # FLUX.2-dev is the full (non-distilled) model: more steps + real guidance.
+    ("flux.2-dev", 28, 4.0),
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),
+    # SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
+    # real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
+    ("sdxl-turbo", 3, 0.0),
+    ("stable-diffusion-xl", 30, 7.0),
+    ("sdxl", 30, 7.0),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)

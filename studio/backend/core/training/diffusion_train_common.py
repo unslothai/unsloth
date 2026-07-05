@@ -387,6 +387,10 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} trains in bf16 compute; set "
                     f"mixed_precision to bf16."
                 )
+        # A zero/negative gamma would zero out (or invert) the min-SNR weight and
+        # silently train on a degenerate loss; None is the documented disable.
+        if self.snr_gamma is not None and float(self.snr_gamma) <= 0:
+            raise ValueError("snr_gamma must be > 0, or null to disable min-SNR weighting")
         # learning_rate can arrive as a string ("1e-4") from the Studio config path, which
         # preserves it as a string after validation; coerce so AdamW receives a float.
         try:
