@@ -422,7 +422,12 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         return text
     n = len(text)
     out = []
-    cursor = 0
+    # Mirror the parse scan: a LEADING JSON answer's span is data, so a quoted
+    # ``call:NAME{...}`` inside it stays visible instead of being stripped out
+    # of the displayed answer.
+    cursor = _leading_json_value_end(text) or 0
+    if cursor:
+        out.append(text[:cursor])
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
         if not m:
@@ -1757,6 +1762,29 @@ def _whole_content_is_json_value(text: str) -> bool:
     return True
 
 
+def _leading_json_value_end(text: str) -> int | None:
+    """End index (exclusive) of a balanced LEADING JSON value (object/array)
+    that really parses as JSON: a structured answer opening the response,
+    possibly followed by prose. Same contract as ``_whole_content_is_json_value``
+    -- markerless scans treat text inside the answer as data -- extended to
+    answers that do not span the whole content. Leading-keyed like the other
+    envelope guards; a JSON blob mid-prose is not an answer span."""
+    i = 0
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i >= n or text[i] not in "{[":
+        return None
+    end = (_balanced_brace_end if text[i] == "{" else _balanced_bracket_end)(text, i)
+    if end is None:
+        return None
+    try:
+        json.loads(text[i : end + 1])
+    except ValueError:
+        return None
+    return end + 1
+
+
 def _parse_gemma_tool_calls(
     content: str,
     *,
@@ -1796,7 +1824,10 @@ def _parse_gemma_tool_calls(
     # resume scanning AFTER its balanced body, otherwise a nested ``call:OTHER{...}``
     # mentioned inside this call's own string argument (e.g. a query that quotes the
     # Gemma tool syntax) is re-matched and executed as a spurious extra tool call.
-    cursor = 0
+    # A LEADING JSON answer followed by prose is data too: start scanning after
+    # it, so an enabled tool's syntax quoted inside its strings is not promoted
+    # (a real call in the tail after the answer still parses).
+    cursor = _leading_json_value_end(content) or 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:
@@ -2547,12 +2578,26 @@ def _parse_glm_tool_calls(
                 # Unclosed <arg_value>: strict mode rejects the whole call instead
                 # of executing it with the argument silently dropped; with Auto-Heal
                 # keep the partial value (a truncated query must not become a no-arg
-                # call). Either way stop -- nothing valid follows an unclosed value.
+                # call).
                 if not allow_incomplete:
                     valid = False
-                else:
+                    break
+                # Bound the healed value at the next structural tag instead of
+                # EOF: a value missing only its </arg_value> before a closing
+                # </tool_call> (or the next <arg_key>) must not swallow the
+                # markup -- and everything after it -- into the argument.
+                # Resuming the walk at the tag lets the block close normally
+                # (and a following call parse).
+                nk = content.find(_GLM_ARG_KEY_OPEN, vs)
+                tc = content.find(_GLM_TC_CLOSE, vs)
+                bounds = [b for b in (nk, tc) if b >= 0]
+                if not bounds:
                     args[key] = content[vs:].rstrip()
-                break
+                    break
+                bound = min(bounds)
+                args[key] = content[vs:bound].rstrip()
+                apos = bound
+                continue
             raw_val = content[vs:ve]
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
             # Template emits non-strings via ``tojson``, strings verbatim. Probe for

@@ -981,3 +981,55 @@ def test_disabled_leading_bare_json_ownership_controls():
     # Name-agnostic path unchanged: the leading object is the call.
     agnostic = parse_tool_calls_from_text('{"name":"draft","parameters":{}} ' + kimi_delete)
     assert [c["function"]["name"] for c in agnostic] == ["draft"], agnostic
+
+
+def test_leading_json_answer_with_prose_keeps_quoted_gemma_snippet_as_data():
+    # A LEADING JSON answer followed by prose is data, same contract as the
+    # whole-content JSON exemption: an enabled tool's syntax documented inside
+    # its strings must not execute or be stripped from the displayed answer.
+    obj = '{"summary":"use call:web_search{query:cats} to search"}\nHope that helps!'
+    assert parse_tool_calls_from_text(obj, enabled_tool_names = {"web_search"}) == []
+    arr = '["use call:web_search{query:cats} to search"]\nHope that helps!'
+    assert parse_tool_calls_from_text(arr, enabled_tool_names = {"web_search"}) == []
+    assert strip_tool_markup(obj, enabled_tool_names = {"web_search"}) == obj
+
+    # A REAL call in the tail after the answer still parses (and strips).
+    tail = '{"summary":"done"}\ncall:web_search{query:cats}'
+    calls = parse_tool_calls_from_text(tail, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+
+    # A leading brace run that is NOT valid JSON gets no exemption.
+    not_json = '{not json} call:web_search{query:cats}'
+    calls_nj = parse_tool_calls_from_text(not_json, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in calls_nj] == ["web_search"], calls_nj
+
+
+def test_glm_heal_bounds_unclosed_value_at_tool_call_close():
+    # Auto-Heal: a value missing only its </arg_value> before the block's
+    # </tool_call> heals to the value text, not the close tag and everything
+    # after it swallowed into the argument.
+    one = "<tool_call>get_weather<arg_key>city</arg_key><arg_value>NYC</tool_call>"
+    calls = parse_tool_calls_from_text(one, allow_incomplete = True)
+    assert [c["function"]["name"] for c in calls] == ["get_weather"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {"city": "NYC"}
+
+    # Trailing prose after the close stays out of the healed value.
+    two = one + "\nLet me check that for you."
+    calls_two = parse_tool_calls_from_text(two, allow_incomplete = True)
+    assert json.loads(calls_two[0]["function"]["arguments"]) == {"city": "NYC"}
+
+    # Strict mode still rejects the unclosed value outright.
+    assert parse_tool_calls_from_text(one, allow_incomplete = False) == []
+
+    # A value truncated at EOF (no structural tag follows) keeps the partial
+    # heal, and a proper close whose value holds a literal </tool_call> is
+    # untouched by the bounding.
+    eof = "<tool_call>get_weather<arg_key>city</arg_key><arg_value>New York Ci"
+    calls_eof = parse_tool_calls_from_text(eof, allow_incomplete = True)
+    assert json.loads(calls_eof[0]["function"]["arguments"]) == {"city": "New York Ci"}
+    lit = (
+        "<tool_call>get_weather<arg_key>city</arg_key>"
+        '<arg_value>print("</tool_call>")</arg_value></tool_call>'
+    )
+    calls_lit = parse_tool_calls_from_text(lit, allow_incomplete = True)
+    assert json.loads(calls_lit[0]["function"]["arguments"]) == {"city": 'print("</tool_call>")'}
