@@ -983,6 +983,13 @@ def run_dit_lora_training(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, which is
     # unsupported for real runs but keeps import/unit tests architecture-agnostic).
+    # Fail fast on pre-Ampere CUDA (T4/V100/RTX 20xx): bf16 compute is required and the run
+    # would otherwise die deep in model load with an opaque dtype error.
+    if device == "cuda" and not torch.cuda.is_bf16_supported():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
+            "this CUDA device does not support bf16."
+        )
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
