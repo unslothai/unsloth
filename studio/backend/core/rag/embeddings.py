@@ -63,6 +63,27 @@ def _install_torchao_stub_once() -> None:
     install_torchao_windows_rocm_stub()
 
 
+def _guard_model_security(name: str) -> None:
+    """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
+    SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
+    /settings gate (a name can also arrive via env/default); local paths and unreachable
+    scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
+    """
+    try:
+        from utils.security import evaluate_file_security, security_load_subdirs
+
+        blocked = evaluate_file_security(
+            name, load_subdirs = security_load_subdirs(name)
+        ).blocked
+    except Exception:
+        return
+    if blocked:
+        raise RuntimeError(
+            f"Embedding model {name!r} is flagged as unsafe by Hugging Face's security "
+            "scan; refusing to load. Set a different RAG embedding model."
+        )
+
+
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
     for a ~1.5x speedup at negligible accuracy loss."""
@@ -75,6 +96,7 @@ def _get(model_name: str | None = None):
 
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
+            _guard_model_security(name)
             _model = SentenceTransformer(
                 name, device = device, model_kwargs = {"torch_dtype": "float16"}
             )

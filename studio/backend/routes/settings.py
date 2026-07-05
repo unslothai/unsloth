@@ -370,15 +370,33 @@ def update_embedding_model(
             event = "settings.update_embedding_model_failed",
             log = logger,
         ) from exc
+    hf_token = (payload.hf_token or "").strip() or None
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
+    is_local_gguf = _llama_backend_active() and _resolves_as_local_gguf(model)
+    if model != default_embedding_model() and not is_local_gguf:
+        # Malware/pickle gate before we persist a repo the embedder later loads with
+        # SentenceTransformer. Runs even under force (force only skips the is-embedding
+        # type check for offline/local repos HF cannot verify); local paths and
+        # unreachable scans fail open inside evaluate_file_security.
+        from utils.security import evaluate_file_security, security_load_subdirs
+
+        if evaluate_file_security(
+            model, hf_token = hf_token, load_subdirs = security_load_subdirs(model, hf_token)
+        ).blocked:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
+                    "cannot be used as the embedding model."
+                ),
+            )
     if (
         model != default_embedding_model()
         and not payload.force
-        and not (_llama_backend_active() and _resolves_as_local_gguf(model))
+        and not is_local_gguf
     ):
-        hf_token = (payload.hf_token or "").strip() or None
         from core.rag import config as rag_config
 
         # A GGUF-named repo on the llama-server backend is loaded from its .gguf
