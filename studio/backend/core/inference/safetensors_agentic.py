@@ -467,12 +467,14 @@ def run_safetensors_tool_loop(
                 # most once per request, only before any tool has executed
                 # (RAG autoinject counts as executed), and only on short
                 # forward-looking replies while tools are active with
-                # Auto-Heal on and the nudge not explicitly disabled
-                # (None keeps the default-on loop behavior).
+                # Auto-Heal on and the nudge explicitly requested. Unlike the
+                # GGUF loop (where the re-prompt predates the flag, so None
+                # keeps it on), this retry is new here: omitting the flag must
+                # not change existing API behavior. Studio sends True.
                 stripped_answer = content_accum.strip()
                 if (
                     auto_heal_tool_calls
-                    and (nudge_tool_calls is None or nudge_tool_calls)
+                    and nudge_tool_calls
                     and active_tools
                     and reprompt_count < MAX_ACT_REPROMPTS
                     and not rag_autoinjected

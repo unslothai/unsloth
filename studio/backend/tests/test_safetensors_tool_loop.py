@@ -1421,6 +1421,7 @@ class TestPlanWithoutActionReprompt:
                 ["Here is the final answer."],
             ],
             exec_results = ["result-1"],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert [c[0] for c in exec_fn.calls] == ["web_search"]
@@ -1434,6 +1435,7 @@ class TestPlanWithoutActionReprompt:
                 ["Let me look into it first."],
                 ["SHOULD NOT APPEAR"],
             ],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
@@ -1448,6 +1450,7 @@ class TestPlanWithoutActionReprompt:
                 [long_answer],
                 ["SHOULD NOT APPEAR"],
             ],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
@@ -1461,6 +1464,7 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
             auto_heal_tool_calls = False,
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
@@ -1475,6 +1479,21 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
             nudge_tool_calls = False,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the web for that." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_omitted_nudge_flag_is_not_reprompted(self):
+        # The retry is new on this loop: API callers who do not send the flag
+        # must keep today's behavior. Studio opts in explicitly.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SHOULD NOT APPEAR"],
+            ],
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
@@ -1502,6 +1521,7 @@ class TestPlanWithoutActionReprompt:
                 ["I'll search the docs."],
                 ["SHOULD NOT APPEAR"],
             ],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
@@ -1518,6 +1538,7 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
             exec_results = ["result-1"],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert [c[0] for c in exec_fn.calls] == ["web_search"]
