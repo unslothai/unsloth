@@ -691,6 +691,15 @@ def _coerce_gradient_checkpointing(value: Any) -> bool:
     return bool(value)
 
 
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a flag that may arrive as a string through the generic Studio config path
+    (e.g. "false" / "0" / "off"). A non-empty string like "false" is otherwise truthy, so
+    an opt-out would silently no-op. A real bool passes through."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "none", "false", "0", "no", "off")
+    return bool(value)
+
+
 def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     """Build a DiffusionLoraConfig from a plain dict. Unknown keys are ignored so a richer
     request payload (UI form) does not break construction; a small set of generic Studio
@@ -721,4 +730,7 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
         kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
             kwargs["gradient_checkpointing"]
         )
+    for flag in ("cache_latents", "enable_tf32"):
+        if flag in kwargs:
+            kwargs[flag] = _coerce_bool(kwargs[flag])
     return DiffusionLoraConfig(**kwargs)

@@ -1,3 +1,0 @@
-- User asked: `What are the torch compile flags - did you enable CUDAGraphs and also see https://docs.pytorch.org/docs/stable/generated/torch.compile.html`
-- Decision/context: Need verify or explain `torch.compile` flags, specifically whether CUDAGraphs are enabled.
-- Pending: Inspect relevant code/config and compare against PyTorch `torch.compile` docs at `https://docs.pytorch.org/docs/stable/generated/torch.compile.html`.
