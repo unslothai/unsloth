@@ -2194,3 +2194,35 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
     backend.generate(prompt = "a sloth")
     backend.generate(prompt = "another sloth")
     assert resets == [True, True]
+
+
+def test_prefetch_returns_snapshot_dir_for_manifest(monkeypatch):
+    # The prefetched pipeline manifest's directory is the local snapshot root; a
+    # config-only base list (no manifest) returns None so the hub id stays in use.
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: f"/cache/snap/{fn}",
+    )
+    root = backend._prefetch_files(
+        "base/repo", None, "base/repo", ["model_index.json", "vae/x.safetensors"], None
+    )
+    assert root == "/cache/snap"
+    assert (
+        backend._prefetch_files("base/repo", None, "base/repo", ["vae/x.safetensors"], None)
+        is None
+    )
+
+
+def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
+    # With a prefetched snapshot, from_pretrained must receive the local dir --
+    # its own hub sweep would re-download the root packaged singles the scoped
+    # prefetch skips (24 GB per FLUX.1 repo).
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        "unsloth/Qwen-Image-2512-bnb-4bit",
+        model_kind = "pipeline",
+        _base_local_dir = str(tmp_path),
+    )
+    assert _FakePipeline.last["base"] == str(tmp_path)
+    backend.unload()
