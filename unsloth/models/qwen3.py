@@ -105,8 +105,17 @@ def Qwen3Attention_fast_forward(
 
     # Qwen3 adds QKNorm (the only difference from Qwen2). A compiled norm
     # mismatches Transformers' numbers, so use fast_rms_layernorm. TODO: investigate.
-    Q = fast_rms_layernorm(self.q_norm, Q)
-    K = fast_rms_layernorm(self.k_norm, K)
+    # When UNSLOTH_EMBEDDING_HIGH_PRECISION is set, use the PyTorch inference
+    # variant for bit-exact numerical parity with the stock HF forward.
+    # The QK norm operates on per-head tensors (head_dim ~96), so even minor
+    # kernel-level differences amplify through softmax across 28+ layers.
+    # Ref: https://github.com/unslothai/unsloth/issues/6881
+    if os.environ.get("UNSLOTH_EMBEDDING_HIGH_PRECISION", "0") == "1":
+        Q = fast_rms_layernorm_inference(self.q_norm, Q)
+        K = fast_rms_layernorm_inference(self.k_norm, K)
+    else:
+        Q = fast_rms_layernorm(self.q_norm, Q)
+        K = fast_rms_layernorm(self.k_norm, K)
 
     Q = Q.transpose(1, 2)
     K = K.transpose(1, 2)

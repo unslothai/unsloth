@@ -1631,6 +1631,10 @@ class FastSentenceTransformer(FastModel):
         # however unsloth throws an exception if "UNSLOTH_WARN_UNINITIALIZED" == 1 and it sees unused weights
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
+        # Request high-precision QK norm for embedding models to match stock
+        # HuggingFace numerical output.  See unslothai/unsloth#6881.
+        _old_embedding_precision = os.environ.get("UNSLOTH_EMBEDDING_HIGH_PRECISION", "0")
+        os.environ["UNSLOTH_EMBEDDING_HIGH_PRECISION"] = "1"
 
         is_distilbert = "distilbert" == model_type.lower()
         is_mpnet = "mpnet" == model_type.lower()
@@ -1686,6 +1690,7 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
+            os.environ["UNSLOTH_EMBEDDING_HIGH_PRECISION"] = _old_embedding_precision
 
         from sentence_transformers import SentenceTransformer
 
