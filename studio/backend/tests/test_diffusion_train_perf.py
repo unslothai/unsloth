@@ -186,6 +186,20 @@ def test_config_validates_new_fields():
     assert cfg.enable_tf32 is False
     assert cfg.cache_latents is False
 
+    # String flags from the generic Studio dict path are coerced: "false" is otherwise a
+    # non-empty (truthy) string, so an opt-out would silently no-op.
+    cfg = _config_from_dict(
+        {
+            "base_model": _SDXL,
+            "data_dir": "d",
+            "output_dir": "o",
+            "enable_tf32": "false",
+            "cache_latents": "0",
+        }
+    )
+    assert cfg.enable_tf32 is False
+    assert cfg.cache_latents is False
+
 
 # ── torch.compile policy ──────────────────────────────────────────────────────
 def test_should_compile_policy():
