@@ -179,6 +179,11 @@ class LocalModelInfo(BaseModel):
         description = "Detected weights format ('gguf' when known). Lets the UI "
         "classify scanned folders whose name lacks a -GGUF suffix.",
     )
+    is_sharded: bool = Field(
+        False,
+        description = "True when the GGUF model is a multi-part split "
+        "(-NNN-of-NNN.gguf shards), so the UI can badge the row.",
+    )
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",

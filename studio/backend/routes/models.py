@@ -266,6 +266,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(models_dir),
                 source = "models_dir",
                 model_format = _dir_model_format(models_dir),
+                is_sharded = _dir_is_sharded_gguf(models_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -303,6 +304,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(child),
                 source = "models_dir",
                 model_format = model_format,
+                is_sharded = _dir_is_sharded_gguf(child) if has_gguf else False,
                 updated_at = updated_at,
             ),
         )
@@ -377,6 +379,19 @@ def _dir_model_format(path: Path) -> Optional[str]:
         return None
 
 
+# llama.cpp split naming: ``model-00001-of-00013.gguf``.
+_GGUF_SPLIT_RE = _re.compile(r"-\d{3,}-of-\d{3,}", _re.IGNORECASE)
+
+
+def _dir_is_sharded_gguf(path: Path) -> bool:
+    """True when a folder holds a multi-part GGUF split (any ``-NNN-of-NNN``
+    shard). Used to badge sharded exports in the UI."""
+    try:
+        return any(_GGUF_SPLIT_RE.search(p.name) for p in path.glob("*.gguf"))
+    except OSError:
+        return False
+
+
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
@@ -400,6 +415,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 path = str(lm_dir),
                 source = "lmstudio",
                 model_format = _dir_model_format(lm_dir),
+                is_sharded = _dir_is_sharded_gguf(lm_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -439,6 +455,33 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         path = str(child),
                         source = "lmstudio",
                         model_format = _dir_model_format(child),
+                        is_sharded = _dir_is_sharded_gguf(child),
+                        updated_at = updated_at,
+                    ),
+                )
+                continue
+
+            # A config-less GGUF folder (e.g. a split/sharded export: many
+            # -NNN-of-NNN.gguf shards with no config.json) is a single model,
+            # not a publisher. Surface it as one row so the split doesn't fan
+            # out into an entry per shard.
+            try:
+                child_has_gguf = any(child.glob("*.gguf"))
+            except OSError:
+                child_has_gguf = False
+            if child_has_gguf:
+                try:
+                    updated_at = child.stat().st_mtime
+                except OSError:
+                    updated_at = None
+                found.append(
+                    LocalModelInfo(
+                        id = str(child),
+                        display_name = child.name,
+                        path = str(child),
+                        source = "lmstudio",
+                        model_format = _dir_model_format(child),
+                        is_sharded = _dir_is_sharded_gguf(child),
                         updated_at = updated_at,
                     ),
                 )
