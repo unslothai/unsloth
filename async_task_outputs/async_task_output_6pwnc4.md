@@ -1,1 +1,0 @@
-- Wrote `outputs/coverage_matrix.md`
