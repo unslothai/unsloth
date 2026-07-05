@@ -2016,13 +2016,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             <TabsList className="h-[34px]">
               {/* Same icons as the sidebar's New Chat / Train entries, so the
                   two workspaces read as the same actions everywhere. */}
-              <TabsTrigger value="create" className="w-[84px] gap-1.5">
-                <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
-                Create
+              {/* TabsTrigger renders children inside a plain inline span (and preflight
+                  makes svg display:block), so the icon and label need their own flex
+                  row to stay on one line. */}
+              <TabsTrigger value="create" className="w-[84px]">
+                <span className="flex items-center gap-1.5">
+                  <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
+                  Create
+                </span>
               </TabsTrigger>
-              <TabsTrigger value="train" className="w-[84px] gap-1.5">
-                <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" />
-                Train
+              <TabsTrigger value="train" className="w-[84px]">
+                <span className="flex items-center gap-1.5">
+                  <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" />
+                  Train
+                </span>
               </TabsTrigger>
             </TabsList>
           </Tabs>
