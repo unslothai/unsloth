@@ -676,7 +676,9 @@ _OUTER_ENVELOPE_CLOSED_PATS = (
 )
 
 
-def _marker_inside_leading_envelope(content: str) -> bool:
+def _marker_inside_leading_envelope(
+    content: str, enabled_tool_names: Optional[set] = None
+) -> bool:
     first_marker = _EMBEDDED_MARKER_RE.search(content)
     if first_marker is None:
         return False
@@ -690,16 +692,22 @@ def _marker_inside_leading_envelope(content: str) -> bool:
         i += 1
     if content.startswith("{", i):
         end = _balanced_brace_end(content, i)
-        if (
-            end is not None
-            and _top_level_bare_json_name(content[i : end + 1]) is not None
-            and i < first_marker.start()
-        ):
-            # Inside the closed call the marker is argument data; AFTER it the
-            # closed leading call still owns the turn in document order (the
-            # marker is a trailing example, or data in a later ``;``-chained
-            # call's strings) -- same rule as the closed XML envelopes below.
-            return True
+        if end is not None and i < first_marker.start():
+            name = _top_level_bare_json_name(content[i : end + 1])
+            if name is not None and (enabled_tool_names is None or name in enabled_tool_names):
+                # Inside the closed call the marker is argument data; AFTER it
+                # the closed leading call still owns the turn in document order
+                # (the marker is a trailing example, or data in a later
+                # ``;``-chained call's strings) -- same rule as the closed XML
+                # envelopes below.
+                return True
+            if name is not None and first_marker.start() <= end:
+                # A DISABLED-name leading object is prose by design, so it
+                # cannot own the turn -- but a marker inside its own strings is
+                # still data (tail-exclusion: the span is dropped, and the tail
+                # holds no call). A marker AFTER the disabled object falls
+                # through so the pre-pass can parse the real call.
+                return True
     elif content.startswith(_MISTRAL_TRIGGER, i):
         end = _mistral_region_end(content, i)
         if end is not None and i < first_marker.start():
@@ -1038,7 +1046,7 @@ def parse_tool_calls_from_text(
     # <tool_call> / <function=...> envelope opens before the first such marker, in
     # which case the marker is literal data inside the outer call's arguments and
     # the shared parser below must take the outer call.
-    if not _marker_inside_leading_envelope(content):
+    if not _marker_inside_leading_envelope(content, enabled_tool_names):
         # Dispatch by earliest envelope opener: a raw parseable DeepSeek
         # example quoted inside a Kimi call's argument string (or vice versa)
         # must not hijack the turn just because of a fixed parser order.

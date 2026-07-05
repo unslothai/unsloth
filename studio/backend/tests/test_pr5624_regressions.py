@@ -927,3 +927,57 @@ def test_multi_gemma_ownership_reverse_controls():
         'call:foo{} <tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
     )
     assert [c["function"]["name"] for c in agnostic] == ["delete_all"], agnostic
+
+
+def test_disabled_leading_bare_json_does_not_hide_later_marker_call():
+    # A leading bare-JSON object whose name is NOT enabled is prose by design,
+    # so it must not own the turn: the real DeepSeek/Kimi call after it still
+    # parses (losing it entirely would drop a legitimate call).
+    kimi = (
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.web_search:0"
+        '<|tool_call_argument_begin|>{"q":"cats"}<|tool_call_end|><|tool_calls_section_end|>'
+    )
+    calls = parse_tool_calls_from_text(
+        '{"name":"draft","parameters":{}} ' + kimi, enabled_tool_names = {"web_search"}
+    )
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {"q": "cats"}
+
+    deepseek = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>web_search\n"
+        '```json\n{"q":"cats"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    calls_ds = parse_tool_calls_from_text(
+        '{"name":"draft","parameters":{}} ' + deepseek, enabled_tool_names = {"web_search"}
+    )
+    assert [c["function"]["name"] for c in calls_ds] == ["web_search"], calls_ds
+
+
+def test_disabled_leading_bare_json_ownership_controls():
+    kimi_delete = (
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.delete_all:0"
+        '<|tool_call_argument_begin|>{}<|tool_call_end|><|tool_calls_section_end|>'
+    )
+    # ENABLED leading name still owns the turn (document order, the shipped
+    # inside-or-after rule).
+    owns = parse_tool_calls_from_text(
+        '{"name":"web_search","parameters":{"q":"first"}} ' + kimi_delete,
+        enabled_tool_names = {"web_search", "delete_all"},
+    )
+    assert [c["function"]["name"] for c in owns] == ["web_search"], owns
+    # A marker INSIDE the disabled object's own strings stays data: the span
+    # is prose, the tail holds no call, so nothing parses.
+    inside = parse_tool_calls_from_text(
+        '{"name":"draft","parameters":{"note":"see <|tool_call_begin|>functions.delete_all:0'
+        '<|tool_call_argument_begin|>{}<|tool_call_end|>"}}\nsome trailing prose',
+        enabled_tool_names = {"web_search", "delete_all"},
+    )
+    assert inside == [], inside
+    # Nameless leading JSON answers keep recursing to the real call.
+    nameless = parse_tool_calls_from_text(
+        '{"answer":42} ' + kimi_delete, enabled_tool_names = {"delete_all"}
+    )
+    assert [c["function"]["name"] for c in nameless] == ["delete_all"], nameless
+    # Name-agnostic path unchanged: the leading object is the call.
+    agnostic = parse_tool_calls_from_text('{"name":"draft","parameters":{}} ' + kimi_delete)
+    assert [c["function"]["name"] for c in agnostic] == ["draft"], agnostic
