@@ -1392,6 +1392,34 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
     assert q["dtype"] == "float16"  # fp16-compatible family keeps fp16 on pre-Ampere
 
 
+def test_bad_mode_strings_fail_before_eviction(fake_runtime):
+    # Every mode normalizer that can raise runs BEFORE the load evicts the previous
+    # pipeline, so a bad request never costs the user their working model.
+    backend = DiffusionBackend()
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = object(),
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    for kwargs in (
+        {"transformer_quant": "int7"},
+        {"speed_mode": "warp"},
+        {"attention_backend": "bogus"},
+        {"transformer_cache": "bogus"},
+        {"text_encoder_quant": "fp3"},
+    ):
+        with pytest.raises(ValueError):
+            backend.load_pipeline(
+                "unsloth/Z-Image-GGUF", gguf_filename = "m.gguf", **kwargs
+            )
+        assert backend._state is not None
+
+
 # Lock split + mid-denoise cancellation
 
 
@@ -1435,17 +1463,25 @@ def test_generate_lock_split_keeps_status_and_unload_responsive(fake_runtime):
     assert backend.status()["loaded"] is True
     assert backend.generate_progress()["active"] is True
 
-    # unload() must return promptly (it does not wait on _generate_lock) and signal
-    # THIS in-flight generation's cancel event.
+    cancel_ref = backend._active_generate_cancel
+    assert cancel_ref is not None
+
+    # unload() signals THIS generation's cancel event, then waits for the denoise to
+    # actually exit before returning: callers treat its return as "VRAM is free" (the
+    # GPU arbiter hands the GPU to chat on it). Release the pipe once the cancel
+    # lands, standing in for the step callback of a real pipeline.
+    releaser = threading.Thread(target = lambda: (cancel_ref.wait(5), release.set()))
+    releaser.start()
     backend.unload()
-    assert backend._active_generate_cancel is not None
-    assert backend._active_generate_cancel.is_set()
+    releaser.join(5)
+    assert cancel_ref.is_set()
     assert backend.status()["loaded"] is False
 
-    release.set()
     t.join(5)
-    # The cancelled generation raised rather than returning a now-evicted image.
+    # The cancelled generation raised rather than returning a now-evicted image, and
+    # it had already exited (deregistering its cancel) before unload() returned.
     assert "exc" in out and "cancelled" in str(out["exc"]).lower()
+    assert backend._active_generate_cancel is None
 
 
 def test_callback_cancellation_interrupts_denoise(fake_runtime):
