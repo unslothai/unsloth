@@ -32,11 +32,16 @@ from core.training.diffusion_dit_trainer import (
 )
 from core.training.diffusion_train_common import (
     DiffusionLoraConfig,
+    LATENT_CACHE_OVER_BUDGET,
     _apply_perf_flags,
     _config_from_dict,
+    _latent_cache_forced,
+    _latent_cache_over_budget,
     _plan_cache_variants,
     _restore_perf_flags,
 )
+import core.training.diffusion_lora_trainer as sdxl_trainer
+import core.training.diffusion_train_common as train_common
 from core.training.diffusion_training_service import DiffusionTrainingService
 from models.training import DiffusionTrainingStartRequest, DiffusionTrainingStopRequest
 from routes.training import router as training_router
@@ -372,3 +377,90 @@ def test_perf_flags_tf32_off_clears_flags():
         torch.get_float32_matmul_precision(),
     )
     assert after == before
+
+
+# ── latent cache size gate ────────────────────────────────────────────────────
+class _FakeLatentDist:
+    def __init__(self, shape):
+        self.mean = torch.zeros(shape, dtype = torch.float32)
+        self.std = torch.ones(shape, dtype = torch.float32)
+
+
+class _FakeEncoded:
+    def __init__(self, shape):
+        self.latent_dist = _FakeLatentDist(shape)
+
+
+class _FakeVae:
+    # Minimal VAE stand-in: encode() returns a posterior of the requested latent shape so the
+    # builder measures a real per-variant byte size without a model load or image files.
+    def __init__(self, shape):
+        self._shape = shape
+
+    def encode(self, pixel_values):
+        return _FakeEncoded(self._shape)
+
+
+def _fake_planned_loader(path, resolution, center_crop, u_left, u_top, flip):
+    # The fake VAE ignores pixels; return a valid tensor + square SDXL time_ids.
+    tensor = torch.zeros(3, resolution, resolution, dtype = torch.float32)
+    return tensor, (resolution, resolution, 0, 0, resolution, resolution)
+
+
+def _build_fake_sdxl_cache(monkeypatch, num_images, latent_shape):
+    # center_crop + no flip collapses to one variant per image, so total_variants == num_images.
+    monkeypatch.setattr(sdxl_trainer, "_load_image_tensor_planned", _fake_planned_loader)
+    cfg = _cfg(cache_variants = 1, center_crop = True, random_flip = False).normalized()
+    return sdxl_trainer._build_sdxl_latent_cache(
+        _FakeVae(latent_shape),
+        1.0,
+        [f"img{i}.png" for i in range(num_images)],
+        cfg,
+        "cpu",
+        torch.float32,
+        None,
+        lambda: False,
+    )
+
+
+def test_latent_cache_over_budget_boundary():
+    # 32 bytes per variant x 4 variants = 128 bytes; exactly at budget is not "over".
+    assert _latent_cache_over_budget(32, 4, budget_bytes = 200) is False
+    assert _latent_cache_over_budget(32, 4, budget_bytes = 128) is False
+    assert _latent_cache_over_budget(32, 4, budget_bytes = 127) is True
+    # An empty plan can never overflow.
+    assert _latent_cache_over_budget(1_000_000, 0, budget_bytes = 1) is False
+
+
+def test_latent_cache_forced_env(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", raising = False)
+    assert _latent_cache_forced() is False
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "1")
+    assert _latent_cache_forced() is True
+
+
+def test_sdxl_cache_built_under_budget(monkeypatch):
+    # Default (4 GiB) budget: a handful of tiny latents fits, so the full cache is returned.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", raising = False)
+    cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))
+    assert cache is not LATENT_CACHE_OVER_BUDGET and cache is not None
+    assert len(cache) == 3
+    assert all(len(variants) == 1 for variants in cache)
+
+
+def test_sdxl_cache_gated_over_budget(monkeypatch):
+    # A budget below one variant forces the gate on the first encode: the sentinel is returned
+    # so the caller keeps the VAE resident and encodes per step.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", raising = False)
+    monkeypatch.setattr(train_common, "_LATENT_CACHE_BUDGET_BYTES", 8)
+    cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))
+    assert cache is LATENT_CACHE_OVER_BUDGET
+
+
+def test_sdxl_cache_force_bypasses_gate(monkeypatch):
+    # An explicit force-on must be honoured verbatim even when the estimate is over budget.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "1")
+    monkeypatch.setattr(train_common, "_LATENT_CACHE_BUDGET_BYTES", 8)
+    cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))
+    assert cache is not LATENT_CACHE_OVER_BUDGET and cache is not None
+    assert len(cache) == 3
