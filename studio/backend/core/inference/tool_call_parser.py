@@ -521,7 +521,13 @@ def parse_tool_calls_from_text(
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None:
         first_other = None
-        for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>", _MISTRAL_TRIGGER):
+        for sig in (
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "<|python_tag|>",
+            _MISTRAL_TRIGGER,
+        ):
             p = content.find(sig)
             if p >= 0 and (first_other is None or p < first_other):
                 first_other = p
