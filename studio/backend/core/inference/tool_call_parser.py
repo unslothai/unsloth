@@ -693,12 +693,16 @@ def _marker_inside_leading_envelope(content: str) -> bool:
         if (
             end is not None
             and _top_level_bare_json_name(content[i : end + 1]) is not None
-            and i < first_marker.start() < end
+            and i < first_marker.start()
         ):
+            # Inside the closed call the marker is argument data; AFTER it the
+            # closed leading call still owns the turn in document order (the
+            # marker is a trailing example, or data in a later ``;``-chained
+            # call's strings) -- same rule as the closed XML envelopes below.
             return True
     elif content.startswith(_MISTRAL_TRIGGER, i):
         end = _mistral_region_end(content, i)
-        if end is not None and i < first_marker.start() < end:
+        if end is not None and i < first_marker.start():
             return True
     # Remove CLOSED outer envelopes first. Their patterns extend to the REAL final
     # close, so a literal ``</function>``/``</tool_call>`` inside an argument value does
@@ -873,6 +877,13 @@ def _signal_inside_leading_wrapperless_gemma(
     leading guards). Markerless form, so the name must be an enabled tool
     (``None`` keeps the name-agnostic behaviour)."""
     first = _first_foreign_tool_signal(content)
+    # The Mistral trigger is foreign to a Gemma call too: the Mistral parser
+    # runs before the Gemma fallback, so a ``[TOOL_CALLS]...`` literal quoted
+    # inside a leading Gemma body would otherwise be promoted over the outer
+    # call (same local inclusion as the bare-JSON guard).
+    trig = content.find(_MISTRAL_TRIGGER)
+    if trig >= 0 and (first is None or trig < first):
+        first = trig
     if first is None:
         return False
     # The call need not open the response: a visible preamble before
@@ -906,6 +917,12 @@ def _disabled_gemma_call_end_containing_signal(
     if enabled_tool_names is None:
         return None
     first = _first_foreign_tool_signal(content)
+    # Mirror the enabled-call guard: the Mistral trigger counts as a foreign
+    # signal here too, so a disabled example quoting ``[TOOL_CALLS]...`` drops
+    # the span instead of letting the Mistral parser promote the literal.
+    trig = content.find(_MISTRAL_TRIGGER)
+    if trig >= 0 and (first is None or trig < first):
+        first = trig
     if first is None:
         return None
     cursor = 0
@@ -2002,10 +2019,12 @@ def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int 
     return None
 
 
-def _gemma_parse_value(text: str, i: int):
+def _gemma_parse_value(text: str, i: int, *, in_mapping: bool = False):
     """Parse one Gemma arg value at ``i`` in a single O(n) forward pass; returns
     ``(value, next_index, closed)``. ``closed`` is False when a string/object/array
-    runs off the end without its terminator, so the caller can fall back to raw."""
+    runs off the end without its terminator, so the caller can fall back to raw.
+    ``in_mapping`` applies the top-level rule that a comma only ends the value
+    when a ``key:`` follows (array elements split on every top-level comma)."""
     if text.startswith(_GEMMA_STR_BEGIN, i):
         close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
         if close < 0:
@@ -2030,9 +2049,39 @@ def _gemma_parse_value(text: str, i: int):
                 return text[i + 1 : j], j + 1, True
             j += 1
         return text[i + 1 :], n, False
-    # Primitive: number / true/false/null / bare identifier.
+    # Primitive: number / true/false/null / bare identifier / unquoted code.
+    # Same delimiter rules as the top-level value scan in
+    # _gemma_parse_stripped_body: ``()``/``{}``/``[]`` depth and contextual
+    # quote openers hide commas and closers inside the value (``f(1,2)``,
+    # ``say "a, b"``), so nested arguments are not split into corrupted keys.
     end = i
-    while end < len(text) and text[end] not in ",}]" and not text.startswith(_GEMMA_STR_BEGIN, end):
+    n = len(text)
+    depth = 0
+    quote = ""
+    prev = ":"
+    prev_raw = ":"
+    while end < n and not text.startswith(_GEMMA_STR_BEGIN, end):
+        ch = text[end]
+        if quote:
+            if ch == "\\" and end + 1 < n:
+                end += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
+            quote = ch
+        elif ch in "{[(":
+            depth += 1
+        elif ch in "}])":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            if not in_mapping or _GEMMA_KEY_RE.match(text, end + 1):
+                break
+        if not ch.isspace():
+            prev = ch
+        prev_raw = ch
         end += 1
     if end == i:
         # Stray ``}`` / ``]`` / ``,`` where a value was expected: consume one char
@@ -2217,7 +2266,7 @@ def _gemma_parse_mapping(text: str, start: int):
         if text[i] == "}":
             out[key] = None
             return out, i + 1, True
-        v, i, _closed = _gemma_parse_value(text, i)
+        v, i, _closed = _gemma_parse_value(text, i, in_mapping = True)
         out[key] = v
     return out, i, False
 
