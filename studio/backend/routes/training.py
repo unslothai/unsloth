@@ -1339,7 +1339,12 @@ async def get_diffusion_training_run(
     rec = get_diffusion_run(job_id)
     if rec is None:
         raise HTTPException(status_code = 404, detail = "No such training run.")
-    return DiffusionTrainingRunDetail(**rec)
+    try:
+        return DiffusionTrainingRunDetail(**rec)
+    except ValidationError:
+        # A malformed on-disk record (hand-edited / older shape) should read as absent
+        # rather than 500 the endpoint, mirroring how the list route skips bad records.
+        raise HTTPException(status_code = 404, detail = "No such training run.")
 
 
 # Extensions accepted into an image-training dataset folder: images the trainer reads,

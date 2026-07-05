@@ -1068,6 +1068,7 @@ _LTX2_SIBLINGS = [
     _sibling("text_encoder/diffusion_pytorch_model-00002-of-00002.safetensors", 25),
     _sibling("vae/diffusion_pytorch_model.safetensors", 3),
     _sibling("tokenizer/tokenizer.model", 1),
+    _sibling("tokenizer/chat_template.jinja", 1),
     _sibling("assets/example.mp4", 500),
 ]
 
@@ -1082,7 +1083,10 @@ def test_base_download_files_scopes_pipeline_pull():
     assert "assets/example.mp4" not in files
     assert files["text_encoder/model-00001-of-00002.safetensors"] == 25
     assert files["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"] == 20
-    assert sum(files.values()) == 10 + 1 + 20 + 18 + 25 + 25 + 3 + 1
+    # The standalone chat template must survive the whitelist: apply_chat_template
+    # reads it at generation time and it is not embedded in tokenizer_config.json.
+    assert "tokenizer/chat_template.jinja" in files
+    assert sum(files.values()) == 10 + 1 + 20 + 18 + 25 + 25 + 3 + 1 + 1
 
 
 def test_base_download_files_gguf_drops_transformer():
@@ -1152,3 +1156,38 @@ def test_hv15_720p_repo_gets_720p_family_defaults():
     fam480 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
     assert fam480 is not None and fam480.name == "hunyuanvideo-1.5"
     assert fam480.resolution_presets[0] == (832, 480)
+
+
+def test_predownload_base_honors_cancel_between_files(monkeypatch):
+    # A warm-cache sweep returns each file instantly without consulting the event,
+    # so the loop must check it explicitly or an unload mid-predownload is ignored.
+    backend = VideoBackend()
+    backend._cancel_event.set()
+    calls: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **kw: (calls.append(fn), f"/cache/{fn}")[1],
+    )
+
+    class _Api:
+        def __init__(self, token = None):
+            pass
+
+        def model_info(
+            self,
+            repo,
+            files_metadata = True,
+        ):
+            return types.SimpleNamespace(
+                siblings = [
+                    _sibling("model_index.json", 1),
+                    _sibling("vae/diffusion_pytorch_model.safetensors", 2),
+                ]
+            )
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend._predownload_base("base/repo", None, "pipeline")
+    assert calls == []
