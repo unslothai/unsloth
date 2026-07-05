@@ -343,6 +343,83 @@ assert.equal(
 // (Artifact order within equal-quality formats is the declaration order, so the
 // 480p entry -- listed first as the lighter default -- wins on big GPUs too.)
 
+// ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
+// Qwen-Image-2512 BF16 (54 GB) does not fit a 24/48 GB budget (bnb-4bit/fp8 win
+// there, asserted above) but on an 80 GB datacenter GPU (budget 56) the official
+// BF16 is the highest-quality artifact that fits and wins.
+assert.equal(
+  pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+assert.equal(
+  pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .repoId,
+  "Qwen/Qwen-Image-2512",
+);
+// Z-Image-Turbo BF16 (30 GB): does not fit 24 GB (bnb-4bit wins) but fits a
+// 48 GB GPU (budget 33.6) where the official BF16 wins.
+const zturbo = groupForRepoId("unsloth/Z-Image-Turbo", IMAGE_CATALOG);
+assert.ok(zturbo);
+assert.equal(
+  pickDefaultArtifact(zturbo, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
+    .format,
+  "bnb-4bit",
+);
+assert.equal(
+  pickDefaultArtifact(zturbo, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+// FLUX.1-dev BF16 (32 GB) is a single option beyond GGUF; fits a 48 GB GPU.
+const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
+assert.ok(fluxDev);
+assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
+assert.equal(
+  pickDefaultArtifact(fluxDev, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+assert.equal(
+  pickDefaultArtifact(fluxDev, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+// LTX-2.3 video now carries the official BF16 / FP8 single-file checkpoints, but
+// they keep the ~50 GB Gemma3 encoder resident, so a consumer or 80 GB GPU routes
+// to GGUF; only a B200-class budget picks the official BF16.
+const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
+assert.ok(ltxGroup);
+assert.equal(
+  pickDefaultArtifact(ltxGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(ltxGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(ltxGroup, { gpuGb: 192, systemRamGb: 256, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+// The LTX-2.3 official checkpoints load as single-file against the family base.
+assert.equal(loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.kind, "single_file");
+assert.equal(
+  loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.filename,
+  "ltx-2.3-22b-distilled.safetensors",
+);
+assert.equal(loadSpecFor("Lightricks/LTX-2.3-fp8", VIDEO_CATALOG)?.kind, "single_file");
+assert.equal(
+  loadSpecFor("Lightricks/LTX-2.3-fp8", VIDEO_CATALOG)?.filename,
+  "ltx-2.3-22b-distilled-fp8.safetensors",
+);
+// The official image BF16 pipelines load via from_pretrained (pipeline kind).
+assert.equal(loadSpecFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.kind, "pipeline");
+assert.equal(loadSpecFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG)?.kind, "pipeline");
+
 // ── groupMatchesQuery ──────────────────────────────────────────────────────────
 
 assert.ok(groupMatchesQuery(qwenGroup, "qwen"));

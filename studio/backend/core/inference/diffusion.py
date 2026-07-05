@@ -218,12 +218,18 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "stabilityai/stable-diffusion-xl-base-1.0",
         "stabilityai/sdxl-turbo",
         # Official vendor, safetensors-only base repos allowlisted as LoRA TRAINING bases
-        # (diffusion training loads the full pipeline from these). Same rule as above: no
-        # pickled weights, no remote code, exact-match lowercased. FLUX.1-dev is gated on
-        # the Hub (needs the user's token); the other two are open.
+        # (diffusion training loads the full pipeline from these) and as the official
+        # BF16 artifact behind each catalog group (model-catalog.ts). Same rule as above:
+        # no pickled weights, no remote code, exact-match lowercased. FLUX.1-dev/schnell/
+        # Kontext are gated on the Hub (need the user's token); the Qwen and Z-Image repos
+        # are open. All verified as diffusers model_index pipelines.
         "black-forest-labs/flux.1-dev",
+        "black-forest-labs/flux.1-schnell",
+        "black-forest-labs/flux.1-kontext-dev",
         "tongyi-mai/z-image-turbo",
         "qwen/qwen-image",
+        "qwen/qwen-image-2512",
+        "qwen/qwen-image-edit-2511",
         # Krea 2: official vendor repos, safetensors-only, no remote code. Loaded
         # per-component via core/inference/diffusion_krea2.py (no GGUF variant yet).
         # Turbo is the inference model; Raw is the undistilled base Krea recommends

@@ -105,6 +105,23 @@ const bf16Pipeline = (
   ...extra,
 });
 
+// A bf16 single-file DiT checkpoint (e.g. Lightricks' distilled LTX-2.3): loads
+// via from_single_file against the family base repo for the VAE / text encoder,
+// same load path as the fp8 single-file checkpoints.
+const bf16Single = (
+  repoId: string,
+  filename: string,
+  approxSizeGb: number,
+): ModelArtifact => ({
+  repoId,
+  format: "bf16",
+  loadKind: "single_file",
+  filename,
+  label: "BF16 (official)",
+  approxSizeGb,
+  keywords: ["bf16", "safetensors", "full precision"],
+});
+
 // ── curated catalogs ────────────────────────────────────────────────────────────
 // Sizes are steady resident estimates (GB) used only for routing; a missing size
 // means "never auto-pick unless downloaded". GGUF entries carry no size -- the
@@ -116,8 +133,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Z-Image-Turbo",
     description: "Text-to-image",
     scope: "image",
-    aliases: ["Tongyi-MAI/Z-Image-Turbo"],
     artifacts: [
+      bf16Pipeline("Tongyi-MAI/Z-Image-Turbo", 30),
       bnb4bit("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", 8),
       gguf("unsloth/Z-Image-Turbo-GGUF"),
     ],
@@ -134,8 +151,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
     scope: "image",
-    aliases: ["Qwen/Qwen-Image-2512"],
     artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2512", 54),
       fp8Single(
         "unsloth/Qwen-Image-2512-FP8",
         "qwen-image-2512-fp8.safetensors",
@@ -150,24 +167,30 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Qwen-Image",
     description: "Text-to-image",
     scope: "image",
-    aliases: ["Qwen/Qwen-Image"],
-    artifacts: [gguf("unsloth/Qwen-Image-GGUF")],
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image", 54),
+      gguf("unsloth/Qwen-Image-GGUF"),
+    ],
   },
   {
     canonicalId: "unsloth/FLUX.1-schnell",
     displayName: "FLUX.1 schnell",
     description: "Text-to-image",
     scope: "image",
-    aliases: ["black-forest-labs/FLUX.1-schnell"],
-    artifacts: [gguf("unsloth/FLUX.1-schnell-GGUF")],
+    artifacts: [
+      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32),
+      gguf("unsloth/FLUX.1-schnell-GGUF"),
+    ],
   },
   {
     canonicalId: "unsloth/FLUX.1-dev",
     displayName: "FLUX.1 dev",
     description: "Text-to-image",
     scope: "image",
-    aliases: ["black-forest-labs/FLUX.1-dev"],
-    artifacts: [gguf("unsloth/FLUX.1-dev-GGUF")],
+    artifacts: [
+      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32),
+      gguf("unsloth/FLUX.1-dev-GGUF"),
+    ],
   },
   {
     canonicalId: "unsloth/FLUX.2-klein-4B",
@@ -188,16 +211,20 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Qwen-Image-Edit 2511",
     description: "Image editing",
     scope: "image",
-    aliases: ["Qwen/Qwen-Image-Edit-2511"],
-    artifacts: [gguf("unsloth/Qwen-Image-Edit-2511-GGUF")],
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-Edit-2511", 54),
+      gguf("unsloth/Qwen-Image-Edit-2511-GGUF"),
+    ],
   },
   {
     canonicalId: "unsloth/FLUX.1-Kontext-dev",
     displayName: "FLUX.1 Kontext dev",
     description: "Image editing",
     scope: "image",
-    aliases: ["black-forest-labs/FLUX.1-Kontext-dev"],
-    artifacts: [gguf("unsloth/FLUX.1-Kontext-dev-GGUF")],
+    artifacts: [
+      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32),
+      gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
+    ],
   },
   {
     canonicalId: "krea/Krea-2-Turbo",
@@ -243,14 +270,29 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
-    // The distilled 2.3 release: GGUF quants plus Lightricks' own fp8/bf16
-    // single-file checkpoints (both already on the backend trust list).
+    // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT
+    // checkpoints (loaded against the LTX-2 base for the VAE / Gemma3 text
+    // encoder, both repos already on the backend trust list) plus the GGUF
+    // quants. The single-file checkpoints keep the ~50 GB Gemma3-27B encoder in
+    // bf16, so their resident footprint is datacenter-scale; consumer GPUs route
+    // to GGUF, which offloads.
     canonicalId: "unsloth/LTX-2.3",
     displayName: "LTX 2.3 distilled",
     description: "Text-to-video with audio",
     scope: "video",
-    aliases: ["lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8"],
-    artifacts: [gguf("unsloth/LTX-2.3-GGUF")],
+    artifacts: [
+      bf16Single(
+        "Lightricks/LTX-2.3",
+        "ltx-2.3-22b-distilled.safetensors",
+        90,
+      ),
+      fp8Single(
+        "Lightricks/LTX-2.3-fp8",
+        "ltx-2.3-22b-distilled-fp8.safetensors",
+        76,
+      ),
+      gguf("unsloth/LTX-2.3-GGUF"),
+    ],
   },
   {
     canonicalId: "Lightricks/LTX-2",

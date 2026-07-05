@@ -1548,8 +1548,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                       <Spinner className="size-4 text-muted-foreground" />
                     </span>
                   )}
-                  {/* A terse caption strip so cards read at a glance. */}
-                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-1 pb-0.5 pt-2 text-left text-[9px] font-medium text-white">
+                  {/* A terse caption strip so cards read at a glance. Left/bottom
+                      padding clears the rounded-lg corner and the selection border
+                      so the leading "5.0s" is never clipped by the curve. */}
+                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-[9px] font-medium leading-none text-white">
                     {clipMeta(video)}
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
