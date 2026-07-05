@@ -1047,25 +1047,20 @@ def write_openclaw_config(
         typer.echo(f"Updated {approvals}")
     else:
         # The no-launch config dir is reused across runs, so a previous --yolo run may
-        # have left auto-approval state behind. A run without --yolo must restore
-        # prompting: strip the exec policy and the approvals defaults. Only the exact
-        # values the yolo branch writes are removed, so a stricter policy someone set
-        # by hand (or OpenClaw recorded) survives.
-        tools = config.get("tools")
-        if isinstance(tools, dict):
-            exec_policy = tools.get("exec")
-            if isinstance(exec_policy, dict):
-                for field, yolo_value in (
-                    ("host", "gateway"),
-                    ("security", "full"),
-                    ("ask", "off"),
-                ):
-                    if exec_policy.get(field) == yolo_value:
-                        del exec_policy[field]
-                if not exec_policy:
-                    del tools["exec"]
-            if not tools:
-                del config["tools"]
+        # have left auto-approval state behind. OpenClaw treats an omitted exec policy as
+        # security=full, ask=off on the gateway host, so deleting the keys would keep
+        # auto-approval on: a non-yolo run must WRITE a prompting policy. Only a
+        # permissive/yolo policy is replaced; a stricter one set by hand survives.
+        exec_policy = (config.get("tools") or {}).get("exec")
+        exec_policy = exec_policy if isinstance(exec_policy, dict) else {}
+        if exec_policy.get("security", "full") == "full" and exec_policy.get("ask", "off") == "off":
+            exec_policy = _subdict(_subdict(config, "tools"), "exec")
+            exec_policy.pop("host", None)  # routing only; defaults to the gateway host
+            exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
+            exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
+        # Drop the yolo defaults from the host approvals file (a stricter default set by
+        # the user or OpenClaw is kept). With a prompting tools.exec the stricter of the
+        # two layers wins, so an omitted approvals default still prompts.
         approvals = path.parent / "exec-approvals.json"
         if approvals.exists():
             state = _read_json_object(approvals)
@@ -1140,16 +1135,17 @@ def write_opencode_config(
         # (singular). Allow the prompting tools so tool calls don't block on the TUI.
         config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
     else:
-        # The no-launch config is reused across runs; drop the auto-allow entries a
-        # previous --yolo run wrote so this session prompts again. Anything else in
-        # the permission block (ask/deny policies, other tools) is kept.
+        # OpenCode defaults an unset permission to "allow" (runs without asking), so a
+        # non-yolo run must WRITE an "ask" policy for the tools --yolo opened, not just
+        # drop the allow entries (which would fall back to that permissive default). A
+        # stricter value (deny/ask) the user set is kept.
         permission = config.get("permission")
-        if isinstance(permission, dict):
-            for tool in ("edit", "bash", "webfetch"):
-                if permission.get(tool) == "allow":
-                    del permission[tool]
-            if not permission:
-                del config["permission"]
+        permission = permission if isinstance(permission, dict) else {}
+        to_ask = [t for t in ("edit", "bash", "webfetch") if permission.get(t, "allow") == "allow"]
+        if to_ask:
+            permission = _subdict(config, "permission")
+            for tool in to_ask:
+                permission[tool] = "ask"
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
