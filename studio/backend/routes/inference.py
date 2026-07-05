@@ -3384,6 +3384,14 @@ async def voice_load_model(
             raise HTTPException(
                 status_code = 500, detail = f"Failed to load Qwen3-TTS voice model: {e}"
             )
+        # Prime so the first real /speech is fast (see the GGUF path below for why).
+        try:
+            await asyncio.to_thread(
+                qwen_tts_backend.generate_audio_response, "Hi there.", "qwen3_tts"
+            )
+        except Exception as e:
+            logger.warning("Qwen3-TTS warmup synth failed (first /speech may be slower): %s", e)
+
         logger.info("Voice slot loaded (Qwen3-TTS): %s", model_identifier)
         return {
             "status": "loaded",
@@ -3485,6 +3493,19 @@ async def voice_load_model(
                 f"Only snac, bicodec, and dac GGUF models are accepted."
             ),
         )
+
+    # Prime the pipeline so the FIRST real /speech is fast. The llama-server
+    # completion graph and the codec's first decode each pay a one-time cold cost
+    # (kernel compile / cache alloc -- seconds on ROCm). Run one tiny throwaway
+    # synth now, while the slot still reads as "loading" (voiceSlotLoading), so the
+    # warm-up phase absorbs it instead of freezing the user's first spoken reply.
+    # Best-effort: a priming failure must never fail an otherwise-good load.
+    try:
+        await asyncio.to_thread(
+            voice_backend.generate_audio_response, "Hi there.", audio_type
+        )
+    except Exception as e:
+        logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
 
     logger.info("Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type)
     return {
