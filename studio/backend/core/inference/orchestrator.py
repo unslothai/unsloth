@@ -65,6 +65,11 @@ class InferenceOrchestrator:
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
+        # mp.Event set for the duration of an unload. Unlike _cancel_event (which
+        # the worker clears at the start of every generate), the worker never
+        # clears this, so a generate still queued behind the cancelled one is
+        # skipped instead of running the switch out from under the cancel.
+        self._drain_event: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
         # Set during a model switch so a generation that wins the _gen_lock
         # handoff bails instead of starting on the outgoing model.
@@ -167,6 +172,7 @@ class InferenceOrchestrator:
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
             self._cancel_event = _CTX.Event()
+            self._drain_event = _CTX.Event()
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
@@ -175,6 +181,7 @@ class InferenceOrchestrator:
                     "cmd_queue": self._cmd_queue,
                     "resp_queue": self._resp_queue,
                     "cancel_event": self._cancel_event,
+                    "drain_event": self._drain_event,
                     "config": config,
                 },
                 daemon = True,
@@ -236,6 +243,7 @@ class InferenceOrchestrator:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
+        self._drain_event = None
         logger.info("Inference subprocess shut down")
 
     def _cleanup(self):
@@ -885,11 +893,27 @@ class InferenceOrchestrator:
                 self.active_model_name = None
             return True
 
+        # Nothing loaded under this name: don't send an unload for a stale model. The
+        # worker falls back to unloading its *active* model when the requested name is
+        # absent, so a stale unload (e.g. one that lost a race to a concurrent load that
+        # already swapped in a different model) would otherwise tear down the wrong one.
+        if model_name != self.active_model_name and model_name not in self.models:
+            self.models.pop(model_name, None)
+            return True
+
         # The subprocess runs commands sequentially, so a bare unload queues behind
         # a running generate (a 2-3 min hang). Cancel first (via the mp.Event the
         # worker polls each token), then take _gen_lock to be the sole resp_queue
         # reader, matching the GGUF backend.
         self._unload_pending = True
+        # Cancelling only the running generation isn't enough: the worker clears
+        # cancel_event at the start of every generate, so a generation still queued
+        # behind it (e.g. the second of two compare-mode requests) would clear the
+        # cancel and run the outgoing model to completion, defeating the fast switch.
+        # drain_event, which the worker never clears, makes any generate it dequeues
+        # while the unload is in flight skip instead of run.
+        if self._drain_event is not None:
+            self._drain_event.set()
         try:
             self._cancel_generation()
             acquired = self._gen_lock.acquire(timeout = _UNLOAD_GEN_LOCK_TIMEOUT)
@@ -956,6 +980,8 @@ class InferenceOrchestrator:
                 self._gen_lock.release()
         finally:
             self._unload_pending = False
+            if self._drain_event is not None:
+                self._drain_event.clear()
 
     def generate_chat_response(
         self,
@@ -1141,6 +1167,7 @@ class InferenceOrchestrator:
         if not self.active_model_name:
             yield "Error: No active model"
             return
+        expected_model = self.active_model_name
 
         # Drain any prior compare-mode dispatcher so we can read resp_queue.
         self._wait_dispatcher_idle()
@@ -1149,7 +1176,12 @@ class InferenceOrchestrator:
         # consume and drop each other's token events. Hold _gen_lock across the
         # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
-            if self._unload_pending:
+            # Recheck under the lock: an unload we raced may have cleared/swapped the
+            # model while we waited here. _unload_pending is reset in unload_model's
+            # finally *after* the lock is released, so it can already read False by the
+            # time we resume; the active-model check catches that handoff and a reload
+            # that swapped in a different model, so we never generate on the wrong one.
+            if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield "Error: model is being unloaded"
                 return
@@ -1220,13 +1252,16 @@ class InferenceOrchestrator:
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
             raise RuntimeError("No active model")
+        expected_model = self.active_model_name
 
         # Serialize under _gen_lock (sole resp_queue reader) and refuse to start on the
         # outgoing model once an unload is pending, matching the text (generate_chat_response)
         # and audio-input (_generate_audio_input_inner) paths. Without this a concurrent
         # /audio/generate could run TTS on the model being switched out.
         with self._gen_lock:
-            if self._unload_pending:
+            # Recheck under the lock (see _generate_inner): a raced unload/switch may
+            # have cleared or swapped the model while we waited for the lock.
+            if self._unload_pending or self.active_model_name != expected_model:
                 raise RuntimeError("model is being unloaded")
 
             request_id = str(uuid.uuid4())
@@ -1339,9 +1374,12 @@ class InferenceOrchestrator:
         if not self.active_model_name:
             yield "Error: No active model"
             return
+        expected_model = self.active_model_name
 
         with self._gen_lock:
-            if self._unload_pending:
+            # Recheck under the lock (see _generate_inner): a raced unload/switch may
+            # have cleared or swapped the model while we waited for the lock.
+            if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield "Error: model is being unloaded"
                 return

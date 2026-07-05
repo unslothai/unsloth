@@ -20,6 +20,7 @@ def _bare_orchestrator():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     o._gen_lock = threading.Lock()
     o._cancel_event = threading.Event()  # stands in for the mp.Event
+    o._drain_event = threading.Event()  # stands in for the unload-drain mp.Event
     o._proc = object()  # truthy so _ensure_subprocess_alive reports alive
     o._cmd_queue = object()
     o._resp_queue = object()
@@ -242,3 +243,229 @@ def test_audio_response_bails_when_unload_pending(monkeypatch):
     # Lock released so the pending unload can proceed.
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
+
+
+# ----------------------------------------------------------------------------
+# Preserve unload cancels across the queue handoff (drain_event) — items #1/#4.
+# ----------------------------------------------------------------------------
+
+
+def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
+    # The worker clears cancel_event at the start of every generate, so a cancel set
+    # while a generate is still queued would be lost when it is dequeued. drain_event
+    # is the durable signal: while it is set the worker skips the generate (emitting an
+    # immediate gen_done so the stream/mailbox drains) instead of running it.
+    import queue as _queue
+
+    from core.inference.worker import _drain_skip_generate
+
+    drain = threading.Event()
+    rq: _queue.Queue = _queue.Queue()
+    cmd = {"type": "generate", "request_id": "r1"}
+
+    # Not draining -> run normally (do not skip, emit nothing).
+    assert _drain_skip_generate(cmd, rq, drain) is False
+    assert rq.empty()
+    # Missing event (older worker) -> also runs normally.
+    assert _drain_skip_generate(cmd, rq, None) is False
+    assert rq.empty()
+
+    # Draining -> skip and emit a cancelled gen_done for this request_id.
+    drain.set()
+    assert _drain_skip_generate(cmd, rq, drain) is True
+    resp = rq.get_nowait()
+    assert resp["type"] == "gen_done"
+    assert resp["request_id"] == "r1"
+    assert resp["cancelled"] is True
+
+
+def test_worker_generate_branches_check_drain_before_clearing_cancel():
+    # Both worker command loops (MLX fast-path + GPU) must consult the drain skip
+    # before clearing cancel_event and running, so a queued generate can't clear an
+    # unload-initiated cancel and run the outgoing model to completion.
+    import inspect
+
+    from core.inference import worker
+
+    src = inspect.getsource(worker.run_inference_process)
+    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 2
+
+
+def test_unload_sets_drain_event_during_switch_and_clears_after(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_drain_queue", lambda: [])
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+
+    seen = {}
+
+    def record_send(cmd):
+        # drain_event must be set for the whole unload round-trip so any generate the
+        # worker dequeues in this window is skipped, not run.
+        seen["drain_set"] = o._drain_event.is_set()
+
+    monkeypatch.setattr(o, "_send_cmd", record_send)
+
+    assert o.unload_model("m") is True
+    assert seen.get("drain_set") is True
+    # Cleared on exit so a later generation (e.g. unloading a non-active model, or a
+    # reused subprocess) is not wrongly skipped.
+    assert o._drain_event.is_set() is False
+
+
+def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send when wedged"))
+
+    # A wedged worker never releases _gen_lock; unload tears the subprocess down. The
+    # real teardown nulls _drain_event, so emulate that so the finally exercises its guard.
+    def fake_shutdown(timeout = 5):
+        o._drain_event = None
+
+    monkeypatch.setattr(o, "_shutdown_subprocess", fake_shutdown)
+    o._gen_lock.acquire()
+
+    assert o.unload_model("m") is True  # must not raise in the drain_event clear
+
+
+# ----------------------------------------------------------------------------
+# Recheck the active model after the lock wait — items #2/#3.
+# ----------------------------------------------------------------------------
+
+
+def test_generation_rechecks_model_after_lock_wait(monkeypatch):
+    # A request passes the pre-lock active-model check, then blocks on _gen_lock while
+    # an unload clears/swaps the model. Even if _unload_pending was already reset (the
+    # unload's finally runs after the lock release), the under-lock active-model recheck
+    # must make it bail instead of sending a generate to the wrong/unloaded backend.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not generate on a swapped/unloaded model")
+    )
+
+    reached_lock = threading.Event()
+    # _wait_dispatcher_idle runs after the pre-lock check and before acquiring the lock;
+    # signalling here means the generator captured the model and is about to block.
+    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
+
+    o.active_model_name = "m"
+    o._unload_pending = False
+    o._gen_lock.acquire()  # stand in for an in-flight unload holding the lock
+
+    out: list = []
+
+    def run():
+        out.extend(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
+
+    t = threading.Thread(target = run)
+    t.start()
+    assert reached_lock.wait(timeout = 5)
+    # Unload finished: model swapped, pending already cleared. Release the lock.
+    o.active_model_name = "other"
+    o._gen_lock.release()
+    t.join(timeout = 5)
+
+    assert out and any("unloaded" in chunk.lower() for chunk in out)
+
+
+def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
+    # Same race, but the unload left no active model (a plain unload, not a switch).
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not generate after the model was unloaded")
+    )
+    reached_lock = threading.Event()
+    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
+
+    o.active_model_name = "m"
+    o._unload_pending = False
+    o._gen_lock.acquire()
+
+    out: list = []
+    t = threading.Thread(
+        target = lambda: out.extend(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
+    )
+    t.start()
+    assert reached_lock.wait(timeout = 5)
+    o.active_model_name = None
+    o._gen_lock.release()
+    t.join(timeout = 5)
+
+    assert out and any("unloaded" in chunk.lower() for chunk in out)
+
+
+# ----------------------------------------------------------------------------
+# Don't unload a stale model name (worker's active-model fallback) — item #5.
+# ----------------------------------------------------------------------------
+
+
+def test_unload_of_stale_name_does_not_touch_active_model(monkeypatch):
+    # If the named model isn't loaded (e.g. a concurrent load already swapped in a
+    # different one), unload must not send a command the worker would satisfy by
+    # unloading its *active* model.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send an unload for a stale model name")
+    )
+    o.active_model_name = "current"
+    o.models = {"current": {}}
+
+    assert o.unload_model("stale") is True
+    # The active model is left intact.
+    assert o.active_model_name == "current"
+    assert "current" in o.models
+
+
+def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
+    # Item #5: /unload must hold the same lifecycle gate as /load so a concurrent load
+    # can't swap the backend subprocess/queues mid-unload.
+    import asyncio
+
+    import routes.inference as inference_route
+    from core.inference import llama_keepwarm as kw
+    from models.inference import UnloadRequest
+
+    class _Llama:
+        is_active = False
+        is_loaded = False
+        model_identifier = None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
+
+    unloaded: list = []
+
+    class _Backend:
+        active_model_name = "m"
+        models = {"m": {}}
+
+        def unload_model(self, name):
+            unloaded.append(name)
+            return True
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+
+    async def scenario():
+        # Hold the real gate, exactly as an in-flight /load would.
+        assert kw._lifecycle_lock.acquire(blocking = False)
+        try:
+            task = asyncio.ensure_future(
+                inference_route.unload_model(UnloadRequest(model_path = "m"), "tester")
+            )
+            # Yield to the loop repeatedly: the route must stay blocked on the gate.
+            for _ in range(10):
+                await asyncio.sleep(0.01)
+            assert unloaded == [], "unload ran while the lifecycle gate was held"
+            assert not task.done()
+        finally:
+            kw._lifecycle_lock.release()
+        resp = await task
+        assert resp.status == "unloaded"
+        assert unloaded == ["m"]
+
+    asyncio.run(scenario())

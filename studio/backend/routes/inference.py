@@ -3798,30 +3798,38 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
-    from core.inference.llama_keepwarm import note_model_unloaded
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
-        # Check if the GGUF backend has this model loaded or is loading it.
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_active and (
-            llama_backend.model_identifier == request.model_path
-            or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
-            or not llama_backend.is_loaded
-        ):
-            # A manual unload is a deliberate user action: tear down now even if a
-            # request is mid-stream (only the automatic idle loop defers to it).
-            llama_backend.unload_model()
-            note_model_unloaded()
-            logger.info(f"Unloaded GGUF model: {request.model_path}")
-            return UnloadResponse(status = "unloaded", model = request.model_path)
+        # Serialize with /load under the same lifecycle gate: the Unsloth unload now
+        # runs off the event loop (asyncio.to_thread), so without this a concurrent
+        # /load could swap in a fresh subprocess/queue mid-unload and the unload
+        # command would land on the newly loaded worker (which then unloads the wrong
+        # model). The gate makes load and unload mutually exclusive.
+        async with inference_lifecycle_gate():
+            # Check if the GGUF backend has this model loaded or is loading it.
+            llama_backend = get_llama_cpp_backend()
+            if llama_backend.is_active and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+                or not llama_backend.is_loaded
+            ):
+                # A manual unload is a deliberate user action: tear down now even if a
+                # request is mid-stream (only the automatic idle loop defers to it).
+                llama_backend.unload_model()
+                note_model_unloaded()
+                logger.info(f"Unloaded GGUF model: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Unload from Unsloth backend, off the event loop: unload takes _gen_lock,
-        # which a slow SSE stream paused between tokens still holds, so a sync call
-        # would block the loop that drives the stream's next token and lock release.
-        backend = get_inference_backend()
-        await asyncio.to_thread(backend.unload_model, request.model_path)
-        note_model_unloaded()
-        logger.info(f"Unloaded model: {request.model_path}")
-        return UnloadResponse(status = "unloaded", model = request.model_path)
+            # Unload from Unsloth backend, off the event loop: unload takes _gen_lock,
+            # which a slow SSE stream paused between tokens still holds, so a sync call
+            # would block the loop that drives the stream's next token and lock release.
+            backend = get_inference_backend()
+            await asyncio.to_thread(backend.unload_model, request.model_path)
+            note_model_unloaded()
+            logger.info(f"Unloaded model: {request.model_path}")
+            return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
