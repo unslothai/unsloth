@@ -384,3 +384,15 @@ def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
     # parser's guarded function-XML scan before the regex, matching the core strip.
     text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
+
+
+def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
+    # The call ends at its first non-data close: prose after it survives the
+    # strip even when it mentions a literal </function>.
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    text = (
+        "<function=web_search><parameter=query>cats</parameter></function>"
+        " Done. The tag </function> closes a call."
+    )
+    assert strip_tool_markup(text, final = True) == "Done. The tag </function> closes a call."

@@ -781,3 +781,63 @@ class TestNamelessLeadingJsonAnswerIsData:
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+class TestLeadingBareJsonOwnsTurnOverTrailingXml:
+    """Document order: a leading closed bare-JSON call owns the turn even when
+    tool XML appears AFTER it (inside-or-after, mirroring the Mistral rule)."""
+
+    def test_leading_call_wins_over_trailing_xml(self):
+        text = (
+            '{"name":"lookup","parameters":{"q":"first"}} Example: '
+            '<tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "delete_all"})
+        assert [c["function"]["name"] for c in calls] == ["lookup"], calls
+        assert json.loads(calls[0]["function"]["arguments"]) == {"q": "first"}
+
+    def test_chained_leading_calls_win_over_trailing_xml(self):
+        text = (
+            '{"name":"lookup","parameters":{"q":"first"}};'
+            '{"name":"lookup","parameters":{"q":"second"}} '
+            '<tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "delete_all"})
+        assert [c["function"]["name"] for c in calls] == ["lookup", "lookup"], calls
+
+    def test_non_call_leading_object_defers_to_trailing_real_call(self):
+        # Nameless answers and disabled-name objects take the decline path:
+        # the object is dropped and the real trailing call still parses.
+        for lead in ('{"answer": 42}', '{"name":"draft","parameters":{}}'):
+            text = lead + ' <tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
+            calls = parse_tool_calls_from_text(text, enabled_tool_names = {"delete_all"})
+            assert [c["function"]["name"] for c in calls] == ["delete_all"], (lead, calls)
+
+    def test_leading_xml_call_still_wins_over_trailing_bare_json(self):
+        text = (
+            '<tool_call>{"name":"delete_all","arguments":{}}</tool_call> '
+            'Example: {"name":"lookup","parameters":{"q":"x"}}'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "delete_all"})
+        assert [c["function"]["name"] for c in calls] == ["delete_all"], calls
+
+
+class TestProseCloseTagAfterClosedFunctionCall:
+    """A literal </function> in prose after a closed call is data: the call
+    ends at its first close that is not parameter data, so arguments never
+    swallow the prose between the real close and the literal."""
+
+    def test_arguments_do_not_swallow_prose(self):
+        text = (
+            "<function=web_search><parameter=query>cats</parameter></function>"
+            " Done. The tag </function> closes a call."
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_literal_close_inside_open_parameter_stays_data(self):
+        text = '<function=python><parameter=code>print("</function>")</parameter></function>'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
+        assert [c["function"]["name"] for c in calls] == ["python"], calls
+        assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</function>")'}
