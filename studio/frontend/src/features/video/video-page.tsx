@@ -33,6 +33,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import { VIDEO_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
+import {
+  VIDEO_CATALOG,
+  catalogToModelOptions,
+  loadSpecFor,
+} from "@/components/assistant-ui/model-selector/model-catalog";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -61,60 +66,13 @@ import {
   unloadVideoModel,
 } from "./api";
 
-// How to load a curated non-GGUF (safetensors) video model. "pipeline" = a full diffusers
-// repo (from_pretrained). The backend gates these to unsloth/* repos plus the official
-// family base repos. Keyed by repo id so the load handler knows the kind.
-type PipelineSpec = { kind: "pipeline"; filename?: string };
-const PIPELINE_MODELS: Record<string, PipelineSpec> = {
-  "Lightricks/LTX-2": { kind: "pipeline" },
-  // Wan2.2 diffusers base repos (no GGUF variant yet): loaded as full pipelines. TI2V-5B
-  // is a single-DiT 720p-class model; T2V-A14B is the dual-expert MoE. The backend gates
-  // these to the Wan-AI base repos (see _TRUSTED_NON_GGUF_VIDEO_REPOS).
-  "Wan-AI/Wan2.2-TI2V-5B-Diffusers": { kind: "pipeline" },
-  "Wan-AI/Wan2.2-T2V-A14B-Diffusers": { kind: "pipeline" },
-  // HunyuanVideo-1.5 community Diffusers repack (tencent's own repo is the original
-  // non-diffusers layout and cannot load as a pipeline).
-  "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": { kind: "pipeline" },
-};
-
-// A curated GGUF picker entry: isGguf true expands its .gguf files in the quant expander
-// (like the image GGUF repos), and the backend resolves the pipeline + base repo from the id.
-const ggufModel = (id: string, name: string): ModelOption => ({
-  id,
-  name,
-  description: "Text-to-video · GGUF",
-  isGguf: true,
-});
-
-// A curated non-GGUF pipeline entry (isGguf false -> no quant expander, direct load).
-const pipelineModel = (id: string, name: string, description: string): ModelOption => ({
-  id,
-  name,
-  description,
-  isGguf: false,
-});
-
-// Curated text-to-video models the picker recommends. The chat ModelSelector also surfaces
-// any other on-device video GGUF (via the VIDEO_GEN_TASKS filter).
-const VIDEO_MODELS: ModelOption[] = [
-  ggufModel("unsloth/LTX-2.3-GGUF", "LTX 2.3 distilled"),
-  pipelineModel("Lightricks/LTX-2", "LTX 2 (base, bf16)", "Text-to-video with audio · Safetensors"),
-  pipelineModel(
-    "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-    "Wan 2.2 TI2V 5B",
-    "Text-to-video 720p · Safetensors",
-  ),
-  pipelineModel(
-    "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-    "Wan 2.2 T2V A14B (MoE)",
-    "Text-to-video, dual-expert · Safetensors",
-  ),
-  pipelineModel(
-    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
-    "HunyuanVideo 1.5 (480p)",
-    "Text-to-video 480p · Safetensors",
-  ),
-];
+// Curated models come from the shared catalog: one canonical group per model
+// with its artifacts as data (the HunyuanVideo group carries both the 480p and
+// 720p repacks), and the load kind per artifact via loadSpecFor (replacing the
+// old PIPELINE_MODELS table). The picker renders groups with a format second
+// level -- which also finally surfaces LTX-2.3 in Recommended (its HF
+// pipeline_tag is image-to-video, so the live text-to-video listing missed it).
+const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most
 // specific first. The distilled model wants very few steps and no guidance; the full base
@@ -935,8 +893,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       // Ignore picks while a load/generation/unload is in flight.
       if (busy !== null) return;
       // Curated non-GGUF model: load as a full pipeline.
-      const spec = PIPELINE_MODELS[id];
-      if (spec) {
+      const spec = loadSpecFor(id, VIDEO_CATALOG);
+      if (spec && spec.kind !== "gguf") {
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
@@ -1223,6 +1181,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             variant="ghost"
             className="!h-[34px]"
             task={VIDEO_GEN_TASKS}
+            catalog={VIDEO_CATALOG}
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />

@@ -3363,6 +3363,28 @@ def _repo_is_diffusers(repo_info) -> bool:
     return False
 
 
+def _cached_repo_task(repo_info) -> Optional[str]:
+    """Pipeline task for a cached non-GGUF repo: 'text-to-video' for repos the
+    video backend can load as full pipelines (its trust list / family detector),
+    else 'text-to-image' for diffusers image repos, else None (chat). Without the
+    video tag, cached Lightricks / Wan / Hunyuan pipelines never surfaced in the
+    Video picker's On Device list -- everything diffusers was blanket-tagged
+    text-to-image."""
+    repo_id = getattr(repo_info, "repo_id", "") or ""
+    try:
+        from core.inference.video import _is_trusted_video_repo
+        from core.inference.video_families import detect_video_family
+
+        # Both gates: a detected video family (so unsloth image repos don't
+        # match) AND the load path's own trust rule (so an untrusted video repo
+        # isn't advertised as loadable).
+        if detect_video_family(repo_id) is not None and _is_trusted_video_repo(repo_id):
+            return _VIDEO_GEN_TASK
+    except Exception:
+        pass
+    return "text-to-image" if _repo_is_diffusers(repo_info) else None
+
+
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
@@ -3409,7 +3431,7 @@ async def list_cached_models(
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
-                            "task": "text-to-image" if _repo_is_diffusers(repo_info) else None,
+                            "task": _cached_repo_task(repo_info),
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.

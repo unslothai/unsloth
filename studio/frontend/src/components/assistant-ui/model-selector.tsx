@@ -36,6 +36,7 @@ import {
 import { Input } from "../ui/input";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import type { CatalogGroup } from "./model-selector/model-catalog";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {
   buildSourceTabs,
@@ -140,6 +141,10 @@ interface ModelSelectorProps {
   showCloudIndicator?: boolean;
   /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
   task?: HfTaskFilter;
+  /** Canonical model groups (Images / Video pages): collapses a model's
+   *  artifact repos into one row with a format second level and device-aware
+   *  routing. Undefined (chat) changes nothing. */
+  catalog?: CatalogGroup[];
 }
 
 function ModelSelectorTrigger({
@@ -321,6 +326,7 @@ function ModelSelectorContent({
   className,
   dataTour,
   task,
+  catalog,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -337,6 +343,7 @@ function ModelSelectorContent({
   className?: string;
   dataTour?: string;
   task?: HfTaskFilter;
+  catalog?: CatalogGroup[];
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -507,6 +514,7 @@ function ModelSelectorContent({
             section={effectiveHubSection}
             onEject={hasSelection && onEject ? onEject : undefined}
             task={task}
+            catalog={catalog}
             sectionToggle={
               <PillTabs
                 ariaLabel="Hub section"
@@ -587,6 +595,7 @@ export function ModelSelector({
   contentDataTour,
   showCloudIndicator = false,
   task,
+  catalog,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -713,6 +722,7 @@ export function ModelSelector({
         className={contentClassName}
         dataTour={contentDataTour}
         task={task}
+        catalog={catalog}
       />
     </Popover>
   );

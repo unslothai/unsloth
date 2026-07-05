@@ -36,6 +36,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import { IMAGE_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
+import {
+  IMAGE_CATALOG,
+  catalogToModelOptions,
+  loadSpecFor,
+} from "@/components/assistant-ui/model-selector/model-catalog";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -69,100 +74,12 @@ import {
 } from "./api";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 
-// Curated diffusion GGUFs the picker recommends. The backend resolves each one's
-// pipeline + base diffusers repo from its repo id, so the rail just lists them;
-// the chat ModelSelector also surfaces any other on-device image GGUF.
-const txt2img = (id: string, name: string): ModelOption => ({
-  id,
-  name,
-  description: "Text-to-image · GGUF",
-  isGguf: true,
-});
-
-// Instruction-editing GGUF (Qwen-Image-Edit). Same single-file GGUF flow as txt2img
-// (the picker expands quant variants); the backend resolves it to the edit family, which
-// exposes only the "edit" workflow.
-const editGguf = (id: string, name: string): ModelOption => ({
-  id,
-  name,
-  description: "Image editing · GGUF",
-  isGguf: true,
-});
-
-// How to load a curated non-GGUF (safetensors) model. "pipeline" = a full diffusers
-// repo (from_pretrained, embedded bnb-4bit quant auto-applied); "single_file" = a
-// single safetensors transformer (e.g. fp8) assembled onto its base repo. The backend
-// gates these to unsloth/* repos plus a short allowlist of official base repos (SDXL).
-// Keyed by repo id so the load handler knows the kind (and, for single_file, the exact
-// filename).
-type SafetensorsSpec = { kind: "pipeline" | "single_file"; filename?: string };
-const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
-  "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
-  // Krea 2 Turbo: official vendor repo (bf16 pipeline), on the backend allowlist.
-  "krea/Krea-2-Turbo": { kind: "pipeline" },
-  // Ideogram 4: official vendor pipelines, on the backend allowlist. No bf16 repo
-  // exists: -fp8 stores its two DiTs as raw float8 (highest precision; ~46 GB
-  // resident after the bf16 cast); -nf4-diffusers is the bnb-4bit export (~11 GB).
-  "ideogram-ai/ideogram-4-fp8": { kind: "pipeline" },
-  "ideogram-ai/ideogram-4-nf4-diffusers": { kind: "pipeline" },
-  "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
-  "unsloth/Qwen-Image-2512-FP8": {
-    kind: "single_file",
-    filename: "qwen-image-2512-fp8.safetensors",
-  },
-  // SDXL is a U-Net family loaded as a whole pipeline (from_pretrained). These
-  // official base repos are on the backend's non-GGUF allowlist.
-  "stabilityai/sdxl-turbo": { kind: "pipeline" },
-  "stabilityai/stable-diffusion-xl-base-1.0": { kind: "pipeline" },
-};
-// Curated non-GGUF picker entries (isGguf:false -> no quant expander, direct load).
-const safetensors = (id: string, name: string, label: string): ModelOption => ({
-  id,
-  name,
-  description: `Text-to-image · ${label}`,
-  isGguf: false,
-});
-
-const MODELS: ModelOption[] = [
-  txt2img("unsloth/Z-Image-Turbo-GGUF", "Z-Image-Turbo"),
-  txt2img("unsloth/Z-Image-GGUF", "Z-Image"),
-  txt2img("unsloth/Qwen-Image-2512-GGUF", "Qwen-Image 2512"),
-  txt2img("unsloth/Qwen-Image-GGUF", "Qwen-Image"),
-  txt2img("unsloth/FLUX.1-schnell-GGUF", "FLUX.1 schnell"),
-  txt2img("unsloth/FLUX.1-dev-GGUF", "FLUX.1 dev"),
-  txt2img("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2 klein 4B"),
-  txt2img("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2 klein 9B"),
-  editGguf("unsloth/Qwen-Image-Edit-2511-GGUF", "Qwen-Image-Edit 2511"),
-  editGguf("unsloth/FLUX.1-Kontext-dev-GGUF", "FLUX.1 Kontext dev"),
-  safetensors(
-    "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
-    "Z-Image-Turbo (bnb-4bit)",
-    "Safetensors · bnb-4bit",
-  ),
-  safetensors("krea/Krea-2-Turbo", "Krea 2 Turbo", "Safetensors · bf16"),
-  safetensors("ideogram-ai/ideogram-4-fp8", "Ideogram 4 (FP8)", "Safetensors · fp8"),
-  safetensors(
-    "ideogram-ai/ideogram-4-nf4-diffusers",
-    "Ideogram 4 (bnb-4bit)",
-    "Safetensors · bnb-4bit",
-  ),
-  safetensors(
-    "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
-    "Qwen-Image 2512 (bnb-4bit)",
-    "Safetensors · bnb-4bit",
-  ),
-  safetensors(
-    "unsloth/Qwen-Image-2512-FP8",
-    "Qwen-Image 2512 (FP8)",
-    "Safetensors · fp8",
-  ),
-  safetensors("stabilityai/sdxl-turbo", "SDXL Turbo", "Safetensors · SDXL"),
-  safetensors(
-    "stabilityai/stable-diffusion-xl-base-1.0",
-    "SDXL Base 1.0",
-    "Safetensors · SDXL",
-  ),
-];
+// Curated models come from the shared catalog: one canonical group per model,
+// its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per
+// artifact via loadSpecFor (replacing the old SAFETENSORS_MODELS table). The
+// picker renders groups with a format second level and routes bare clicks to
+// the best artifact for the device.
+const MODELS: ModelOption[] = catalogToModelOptions(IMAGE_CATALOG);
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) that must
 // be supported by the loaded model for the tab to enable; null = always available.
@@ -1579,8 +1496,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // busy, while the backend rejects the second load with a 409.
       if (busy !== null) return;
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
-      const spec = SAFETENSORS_MODELS[id];
-      if (spec) {
+      const spec = loadSpecFor(id, IMAGE_CATALOG);
+      if (spec && spec.kind !== "gguf") {
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
@@ -2033,6 +1950,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             variant="ghost"
             className="!h-[34px]"
             task={IMAGE_GEN_TASKS}
+            catalog={IMAGE_CATALOG}
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />
