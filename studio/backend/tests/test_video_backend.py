@@ -1040,6 +1040,7 @@ def test_second_dit_view_write_through():
     view.flag = "set"
     assert pipe.flag == "set"
 
+
 # ── scoped base-repo download ─────────────────────────────────────────────────
 
 
