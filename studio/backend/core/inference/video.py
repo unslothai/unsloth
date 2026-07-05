@@ -1062,18 +1062,12 @@ class VideoBackend:
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
         offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
-        if offload_policy == "group" and len(views) > 1:
-            # Group offload streams only ``pipe.transformer``; the second expert would
-            # otherwise sit resident (~57 GB bf16 on the A14B) and defeat the tier.
-            # model/sequential offload hook every top-level module, so only group needs
-            # this. Applied through the view so the helper streams transformer_2.
-            from .diffusion_memory import _apply_group_offload
-            for view in views[1:]:
-                if not _apply_group_offload(view, device, logger):
-                    logger.warning(
-                        "video.memory: group offload did not engage on the second "
-                        "expert; it stays resident"
-                    )
+        # A dual-DiT MoE pipe (Wan2.2-A14B) needs no extra per-expert offload pass here:
+        # apply_memory_plan's group tier (_apply_group_offload) already block-streams every
+        # DiT it finds on the pipe -- transformer AND transformer_2 -- and model/sequential
+        # offload hook every top-level module, so the second expert is covered under all tiers.
+        # A second _apply_group_offload on transformer_2 would re-register the group-offload
+        # hooks it already carries, which diffusers rejects with a duplicate-hook ValueError.
         if not vae_tiling:
             # Decode of a whole clip is the video memory peak; tiling is near-free
             # in quality and keeps the decode bounded, so it is always on.

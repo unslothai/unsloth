@@ -49,6 +49,13 @@ class DiffusionFamily:
     # rather than ``transformer_class.from_single_file`` + a companion base repo.
     # DiT families leave this False (their single file is transformer-only).
     single_file_is_pipeline: bool = False
+    # True for families whose full pipeline assembles MULTIPLE denoiser modules that a
+    # transformer-only file cannot supply (Ideogram 4 pairs a conditional ``transformer``
+    # with a separate ``unconditional_transformer``): there is no single-file or GGUF
+    # artifact carrying both, so only a full ``pipeline`` load is valid. The single-file /
+    # GGUF branches build just one transformer and would assemble a pipeline missing its
+    # second DiT, so validate_load_request rejects those kinds for such a family up front.
+    pipeline_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows. The backend
     # builds these around the ALREADY-loaded transformer/VAE/text-encoder via
     # ``Pipeline.from_pipe`` (no extra weights, no reload), so a family only needs the
@@ -322,6 +329,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "Ideogram4Transformer2DModel",
         base_repo = "ideogram-ai/ideogram-4-fp8",
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),
+        # Two DiTs assembled per-component (conditional + unconditional_transformer), so
+        # there is no transformer-only single-file / GGUF load for this family.
+        pipeline_only = True,
     ),
     # SDXL is the one U-Net family here: the denoiser is ``pipe.unet``
     # (UNet2DConditionModel), not a DiT ``pipe.transformer``, and a single-file
