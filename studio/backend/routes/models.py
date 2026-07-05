@@ -3178,12 +3178,16 @@ _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
         "aura",
         "hidream",
         "cosmos",
-        "ltxv",
         "hyvid",
-        "wan",
         "lumina2",
     }
 )
+
+# Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv"; the Wan
+# community GGUFs as "wan"). Tagged text-to-video so they surface in the Video
+# picker (VIDEO_GEN_TASKS) and stay out of chat (NON_CHAT_TASKS).
+_VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
+_VIDEO_GEN_TASK = "text-to-video"
 
 # Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
@@ -3204,6 +3208,8 @@ def _arch_to_task(arch: Optional[str]) -> Optional[str]:
     a = arch.lower()
     if a in _DIFFUSION_GGUF_ARCHS:
         return "text-to-image"
+    if a in _VIDEO_GGUF_ARCHS:
+        return _VIDEO_GEN_TASK
     # A diffusion arch the backend can't assemble: hide it from chat (it would die
     # in llama.cpp) without surfacing it in Images (it would 400 in validate_load).
     if a in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:

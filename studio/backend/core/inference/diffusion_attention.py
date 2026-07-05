@@ -213,11 +213,24 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
         )
     except Exception as exc:  # noqa: BLE001 — no wheel / no network -> native fallback
         if logger is not None:
-            logger.warning(
-                "diffusion.attention: could not install %s (%s); falling back to default",
-                package,
-                exc,
-            )
+            # A failed pip install raises CalledProcessError whose str() shows only the
+            # exit code and command; the real reason (no matching wheel, resolver error)
+            # is in exc.stderr. Surface it so a fallback to native is diagnosable.
+            stderr = getattr(exc, "stderr", None)
+            if stderr:
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", errors = "replace")
+                logger.warning(
+                    "diffusion.attention: could not install %s; pip failed with: %s",
+                    package,
+                    stderr.strip() or str(exc),
+                )
+            else:
+                logger.warning(
+                    "diffusion.attention: could not install %s (%s); falling back to default",
+                    package,
+                    exc,
+                )
 
 
 def apply_attention_backend(

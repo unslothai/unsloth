@@ -340,6 +340,38 @@ def test_validate_rejects_unknown_and_untrusted():
         backend.validate_load_request("unsloth/LTX-2.3-GGUF", model_kind = "gguf")
 
 
+def test_validate_gates_base_repo_and_local_paths(tmp_path):
+    backend = VideoBackend()
+    # An arbitrary remote base_repo must not reach from_pretrained via a GGUF pick.
+    with pytest.raises(ValueError, match = "base_repo"):
+        backend.validate_load_request(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = "evil/companions",
+        )
+    # The family base and local dirs stay allowed.
+    fam = backend.validate_load_request(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "x.gguf",
+        model_kind = "gguf",
+        base_repo = "Lightricks/LTX-2",
+    )
+    assert fam.name == "ltx-2"
+    # A local dir without the picked checkpoint fails BEFORE the GPU handoff.
+    with pytest.raises(ValueError):
+        backend.validate_load_request(
+            str(tmp_path), gguf_filename = "missing.gguf", family_override = "ltx-2"
+        )
+    # A path-shaped repo id that does not exist fails validation too.
+    with pytest.raises(ValueError, match = "does not exist"):
+        backend.validate_load_request(
+            str(tmp_path / "nope" / "model.gguf"),
+            gguf_filename = "model.gguf",
+            family_override = "ltx-2",
+        )
+
+
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     backend = VideoBackend()
     status = _load_gguf(backend, tmp_path)
