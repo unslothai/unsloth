@@ -74,9 +74,13 @@ torch._dynamo.config.accumulated_recompile_limit = max(
 # ---------------------------------------------------------------------------
 # Compiled kernels. FlexAttention needs torch.compile to fuse the sparse mask
 # into a single kernel; create_block_mask is likewise compiled for speed.
-# ---------------------------------------------------------------------------
-_flex_attention_compiled = torch.compile(flex_attention, dynamic = False)
-_create_block_mask_compiled = torch.compile(create_block_mask, dynamic = False)
+# dynamic=True is required for GRPO: the packed length T changes almost every
+# batch, and dynamic=False recompiles the flex fwd+bwd kernel on every new T
+# (~14s each on a 4B trunk). dynamic=True compiles once, then reuses the kernel
+# across all lengths (recompile-free after warmup); T is still padded to a
+# multiple of 128 (_pad_len) for the backward-kernel block assertion.
+_flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
+_create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
 # FlexAttention kernel_options (block sizes), selected by Q dtype.
 #
