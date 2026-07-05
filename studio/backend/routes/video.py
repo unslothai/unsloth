@@ -91,6 +91,7 @@ async def load_video_model(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
+            base_repo = request.base_repo,
             family_override = request.family_override,
             model_kind = request.model_kind,
             transformer_quant = request.transformer_quant,

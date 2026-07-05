@@ -12,7 +12,12 @@ import types
 
 import pytest
 
-from core.inference.video import VideoBackend, get_video_backend, resolve_video_model_kind
+from core.inference.video import (
+    VideoBackend,
+    _detect_load_family,
+    get_video_backend,
+    resolve_video_model_kind,
+)
 from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
@@ -455,6 +460,33 @@ def test_validate_gates_base_repo_and_local_paths(tmp_path):
             gguf_filename = "model.gguf",
             family_override = "ltx-2",
         )
+
+
+def test_validate_rejects_gguf_repo_as_pipeline():
+    backend = VideoBackend()
+    # A -GGUF repo with no quant filename resolves to the pipeline kind and would
+    # only fail minutes later in from_pretrained, AFTER evicting the GPU owner.
+    with pytest.raises(ValueError, match = "pick one of its .gguf files"):
+        backend.validate_load_request("unsloth/LTX-2.3-GGUF")
+    with pytest.raises(ValueError, match = "pick one of its .gguf files"):
+        backend.validate_load_request("unsloth/Wan2.2-TI2V-5B-GGUF/")
+
+
+def test_detect_load_family_filename_fallback():
+    # Repo id alone carries the family.
+    fam = _detect_load_family("Lightricks/LTX-2", None, None)
+    assert fam is not None and fam.name == "ltx-2"
+    # Repo id is opaque but the picked filename carries it: fall back to the
+    # combined path so validate and _run_load agree on the family.
+    fam = _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", None)
+    assert fam is not None and fam.name == "ltx-2"
+    # No filename and no recognisable repo id: no family.
+    assert _detect_load_family("someorg/quants", None, None) is None
+    # An explicit override resolves by name/alias and skips the filename fallback:
+    # a bogus override stays None even when the filename would have matched.
+    fam = _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "ltxv")
+    assert fam is not None and fam.name == "ltx-2"
+    assert _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "bogus") is None
 
 
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
