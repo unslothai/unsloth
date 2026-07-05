@@ -232,9 +232,23 @@ def build_group_layout(
     cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
     cstart_cpu = cstart.tolist()
     ids_cpu = input_ids.tolist()
-    keep_cpu = keep.tolist()
-    # per-row list of ORIGINAL real (non-pad) columns, ascending.
-    real_cols_cpu = [[c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)]
+    # per-row list of ORIGINAL real (non-pad) columns, ascending. GRPO rows are one
+    # contiguous real run (left pad + real + right pad; the run does NOT necessarily
+    # start at column 0), so derive [first, first+n) on GPU and keep the O(B*L) scan
+    # only as a fallback for non-contiguous rows.
+    n_real = keep.sum(dim = 1)
+    first = torch.argmax(keep.to(torch.int8), dim = 1)
+    ar = torch.arange(L, device = device)
+    contiguous = bool(
+        (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
+    )
+    if contiguous:
+        real_cols_cpu = [
+            list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())
+        ]
+    else:
+        keep_cpu = keep.tolist()
+        real_cols_cpu = [[c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)]
 
     groups = _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
     if groups is None:
