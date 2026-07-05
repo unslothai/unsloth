@@ -32,6 +32,102 @@ def list_checkpoints(
             typer.echo(f"  {display}{loss_str}: {path}")
 
 
+def run_export_format(
+    backend,
+    format: str,
+    save_directory: str,
+    quantization: str = "q4_k_m",
+    push_to_hub: bool = False,
+    repo_id: Optional[str] = None,
+    hf_token: Optional[str] = None,
+    private: bool = False,
+):
+    if format == "merged-16bit":
+        return backend.export_merged_model(
+            save_directory = save_directory,
+            format_type = "16-bit (FP16)",
+            push_to_hub = push_to_hub,
+            repo_id = repo_id,
+            hf_token = hf_token,
+            private = private,
+        )
+    if format == "merged-4bit":
+        return backend.export_merged_model(
+            save_directory = save_directory,
+            format_type = "4-bit (FP4)",
+            push_to_hub = push_to_hub,
+            repo_id = repo_id,
+            hf_token = hf_token,
+            private = private,
+        )
+    if format == "gguf":
+        return backend.export_gguf(
+            save_directory = save_directory,
+            quantization_method = quantization.upper(),
+            push_to_hub = push_to_hub,
+            repo_id = repo_id,
+            hf_token = hf_token,
+        )
+    if format == "lora":
+        return backend.export_lora_adapter(
+            save_directory = save_directory,
+            push_to_hub = push_to_hub,
+            repo_id = repo_id,
+            hf_token = hf_token,
+            private = private,
+        )
+    return False, f"Invalid format '{format}'", None
+
+
+def export_checkpoint(
+    checkpoint: Path,
+    output_dir: Path,
+    format: str,
+    quantization: str = "q4_k_m",
+    push_to_hub: bool = False,
+    repo_id: Optional[str] = None,
+    hf_token: Optional[str] = None,
+    private: bool = False,
+    max_seq_length: int = 2048,
+    load_in_4bit: bool = True,
+) -> Optional[str]:
+    from studio.backend.core.export import ExportBackend
+
+    backend = ExportBackend()
+
+    typer.echo(f"Loading checkpoint: {checkpoint}")
+    success, message = backend.load_checkpoint(
+        checkpoint_path = str(checkpoint),
+        max_seq_length = max_seq_length,
+        load_in_4bit = load_in_4bit,
+        hf_token = hf_token,
+    )
+    if not success:
+        typer.echo(f"Error: {message}", err = True)
+        raise typer.Exit(code = 1)
+    typer.echo(message)
+
+    typer.echo(f"Exporting as {format}...")
+    success, message, output_path = run_export_format(
+        backend,
+        format,
+        str(output_dir),
+        quantization = quantization,
+        push_to_hub = push_to_hub,
+        repo_id = repo_id,
+        hf_token = hf_token,
+        private = private,
+    )
+    if not success:
+        typer.echo(f"Error: {message}", err = True)
+        raise typer.Exit(code = 1)
+
+    typer.echo(message)
+    if output_path:
+        typer.echo(f"Saved to: {output_path}")
+    return output_path
+
+
 def export(
     checkpoint: Path = typer.Argument(..., help = "Path to checkpoint directory."),
     output_dir: Path = typer.Argument(..., help = "Directory to save exported model."),
@@ -72,62 +168,15 @@ def export(
         typer.echo("Error: --repo-id required when using --push-to-hub", err = True)
         raise typer.Exit(code = 2)
 
-    from studio.backend.core.export import ExportBackend
-
-    backend = ExportBackend()
-
-    typer.echo(f"Loading checkpoint: {checkpoint}")
-    success, message = backend.load_checkpoint(
-        checkpoint_path = str(checkpoint),
+    export_checkpoint(
+        checkpoint = checkpoint,
+        output_dir = output_dir,
+        format = format,
+        quantization = quantization,
+        push_to_hub = push_to_hub,
+        repo_id = repo_id,
+        hf_token = hf_token,
+        private = private,
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
     )
-    if not success:
-        typer.echo(f"Error: {message}", err = True)
-        raise typer.Exit(code = 1)
-    typer.echo(message)
-
-    typer.echo(f"Exporting as {format}...")
-    output_path: Optional[str] = None
-    if format == "merged-16bit":
-        success, message, output_path = backend.export_merged_model(
-            save_directory = str(output_dir),
-            format_type = "16-bit (FP16)",
-            push_to_hub = push_to_hub,
-            repo_id = repo_id,
-            hf_token = hf_token,
-            private = private,
-        )
-    elif format == "merged-4bit":
-        success, message, output_path = backend.export_merged_model(
-            save_directory = str(output_dir),
-            format_type = "4-bit (FP4)",
-            push_to_hub = push_to_hub,
-            repo_id = repo_id,
-            hf_token = hf_token,
-            private = private,
-        )
-    elif format == "gguf":
-        success, message, output_path = backend.export_gguf(
-            save_directory = str(output_dir),
-            quantization_method = quantization.upper(),
-            push_to_hub = push_to_hub,
-            repo_id = repo_id,
-            hf_token = hf_token,
-        )
-    elif format == "lora":
-        success, message, output_path = backend.export_lora_adapter(
-            save_directory = str(output_dir),
-            push_to_hub = push_to_hub,
-            repo_id = repo_id,
-            hf_token = hf_token,
-            private = private,
-        )
-
-    if not success:
-        typer.echo(f"Error: {message}", err = True)
-        raise typer.Exit(code = 1)
-
-    typer.echo(message)
-    if output_path:
-        typer.echo(f"Saved to: {output_path}")
