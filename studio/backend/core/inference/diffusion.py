@@ -927,8 +927,9 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise NOW, before this load evicts the
         # previous pipeline below: their first in-line uses all sit past _unload_locked,
-        # where a bad request would cost the user their working model.
-        transformer_quant = normalize_transformer_quant(transformer_quant)
+        # where a bad request would cost the user their working model. Validate-only for
+        # transformer_quant: the raw value keeps the unset/auto vs explicit-off tri-state.
+        normalize_transformer_quant(transformer_quant)
         normalize_speed_mode(speed_mode)
         normalize_attention_backend(attention_backend)
         normalize_transformer_cache(transformer_cache)
@@ -1018,7 +1019,7 @@ class DiffusionBackend:
                 quant_plan = None
                 if (
                     kind == "gguf"
-                    and transformer_quant is not None  # normalized above, pre-eviction
+                    and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
                     and plan.offload_policy != OFFLOAD_NONE
                 ):
