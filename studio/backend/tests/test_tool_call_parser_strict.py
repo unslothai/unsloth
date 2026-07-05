@@ -343,10 +343,8 @@ class TestParserLinearity:
         assert time.perf_counter() - t0 < 2.0
 
     def test_gemma_wrapperless_deep_nesting_is_linear(self):
-        # Wrapper-less Gemma ``call:f{a:{a:{...}}}`` formerly pre-scanned each
-        # subtree with a balanced-brace walk and then re-parsed it, so doubling
-        # the nesting depth ~quadrupled the time (O(n^2)). The single-pass parser
-        # is ~linear, so 2x depth should be well under 3x time.
+        # Wrapper-less Gemma ``call:f{a:{a:{...}}}`` formerly pre-scanned each subtree with a
+        # balanced-brace walk and then re-parsed it, so doubling the nesting depth ~quadrupled the ...
         import time
 
         def nested(d):
@@ -501,10 +499,7 @@ def test_glm_literal_close_tag_in_string_arg_not_truncated():
 
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
-    # A GLM string argument may legitimately contain the literal close tag
-    # ``</tool_call>`` (e.g. code that prints it). Pre-bounding the body at the
-    # first ``</tool_call>`` truncated the value; walking against the full content
-    # keeps it because each <arg_value> is delimited by its own </arg_value>.
+    # A GLM string argument may legitimately contain the literal close tag ``</tool_call>``.
     text = (
         "<tool_call>run_code\n"
         "<arg_key>code</arg_key>\n"
@@ -685,9 +680,8 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
 
 
 def test_glm_strip_treats_literal_close_tag_in_arg_value_as_data():
-    # Core strip parity with the parser: a literal </tool_call> inside a GLM
-    # <arg_value> is argument data, so the whole call is stripped (no leaked tail),
-    # while the parser extracts the call with the literal preserved in the argument.
+    # Core strip parity with the parser: a literal </tool_call> inside a GLM <arg_value> is
+    # argument data, so the whole call is stripped (no leaked tail), while the parser extracts the ...
     from core.inference.tool_call_parser import strip_tool_markup
 
     text = (

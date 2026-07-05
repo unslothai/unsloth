@@ -8427,10 +8427,8 @@ class LlamaCppBackend:
                 "duration_ms": round((time.monotonic() - started_at) * 1000.0),
             }
 
-        # Enabled-tool-name gate for the markerless Gemma ``call:NAME{...}`` strip,
-        # so a disabled/example name in prose is kept instead of deleted. Set per
-        # iteration from the active tools below; None here keeps the pre-loop
-        # (name-agnostic) behaviour for any strip before the first iteration.
+        # Enabled-name gate for the markerless Gemma strip (disabled/example
+        # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
 
         def _strip_tool_markup(
@@ -8448,18 +8446,14 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            # Use the shared parser patterns (not the legacy tool_healing set) so a
-            # textual GGUF Mistral ``[TOOL_CALLS]`` / Llama ``<|python_tag|>`` call
-            # entering DRAINING is stripped instead of leaking the marker (and any
-            # same-chunk args) to streaming clients. Balanced Mistral / Gemma blocks
-            # go first (nested JSON would be truncated by the non-greedy pattern
-            # arms); no final trim so incremental length comparisons still hold.
+            # Shared parser patterns (not the legacy tool_healing set) so textual
+            # Mistral/python_tag calls entering DRAINING never leak. Balanced
+            # strips first (nested JSON removed whole); no final trim so
+            # incremental length comparisons hold.
             text = _strip_mistral_closed_calls(text)
             text = _strip_gemma_wrapperless_calls(text, _enabled_tool_names)
-            # Guarded function-XML and GLM scans each close at the call's REAL terminator
-            # (parser-accurate) BEFORE the regex arms, matching the final strip: a literal
-            # ``<function=...>`` / ``</tool_call>`` inside a parameter value is data, not a
-            # call, so the open-ended regex tail must not eat the real trailing prose.
+            # Parser-accurate scans close at each call's REAL terminator before
+            # the regex arms: literal markup inside a value is data.
             text = _strip_function_xml_calls(text, final = True)
             text = _strip_glm_calls(text, final = True)
             for pat in _TOOL_ALL_PATS:
@@ -8850,12 +8844,10 @@ class LlamaCppBackend:
                                                 is_prefix = True
                                                 break
 
-                                        # No-signal call shapes the XML-signal scan
-                                        # misses (mirror the safetensors loop, else
-                                        # these stream raw and -- for bare JSON --
-                                        # the safety net never fires): Llama-3.2 bare
-                                        # {"name":..} (after any leaked sentinel) and
-                                        # Gemma wrapper-less call:NAME{...}.
+                                        # Signal-less call shapes (mirror the
+                                        # safetensors loop): Llama-3.2 bare
+                                        # {"name":..} and Gemma call:NAME{...}
+                                        # would otherwise stream raw.
                                         _hold_buffer = False
                                         # Whole buffer is the call (no visible prefix) -- drain silently.
                                         _drain_silently = False
@@ -8868,9 +8860,8 @@ class LlamaCppBackend:
                                                     elif _looks_like_enabled_bare_json(
                                                         _bare, _enabled_tool_names
                                                     ):
-                                                        # Oversized still-open ENABLED-tool call:
-                                                        # stop holding (memory bound) but DRAIN
-                                                        # rather than leak the raw prefix; a giant
+                                                        # Oversized still-open enabled call:
+                                                        # drain rather than leak; a giant
                                                         # ordinary JSON answer still streams.
                                                         _drain_silently = True
                                                 elif self._parse_tool_calls_from_text(
@@ -8885,9 +8876,7 @@ class LlamaCppBackend:
                                                 is not None
                                                 or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
                                             ):
-                                                # Whitespace-tolerant (``call : NAME``)
-                                                # like the parser, so the spaced
-                                                # spelling is held, not leaked.
+                                                # Whitespace-tolerant like the parser.
                                                 if _GEMMA_BARE_TC_RE.match(stripped_buf):
                                                     _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:

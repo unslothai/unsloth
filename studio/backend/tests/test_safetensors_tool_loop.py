@@ -238,9 +238,8 @@ class TestParser:
         )
 
     def test_streaming_strip_handles_nested_mistral_json(self):
-        # The non-greedy [TOOL_CALLS]name{...} pattern truncates nested JSON at the
-        # first }; the balanced helper must remove the whole call so no trailing
-        # brace leaks to the streaming client.
+        # The non-greedy [TOOL_CALLS]name{...} pattern truncates nested JSON at the first }; the
+        # balanced helper must remove the whole call so no trailing brace leaks to the streaming ...
         raw = 'ok [TOOL_CALLS]foo{"a":{"b":1}} tail'
         out = strip_tool_markup_streaming(raw)
         assert "[TOOL_CALLS]" not in out
@@ -893,10 +892,7 @@ class TestParserDeepSeek:
         assert result[1]["function"]["name"] == "get_weather"
 
     def test_v3_1_with_reasoning(self):
-        # Reasoning <think>...</think> precedes the tool block. The
-        # parser only sees the tool block (reasoning handling lives
-        # in the streaming buffer / template helper); confirm the
-        # block parses even with leading prose.
+        # Reasoning <think>...</think> precedes the tool block.
         text = (
             "<think>I'm thinking</think>\n"
             "<｜tool▁calls▁begin｜>"
@@ -923,9 +919,7 @@ class TestParserDeepSeek:
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_v3_1_multi_call_recovers_when_first_end_marker_missing(self):
-        # First inner call omits its <｜tool▁call▁end｜>; the second must still
-        # be parsed. Advancing by the JSON end (not by searching forward for
-        # the next end marker) keeps the call in between from being skipped.
+        # First inner call omits its <｜tool▁call▁end｜>; the second must still be parsed.
         text = (
             "<｜tool▁calls▁begin｜>"
             "<｜tool▁call▁begin｜>get_time"
@@ -941,10 +935,8 @@ class TestParserDeepSeek:
         assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
 
     def test_v3_1_strict_recovers_after_missing_call_end(self):
-        # Strict mode (Auto-Heal off): the FIRST inner call is missing its
-        # <｜tool▁call▁end｜> terminator, so it is skipped -- but the parser must
-        # keep scanning and still return the LATER well-formed call instead of
-        # dropping the whole envelope (matches the Kimi strict parser).
+        # Strict mode (Auto-Heal off): the FIRST inner call is missing its <｜tool▁call▁end｜>
+        # terminator, so it is skipped -- but the parser must keep scanning and still return the ...
         text = (
             "<｜tool▁calls▁begin｜>"
             "<｜tool▁call▁begin｜>get_weather"
@@ -965,9 +957,7 @@ class TestParserDeepSeek:
         assert [c["function"]["name"] for c in strict] == ["get_time"]
 
     def test_r1_strict_recovers_after_missing_close_fence(self):
-        # R1 form. Strict mode: the FIRST call's closing ``` fence + terminator
-        # never arrived, so it is skipped -- the parser must continue and return
-        # the LATER well-formed call rather than break out and drop everything.
+        # R1 form.
         text = (
             "<｜tool▁calls▁begin｜>"
             "function<｜tool▁sep｜>get_weather\n```json\n"
@@ -994,16 +984,14 @@ class TestParserDeepSeek:
         assert strip_tool_markup(text, final = True) == "before  after"
 
     def test_deepseek_signal_wakes_streaming(self):
-        # The streaming buffer state machine must wake on the DeepSeek
-        # opener so the rest of the section is drained instead of
-        # leaked.
+        # The streaming buffer state machine must wake on the DeepSeek opener so the rest of the
+        # section is drained instead of leaked.
         text = "<｜tool▁calls▁begin｜>..."
         assert has_tool_signal(text)
 
     def test_deepseek_short_opener_is_stripped(self):
-        # The short ``<｜tool▁calls｜>`` opener is parsed, so its markup must
-        # also be stripped (the strip patterns used to require ...calls_begin
-        # and left the short-opener markup leaking to the UI).
+        # The short ``<｜tool▁calls｜>`` opener is parsed, so its markup must also be stripped (the
+        # strip patterns used to require ...calls_begin and left the short-opener markup leaking to ...
         text = (
             "before "
             "<｜tool▁calls｜>"
@@ -1039,9 +1027,7 @@ class TestParserGLM:
         assert args == {"query": "weather Tokyo"}
 
     def test_glm_mixed_types_decode_correctly(self):
-        # Per the chat_template.jinja, strings are emitted raw and
-        # non-strings are JSON-encoded. The parser must decode the
-        # mixed shape back to native types.
+        # Per the chat_template.jinja, strings are emitted raw and non-strings are JSON-encoded.
         import json as _json
 
         text = (
@@ -1093,10 +1079,8 @@ class TestParserGLM:
         assert strip_tool_markup(text, final = True) == "before  after"
 
     def test_glm_zero_arg_inline_call(self):
-        # GLM 4.7 emits a no-argument call inline as
-        # ``<tool_call>name</tool_call>`` (name followed straight by the
-        # close tag, no \n / <arg_key>). vLLM, SGLang and llama.cpp all
-        # parse this to a call with empty args; it must not be dropped.
+        # GLM 4.7 emits a no-argument call inline as ``<tool_call>name</tool_call>`` (name followed
+        # straight by the close tag, no \n / <arg_key>).
         import json as _json
 
         text = "<tool_call>get_current_date</tool_call>"
@@ -1118,9 +1102,8 @@ class TestParserGLM:
         assert result[1]["function"]["name"] == "get_weather"
 
     def test_glm_string_value_whitespace_preserved(self):
-        # The template emits string args verbatim, so significant leading /
-        # trailing whitespace (code, diffs) must survive. vLLM has an
-        # explicit regression test for this (string args are not stripped).
+        # The template emits string args verbatim, so significant leading / trailing whitespace
+        # (code, diffs) must survive.
         import json as _json
 
         text = (
@@ -1158,9 +1141,8 @@ class TestParserKimi:
         assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
 
     def test_outer_tool_call_with_embedded_kimi_marker_parses_outer(self):
-        # A Qwen/Hermes <tool_call> whose argument contains literal Kimi markup
-        # (a user asking about that syntax) must execute the OUTER call, not the
-        # embedded marker via the DeepSeek/Kimi pre-pass.
+        # A Qwen/Hermes <tool_call> whose argument contains literal Kimi markup (a user asking
+        # about that syntax) must execute the OUTER call, not the embedded marker via the ...
         text = (
             '<tool_call>{"name":"web_search","arguments":{"query":'
             '"explain <|tool_call_begin|>functions.evil:0'
@@ -1207,12 +1189,8 @@ class TestParserKimi:
         assert result[1]["id"].endswith(":1")
 
     def test_kimi_dotted_name_keeps_full_dotted_name(self):
-        # A dotted Kimi id keeps its FULL name after stripping only the
-        # ``functions.`` prefix and ``:idx`` suffix -- matching current
-        # vLLM (``tool_id.split(":")[0].removeprefix("functions.")``) and
-        # SGLang (``r"^(?:functions\.)?(?P<name>[\w.\-]+):(?P<index>\d+)$"``).
-        # Truncating to the final dot-segment would corrupt dotted MCP tool
-        # names such as ``mcp.server-list``.
+        # A dotted Kimi id keeps its FULL name after stripping only the ``functions.`` prefix and
+        # ``:idx`` suffix -- matching current vLLM ...
         text = (
             "<|tool_calls_section_begin|>"
             "<|tool_call_begin|>a.b.c:2"
@@ -1242,8 +1220,6 @@ class TestParserKimi:
 
     def test_kimi_multi_call_recovers_when_first_end_marker_missing(self):
         # First call omits its <|tool_call_end|>; the second must still parse.
-        # Advancing by the JSON end keeps the call in between from being
-        # skipped by a forward search for the next end marker.
         text = (
             "<|tool_calls_section_begin|>"
             "<|tool_call_begin|>functions.read_file:0"
@@ -1289,10 +1265,8 @@ class TestParserKimi:
         assert has_tool_signal(text)
 
     def test_kimi_call_without_section_wrapper(self):
-        # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper
-        # optional -- Kimi K2 can emit a bare ``<|tool_call_begin|>`` call
-        # (e.g. straight after reasoning, without opening a section). It
-        # must still be parsed, not dropped.
+        # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper optional -- Kimi K2 can emit
+        # a bare ``<|tool_call_begin|>`` call.
         import json as _json
 
         text = (
@@ -1307,9 +1281,8 @@ class TestParserKimi:
         assert _json.loads(result[0]["function"]["arguments"]) == {"cmd": "ls"}
 
     def test_kimi_malformed_json_recovers_later_calls(self):
-        # A call with malformed / truncated JSON must not drop the valid
-        # calls that follow it in the same section (the bad call is skipped,
-        # the good one is recovered).
+        # A call with malformed / truncated JSON must not drop the valid calls that follow it in
+        # the same section (the bad call is skipped, the good one is recovered).
         import json as _json
 
         text = (
@@ -1376,9 +1349,8 @@ class TestParserCrossFormatRouting:
             )
 
     def test_all_new_markers_in_tool_xml_signals(self):
-        # The safetensors / MLX streaming buffer must wake on every
-        # supported emission marker -- otherwise the BUFFERING state
-        # leaks tool content to the user before parse.
+        # The safetensors / MLX streaming buffer must wake on every supported emission marker --
+        # otherwise the BUFFERING state leaks tool content to the user before parse.
         from core.inference.tool_call_parser import TOOL_XML_SIGNALS
         for marker in (
             "<｜tool▁calls▁begin｜>",
@@ -1511,10 +1483,8 @@ def test_gemma_wrapperless_call_is_not_streamed_as_content():
 
 
 def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
-    # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split
-    # across stream chunks. The suppression buffer's prefix check must tolerate
-    # that whitespace (via _GEMMA_BARE_TC_PREFIX_RE) so partial ``call :`` markup
-    # is held (BUFFERING) instead of leaking to content, and the call still runs.
+    # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split across stream
+    # chunks.
     loop, exec_fn = _make_loop(
         turns = [["call", " : ", "web_search", "{query:cats}"], ["Found."]],
         exec_results = ["RESULT"],
@@ -1733,9 +1703,8 @@ class TestLoopBasic:
         assert exec_fn.calls == [("web_search", {"query": "weather"})]
 
     def test_deepseek_v3_1_form(self):
-        # DeepSeek V3.1 emission inside the agentic loop -- the buffer
-        # state machine must wake on ``<｜tool▁calls▁begin｜>`` and the
-        # parser must extract the V3.1 bare-JSON body.
+        # DeepSeek V3.1 emission inside the agentic loop -- the buffer state machine must wake on
+        # ``<｜tool▁calls▁begin｜>`` and the parser must extract the V3.1 bare-JSON body.
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -3071,9 +3040,8 @@ class TestGuardrails:
         ]
 
     def test_same_turn_distinct_calls_are_capped(self):
-        # >_MAX_TOOL_CALLS_PER_TURN DISTINCT calls in one turn must be capped so a
-        # runaway turn cannot fan out into many executions (the GGUF path is held
-        # back by llama-server's lazy grammar; safetensors caps explicitly).
+        # >_MAX_TOOL_CALLS_PER_TURN DISTINCT calls in one turn must be capped so a runaway turn
+        # cannot fan out into many executions (the GGUF path is held back by llama-server's lazy ...
         from core.inference.safetensors_agentic import _MAX_TOOL_CALLS_PER_TURN
 
         n = _MAX_TOOL_CALLS_PER_TURN + 4
@@ -3346,13 +3314,8 @@ class TestParserRobustness:
 
 
 def test_render_with_native_template_returns_render_only_when_tools_emitted():
-    # The native-template fallback re-renders with the model's repo template when
-    # an override drops the tools schema. It must return the rendered prompt only
-    # when the native template actually emits tools (render differs with vs
-    # without tools); otherwise None, so the caller keeps the override render.
-    # Tests the dependency-light helper directly. Importing InferenceBackend pulls in
-    # unsloth, which reads optional ``vllm`` package metadata that need not be present
-    # in a backend/test environment; the helper itself has no such dependency.
+    # The native-template fallback re-renders with the model's repo template when an override drops
+    # the tools schema.
     from types import SimpleNamespace
 
     from core.inference.chat_template_helpers import render_native_template
@@ -3408,9 +3371,8 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
 
 
 def test_render_with_native_template_does_not_mutate_shared_tokenizer():
-    # The shared tokenizer must never carry the temporary native template, even
-    # mid-render: this runs outside the generation lock, so a concurrent request
-    # could otherwise render with the wrong template.
+    # The shared tokenizer must never carry the temporary native template, even mid-render: this
+    # runs outside the generation lock, so a concurrent request could otherwise render with the ...
     from types import SimpleNamespace
 
     from core.inference.chat_template_helpers import render_native_template
@@ -3475,9 +3437,8 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
 
 
 def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
-    # The shared gate (used by the transformers and MLX backends): when the live
-    # render is identical with and without tools, re-render with the native
-    # template and return it. When the live render already differs, keep it.
+    # The shared gate (used by the transformers and MLX backends): when the live render is
+    # identical with and without tools, re-render with the native template and return it.
     from types import SimpleNamespace
 
     from core.inference.chat_template_helpers import render_with_native_template_fallback
@@ -3554,9 +3515,7 @@ def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
 
 
 def test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises():
-    # A template that REQUIRES tools can raise on the no-tools probe. That must not
-    # discard the already-valid tools prompt (transformers would fall back to manual
-    # formatting and drop the schema; MLX would let the exception escape).
+    # A template that REQUIRES tools can raise on the no-tools probe.
     from types import SimpleNamespace
 
     from core.inference.chat_template_helpers import render_with_native_template_fallback

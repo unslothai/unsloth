@@ -229,9 +229,6 @@ def test_detect_safetensors_features_deepseek_template_keeps_tools_on():
 
 
 # GLM 4.5 / 4.6 / 4.7 emit ``<tool_call>NAME\n<arg_key>...<arg_value>...
-# </tool_call>``. Shares the outer ``<tool_call>`` marker with Qwen but
-# the per-arg ``<arg_key>`` is unique to GLM, so the gate uses it as
-# the disambiguation signal.
 GLM_TEMPLATE = """
 {%- if tools %}
   For each function call, output the function name and arguments within
@@ -634,9 +631,8 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     ],
 )
 def test_detect_safetensors_features_deepseek_opener_variants_keep_tools_on(opener):
-    # Every DeepSeek opener the parser accepts must keep supports_tools on; the
-    # route gate derives its markers from the parser's TOOL_XML_SIGNALS so it can
-    # no longer drift behind the parser and wrongly disable tools.
+    # Every DeepSeek opener the parser accepts must keep supports_tools on; the route gate derives
+    # its markers from the parser's TOOL_XML_SIGNALS so it can no longer drift behind the parser ...
     from routes.inference import _detect_safetensors_features
 
     tpl = (

@@ -29,10 +29,8 @@ assert _m, "could not extract _TOOL_XML_RE source"
 assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
     1
 ), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
-# The regex reuses the parser's shared DeepSeek opener alternation; provide it so
-# the extracted ``_re.compile`` expression resolves the same source. The display
-# helper delegates to _strip_tool_xml, which runs the parser's Mistral balanced
-# strip, the GLM scan, and the guarded function-XML scan, so provide those too.
+# The regex reuses the parser's shared DeepSeek opener alternation; provide it so the extracted
+# ``_re.compile`` expression resolves the same source.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
@@ -441,11 +439,7 @@ def test_python_tag_strip_restarts_on_second_python_tag():
 
 
 def test_glm_call_with_literal_close_tag_in_arg_value_is_stripped_whole():
-    # GLM 4.x emits <tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>
-    # ...</tool_call>. When an arg VALUE contains a literal </tool_call>, the
-    # non-greedy <tool_call>.*?</tool_call> regex stopped at that literal and leaked
-    # the call's tail. The route strip now scans to the call's real close (matching
-    # the parser) so the whole call is removed and only the prose remains.
+    # GLM 4.x emits <tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value> ...</tool_call>.
     text = (
         "<tool_call>web_search\n<arg_key>query</arg_key>\n"
         "<arg_value>find </tool_call> here</arg_value>\n</tool_call> done"
@@ -482,9 +476,8 @@ def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
 
 
 def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
-    # The route strip must gate the markerless Gemma call:NAME{...} form on the enabled
-    # tool names, like the parser/loop, so a disabled/example name in prose is preserved
-    # in Anthropic/display/history cleanup instead of deleted from the answer.
+    # The route strip must gate the markerless Gemma call:NAME{...} form on the enabled tool names,
+    # like the parser/loop, so a disabled/example name in prose is preserved in ...
     prose = "To document syntax you write call:foo{query:example}. That shows the format."
     assert "call:foo{query:example}" in _strip_tool_xml(prose, {"web_search"})
     # An enabled name is still a real call and stripped.
@@ -496,10 +489,8 @@ def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
 
 
 def test_gemma_strip_gate_empty_tools_preserves_prose():
-    # With NO tools enabled the gate must return an EMPTY set (strip nothing), not
-    # None: None falls back to strip-all and deletes an answer that documents the
-    # call:NAME{...} syntax. Covers both the explicit empty list and None (the
-    # Anthropic path massages an empty tool list to None).
+    # With NO tools enabled the gate must return an EMPTY set (strip nothing), not None: None falls
+    # back to strip-all and deletes an answer that documents the call:NAME{...} syntax.
     assert _gemma_strip_gate([]) == set()
     assert _gemma_strip_gate(None) == set()
     assert _gemma_strip_gate([{"function": {"name": "web_search"}}]) == {"web_search"}

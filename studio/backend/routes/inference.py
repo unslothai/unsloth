@@ -1327,17 +1327,13 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Markers any supported parser recognises. If the template advertises
-    # tools but uses none, drop the pill. Reuse the parser's own signal list
-    # (``_PARSER_TOOL_SIGNALS``) so this gate never drifts from the formats the
-    # parser actually handles -- a hand-maintained copy silently lost the new
-    # DeepSeek opener variants. ``<arg_key>`` is GLM's unique signal (GLM and Qwen
-    # share ``<tool_call>``); it is not in the shared XML-signal set, so add it here.
-    # The bare-JSON ``{"name":`` form (Llama-3.2 ``custom_tools``) is matched below
-    # with the whitespace/escape-tolerant ``_BARE_JSON_NAME_MARKER_RE`` instead of
-    # literal substrings, so a pretty-printed ``{ "name" :`` or escaped
-    # ``{\"name\":`` template is not mis-classified as tool-less (the parser accepts
-    # that whitespace via ``json.JSONDecoder().raw_decode``).
+    # Markers any supported parser recognises (template advertises tools but
+    # uses none -> drop the pill). Reuse the parser's own signal list so this
+    # gate never drifts (a hand-maintained copy lost the DeepSeek variants);
+    # ``<arg_key>`` is GLM's unique signal, absent from the shared set. The
+    # bare-JSON ``{"name":`` form is matched below with the whitespace/escape-
+    # tolerant ``_BARE_JSON_NAME_MARKER_RE`` so pretty-printed or escaped
+    # templates are not mis-classified as tool-less.
     _PARSER_MARKERS = (
         *_PARSER_TOOL_SIGNALS,
         "<arg_key>",
@@ -1670,34 +1666,21 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip leaked tool-call markup: every shared-parser format AND the four leak shapes
-# ``llama_cpp.py``'s speculative buffer splits across the visible/DRAIN boundary
-# (closed pair, orphan open to EOF, bare orphan close, tail-only ``</parameter>``).
-# Mistral ``[TOOL_CALLS]`` goes to the parser's balanced-brace helper -- a non-greedy
-# ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
-# Reuse the parser's DeepSeek opener alternation so the display strip covers every
-# opener the parser accepts (incl. the space / escaped-underscore spellings); a
-# signal we parse must never be left un-stripped.
+# Strip leaked tool-call markup: every shared-parser format plus the four leak
+# shapes llama_cpp.py's speculative buffer splits across the visible/DRAIN
+# boundary. Mistral [TOOL_CALLS] uses the parser's balanced-brace helper (a
+# non-greedy regex would truncate nested JSON); the DeepSeek opener alternation
+# is the parser's own, so a signal we parse is never left un-stripped.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 
 _TOOL_XML_RE = _re.compile(
-    # (mcp__srv__list-issues) that would otherwise leak past this strip.
-    # The Llama-3 ``<|python_tag|>...`` arm runs to the next REAL Llama control
-    # sentinel or EOF. Stopping at any ``<|`` (the old ``<(?!\|)``) truncated the
-    # strip when a tool-call argument carried a literal ``<|...|>`` token (e.g.
-    # ``<|cite|>`` inside a string), leaking the call tail into display; the
-    # explicit sentinel list keeps literal ``<``, ``<|x|>`` markup, newlines, and
-    # embedded JSON while still bounding on genuine header/eot/eom/python_tag tokens.
-    # The last arms strip DeepSeek envelopes (every opener variant), Kimi section
-    # blocks, and a bare (section-less) Kimi call.
-    # ``<function=name>`` (Qwen3.5) and the attribute form ``<function name="name">``
-    # (MiniCPM-5 / MiniMax-M2); name class ``[\w.\-]`` mirrors the parser so this
-    # form is stripped from the UI instead of leaking.
-    # A CLOSED ``<function=...>...</function>`` extends to the call's real close
-    # (last ``</function>`` before the next opener), so a literal ``</function>``
-    # inside a parameter value -- e.g. ``print("</function>")`` -- does not truncate
-    # the strip and leak the tail. This arm runs first; the combined arm below still
-    # handles ``<tool_call>`` and orphan (unclosed) ``<function=...>`` tails.
+    # Arm order/notes: the closed ``<function=...>`` arm runs first and extends
+    # to the call's REAL close so a literal ``</function>`` in a value does not
+    # leak the tail; the combined arm still catches ``<tool_call>`` and orphan
+    # tails. The python_tag arm bounds only on REAL Llama control sentinels
+    # (stopping at any ``<|`` truncated on literal ``<|x|>`` tokens in values).
+    # The last arms cover DeepSeek envelopes (all opener variants), Kimi section
+    # blocks, and bare Kimi calls. Name class ``[\w.\-]`` mirrors the parser.
     r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*</function>'
     r'|<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
@@ -1715,14 +1698,10 @@ _TOOL_XML_RE = _re.compile(
 
 
 def _gemma_strip_gate(tools) -> set:
-    """Enabled tool NAMES for gating the wrapper-less Gemma ``call:NAME{...}`` strip.
-    Mirrors the parser/loop gate: a markerless ``call:foo{...}`` is a real call only
-    when ``foo`` is an enabled tool; otherwise it is prose (an example/disabled name)
-    and must survive in display/history. This is a display/history gate only, so with
-    NO tools enabled it returns an EMPTY set (strip nothing) rather than ``None``: with
-    no active tool, every ``call:NAME{...}`` is prose. Returning ``None`` here would
-    fall back to the strip-all behaviour and delete a legitimate answer that documents
-    the syntax."""
+    """Enabled tool NAMES gating the wrapper-less Gemma strip (mirrors the
+    parser/loop gate: only an enabled ``call:foo{...}`` is a call). With NO tools
+    enabled this returns an EMPTY set, not ``None``: every ``call:NAME{...}`` is
+    then prose, and ``None`` would strip-all and delete a legitimate answer."""
     names = {
         (t.get("function") or {}).get("name")
         for t in (tools or [])
@@ -1733,18 +1712,11 @@ def _gemma_strip_gate(tools) -> set:
 
 
 def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Combine the parser's scan-based strips with ``_TOOL_XML_RE``: the Mistral
-    ``[TOOL_CALLS]`` balanced-brace strip and the Gemma ``call:NAME{...}``
-    wrapper-less form (no XML, not in ``_TOOL_XML_RE``, else they leak through
-    Anthropic/display/history cleanup); the GLM scan (finds each call's real
-    ``</tool_call>`` so a literal ``</tool_call>`` in an arg value is data, not a
-    leaked tail); and the guarded function-XML scan (skips ``<function=`` openers
-    inside an open ``<parameter>`` value -- same ``_inside_open_parameter`` guard as
-    the parser -- so a literal nested ``<function=...></function>`` in an argument
-    does not truncate the strip and leak the tail).
-    ``enabled_tool_names`` gates the markerless Gemma strip so a disabled/example
-    ``call:foo{...}`` in prose is preserved (mirrors the parser/loop gate); ``None``
-    strips every closed call."""
+    """Combine the parser's scan-based strips (Mistral balanced-brace, gated
+    Gemma wrapper-less, GLM real-close, guarded function-XML) with
+    ``_TOOL_XML_RE`` -- the scan strips close at each call's REAL terminator so
+    literal markup inside argument values is data, not a leaked tail.
+    ``enabled_tool_names`` gates the Gemma strip; ``None`` strips every closed call."""
     cleaned = _strip_glm_calls(
         _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text), enabled_tool_names),
         final = True,
@@ -1759,11 +1731,9 @@ def _strip_tool_xml_for_display(
     auto_heal_tool_calls: bool,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Route-level tool-call leak cleanup, only when Auto-Heal is enabled.
-    Delegates to ``_strip_tool_xml`` so the Mistral ``[TOOL_CALLS]`` balanced-brace
-    pass runs here too -- ``_TOOL_XML_RE`` alone has no ``[TOOL_CALLS]`` arm and
-    would leak Mistral textual calls (nested JSON) into OpenAI-compatible display
-    and stale-history paths. ``enabled_tool_names`` gates the Gemma strip."""
+    """Route-level leak cleanup (Auto-Heal only). Delegates to ``_strip_tool_xml``
+    so the Mistral balanced-brace pass runs too (``_TOOL_XML_RE`` alone has no
+    ``[TOOL_CALLS]`` arm). ``enabled_tool_names`` gates the Gemma strip."""
     if not auto_heal_tool_calls:
         return text
     return _strip_tool_xml(text, enabled_tool_names)

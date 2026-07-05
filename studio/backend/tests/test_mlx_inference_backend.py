@@ -105,10 +105,8 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
 
 
 def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
-    # A LoRA adapter's own tokenizer often ships no chat template; the native
-    # tool-calling template lives on the base model. The model record must carry
-    # ``base_model`` so render_native_template can load the base repo's template
-    # instead of the (template-less) adapter.
+    # A LoRA adapter's own tokenizer often ships no chat template; the native tool-calling template
+    # lives on the base model.
     _install_fake_mlx(monkeypatch)
     calls = []
     _install_fake_fast_mlx(monkeypatch, calls)
@@ -216,10 +214,8 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
 
-    # The text path renders once with tools, then the native-template fallback
-    # makes a second no-tools probe call (tools=None) to detect whether the
-    # template dropped the schema. Record every call so the probe does not clobber
-    # the real render we are asserting on.
+    # The text path renders once with tools, then the native-template fallback makes a second no-
+    # tools probe call (tools=None) to detect whether the template dropped the schema.
     captured_calls = []
 
     def _fake_apply(tokenizer, messages, **kwargs):

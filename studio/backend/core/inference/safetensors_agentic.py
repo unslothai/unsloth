@@ -79,10 +79,8 @@ _REPROMPT_INSTRUCTION_TEMPLATE = (
     "STOP. Do NOT write code or explain. You MUST call a tool NOW. Call {tool_hint} immediately."
 )
 
-# Without a grammar constraint a small model can loop, emitting the same tool
-# call dozens of times in one turn (llama-server's lazy grammar prevents this
-# on the GGUF side). Collapse exact-duplicate calls within a turn and cap the
-# number kept so one runaway turn cannot fan out into many tool executions.
+# No grammar constraint here (unlike llama-server's lazy grammar): collapse
+# exact-duplicate calls and cap the count so a runaway turn cannot fan out.
 _MAX_TOOL_CALLS_PER_TURN = 8
 
 
@@ -107,19 +105,14 @@ def strip_tool_markup_streaming(
     disabled/example name in prose is kept (mirrors the parser gate)."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    # Mirror the final strip's scan order so streaming and final display agree.
-    # Balanced strip first so nested Mistral / Gemma JSON ({"a":{"b":1}},
-    # call:f{a:{b:1}}) is removed whole instead of the non-greedy pattern arms
-    # truncating at the first ``}`` and leaving a trailing brace visible. The guarded
-    # function-XML and GLM scans each close at the call's REAL terminator so a literal
-    # ``<function=...>`` / ``</tool_call>`` inside an arg value is data, not a leak, and
-    # trailing prose after the call survives. No final trim so incremental length
-    # comparisons in the streaming loop still hold.
-    # Drop a leading Magistral ``[THINK]...[/THINK]`` block (bracket form, not the
-    # ``<think>`` the reasoning channel renders): without this the raw chain-of-thought
-    # leaks into the streamed safetensors content instead of the reasoning drawer. An
-    # unclosed ``[THINK]`` holds from the marker on until ``[/THINK]`` arrives, so the
-    # cleaned text stays monotonic and nothing flickers.
+    # Mirror the final strip's scan order so streaming and final display agree:
+    # balanced strips first (nested JSON removed whole), then the guarded
+    # function-XML/GLM scans that close at each call's REAL terminator, so
+    # literal markup inside argument values is data and trailing prose survives.
+    # No final trim so incremental length comparisons in the streaming loop hold.
+    # Leading Magistral [THINK]...[/THINK] is dropped (bracket form, not the
+    # reasoning channel's <think>); an unclosed [THINK] holds until [/THINK]
+    # arrives so the cleaned text stays monotonic.
     text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
     text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
@@ -484,13 +477,10 @@ def run_safetensors_tool_loop(
                     continue
                 # Closed non-call object (or oversized non-call) -- stream as text.
 
-            # Gemma 4 wrapper-less ``call:NAME{...}`` (special tokens stripped) has no
-            # entry in tool_xml_signals, so without this it streams raw and is only
-            # caught by the end-of-turn safety net. The ``(?<!\w)`` guard in
-            # _GEMMA_BARE_TC_RE keeps words like "recall:" out; the safety net still
-            # recovers the text if it turns out not to be a call. The prefix regex is
-            # whitespace-tolerant (``call : web_search``) like the parser, so the
-            # spaced spelling is held instead of leaking.
+            # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
+            # buffer it here or it streams raw until the end-of-turn safety net.
+            # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-
+            # tolerant like the parser.
             if (
                 not is_match
                 and not is_prefix
@@ -701,9 +691,7 @@ def run_safetensors_tool_loop(
             yield {"type": "status", "text": ""}
             return
 
-        # Collapse exact-duplicate tool calls emitted in a single turn (a
-        # runaway model can repeat one call many times) and cap the count, so
-        # one turn cannot fan out into dozens of identical executions/events.
+        # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
         if tool_calls:
             seen_keys: set = set()
             deduped: list = []

@@ -171,18 +171,15 @@ class MLXInferenceBackend:
 
         self.active_model_name = model_name
         self.models[model_name] = {
-            # Per-model load token for the native-template fallback (matches
-            # the transformers backend; a later token-less load must not break
-            # template fetches for a previously loaded gated model).
+            # Per-model load token for the native-template fallback (matches the
+            # transformers backend).
             "hf_token": hf_token,
             "model": self._model,
             "tokenizer": self._tokenizer,
             "processor": self._processor,
             "is_vision": is_vision,
             "is_lora": getattr(config, "is_lora", False),
-            # For a LoRA adapter the native chat template lives on the base model;
-            # without this the native-template fallback would load the adapter's own
-            # (often template-less) tokenizer instead of the base model template.
+            # For a LoRA adapter the native chat template lives on the base model.
             "base_model": getattr(config, "base_model", None)
             if getattr(config, "is_lora", False)
             else None,

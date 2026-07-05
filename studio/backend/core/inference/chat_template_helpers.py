@@ -112,12 +112,9 @@ def render_native_template(
                 template_source,
                 exc,
             )
-            # A failed FETCH is not "no template": caching False here would
-            # pin the tool-dropping override prompt for the whole session
-            # even after the model record's hf_token is fixed or a transient
-            # Hub error clears. Leave the sentinel unset so the next call
-            # retries; only definitive loads (template or genuinely absent)
-            # are cached below.
+            # A failed FETCH is not "no template": caching False would pin the
+            # tool-dropping override for the session. Leave the sentinel unset so
+            # the next call retries; only definitive loads are cached below.
             return None
         model_info["native_chat_template"] = native_tpl
     if not native_tpl:
@@ -127,10 +124,8 @@ def render_native_template(
     if tokenizer is None:
         return None
     tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-    # Render on a shallow copy carrying the native template. Mutating the shared
-    # tokenizer.chat_template here races concurrent requests (this runs outside the
-    # generation lock), which could make another request render with the native
-    # template or restore over its saved value.
+    # Render on a shallow copy: mutating the shared tokenizer.chat_template here
+    # (outside the generation lock) races concurrent requests.
     try:
         render_tokenizer = copy.copy(tokenizer)
         render_tokenizer.chat_template = native_tpl
@@ -194,11 +189,9 @@ def render_with_native_template_fallback(
         return formatted_prompt
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
-    # The no-tools probe re-renders the live template with ``tools=None`` to detect
-    # whether it dropped the schema. A template that *requires* tools can raise here;
-    # that is not a reason to discard the already-valid tools prompt, so on any error
-    # keep ``formatted_prompt`` (the transformers path would otherwise fall back to
-    # manual formatting and lose the schema, and the MLX path would let it escape).
+    # The no-tools probe detects whether the live template dropped the schema. A
+    # template that REQUIRES tools can raise here; on any error keep the
+    # already-valid tools prompt rather than losing the schema.
     try:
         probe_no_tools = apply_fn(
             tokenizer,

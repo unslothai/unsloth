@@ -251,10 +251,8 @@ class InferenceBackend:
             )
 
             self.models[model_name] = {
-                # Per-model load token: the native-template fallback must use
-                # the token this model was loaded with, not whichever model
-                # loaded last (a later token-less load would break template
-                # fetches for a gated model and silently drop its tools).
+                # Per-model load token: the native-template fallback must use the
+                # token this model was loaded with, not whichever model loaded last.
                 "hf_token": hf_token,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,

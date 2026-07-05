@@ -71,9 +71,7 @@ def test_bare_value_with_timestamps_after_comma_is_kept():
 
 def test_wrapperless_bare_value_with_timestamps_after_comma_is_kept():
     # The wrapper-less Gemma form (no <|tool_call> markers) goes through the
-    # _gemma_parse_stripped_body scanner and its _GEMMA_KEY_RE. A comma followed
-    # by a time/ratio is value text, not a new key, so the whole query must be
-    # preserved as one argument -- matching the wrapped path above.
+    # _gemma_parse_stripped_body scanner and its _GEMMA_KEY_RE.
     calls = parse_tool_calls_from_text("call:web_search{query:meet at 10:00, 11:00 tomorrow}")
     assert len(calls) == 1, calls
     assert calls[0]["function"]["name"] == "web_search"
@@ -187,9 +185,8 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
 
 
 def test_wrapperless_nested_object_argument_is_parsed():
-    # skip_special_tokens stream: the <|tool_call> wrapper and <|"|> string
-    # markers were stripped, so a nested object arrives bare. It must parse as a
-    # nested dict, not the literal string "{city:NYC}".
+    # skip_special_tokens stream: the <|tool_call> wrapper and <|"|> string markers were stripped,
+    # so a nested object arrives bare.
     calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
     assert len(calls) == 1
     assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
