@@ -505,9 +505,11 @@ def test_export_endpoint_validation(client, monkeypatch):
     # Unknown id is a 404.
     resp = client.get("/api/inference/video/gallery/does-not-exist/export?format=gif")
     assert resp.status_code == 404
+
     # A missing codec surfaces as 501 with the transcoder's message.
     def _boom(video_id, fmt):
         raise RuntimeError("WebM export needs the 'av' package (PyAV).")
+
     monkeypatch.setattr(gallery_module, "transcode", _boom)
     client.post(
         "/api/inference/video/load",

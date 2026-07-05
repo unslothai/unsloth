@@ -458,9 +458,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
-def test_dense_speed_auto_defers_compile_to_third_generation(
-    fake_runtime, tmp_path, monkeypatch
-):
+def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_path, monkeypatch):
     # Dense models with speed unset stay bit-identical eager for the first two
     # generations; the 3rd engages the `default` profile mid-session (repeated
     # use amortises the one-time compile), upgrading attention alongside it.
@@ -472,15 +470,11 @@ def test_dense_speed_auto_defers_compile_to_third_generation(
         "apply_speed_optims",
         lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
     )
-    monkeypatch.setattr(
-        dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend
-    )
+    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: (
-            "_native_cudnn" if speed_active else None
-        ),
+        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 

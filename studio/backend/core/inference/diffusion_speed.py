@@ -120,7 +120,10 @@ def normalize_speed_mode(value: Optional[str]) -> str:
 
 
 def resolve_speed_mode(
-    value: Optional[str], *, is_gguf: bool, dense_default: str = SPEED_OFF
+    value: Optional[str],
+    *,
+    is_gguf: bool,
+    dense_default: str = SPEED_OFF,
 ) -> str:
     """The effective speed mode when the caller leaves it UNSET (``None``).
 

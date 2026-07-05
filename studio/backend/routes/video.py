@@ -300,9 +300,7 @@ async def export_gallery_video(
 
     fmt = format.strip().lower()
     if fmt not in ("webm", "gif"):
-        raise HTTPException(
-            status_code = 400, detail = "Unsupported format. Use webm or gif."
-        )
+        raise HTTPException(status_code = 400, detail = "Unsupported format. Use webm or gif.")
     try:
         data = await asyncio.to_thread(video_gallery.transcode, video_id, fmt)
     except RuntimeError as exc:

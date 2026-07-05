@@ -2061,9 +2061,7 @@ class DiffusionBackend:
             logger = logger,
         )
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
-        object.__setattr__(
-            state, "speed_optims", tuple(k for k, v in speed_applied.items() if v)
-        )
+        object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         entry = (state.resolved or {}).get("speed_mode")
         if isinstance(entry, dict):
             entry["value"] = SPEED_DEFAULT
@@ -2075,9 +2073,7 @@ class DiffusionBackend:
         if isinstance(att, dict) and att.get("source") == "auto":
             att["value"] = attention_engaged or "native"
             att["reason"] = (
-                "cuDNN fused attention upgrade"
-                if attention_engaged
-                else "diffusers default"
+                "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
             )
         logger.info(
             "diffusion.speed: deferred profile engaged on generation 3 "
@@ -2161,8 +2157,7 @@ class DiffusionBackend:
                         self._engage_deferred_speed(state)
                     except Exception as exc:  # noqa: BLE001 — speed is best-effort
                         logger.warning(
-                            "diffusion.speed: deferred engagement failed, staying "
-                            "eager: %s",
+                            "diffusion.speed: deferred engagement failed, staying eager: %s",
                             exc,
                         )
 

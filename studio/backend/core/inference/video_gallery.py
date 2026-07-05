@@ -141,9 +141,7 @@ def _transcode_gif(path: Path) -> bytes:
             for i, frame in enumerate(src.decode(in_v)):
                 if i % step:
                     continue
-                frames.append(
-                    frame.to_image().convert("P", palette = Image.Palette.ADAPTIVE)
-                )
+                frames.append(frame.to_image().convert("P", palette = Image.Palette.ADAPTIVE))
     except RuntimeError:
         raise
     except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"

@@ -995,12 +995,8 @@ class VideoBackend:
         cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
         default_cache_steps: Optional[int] = None
         if cache_auto:
-            default_cache_steps, _ = default_video_generation_params(
-                gguf_filename, repo_id, base
-            )
-            cache_request = (
-                TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
-            )
+            default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
+            cache_request = TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
         cache_engaged = None
         for view in views:
             engaged = apply_step_cache(
