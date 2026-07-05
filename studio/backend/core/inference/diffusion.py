@@ -1688,7 +1688,6 @@ class DiffusionBackend:
             # local dir the user picked has no Hub scan and is exempt (fail-open there).
             if not getattr(resolved_cn, "is_local", False):
                 from utils.security import evaluate_file_security
-
                 _cn_fs = evaluate_file_security(resolved_cn.path, hf_token = state.hf_token or None)
                 if _cn_fs.blocked:
                     raise ValueError(_cn_fs.reason)
