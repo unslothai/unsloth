@@ -1177,10 +1177,28 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
 
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
-    body: DiffusionTrainingStartRequest, current_subject: str = Depends(get_current_subject)
+    body: DiffusionTrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Start an SDXL LoRA training job from an image + caption dataset."""
     from core.training.diffusion_training_service import get_diffusion_training_service
+
+    # When Studio is driven as an inference API (API-key auth), refuse to start training
+    # while a request is in flight: _free_gpu_for_diffusion_training() below unloads the
+    # chat backends to reclaim VRAM, which would kill the stream. Mirrors start_training so
+    # a diffusion start cannot silently drop an active API inference request.
+    if via_api_key is True:
+        from core.inference.llama_keepwarm import other_inference_request_count
+        if other_inference_request_count(current_request_counted = False) > 0:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Cannot start diffusion (Images) training over the API while an inference "
+                    "request is in progress. Wait for it to finish, or start training from the "
+                    "Studio UI."
+                ),
+            )
 
     # Interlock: refuse while an LLM training run holds the GPU (symmetric with the
     # diffusion check in start_training), so the two trainers never contend for VRAM.
@@ -1233,6 +1251,21 @@ async def start_diffusion_training(
     # residents, so a missing/insufficient token fails fast (400) without tearing down the
     # user's loaded chat/Images model, and never surfaces as a confusing mid-load 401.
     _preflight_gated_base(config.get("base_model", ""), config.get("hf_token"))
+
+    # Preflight the dataset too: a missing/empty/uncaptionable data_dir otherwise
+    # fails inside the spawned trainer AFTER the user's chat/Images model was
+    # evicted. Same discovery the trainer runs, so the two cannot disagree.
+    from core.training import diffusion_train_common as _dtc
+
+    try:
+        await asyncio.to_thread(
+            _dtc.discover_image_caption_pairs,
+            config["data_dir"],
+            instance_prompt = config.get("instance_prompt") or None,
+            caption_column = config.get("caption_column") or "text",
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code = 400, detail = str(e))
 
     # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
     # loads its own pipeline.
@@ -1601,6 +1634,10 @@ async def get_diffusion_dataset_image(
 
         thumbs_dir = folder / _THUMBS_DIRNAME
         thumbs_dir.mkdir(exist_ok = True)
+        # Key on the full filename (stem + extension), not the stem: two images that
+        # share a stem but differ by extension (sample.png / sample.jpg) would otherwise
+        # collide on one cache file, and an mtime-newer cache built for the first would
+        # be served for the second, showing the wrong image in the labeling grid.
         thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
@@ -1646,12 +1683,24 @@ async def set_diffusion_dataset_caption(
         sidecar = image_path.with_suffix(".txt")
         if caption:
             sidecar.write_text(caption, encoding = "utf-8")
-        else:
-            # Blank clears the sidecar; also drop a stale .caption so the image reads as
-            # uncaptioned afterwards.
-            sidecar.unlink(missing_ok = True)
             image_path.with_suffix(".caption").unlink(missing_ok = True)
-        return _image_record(folder, image_path, _load_metadata_captions(folder))
+            return _image_record(folder, image_path, _load_metadata_captions(folder))
+        # Blank must actually clear. Unlinking alone would resurface this image's
+        # metadata.jsonl / captions.jsonl caption (the fallback source), so when one
+        # exists write an EMPTY sidecar instead: both the record reader and the
+        # trainer's discovery treat an existing sidecar as authoritative even when
+        # empty, which makes it a tombstone. No metadata caption -> plain cleanup.
+        meta = _load_metadata_captions(folder)
+        try:
+            rel = image_path.relative_to(folder).as_posix()
+        except ValueError:
+            rel = image_path.name
+        if image_path.name in meta or rel in meta:
+            sidecar.write_text("", encoding = "utf-8")
+        else:
+            sidecar.unlink(missing_ok = True)
+        image_path.with_suffix(".caption").unlink(missing_ok = True)
+        return _image_record(folder, image_path, meta)
 
     return await asyncio.to_thread(write)
 
@@ -1674,6 +1723,9 @@ async def delete_diffusion_dataset_image(
             image_path.with_suffix(ext).unlink(missing_ok = True)
         thumbs_dir = folder / _THUMBS_DIRNAME
         if thumbs_dir.is_dir():
+            # Thumbs are keyed on the full filename (stem + extension), so match that
+            # here too; a stem-only glob would leave this image's thumbs behind and
+            # could delete a same-stem sibling's (sample.png vs sample.jpg).
             for t in thumbs_dir.glob(f"{image_path.name}_*.jpg"):
                 t.unlink(missing_ok = True)
         return {"deleted": image_path.name}

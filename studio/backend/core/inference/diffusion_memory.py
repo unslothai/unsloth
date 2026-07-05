@@ -507,6 +507,16 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
         import torch
         from diffusers.hooks import apply_group_offloading
 
+        # A dual-DiT pipeline (e.g. Ideogram 4's unconditional tower) carries a second
+        # denoiser as large as the first; leaving it resident would defeat this tier
+        # (the pair rarely fits where one alone did not). Stream every DiT and keep
+        # only the genuinely smaller companions resident.
+        streamed: dict[str, Any] = {"transformer": transformer}
+        for extra in ("transformer_2", "unconditional_transformer"):
+            module = getattr(pipe, extra, None)
+            if isinstance(module, torch.nn.Module):
+                streamed[extra] = module
+
         onload = torch.device(device)
         use_stream = onload.type == "cuda"  # overlap H2D copies with compute on CUDA
         gkwargs: dict[str, Any] = {
@@ -536,11 +546,12 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
         # load-time crash. The streamed transformer manages its own placement via the
         # offloading hooks applied next.
         for name, comp in getattr(pipe, "components", {}).items():
-            if name == "transformer":
+            if name in streamed:
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
-        apply_group_offloading(transformer, **gkwargs)
+        for module in streamed.values():
+            apply_group_offloading(module, **gkwargs)
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if logger is not None:
