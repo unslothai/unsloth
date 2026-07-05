@@ -731,3 +731,43 @@ def test_wrapperless_gemma_nested_call_in_arg_is_not_a_second_call():
         c["function"]["name"]
         for c in parse_tool_calls_from_text(two, enabled_tool_names = {"web_search", "get_time"})
     ] == ["web_search", "get_time"]
+
+
+def test_leading_bare_json_call_owns_quoted_gemma_snippet():
+    # Document order: a leading Llama-3.2 bare-JSON call with trailing prose owns
+    # the turn. An enabled Gemma ``call:NAME{...}`` snippet quoted inside its own
+    # string argument is data -- the markerless Gemma scan must not promote it
+    # and drop the real call (wrong tool would execute).
+    text = (
+        '{"name":"lookup","parameters":{"note":"use call:web_search{query:cats} for this"}}\n'
+        "That is the call I would make."
+    )
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "web_search"})
+    assert [c["function"]["name"] for c in calls] == ["lookup"], calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "note": "use call:web_search{query:cats} for this"
+    }
+
+    # Same with the ``;`` inter-call separator: both real calls parse, the
+    # quoted snippet still does not.
+    two = (
+        '{"name":"lookup","parameters":{"note":"see call:web_search{query:cats}"}};'
+        '{"name":"lookup","parameters":{"q":"second"}}'
+    )
+    calls_two = parse_tool_calls_from_text(two, enabled_tool_names = {"lookup", "web_search"})
+    assert [c["function"]["name"] for c in calls_two] == ["lookup", "lookup"], calls_two
+
+
+def test_leading_gemma_call_still_wins_over_trailing_json_example():
+    # Reverse control: a real leading wrapper-less Gemma call followed by a
+    # bare-JSON example keeps the Gemma call (bare JSON only matches a LEADING
+    # object, so the reorder cannot steal this turn).
+    text = 'call:web_search{query:cats} Example JSON: {"name":"demo_tool","parameters":{}}'
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "demo_tool"})
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+
+    # And prose-only enabled Gemma syntax (no leading JSON) still promotes: the
+    # markerless by-design behaviour is unchanged.
+    prose = "You can run call:web_search{query:cats} to search."
+    calls_p = parse_tool_calls_from_text(prose, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in calls_p] == ["web_search"], calls_p

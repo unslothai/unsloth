@@ -1059,22 +1059,26 @@ def parse_tool_calls_from_text(
         if calls:
             return calls
 
-    # Gemma wrapper-less ``call:NAME{...}`` (special tokens stripped). Markerless like
-    # the Llama-3.2 bare-JSON form below, so it takes the same ``enabled_tool_names``
-    # gate: a disabled/example name in prose must not be stolen as a call.
-    calls = _parse_gemma_tool_calls(
-        content,
-        id_offset = id_offset,
-        allow_incomplete = allow_incomplete,
-        enabled_tool_names = enabled_tool_names,
+    # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict (starts with ``{``
+    # and parses to the right shape) so plain prose stays untouched. Runs before
+    # the markerless Gemma scan: this form only ever matches a LEADING call
+    # object, and document order says that call owns the turn -- an enabled
+    # ``call:NAME{...}`` quoted inside its string arguments is data, while a
+    # leading Gemma call is untouched (that content never starts with ``{``).
+    calls = _parse_llama3_bare_json(
+        content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
     )
     if calls:
         return calls
 
-    # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict (starts with ``{``
-    # and parses to the right shape) so plain prose stays untouched.
-    return _parse_llama3_bare_json(
-        content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+    # Gemma wrapper-less ``call:NAME{...}`` (special tokens stripped). Markerless like
+    # the Llama-3.2 bare-JSON form above, so it takes the same ``enabled_tool_names``
+    # gate: a disabled/example name in prose must not be stolen as a call.
+    return _parse_gemma_tool_calls(
+        content,
+        id_offset = id_offset,
+        allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
     )
 
 
