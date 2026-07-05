@@ -136,6 +136,29 @@ def test_incompatible_model_runs_uncached(monkeypatch):
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
 
 
+def test_enable_cache_failure_rolls_back_partial_hooks(monkeypatch):
+    # enable_cache can raise after hooking some blocks; the reported-uncached model
+    # must not actually run half-cached, so the failure path calls disable_cache.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer(fail = True)
+    t.disabled = False
+    t.disable_cache = lambda: setattr(t, "disabled", True)
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert t.disabled is True
+
+
+def test_config_import_falls_back_to_hooks_module(monkeypatch):
+    # Older diffusers exports FirstBlockCacheConfig only from diffusers.hooks.
+    diffusers = types.ModuleType("diffusers")  # no FirstBlockCacheConfig attribute
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    hooks = types.ModuleType("diffusers.hooks")
+    hooks.FirstBlockCacheConfig = _Config
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+
+
 def test_missing_transformer_is_none(monkeypatch):
     _stub_diffusers(monkeypatch)
     pipe = types.SimpleNamespace(transformer = None)
