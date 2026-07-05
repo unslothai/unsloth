@@ -168,6 +168,16 @@ def test_resolve_browse_target_rejects_sensitive_dir(tmp_path):
     assert exc_info.value.status_code == 403
 
 
+def test_resolve_browse_target_rejects_sensitive_root(tmp_path):
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents = True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        folder_browser._resolve_browse_target(str(ssh), [ssh])
+
+    assert exc_info.value.status_code == 403
+
+
 def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
@@ -179,6 +189,24 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     names = {entry.name for entry in response.entries}
     assert "models" in names
     assert ".ssh" not in names
+
+
+def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    media_root = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
+    model_dir = media_root / "modelsAI" / "gguf" / "qwen3.6"
+    home.mkdir()
+    model_dir.mkdir(parents = True)
+    monkeypatch.setattr(folder_browser.Path, "home", lambda: home)
+    monkeypatch.setattr(folder_browser, "linux_run_media_mount_roots", lambda: [media_root])
+    monkeypatch.setattr(folder_browser, "_resolve_hf_cache_dir", lambda: tmp_path / "missing-hf")
+    monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(folder_browser, "well_known_model_dirs", lambda: [])
+
+    allowlist = folder_browser._build_browse_allowlist()
+
+    assert media_root.resolve() in allowlist
+    assert folder_browser._resolve_browse_target(str(model_dir), allowlist) == model_dir.resolve()
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
@@ -1629,6 +1657,34 @@ def test_variant_partial_accepts_variant_filtered_legacy_hashes(monkeypatch, tmp
         "Q5_K_M",
         incomplete_blob_hashes = {"main-q4"},
         variant_blob_hashes = frozenset({"main-q5"}),
+    )
+
+
+def test_variant_partial_accepts_completed_variant_in_non_latest_snapshot(monkeypatch, tmp_path):
+    """A verified GGUF update can prune an older snapshot and make that old
+    directory the newest by mtime. The variant is still complete when another
+    snapshot satisfies its manifest."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    repo_dir = tmp_path / "cache" / "models--Org--Repo"
+    old_snapshot = repo_dir / "snapshots" / "old"
+    new_snapshot = repo_dir / "snapshots" / "new"
+    old_snapshot.mkdir(parents = True)
+    new_snapshot.mkdir(parents = True)
+    (old_snapshot / "model-Q8_0.gguf").write_bytes(b"sibling")
+    (new_snapshot / "model-Q4_K_M.gguf").write_bytes(b"new")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Repo",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 3)],
+        "http",
+    )
+
+    assert not inventory_scan.is_variant_partial(
+        "Org/Repo",
+        "Q4_K_M",
+        snapshot_dir = old_snapshot,
+        repo_cache_dir = repo_dir,
     )
 
 

@@ -15,7 +15,7 @@ Usage:
 A raw github URL (raw.githubusercontent.com/.../nb/Foo.ipynb) is fetched first.
 """
 
-import argparse, json, os, re, subprocess, sys, tempfile, urllib.request
+import argparse, json, os, re, shutil, subprocess, sys, tempfile, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -69,10 +69,13 @@ def main():
     sidecar = compat.sidecar_for(want) if (compat and want) else None
 
     # Materialise the notebook locally for nbconvert.
+    tmp_dir = None
     if args.notebook.startswith(("http://", "https://")) or args.out:
-        src_path = args.out or os.path.join(
-            tempfile.mkdtemp(), os.path.basename(args.notebook.split("?")[0])
-        )
+        if args.out:
+            src_path = args.out
+        else:
+            tmp_dir = tempfile.mkdtemp()
+            src_path = os.path.join(tmp_dir, os.path.basename(args.notebook.split("?")[0]))
         with open(src_path, "w") as f:
             json.dump(nb, f)
     else:
@@ -109,7 +112,13 @@ def main():
         os.path.dirname(os.path.abspath(out_path)) or ".",
     ]
     print("[unsloth-run] executing:", os.path.basename(src_path))
-    sys.exit(subprocess.call(cmd, env = env))
+    try:
+        rc = subprocess.call(cmd, env = env)
+    finally:
+        # Clean up the temp dir we materialised a downloaded notebook into.
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors = True)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

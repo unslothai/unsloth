@@ -64,38 +64,19 @@ export function matchesFormatFilter(
   }
 }
 
-// Model-size extraction from repo id, matching the backend's 3-regex priority:
-//   active params (MoE "A3B") > effective params (Gemma "E4B") > total ("8B").
-// Bounded by separators so we never read "16" from "bf16" or "2" from "Kimi-K2".
-// Examples: "Qwen3.5-35B-A3B" -> 3, "gemma-4-E4B" -> 4, "Llama-3-8B" -> 8.
-const ACTIVE_PARAM_RE = /(?:^|[-_/. ])a(\d+(?:\.\d+)?)\s*[bB](?=$|[-_/. ])/i;
-const EFFECTIVE_PARAM_RE = /(?:^|[-_/. ])e(\d+(?:\.\d+)?)\s*[bB](?=$|[-_/. ])/i;
-const TOTAL_PARAM_RE = /(?:^|[-_/. ])(\d+(?:\.\d+)?)\s*[bB](?=$|[-_/. ])/;
-
-function paramsFromMatch(match: RegExpExecArray | null): number | undefined {
-  if (!match) return undefined;
-  const billions = parseFloat(match[1]);
-  return Number.isFinite(billions) && billions > 0
-    ? billions * 1e9
-    : undefined;
-}
-
-/** Active/effective parameter count parsed from a repo id, if it uses explicit
- * MoE/Gemma-style notation such as A3B or E4B. */
-export function activeOrEffectiveParamsFromId(id: string): number | undefined {
-  return (
-    paramsFromMatch(ACTIVE_PARAM_RE.exec(id)) ??
-    paramsFromMatch(EFFECTIVE_PARAM_RE.exec(id))
-  );
-}
+// First "<n>B" token in a repo id, e.g. "Qwen3-4B-GGUF" -> 4, "gpt-oss-20b" ->
+// 20, "Qwen3-30B-A3B" -> 30 (MoE total), "gemma-4-E4B" -> 4 (effective-param
+// "E" series). The digits must be bounded by a separator so we never read "16"
+// from "bf16" or the "2" in "Kimi-K2".
+const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
 
 /** Parameter count (absolute, e.g. 4e9) parsed from a repo id, or undefined
- * when the id has no size token (so callers can treat the size as unknown).
- * Prefers MoE active-param notation (A3B) over effective (E4B) over total. */
+ * when the id has no size token (so callers can treat the size as unknown). */
 export function paramsFromId(id: string): number | undefined {
-  return (
-    activeOrEffectiveParamsFromId(id) ?? paramsFromMatch(TOTAL_PARAM_RE.exec(id))
-  );
+  const match = PARAM_RE.exec(id);
+  if (!match) return undefined;
+  const billions = parseFloat(match[1]);
+  return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
 }
 
 // Smallest practical GGUF/MLX quant (~Q2_K, low-bit). The fit check asks whether
@@ -132,4 +113,36 @@ export function fitsDevice(opts: {
     return estimatedVramGb <= budgetGb;
   }
   return requireKnown ? false : true;
+}
+
+/** Fit predicate for one Hub listing row, shared by the chat model selector
+ * and the Hub page "Fits on device" filter. GGUF repos: metadata size (actual
+ * weights) or the smallest-quant estimate from the param count. Safetensors /
+ * MLX repos: always the params-based smallest-quant estimate, matching the
+ * VRAM badge's quantized-load assumption; their estimatedSizeBytes is the
+ * full-precision checkpoint and would wrongly hide models the quantized load
+ * path can run. Anything unsizable is hidden (requireKnown) so over-budget
+ * models with no metadata don't slip through. An unknown device budget keeps
+ * everything. */
+export function hfModelFitsDevice(
+  model: {
+    id: string;
+    totalParams?: number;
+    estimatedSizeBytes?: number;
+    isGguf?: boolean;
+  },
+  gpu: { memoryTotalGb: number; systemRamAvailableGb: number },
+): boolean {
+  if (gpu.memoryTotalGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
+  const params = model.totalParams ?? paramsFromId(model.id);
+  const quantBytes = params ? estimateQuantBytes(params) : undefined;
+  const sizeBytes = isGgufId(model.id, model.isGguf)
+    ? (model.estimatedSizeBytes ?? quantBytes)
+    : (quantBytes ?? model.estimatedSizeBytes);
+  return fitsDevice({
+    sizeBytes,
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    requireKnown: true,
+  });
 }

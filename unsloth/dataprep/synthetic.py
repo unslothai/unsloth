@@ -295,8 +295,11 @@ class SyntheticDataKit:
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
         ready = False
-        deadline = time.monotonic() + (timeout or 1200)
-        while time.monotonic() < deadline:
+        # timeout = None (or 0) preserves the previous Event.wait(None) escape
+        # hatch: wait indefinitely for the readiness message (useful for large
+        # models or slow first-time downloads). Any positive value is a deadline.
+        deadline = (time.monotonic() + timeout) if timeout else None
+        while deadline is None or time.monotonic() < deadline:
             if self.stdout_capture.wait_for_ready(timeout = 1) or self.stderr_capture.wait_for_ready(
                 timeout = 0
             ):
