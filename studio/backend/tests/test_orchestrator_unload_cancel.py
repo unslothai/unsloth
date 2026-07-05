@@ -421,6 +421,50 @@ def test_unload_of_stale_name_does_not_touch_active_model(monkeypatch):
     assert "current" in o.models
 
 
+def test_unload_matches_active_model_case_insensitively(monkeypatch):
+    # The load path treats a differently-cased repo id as the same model
+    # (active_model_name.lower() == identifier.lower()) and ModelConfig
+    # canonicalizes casing to a cached repo's spelling, so active_model_name can
+    # differ in case from the raw model_path a client later sends to /unload.
+    # The stale-name guard must match case-insensitively too; otherwise it no-ops
+    # the unload and leaves the model resident while reporting success.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    sent = []
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: sent.append(cmd))
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_drain_queue", lambda: [])
+
+    o.active_model_name = "unsloth/Qwen3-4B"
+    o.models = {"unsloth/Qwen3-4B": {}}
+
+    # Client unloads with the casing it originally typed, before canonicalization.
+    assert o.unload_model("unsloth/qwen3-4b") is True
+    # The guard did not no-op: an unload for the canonical active model reached
+    # the worker (not the raw lowercase name, so the worker matches it directly).
+    assert {"type": "unload", "model_name": "unsloth/Qwen3-4B"} in sent
+    # Local state is cleared for the canonical name, not left stale.
+    assert o.active_model_name is None
+    assert o.models == {}
+
+
+def test_unload_of_stale_name_still_no_ops_after_case_insensitive_match(monkeypatch):
+    # The case-insensitive match must only rescue the active model; a genuinely
+    # different model name (case-insensitively too) must still no-op so the
+    # worker's absent-name fallback can't tear down the active model.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send an unload for a stale model name")
+    )
+    o.active_model_name = "unsloth/Qwen3-4B"
+    o.models = {"unsloth/Qwen3-4B": {}}
+
+    assert o.unload_model("unsloth/Llama-3.1-8B") is True
+    assert o.active_model_name == "unsloth/Qwen3-4B"
+    assert "unsloth/Qwen3-4B" in o.models
+
+
 def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkeypatch):
     # A load always spawns a fresh subprocess holding only the new model, so
     # self.models must mirror that instead of accumulating the previous model's name.

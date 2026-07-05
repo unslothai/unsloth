@@ -883,6 +883,19 @@ class InferenceOrchestrator:
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
+        # The load path treats a differently-cased repo id as the same model
+        # (active_model_name.lower() == identifier.lower()) and canonicalizes
+        # casing via resolve_cached_repo_id_case, so active_model_name can differ
+        # in case from the raw name a client sends to /unload. Match the active
+        # model case-insensitively and operate on its canonical spelling, so the
+        # stale-name guard below, the unload command, and the local-state cleanup
+        # all target the loaded model instead of no-oping and leaving it resident.
+        if (
+            self.active_model_name is not None
+            and model_name != self.active_model_name
+            and model_name.lower() == self.active_model_name.lower()
+        ):
+            model_name = self.active_model_name
         if model_name in self.loading_models:
             logger.info(
                 "Cancelling in-flight load for model '%s' by terminating subprocess",
