@@ -62,9 +62,19 @@ _TOOL_CLOSED_PATS = [
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*$', re.DOTALL),
-    re.compile(r"<\|tool_call>.*$", re.DOTALL),
-    re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
-    re.compile(r"<\|python_tag\|>.*$", re.DOTALL),
+    # The bare-word markers drop a trailing truncated call only when what
+    # follows looks like that family's call start -- a prose answer mentioning
+    # the marker (``See [TOOL_CALLS] docs...``) must not lose everything after
+    # it. A marker at end-of-text is a bare fragment and still drops.
+    re.compile(r"<\|tool_call>(?=\s*call\s*:|\s*$).*$", re.DOTALL),
+    re.compile(
+        r"\[TOOL_CALLS\](?=\s*(?:[\[{]|[A-Za-z_][\w.\-]*[\[{])|\s*$).*$",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"<\|python_tag\|>(?=\s*(?:\{|[A-Za-z_][\w.]*\()|\s*$).*$",
+        re.DOTALL,
+    ),
 ]
 
 
@@ -1291,32 +1301,44 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Remove a leading Llama-3.2 bare-JSON call that ``strip_tool_markup`` misses; non-call text is unchanged and ``enabled_tool_names`` gates like the parser."""
-    probe = strip_llama3_leading_sentinels(text.lstrip())
-    if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
-        return text
-    if enabled_tool_names is not None:
-        # Only suppress when the leading object is (or may be) a real call, i.e. its
-        # TOP-LEVEL name is an enabled tool. A nested ``"name"`` (e.g.
-        # {"result":{"name":"web_search",...}}) is ordinary data, not the call name,
-        # so it must not gate the strip. An unknown / un-extractable name is kept.
-        name = _top_level_bare_json_name(probe)
-        if name not in enabled_tool_names:
-            return text
-    end = _balanced_brace_end(probe, 0)
-    if end is None:
-        return ""  # truncated bare-JSON call -- nothing recoverable
-    # A closed object must have the CALL SHAPE the parser accepts (a dict
-    # ``parameters``, or dict / JSON-string ``arguments``). An ordinary JSON
-    # answer such as {"name":"web_search","result":"no call"} is content the
-    # parser rejects, so the strip must keep it visible too.
-    try:
-        obj = json.loads(probe[: end + 1])
-    except (json.JSONDecodeError, ValueError):
-        return text
-    if not _bare_json_call_shaped(obj):
-        return text
-    return probe[end + 1 :].lstrip()
+    """Remove leading Llama-3.2 bare-JSON calls (including a ``;``-chained run)
+    that ``strip_tool_markup`` misses; non-call text is unchanged and
+    ``enabled_tool_names`` gates like the parser. Consuming the whole chain
+    matters because the loops keep this text as next-turn assistant history: a
+    leftover executed call would be replayed alongside the structured
+    ``tool_calls``."""
+    remainder = text
+    stripped_any = False
+    while True:
+        probe = strip_llama3_leading_sentinels(remainder.lstrip())
+        # Skip the Llama-3 ``;`` inter-call separator between chained calls.
+        if stripped_any:
+            probe = probe.lstrip(" \t\n\r;")
+        if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
+            return probe.lstrip() if stripped_any else text
+        if enabled_tool_names is not None:
+            # Only suppress when the leading object is (or may be) a real call, i.e. its
+            # TOP-LEVEL name is an enabled tool. A nested ``"name"`` (e.g.
+            # {"result":{"name":"web_search",...}}) is ordinary data, not the call name,
+            # so it must not gate the strip. An unknown / un-extractable name is kept.
+            name = _top_level_bare_json_name(probe)
+            if name not in enabled_tool_names:
+                return probe.lstrip() if stripped_any else text
+        end = _balanced_brace_end(probe, 0)
+        if end is None:
+            return ""  # truncated bare-JSON call -- nothing recoverable
+        # A closed object must have the CALL SHAPE the parser accepts (a dict
+        # ``parameters``, or dict / JSON-string ``arguments``). An ordinary JSON
+        # answer such as {"name":"web_search","result":"no call"} is content the
+        # parser rejects, so the strip must keep it visible too.
+        try:
+            obj = json.loads(probe[: end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return probe.lstrip() if stripped_any else text
+        if not _bare_json_call_shaped(obj):
+            return probe.lstrip() if stripped_any else text
+        remainder = probe[end + 1 :]
+        stripped_any = True
 
 
 def _bare_json_call_shaped(obj) -> bool:
