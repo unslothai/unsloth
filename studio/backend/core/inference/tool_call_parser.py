@@ -627,12 +627,16 @@ def _parse_function_xml(
         func_name = fm.group(1) or fm.group(2)
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-        # Use the LAST </function> / </tool_call> within this call's window: a
-        # literal close tag inside a code/search argument (e.g. print("</function>"))
-        # appears before the real close, so first-match would truncate the argument.
+        # The call ends at the FIRST </function> / </tool_call> that is not
+        # inside an open parameter: a literal close in a code/search argument
+        # (e.g. print("</function>")) is skipped as data, and prose after the
+        # real close is no longer folded into the last argument (mirrors
+        # _strip_function_xml_calls and tool_healing._func_close_index).
         close_match = None
         for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
-            close_match = cm
+            if not _inside_open_parameter(content, cm.start()):
+                close_match = cm
+                break
         has_close = close_match is not None
         if has_close:
             body_end = close_match.start()
@@ -1302,7 +1306,34 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
     end = _balanced_brace_end(probe, 0)
     if end is None:
         return ""  # truncated bare-JSON call -- nothing recoverable
+    # A closed object must have the CALL SHAPE the parser accepts (a dict
+    # ``parameters``, or dict / JSON-string ``arguments``). An ordinary JSON
+    # answer such as {"name":"web_search","result":"no call"} is content the
+    # parser rejects, so the strip must keep it visible too.
+    try:
+        obj = json.loads(probe[: end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return text
+    if not _bare_json_call_shaped(obj):
+        return text
     return probe[end + 1 :].lstrip()
+
+
+def _bare_json_call_shaped(obj) -> bool:
+    """The shape gate ``_parse_llama3_bare_json`` applies to a decoded object."""
+    if not isinstance(obj, dict):
+        return False
+    if "parameters" in obj:
+        return isinstance(obj.get("parameters"), dict)
+    args = obj.get("arguments")
+    if isinstance(args, dict):
+        return True
+    if isinstance(args, str):
+        try:
+            return isinstance(json.loads(args), dict)
+        except (json.JSONDecodeError, ValueError):
+            return False
+    return False
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:

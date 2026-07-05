@@ -841,3 +841,60 @@ class TestProseCloseTagAfterClosedFunctionCall:
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
         assert [c["function"]["name"] for c in calls] == ["python"], calls
         assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</function>")'}
+
+    def test_attribute_form_arguments_do_not_swallow_prose(self):
+        # The <function name="..."> attribute form shares the first-balanced-close
+        # rule: prose mentioning a literal close tag never folds into arguments.
+        text = (
+            '<function name="web_search"><parameter name="query">cats</parameter></function>'
+            " Done. The tag </function> closes a call."
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"], calls
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_attribute_form_literal_close_in_open_parameter_stays_data(self):
+        text = '<function name="python"><parameter name="code">print("</function>")</parameter></function>'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
+        assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</function>")'}
+
+    def test_attribute_form_two_calls_both_parse(self):
+        text = (
+            '<function name="web_search"><parameter name="query">cats</parameter></function>'
+            '<function name="python"><parameter name="code">x=1</parameter></function>'
+        )
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "python"})
+        assert [c["function"]["name"] for c in calls] == ["web_search", "python"], calls
+
+
+class TestEnabledNameJsonAnswerIsContent:
+    """A JSON answer whose top-level name matches an enabled tool but has no
+    call shape is content: the parser rejects it, so the strip and the drain
+    gate must keep it visible too."""
+
+    def test_answer_survives_strip(self):
+        from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+        ans = '{"name":"web_search","result":"no call"}'
+        assert strip_leading_bare_json_call(ans, {"web_search"}) == ans
+
+    def test_answer_does_not_route_to_draining(self):
+        from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
+
+        assert not _looks_like_enabled_bare_json(
+            '{"name":"web_search","result":"no call"}', {"web_search"}
+        )
+
+    def test_real_call_still_strips_and_drains(self):
+        from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
+        from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+        real = '{"name":"web_search","parameters":{"q":"x"}}'
+        assert strip_leading_bare_json_call(real, {"web_search"}) == ""
+        assert _looks_like_enabled_bare_json(real, {"web_search"})
+
+    def test_arguments_string_call_still_strips(self):
+        from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+        call = '{"name":"web_search","arguments":"{\\"q\\":\\"x\\"}"} tail'
+        assert strip_leading_bare_json_call(call, {"web_search"}) == "tail"
