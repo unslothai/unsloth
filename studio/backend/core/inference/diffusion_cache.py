@@ -101,7 +101,10 @@ def apply_step_cache(
         _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))
         return None
     try:
-        from diffusers import FirstBlockCacheConfig
+        try:
+            from diffusers import FirstBlockCacheConfig
+        except ImportError:  # older diffusers exports it only from diffusers.hooks
+            from diffusers.hooks import FirstBlockCacheConfig
 
         config = FirstBlockCacheConfig(threshold = thr)
         enable_cache(config)
@@ -113,6 +116,12 @@ def apply_step_cache(
             logger.info("diffusion.cache: %s engaged (threshold=%s)", mode, thr)
         return mode
     except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
+        # enable_cache can fail after hooking some blocks; drop any partial hooks so
+        # the reported-uncached model doesn't actually run half-cached.
+        try:
+            transformer.disable_cache()
+        except Exception:  # noqa: BLE001
+            pass
         _warn(logger, mode, exc)
         return None
 
