@@ -49,7 +49,25 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 import textwrap
-from ._utils import _get_inference_mode_context_manager
+from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
+
+# One-time gates for the GRPO sequence-packing path. Mirrored into the generated
+# trainer cache via RL_PRE_ITEMS below, since inlined function bodies do not carry
+# this module's imports.
+UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+# Packed path needs unsloth_zoo's masked-column guard in grpo_compute_loss (zoo#840).
+# Per-process constant is correct: the installed zoo cannot change mid-process.
+try:
+    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = "torch.where(_keep, new" in inspect.getsource(
+        RL_REPLACEMENTS["grpo_compute_loss"]
+    )
+except Exception:
+    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
 
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
@@ -1368,29 +1386,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             logprobs = None
             _pk_result = None
             _pk_use = False
-            _pk_enabled = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
-                "0",
-                "false",
-                "no",
-                "off",
-            )
-            if _pk_enabled:
-                # The packed path leaves masked prompt/pad logprob columns at 0, which only stays finite
-                # if the unsloth_zoo grpo_compute_loss zeroes those columns before exp() (zoo#840). Detect
-                # that guard once (cached on the model) and disable packing against an older unsloth_zoo
-                # so we never feed a NaN-prone loss; it re-enables automatically once the guard is present.
-                _pk_guard = getattr(unwrapped_model, "_unsloth_zoo_masked_col_guard", None)
-                if _pk_guard is None:
-                    try:
-                        import inspect as _pk_inspect
-                        from unsloth_zoo.rl_replacements import RL_REPLACEMENTS as _pk_RL
-                        _pk_guard = "torch.where(_keep, new" in _pk_inspect.getsource(
-                            _pk_RL["grpo_compute_loss"]
-                        )
-                    except Exception:
-                        _pk_guard = False
-                    unwrapped_model._unsloth_zoo_masked_col_guard = _pk_guard
-                _pk_enabled = _pk_guard
+            _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
+            # Packed path needs zoo#840's masked-column guard in grpo_compute_loss, else the
+            # zeroed prompt/pad columns turn NaN in exp(). Detected once at import time
+            # (per-process constant; the installed unsloth_zoo cannot change mid-process).
+            _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
             _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
             if (
                 _pk_enabled
@@ -1399,9 +1399,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 and mm_token_type_ids is None
                 and _pk_ok is not False
             ):
-                # this function's source is copied into the generated GRPO trainer, so import the
-                # logging flag locally (before the try) to keep the bare name defined there too
-                from unsloth.models._utils import UNSLOTH_ENABLE_LOGGING
                 try:
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
@@ -1494,12 +1491,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_vS = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
                         )
-                        _pk_force_verify = (
-                            os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
-                        )
+                        # debug knob (force re-verify every step) commented out; re-enable by hand
+                        # _pk_force_verify = (
+                        #     os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+                        # )
                         if (
-                            (not _pk_force_verify)
-                            and _pk_ok is True
+                            # (not _pk_force_verify) and
+                            _pk_ok is True
                             and _pk_T <= _pk_vT
                             and _pk_maxseg <= _pk_vS
                         ):
@@ -1771,6 +1769,26 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
+# Module-level constants the inlined grpo functions reference. inspect.getsource inlines the
+# function bodies but NOT the module imports, so names like UNSLOTH_ENABLE_LOGGING must be
+# (re)defined in the generated cache module. Provide it as a pre-item so the seq-packing /
+# PrefixGrouper verify logging branches resolve it (env-driven, default off).
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "import os as _unsloth_os\n"
+    "UNSLOTH_ENABLE_LOGGING = _unsloth_os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') in ('1', 'True', 'true')\n"
+)
+# One-time sequence-packing gates, same values as the module-top constants above.
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "UNSLOTH_GRPO_SEQ_PACKING_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_SEQ_PACKING', '1').lower() not in ('0', 'false', 'no', 'off')\n"
+)
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "try:\n"
+    "    import inspect as _unsloth_inspect\n"
+    "    from unsloth_zoo.rl_replacements import RL_REPLACEMENTS as _unsloth_zoo_RL\n"
+    "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = 'torch.where(_keep, new' in _unsloth_inspect.getsource(_unsloth_zoo_RL['grpo_compute_loss'])\n"
+    "except Exception:\n"
+    "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False\n"
+)
 
 
 # Edit _get_per_token_logps to handle mixed precision
