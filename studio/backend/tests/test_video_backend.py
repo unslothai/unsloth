@@ -526,6 +526,5 @@ def test_base_download_files_ltx23_keeps_only_shared_components():
     assert "text_encoder/model-00001-of-00002.safetensors" in names
     assert "tokenizer/tokenizer.model" in names
     assert not any(
-        n.startswith(("vae/", "connectors/", "latent_upsampler/", "transformer/"))
-        for n in names
+        n.startswith(("vae/", "connectors/", "latent_upsampler/", "transformer/")) for n in names
     )

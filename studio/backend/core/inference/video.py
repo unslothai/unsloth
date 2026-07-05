@@ -346,9 +346,7 @@ class VideoBackend:
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
-            base_local = self._predownload_base(
-                base, kwargs.get("hf_token"), kind, ltx23 = ltx23
-            )
+            base_local = self._predownload_base(base, kwargs.get("hf_token"), kind, ltx23 = ltx23)
             # The 2.3 assembly pulls per component from the hub id (its snapshot here
             # deliberately lacks the base VAEs), so it only gets the warmed cache; the
             # generic from_pretrained paths get the complete local snapshot.
@@ -373,7 +371,12 @@ class VideoBackend:
     _LTX23_BASE_PREFIXES = ("scheduler/", "text_encoder/", "tokenizer/")
 
     @staticmethod
-    def _base_download_files(info: Any, kind: str, *, ltx23: bool = False) -> list[tuple[str, int]]:
+    def _base_download_files(
+        info: Any,
+        kind: str,
+        *,
+        ltx23: bool = False,
+    ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
         Single source of truth for the progress estimate AND the scoped pre-download,
@@ -398,11 +401,7 @@ class VideoBackend:
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
                 continue
-            if (
-                ltx23
-                and "/" in name
-                and not name.startswith(VideoBackend._LTX23_BASE_PREFIXES)
-            ):
+            if ltx23 and "/" in name and not name.startswith(VideoBackend._LTX23_BASE_PREFIXES):
                 continue
             files.append((name, int(size)))
         return files
@@ -435,7 +434,12 @@ class VideoBackend:
             return None
 
     def _predownload_base(
-        self, base: str, hf_token: Optional[str], kind: str, *, ltx23: bool = False
+        self,
+        base: str,
+        hf_token: Optional[str],
+        kind: str,
+        *,
+        ltx23: bool = False,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
 
