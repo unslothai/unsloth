@@ -509,3 +509,23 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
     )
     assert _FakePipeline.last["base"] == str(tmp_path)
     backend.unload()
+
+
+def test_base_download_files_ltx23_keeps_only_shared_components():
+    # A 2.3 checkpoint supplies the DiT, connectors, both VAEs and the vocoder, so
+    # the base pull shrinks to scheduler + text encoder + tokenizer (+ root manifest).
+    siblings = _LTX2_SIBLINGS + [
+        _sibling("scheduler/scheduler_config.json", 1),
+        _sibling("connectors/diffusion_pytorch_model.safetensors", 3),
+        _sibling("latent_upsampler/diffusion_pytorch_model.safetensors", 1),
+    ]
+    info = types.SimpleNamespace(siblings = siblings)
+    names = [n for n, _ in VideoBackend._base_download_files(info, "gguf", ltx23 = True)]
+    assert "model_index.json" in names
+    assert "scheduler/scheduler_config.json" in names
+    assert "text_encoder/model-00001-of-00002.safetensors" in names
+    assert "tokenizer/tokenizer.model" in names
+    assert not any(
+        n.startswith(("vae/", "connectors/", "latent_upsampler/", "transformer/"))
+        for n in names
+    )
