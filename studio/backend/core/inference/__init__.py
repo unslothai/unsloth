@@ -34,7 +34,6 @@ def __getattr__(name):
 
     if name == "LlamaCppBackend":
         from .llama_cpp import LlamaCppBackend
-
         globals()["LlamaCppBackend"] = LlamaCppBackend
         return LlamaCppBackend
 
