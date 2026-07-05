@@ -7,7 +7,10 @@ to whatever the conservative supports_* fallback would pick.
 
 import pytest
 
-from unsloth.models._utils import _disable_flash_attention_if_needed
+from unsloth.models._utils import (
+    _disable_flash_attention_if_needed,
+    resolve_attention_implementation,
+)
 
 
 def test_explicit_sdpa_is_honored_even_when_not_marked_supported():
@@ -88,6 +91,34 @@ def test_flash_request_still_falls_back_when_disabled():
         disable_reason = "unit test forces flash disabled",
     )
     assert result == "sdpa"
+
+
+def test_resolver_honors_explicit_sdpa_when_not_supported_and_flash_disabled():
+    # End-to-end through the public resolver: an explicit sdpa request with a
+    # flash-disabled config (oversized head dim) and supports_sdpa=False must not be
+    # rewritten to eager by the resolver's own not-supports_sdpa guard.
+    config = {"model_type": "test", "head_dim": 512}  # head_dim > 256 disables flash
+    result = resolve_attention_implementation(
+        model_class = None,
+        config = config,
+        requested_attn_implementation = "sdpa",
+        supports_sdpa = False,
+    )
+    assert result == "sdpa"
+    assert config.get("_attn_implementation") == "sdpa"
+
+
+def test_resolver_downgrades_non_explicit_sdpa_when_not_supported():
+    # No explicit request: the model resolution seeds sdpa/eager and the guard must
+    # still downgrade a synthesized sdpa to eager for a model that cannot run it.
+    config = {"model_type": "test", "attn_implementation": "sdpa"}
+    result = resolve_attention_implementation(
+        model_class = None,
+        config = config,
+        requested_attn_implementation = None,
+        supports_sdpa = False,
+    )
+    assert result == "eager"
 
 
 if __name__ == "__main__":

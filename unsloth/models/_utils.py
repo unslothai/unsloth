@@ -859,7 +859,13 @@ def resolve_attention_implementation(
         final_attn_impl = requested_attn_implementation
         _set_attn_impl(config, final_attn_impl)
 
-    if not supports_sdpa and final_attn_impl == "sdpa":
+    # A caller who explicitly passes requested_attn_implementation="sdpa" keeps it even
+    # on a conservatively unsupported model, mirroring _disable_flash_attention_if_needed
+    # which honors an explicit sdpa request unconditionally. Only a synthesized/default
+    # sdpa (requested_attn_implementation is None, so the value came from the model
+    # resolution above or the config) downgrades to eager.
+    explicit_sdpa_request = requested_attn_implementation == "sdpa"
+    if not supports_sdpa and final_attn_impl == "sdpa" and not explicit_sdpa_request:
         print(
             f"Unsloth: {(model_type_name or 'model').title()} does not support SDPA - switching to fast eager."
         )
