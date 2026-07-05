@@ -2665,6 +2665,12 @@ const VOICE_BARGE_IN_DEBOUNCE_MS = 300;
 // instead of stacking as separate turns. Tunable: lower = snappier single turns,
 // higher = groups slower/longer multi-part barge-ins.
 const VOICE_COALESCE_MS = 650;
+// How long playback may pause between sentences before the orb admits a real
+// synth stall and turns lilac ("Generating voice"). The swap between two already
+// synthesized clips is well under this, so ordinary sentence boundaries hold the
+// blue "Speaking" state instead of flickering to lilac; only a gap that persists
+// past this (synthesis genuinely behind playback) shows lilac.
+const SYNTH_GAP_MS = 350;
 
 const VoiceEngine: FC = () => {
   const aui = useAui();
@@ -2685,6 +2691,9 @@ const VoiceEngine: FC = () => {
   // TTS session is streaming). Barge-in must cut in BOTH cases -- including the
   // tail where the last clip is still playing after the session already ended.
   const isPlayingRef = useRef(false);
+  // Debounce timer for the speaking -> synthesizing (lilac) transition, so a brief
+  // inter-sentence playback gap doesn't flicker the orb to lilac.
+  const synthGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const auiRef = useRef(aui);
   auiRef.current = aui;
 
@@ -2902,31 +2911,64 @@ const VoiceEngine: FC = () => {
   const sttWarming = useChatRuntimeStore((s) => s.sttWarming);
   const voiceHearing = useChatRuntimeStore((s) => s.voiceHearing);
   useEffect(() => {
-    if (voiceMode !== "active")     { setVoiceOrbState(null); return; }
+    const clearSynthGap = () => {
+      if (synthGapTimerRef.current) {
+        clearTimeout(synthGapTimerRef.current);
+        synthGapTimerRef.current = null;
+      }
+    };
+    if (voiceMode !== "active")     { clearSynthGap(); setVoiceOrbState(null); return; }
     // Voice slot OR Whisper STT still loading -> grey-blue "loading" (not the
     // lilac "generating speech"), so the orb clearly isn't a ready green while a
     // model warms up (~35s on ROCm). Fixes both "it just sits green" and the
     // lilac collision between loading and TTS synthesis.
-    if (voiceSlotLoading || sttWarming) { setVoiceOrbState("loading"); return; }
+    if (voiceSlotLoading || sttWarming) { clearSynthGap(); setVoiceOrbState("loading"); return; }
     // Mic is picking up your voice right now -> salmon "hearing you". Placed
     // above the speaking checks so talking over the model (barge-in) also reads
     // as hearing, and above thinking so it shows the instant you start.
-    if (voiceHearing)               { setVoiceOrbState("hearing"); return; }
+    if (voiceHearing)               { clearSynthGap(); setVoiceOrbState("hearing"); return; }
     // Audio actually playing -> "speaking" wins over any background work (the LLM
     // still writing the rest of the reply, or the next sentence synthesizing).
     // These run in parallel with playback, but playing is the most important thing
     // the user perceives, so it must not be overridden by background generation.
-    if (isPlaying)                  { setVoiceOrbState("speaking"); return; }
+    if (isPlaying)                  { clearSynthGap(); setVoiceOrbState("speaking"); return; }
     // Nothing playing yet. Split the old "thinking" into its real phases so the
     // caption says exactly what's happening: Whisper turning speech->text, then
     // the LLM writing the reply. Transcribing is checked first since it precedes
     // generation for a given turn.
-    if (voiceTranscribing)          { setVoiceOrbState("transcribing"); return; }
-    if (isThreadRunning)            { setVoiceOrbState("generating"); return; }
-    // TTS session active, nothing playing, generation done = a real synth gap (lilac).
-    if (isSpeaking)                 { setVoiceOrbState("synthesizing"); return; }
+    if (voiceTranscribing)          { clearSynthGap(); setVoiceOrbState("transcribing"); return; }
+    if (isThreadRunning)            { clearSynthGap(); setVoiceOrbState("generating"); return; }
+    // TTS session active but nothing playing right now. Usually this is just the
+    // brief gap between two ALREADY-synthesized sentences swapping the audio
+    // element, NOT a real stall -- so don't flicker to lilac. Hold the current
+    // state and only show "Generating voice" if the gap persists past SYNTH_GAP_MS
+    // (playback genuinely hasn't caught up to synthesis). If a clip starts within
+    // the window, isPlaying flips true, this effect re-runs into the speaking
+    // branch above, and clearSynthGap() cancels the pending switch.
+    if (isSpeaking) {
+      if (!synthGapTimerRef.current) {
+        synthGapTimerRef.current = setTimeout(() => {
+          synthGapTimerRef.current = null;
+          // Re-check live via refs at fire time: only go lilac if still stalled.
+          if (
+            voiceModeRef.current === "active" &&
+            isSpeakingRef.current &&
+            !isPlayingRef.current
+          ) {
+            setVoiceOrbState("synthesizing");
+          }
+        }, SYNTH_GAP_MS);
+      }
+      return;
+    }
+    clearSynthGap();
     setVoiceOrbState("listening");
   }, [voiceMode, voiceSlotLoading, sttWarming, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
+
+  // Clear any pending synth-gap timer on unmount so it can't fire after teardown.
+  useEffect(() => () => {
+    if (synthGapTimerRef.current) clearTimeout(synthGapTimerRef.current);
+  }, []);
 
   // Helper: transition to "active" and start the mic.
   const activateLoop = useCallback(() => {
