@@ -269,7 +269,12 @@ def build_sd_cpp_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.batch_count and params.batch_count != 1:
-        cmd += ["--batch-count", str(int(params.batch_count))]
+        # sd-cli names the extra batch images itself (output_2.png, ...) and the runner
+        # collects only the literal --output path, so a CLI batch would silently drop
+        # every image after the first. Batches go through the sdcpp server API instead.
+        raise ValueError(
+            "sd-cli runs are single-image; use the sdcpp server API for batch generation."
+        )
 
     cmd += ["--output", output_path]
     if threads is not None:
