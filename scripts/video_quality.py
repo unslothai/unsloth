@@ -159,11 +159,23 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    n = min(len(ref_frames), len(cand_frames))
+    # The gate holds the requested shape (num_frames) fixed for reference and
+    # candidate alike, so both clips must decode to the same frame count. A
+    # shorter candidate is a truncated/corrupt render, not a valid one; comparing
+    # only the shared prefix would let good early frames mask the missing tail, so
+    # the mismatch is recorded and gated as FAIL (see verdict()) rather than
+    # silently dropped. No off-by-one is tolerated: nothing in the encode/decode
+    # path justifies one.
+    ref_count, cand_count = len(ref_frames), len(cand_frames)
+    frame_count_mismatch = ref_count != cand_count
+    n = min(ref_count, cand_count)
     if n == 0:
         # An empty/corrupt decode must gate as FAIL, not crash the whole run.
         return {
             "frames_compared": 0,
+            "ref_frame_count": ref_count,
+            "cand_frame_count": cand_count,
+            "frame_count_mismatch": frame_count_mismatch,
             "psnr_mean": 0.0,
             "ssim_mean": 0.0,
             "temporal_deviation": math.inf,
@@ -179,6 +191,9 @@ def clip_metrics(
     )
     return {
         "frames_compared": len(idx),
+        "ref_frame_count": ref_count,
+        "cand_frame_count": cand_count,
+        "frame_count_mismatch": frame_count_mismatch,
         "psnr_mean": sum(psnrs) / len(psnrs),
         "ssim_mean": sum(ssims) / len(ssims),
         "temporal_deviation": temporal_deviation(ref_frames[:n], cand_frames[:n]),
@@ -212,7 +227,12 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
 def verdict(metrics: dict[str, Any], audio: dict[str, Any]) -> str:
     """PASS / WARN / FAIL per the standing accuracy budget (~25 percent structural
     drift acceptable, 50 percent or a collapse never)."""
-    if metrics["has_nan"] or metrics["min_luma"] < 0.02 or audio.get("silent_collapse"):
+    if (
+        metrics["has_nan"]
+        or metrics.get("frame_count_mismatch")
+        or metrics["min_luma"] < 0.02
+        or audio.get("silent_collapse")
+    ):
         return "FAIL"
     if metrics["ssim_mean"] < 0.50 or metrics["temporal_deviation"] > 1.0:
         return "FAIL"
@@ -440,6 +460,15 @@ def selftest() -> int:
 
     shifted = clip_metrics(ref, make_clip(offset = 0.5))
     check(shifted["ssim_mean"] < same["ssim_mean"], "content shift lowers ssim")
+
+    # A truncated render whose surviving prefix is pixel-identical must still FAIL
+    # on the frame-count mismatch alone, not PASS on the good early frames.
+    truncated = clip_metrics(ref, make_clip()[: n // 2])
+    check(
+        truncated["frame_count_mismatch"] is True
+        and verdict(truncated, {"silent_collapse": False}) == "FAIL",
+        f"truncated clip verdict FAIL ({truncated['cand_frame_count']}/{truncated['ref_frame_count']} frames)",
+    )
 
     audio = audio_metrics(np.sin(np.linspace(0, 100, 16000)), np.zeros(16000))
     check(audio["silent_collapse"] is True, "silent audio collapse detected")
