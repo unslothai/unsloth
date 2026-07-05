@@ -1410,6 +1410,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         tol_ok as _pg_tol_ok,
                         TOL_KILL as _PG_TOL_KILL,
                     )
+
                     # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
                     # entirely for softcap models (e.g. gemma2) before building any layout.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
@@ -1429,7 +1430,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pg_pad = self.processing_class.pad_token_id
                     # sliding-window models lose the per-sequence window in the packed stream, so
                     # cap the PG span (P+max(R)) at the window, mirroring the packed _pk_sw guard.
-                    _pg_sw = getattr(getattr(unwrapped_model, "config", None), "sliding_window", None)
+                    _pg_sw = getattr(
+                        getattr(unwrapped_model, "config", None), "sliding_window", None
+                    )
                     if not (isinstance(_pg_sw, int) and _pg_sw > 0):
                         _pg_sw = None
                     _pg_layout = _pg_build_layout(
