@@ -187,6 +187,7 @@ class VideoBackend:
         repo_id: str,
         *,
         gguf_filename: Optional[str] = None,
+        base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> VideoFamily:
@@ -208,8 +209,29 @@ class VideoBackend:
                 f"Non-GGUF video loads are limited to unsloth/* repos, the official "
                 f"family base repos, and local paths; '{repo_id}' is neither."
             )
+        # The companions load with from_pretrained too, so an explicit base repo is
+        # held to the same bar as a non-GGUF repo id: a GGUF pick must not smuggle
+        # in an arbitrary remote base.
+        if base_repo and (base_repo or "").strip() and not _is_trusted_video_repo(base_repo):
+            raise ValueError(
+                f"base_repo is limited to unsloth/* repos, the official family base "
+                f"repos, and local paths; '{base_repo}' is neither."
+            )
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
+        # A local checkpoint that cannot exist must fail HERE, before the route evicts
+        # a resident chat/image model for a load that dies at resolve time.
+        if kind in ("gguf", "single_file"):
+            root = Path(repo_id).expanduser()
+            if root.is_dir():
+                from .diffusion_families import resolve_local_gguf_child
+
+                try:
+                    resolve_local_gguf_child(root, gguf_filename or "")
+                except Exception as exc:  # noqa: BLE001 -- surface as client input error
+                    raise ValueError(str(exc)) from exc
+            elif repo_id.startswith(("/", "~", "./", "../")) and not root.is_file():
+                raise ValueError(f"Local model path '{repo_id}' does not exist.")
         _ensure_mp4_encoder_available()
         return fam
 
@@ -235,6 +257,7 @@ class VideoBackend:
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
+            base_repo = base_repo,
             family_override = family_override,
             model_kind = model_kind,
         )
@@ -405,6 +428,7 @@ class VideoBackend:
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
+            base_repo = base_repo,
             family_override = family_override,
             model_kind = model_kind,
         )
@@ -418,6 +442,13 @@ class VideoBackend:
             # above already bailed a superseded worker before this point.
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+        # Wait for the signalled generation to actually exit before tearing the old
+        # pipeline down: the denoise loop holds its own pipe reference until the
+        # next step callback, and freeing/reallocating under it would put two
+        # models in VRAM at once. generate() holds _generate_lock for its full
+        # body, so a bare acquire is the exit barrier (never while holding _lock).
+        with self._generate_lock:
+            pass
         self._teardown_state()
 
         target = resolve_diffusion_device_target()
@@ -449,7 +480,13 @@ class VideoBackend:
                 if components is not None
                 else None
             )
-            model_dense_mib = transformer_mib
+            # The resident check budgets ALL weights (the image backend's contract):
+            # the companions stay resident even when only the transformer would fit,
+            # so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM
+            # while from_pretrained loads the text encoder / VAEs.
+            model_dense_mib = (
+                transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
+            )
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
             height = fam.resolution_presets[0][1],
@@ -473,7 +510,8 @@ class VideoBackend:
             pipe = pipeline_cls.from_pretrained(repo_id, **pipe_kwargs)
         else:
             transformer_cls = getattr(diffusers, fam.transformer_class)
-            checkpoint_path = self._resolve_checkpoint_path(repo_id, gguf_filename, hf_token)
+            # checkpoint_path was already resolved (and downloaded) by the memory
+            # planning branch above for every non-pipeline kind.
             sf_kwargs: dict[str, Any] = {
                 "torch_dtype": dtype,
                 "config": base,
@@ -506,11 +544,19 @@ class VideoBackend:
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
 
-        # ── optimisation layers, in the image backend's order: speed profile
-        # (compile must precede placement), attention (compile traces it),
-        # placement/offload, then the step cache.
+        # ── optimisation layers, in the image backend's order: step cache FIRST
+        # (compile keys its fullgraph decision off an active cache: FBCache hooks
+        # graph-break, so compiling fullgraph before installing the cache crashes
+        # the first cached generation), then attention, the speed profile, and
+        # placement/offload last.
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
         backend_flags = snapshot_backend_flags()
+        cache_engaged = apply_step_cache(
+            pipe,
+            mode = normalize_transformer_cache(transformer_cache),
+            threshold = transformer_cache_threshold,
+            logger = logger,
+        )
         attention_engaged = apply_attention_backend(
             pipe,
             select_attention_backend(
@@ -524,8 +570,16 @@ class VideoBackend:
             is_gguf = kind == "gguf",
             family = fam,
             speed_mode = effective_speed,
+            cache_active = cache_engaged is not None,
             offload_active = plan.offload_policy != "none",
         )
+        # A cancelled/superseded load must not place weights on the GPU the arbiter
+        # may already have handed to another backend; recheck right before placement
+        # (the commit below still does the final locked check).
+        if _load_token is not None and _load_token != self._load_token:
+            del pipe
+            clear_gpu_cache()
+            raise RuntimeError("Video load was cancelled or superseded.")
         offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
         if not vae_tiling:
             # Decode of a whole clip is the video memory peak; tiling is near-free
@@ -535,12 +589,6 @@ class VideoBackend:
                 vae_tiling = True
             except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                 logger.warning("video.vae_tiling_failed: %s", exc)
-        cache_engaged = apply_step_cache(
-            pipe,
-            mode = normalize_transformer_cache(transformer_cache),
-            threshold = transformer_cache_threshold,
-            logger = logger,
-        )
 
         resolved = build_resolved_record(
             {
@@ -585,7 +633,10 @@ class VideoBackend:
                 vae_tiling = vae_tiling,
                 memory_mode = plan.requested_mode,
                 speed_mode = effective_speed,
-                speed_optims = tuple(speed_optims or ()),
+                # Only the optimisations that actually engaged: apply_speed_optims
+                # returns every flag with True/False, and iterating the dict raw
+                # would report disabled ones as active in /video/status.
+                speed_optims = tuple(k for k, v in (speed_optims or {}).items() if v),
                 backend_flags = backend_flags,
                 attention_backend = attention_engaged,
                 transformer_cache = cache_engaged,
@@ -812,6 +863,12 @@ class VideoBackend:
             state, self._state = self._state, None
         if state is not None:
             restore_backend_flags(state.backend_flags)
+            # A GGUF video load may have installed the process-wide compiled GGUF
+            # dequantizer; restore the stock kernels so a later load that asked for
+            # speed_mode=off gets the bit-identical path (mirrors the image unload).
+            from . import diffusion_gguf_compile
+
+            diffusion_gguf_compile.uninstall_all()
             del state
             clear_gpu_cache()
 

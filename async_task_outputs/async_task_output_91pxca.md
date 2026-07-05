@@ -1,5 +1,0 @@
-- Verified all phase PRs touch only `studio/backend/...` plus `scripts/`; no core training lib.
-- Found GGUF NVIDIA path defaults to `SPEED_OFF` field but `resolve_speed_mode(..., is_gguf=True)` enables ~2.2x.
-- Confirmed `SdCppEngine` not wired into live routes.
-- COMPLETED: precise speedup matrix.
-- PENDING: route CPU/MPS to sd.cpp.

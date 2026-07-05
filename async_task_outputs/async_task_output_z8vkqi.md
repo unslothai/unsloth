@@ -1,1 +1,0 @@
-- GGUF diffusers dequantizes; sd.cpp likely faster

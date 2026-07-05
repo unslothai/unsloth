@@ -168,7 +168,10 @@ def _convert_fp8_state_dict(raw: dict, hidden_size: int, dtype) -> dict:
     def dequantize(name: str):
         weight = raw[name].to(torch.float32)
         scale = raw[name + "_scale"].to(torch.float32)
-        return (weight * scale[:, None]).to(dtype)
+        # Per-output-channel scale, broadcast over the remaining dims. Every scaled
+        # tensor in the shipped repos is 2D; the rank-aware view keeps a future
+        # non-2D quantized tensor correct instead of silently mis-broadcasting.
+        return (weight * scale.view(-1, *([1] * (weight.ndim - 1)))).to(dtype)
 
     converted: dict = {}
     for key, value in raw.items():
@@ -180,6 +183,13 @@ def _convert_fp8_state_dict(raw: dict, hidden_size: int, dtype) -> dict:
             continue
         if key.endswith("attention.qkv.weight"):
             fused = dequantize(key)  # [3 * hidden_size, hidden_size]
+            if fused.shape[0] != 3 * hidden_size:
+                # Equal-thirds is only correct for full multi-head attention; a GQA
+                # export (fewer K/V rows) must fail loudly, not split into garbage.
+                raise RuntimeError(
+                    f"fused qkv at {key} has {fused.shape[0]} rows, expected "
+                    f"{3 * hidden_size}; cannot split into equal Q/K/V blocks"
+                )
             base = key[: -len("qkv.weight")]
             for index, proj in enumerate(_QKV_SPLIT):
                 block = fused[index * hidden_size : (index + 1) * hidden_size]
@@ -291,7 +301,8 @@ def load_ideogram4_text_encoder(
         if key + "_scale" in raw:
             weight = value.to(torch.float32)
             scale = raw[key + "_scale"].to(torch.float32)
-            state_dict[key] = (weight * scale[:, None]).to(dtype)
+            # Rank-aware broadcast, matching _convert_fp8_state_dict.
+            state_dict[key] = (weight * scale.view(-1, *([1] * (weight.ndim - 1)))).to(dtype)
         else:
             state_dict[key] = value.to(dtype)
 
@@ -330,11 +341,17 @@ def load_ideogram4_transformer(
     config = _read_transformer_config(repo_id, subfolder, token)
     shard_paths = _transformer_shard_paths(repo_id, subfolder, token)
 
-    # Detect the fp8 layout from the shard HEADER (safe_open.keys() reads metadata only,
-    # not the multi-GB tensor bodies). Only the fp8 path then materializes the tensors;
-    # the -nf4 path goes straight to from_pretrained without a wasteful full-shard read.
-    with safetensors.safe_open(shard_paths[0], "pt") as handle:
-        is_fp8 = any(key.endswith("_scale") for key in handle.keys())
+    # Detect the fp8 layout from the shard HEADERS (safe_open.keys() reads metadata only,
+    # not the multi-GB tensor bodies). All shards are checked so a multi-shard export
+    # whose first shard happens to hold only dense tensors still routes to the dequant
+    # path. Only the fp8 path then materializes the tensors; the -nf4 path goes straight
+    # to from_pretrained without a wasteful full-shard read.
+    is_fp8 = False
+    for path in shard_paths:
+        with safetensors.safe_open(path, "pt") as handle:
+            if any(key.endswith("_scale") for key in handle.keys()):
+                is_fp8 = True
+                break
     if not is_fp8:
         # Already the diffusers split layout (the quantized -nf4 exports). Let
         # from_pretrained re-apply the embedded quantization_config unchanged.
