@@ -1503,14 +1503,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_T = int(_pg_layout.flat_ids.shape[1])
                         _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
                         _pg_env = (
-                            _pg_verified.get(_pg_sig)
-                            if isinstance(_pg_verified, dict)
-                            else None
+                            _pg_verified.get(_pg_sig) if isinstance(_pg_verified, dict) else None
                         )
                         if (not _pg_verify_on()) or (
-                            _pg_env is not None
-                            and _pg_T <= _pg_env[0]
-                            and _pg_maxseg <= _pg_env[1]
+                            _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
                         ):
                             _pg_use = True
                             _pg_skip_pk = True  # trusted shape -> no full-row forward needed
