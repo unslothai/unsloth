@@ -441,6 +441,45 @@ def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
     assert cfg_explicit.train_steps == 25
 
 
+def test_permutation_sampler_covers_dataset_once_per_cycle():
+    # Every index must appear exactly once per cycle before any repeat (epoch-style pass),
+    # so a short run over a small dataset never leaves images unseen the way the old
+    # with-replacement draw did. Consecutive cycles must be reshuffled (differ).
+    import random
+
+    from core.training.diffusion_train_common import PermutationBatchSampler
+
+    n = 100
+    sampler = PermutationBatchSampler(n, random.Random(0))
+
+    # Draw exactly one cycle in batches of 3 (n not divisible by the batch, so a batch spans
+    # the cycle boundary); the first n indices must be a permutation of range(n).
+    drawn: list[int] = []
+    while len(drawn) < n:
+        drawn.extend(sampler.next_batch(3))
+    first_cycle = drawn[:n]
+    assert sorted(first_cycle) == list(range(n))  # each index once, none missing
+
+    # The next full cycle is also a permutation, and it is reshuffled (order differs).
+    fresh = PermutationBatchSampler(n, random.Random(0))
+    cycle_a = fresh.next_batch(n)
+    cycle_b = fresh.next_batch(n)
+    assert sorted(cycle_a) == list(range(n))
+    assert sorted(cycle_b) == list(range(n))
+    assert cycle_a != cycle_b  # cycles are reshuffled, not repeated in the same order
+
+    # A seed replays the exact index stream (determinism for reproducible runs).
+    replay = PermutationBatchSampler(n, random.Random(0))
+    assert replay.next_batch(n) == cycle_a
+
+    # A batch larger than the dataset refills across cycles so it never shrinks (batch shape
+    # preserved), even though it must then repeat indices within the batch.
+    big = PermutationBatchSampler(4, random.Random(1))
+    batch = big.next_batch(10)
+    assert len(batch) == 10
+    assert set(batch) == {0, 1, 2, 3}
+
+
 def test_route_start_accepts_zero_max_grad_norm(client):
     # 0 is the documented "disable clipping" value (the trainer skips clip_grad_norm_);
     # the request model must not reject it.
@@ -951,3 +990,16 @@ def test_runs_route_tolerates_bad_field_record(client, _isolated_runs_dir):
     assert r.status_code == 200, r.text
     adapters = [x["adapter"] for x in r.json()["runs"]]
     assert adapters == ["good"]  # the bad-field record was skipped, the good one remained
+
+
+def test_run_detail_route_non_object_record_is_404(client, _isolated_runs_dir):
+    # A valid-JSON but non-object record (a truncated / hand-edited [] file named with a real
+    # job id) makes DiffusionTrainingRunDetail(**rec) raise TypeError, not ValidationError; the
+    # detail route must shape-check like the list path and 404 instead of 500.
+    import json
+
+    job_id = "a" * 32
+    (_isolated_runs_dir / f"{job_id}.json").write_text(json.dumps([]))
+
+    r = client.get(f"/api/train/diffusion/runs/{job_id}")
+    assert r.status_code == 404, r.text
