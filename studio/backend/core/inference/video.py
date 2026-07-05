@@ -1238,6 +1238,17 @@ class VideoBackend:
                     with torch.inference_mode(), progress_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
+                    # This cancel unwinds pipe.__call__ by exception (the scheduler
+                    # wrapper has no cooperative _interrupt), skipping the pipeline's
+                    # end-of-call maybe_free_model_hooks(); under model/group offload
+                    # the currently-onloaded modules would otherwise stay on the GPU
+                    # until the next request touches them.
+                    free_hooks = getattr(pipe, "maybe_free_model_hooks", None)
+                    if callable(free_hooks):
+                        try:
+                            free_hooks()
+                        except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                            pass
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)

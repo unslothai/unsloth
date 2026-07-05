@@ -151,6 +151,7 @@ def test_supported_names():
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
     )
 
 

@@ -303,6 +303,10 @@ class _FakeHV15Pipe:
         self.components = {"transformer": self.transformer, "vae": self.vae}
         self.moved_to = None
         self.last_kwargs = None
+        self.hooks_freed = 0
+
+    def maybe_free_model_hooks(self):
+        self.hooks_freed += 1
 
     def to(self, device):
         self.moved_to = device
@@ -718,6 +722,10 @@ def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
     assert pipe.scheduler.calls == 1
     # The wrapper must restore scheduler.step even on the exception path.
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
+    # The exception unwound pipe.__call__ before its own end-of-call cleanup, so
+    # generate() must have freed the offload hooks itself (VRAM would otherwise
+    # stay onloaded until the next request).
+    assert pipe.hooks_freed == 1
 
 
 def test_singleton():
@@ -1129,3 +1137,18 @@ def test_base_download_files_ltx23_keeps_only_shared_components():
     assert not any(
         n.startswith(("vae/", "connectors/", "latent_upsampler/", "transformer/")) for n in names
     )
+
+
+def test_hv15_720p_repo_gets_720p_family_defaults():
+    # The 720p repack is trusted, but it must resolve its OWN family entry: the
+    # generic hunyuanvideo-1.5 entry would default generation to 832x480.
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v")
+    assert fam is not None and fam.name == "hunyuanvideo-1.5-720p"
+    assert fam.resolution_presets[0] == (1280, 720)
+    assert fam.base_repo.endswith("720p_t2v")
+    # The 480p repo keeps the original entry.
+    fam480 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
+    assert fam480 is not None and fam480.name == "hunyuanvideo-1.5"
+    assert fam480.resolution_presets[0] == (832, 480)

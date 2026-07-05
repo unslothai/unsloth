@@ -237,6 +237,30 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # VAE (4.7 -> 2.4); the Qwen2.5-VL TE is stored bf16 (14.0) plus ByT5 0.8.
         bf16_components_gb = (16.6, 14.8, 2.4),
     ),
+    # The 720p t2v repack: same architecture, pipeline quirks, guider config
+    # (guidance 6.0) and shard footprint as the 480p entry above; only the
+    # trained resolution class differs. Kept as its OWN family so a 720p load
+    # defaults to 720p-class sizes instead of silently rendering at 832x480.
+    # The repo-id alias is the full path segment, so it out-lengths (and thus
+    # outranks) the generic "hunyuanvideo-1.5" token for this repo only.
+    VideoFamily(
+        name = "hunyuanvideo-1.5-720p",
+        pipeline_class = "HunyuanVideo15Pipeline",
+        transformer_class = "HunyuanVideo15Transformer3DModel",
+        base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
+        has_audio = False,
+        guidance_via_guider = True,
+        default_steps = 50,
+        default_guidance = 6.0,
+        default_num_frames = 121,
+        default_fps = 24,
+        frame_step = 4,
+        resolution_multiple = 16,
+        # 720p-class presets: landscape, vertical, square (all /16).
+        resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
+        bf16_components_gb = (16.6, 14.8, 2.4),
+    ),
 )
 
 
