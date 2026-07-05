@@ -1580,7 +1580,14 @@ class DiffusionBackend:
             pipe = getattr(diffusers, pipe_cls_name).from_pipe(
                 state.pipe, controlnet = cn_model, torch_dtype = None
             )
-            self._cn_pipes[key] = pipe
+            with self._lock:
+                # Same race as the model cache above: an unload/superseding load may
+                # have cleared _cn_pipes while from_pipe ran; caching now would pin a
+                # pipeline built around the UNLOADED base and hand it to the next load.
+                if cancel.is_set() or self._state is not state:
+                    del pipe
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                self._cn_pipes[key] = pipe
         return pipe
 
     @staticmethod
