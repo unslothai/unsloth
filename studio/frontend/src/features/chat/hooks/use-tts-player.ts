@@ -105,6 +105,32 @@ async function envelopeFromBlob(blob: Blob): Promise<Float32Array | null> {
   }
 }
 
+// Shared AudioContext for STREAMING PCM playback. Unlike the analysis-only context
+// above, this one IS connected to the speakers: incoming 24 kHz int16 PCM chunks are
+// scheduled back-to-back on it so audio starts on the first chunk (~1s) instead of
+// waiting for the whole clip. Created lazily; resumed on a user gesture (primeAudio).
+let _playCtx: AudioContext | null = null;
+function getPlayCtx(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  if (!_playCtx) _playCtx = new Ctor();
+  return _playCtx;
+}
+
+function streamPlaybackSupported(): boolean {
+  return getPlayCtx() !== null && typeof ReadableStream !== "undefined";
+}
+
+// Jitter buffer: Orpheus generates at ~real time (RTF ~1), so streamed chunks
+// barely keep pace with playback. Starting the first buffer this far in the future
+// keeps the scheduler ~this many seconds ahead of generation, so a late chunk
+// (GPU jitter) doesn't starve playback into a gap/click. Costs ~this much extra
+// first-audio latency, still far below waiting for the whole clip.
+const STREAM_PREROLL_S = 0.35;
+
 export function useTtsPlayer(
   audioType: string | null | undefined,
   onPlaybackEnd?: () => void,
@@ -141,6 +167,12 @@ export function useTtsPlayer(
   // Resolver for the sentence currently awaiting playback, so stop() can unwind
   // the speak loop immediately (pause() doesn't fire "ended").
   const playResolveRef = useRef<(() => void) | null>(null);
+  // Streaming-PCM playback state: the Web Audio sources currently scheduled (so
+  // stop()/barge-in can cut them), the orb-level rAF handle, and a resolver so
+  // stop() can immediately unwind a sentence that's mid-stream.
+  const streamSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const streamLevelRafRef = useRef(0);
+  const streamResolveRef = useRef<(() => void) | null>(null);
   const onPlaybackEndRef = useRef(onPlaybackEnd);
   onPlaybackEndRef.current = onPlaybackEnd;
 
@@ -158,16 +190,23 @@ export function useTtsPlayer(
   } | null>(null);
 
   const isTtsModel = TTS_AUDIO_TYPES.has(audioType ?? "") || voiceSlotLoaded;
+  // Stream PCM straight from /api/audio/speech/stream (SNAC/Orpheus voice slot) and
+  // play it as it arrives, so first audio lands ~1s in instead of after the whole
+  // clip. Only for the loaded voice slot (the streaming endpoint is SNAC-only); if
+  // the stream 400s (non-SNAC), playSentenceStream falls back to the blocking blob.
+  const streamMode = voiceSlotLoaded && streamPlaybackSupported();
 
   // Unlock Safari's audio autoplay policy by calling play()+pause() during
   // a synchronous user gesture. The element is reused for all subsequent plays
-  // so the unlock survives async fetch callbacks.
+  // so the unlock survives async fetch callbacks. Also resume the streaming
+  // AudioContext in the same gesture so scheduled PCM isn't blocked by autoplay.
   const primeAudio = useCallback(() => {
     if (typeof window === "undefined") return;
     if (!audioRef.current) {
       audioRef.current = new Audio();
     }
     audioRef.current.play().then(() => audioRef.current?.pause()).catch(() => {});
+    void getPlayCtx()?.resume().catch(() => {});
   }, []);
 
   const revokeUrl = useCallback(() => {
@@ -199,6 +238,26 @@ export function useTtsPlayer(
     }
   }, []);
 
+  // Cut streaming-PCM playback: stop every scheduled buffer source, drop the orb
+  // level loop, and resolve the sentence that's mid-stream so its awaiter unwinds.
+  const stopStream = useCallback(() => {
+    for (const src of streamSourcesRef.current) {
+      try {
+        src.onended = null;
+        src.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    streamSourcesRef.current.clear();
+    if (streamLevelRafRef.current) cancelAnimationFrame(streamLevelRafRef.current);
+    streamLevelRafRef.current = 0;
+    voiceOutputLevel.current = 0;
+    const resolve = streamResolveRef.current;
+    streamResolveRef.current = null;
+    resolve?.();
+  }, []);
+
   const stop = useCallback(() => {
     requestIdRef.current += 1;
     // Cancel any in-flight synth so the voice slot stops on stale sentences and
@@ -206,10 +265,11 @@ export function useTtsPlayer(
     synthAbortRef.current?.abort();
     synthAbortRef.current = new AbortController();
     stopTts();
+    stopStream();
     stopSynth();
     setIsSpeaking(false);
     setIsPlaying(false);
-  }, [stopTts, stopSynth]);
+  }, [stopTts, stopStream, stopSynth]);
 
   // Play a single audio blob; resolves when it ends, errors, or is superseded by
   // a stop()/new speak().
@@ -278,6 +338,151 @@ export function useTtsPlayer(
     });
   }, []);
 
+  // Stream ONE sentence from /api/audio/speech/stream and play its 24 kHz int16 PCM
+  // as it arrives (Web Audio, buffer sources scheduled back-to-back), so audio
+  // starts on the first chunk (~1s) instead of after the whole clip. Resolves true
+  // once playback finished or was cut; resolves FALSE without playing if the stream
+  // isn't usable (non-SNAC voice / error) so the caller can fall back to the blob.
+  const playSentenceStream = useCallback(
+    (sentence: string, reqId: number): Promise<boolean> => {
+      return new Promise<boolean>((resolve) => {
+        if (requestIdRef.current !== reqId) {
+          resolve(true);
+          return;
+        }
+        const ctx = getPlayCtx();
+        if (!ctx) {
+          resolve(false);
+          return;
+        }
+        void ctx.resume().catch(() => {});
+        const voice = useChatRuntimeStore.getState().selectedVoiceName || "tara";
+
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.connect(ctx.destination);
+        const levelBuf = new Float32Array(analyser.fftSize);
+        const runLevel = () => {
+          analyser.getFloatTimeDomainData(levelBuf);
+          let s = 0;
+          for (let i = 0; i < levelBuf.length; i++) s += levelBuf[i] * levelBuf[i];
+          voiceOutputLevel.current = Math.sqrt(s / levelBuf.length);
+          streamLevelRafRef.current = requestAnimationFrame(runLevel);
+        };
+
+        let playHead = 0;
+        let started = false;
+        let streamEnded = false;
+        let pending = 0;
+        let settled = false;
+        let leftover: Uint8Array | null = null;
+
+        const finish = (played: boolean) => {
+          if (settled) return;
+          settled = true;
+          streamResolveRef.current = null;
+          try {
+            analyser.disconnect();
+          } catch {
+            /* already gone */
+          }
+          if (streamLevelRafRef.current && streamSourcesRef.current.size === 0) {
+            cancelAnimationFrame(streamLevelRafRef.current);
+            streamLevelRafRef.current = 0;
+            voiceOutputLevel.current = 0;
+          }
+          if (requestIdRef.current === reqId) setIsPlaying(false);
+          resolve(played);
+        };
+        // stop()/barge-in calls this (via stopStream) to unwind immediately.
+        streamResolveRef.current = () => finish(true);
+
+        const schedule = (bytes: Uint8Array) => {
+          let data = bytes;
+          if (leftover && leftover.length) {
+            const merged = new Uint8Array(leftover.length + bytes.length);
+            merged.set(leftover);
+            merged.set(bytes, leftover.length);
+            data = merged;
+            leftover = null;
+          }
+          const nSamples = data.length >> 1;
+          if (nSamples === 0) {
+            leftover = data;
+            return;
+          }
+          const usable = nSamples * 2;
+          if (usable < data.length) leftover = data.slice(usable);
+          const view = new DataView(data.buffer, data.byteOffset, usable);
+          const f32 = new Float32Array(nSamples);
+          for (let i = 0; i < nSamples; i++) f32[i] = view.getInt16(i * 2, true) / 32768;
+          const audioBuf = ctx.createBuffer(1, nSamples, 24000);
+          audioBuf.copyToChannel(f32, 0);
+          const src = ctx.createBufferSource();
+          src.buffer = audioBuf;
+          src.connect(analyser);
+          // First buffer starts a jitter-buffer ahead (STREAM_PREROLL_S) so the
+          // scheduler stays ahead of the ~real-time generation; the rest chain
+          // gaplessly off the running playhead. The max() guard means a chunk that
+          // arrived late still schedules just ahead of now instead of in the past.
+          const startAt = !started
+            ? ctx.currentTime + STREAM_PREROLL_S
+            : Math.max(ctx.currentTime + 0.005, playHead);
+          src.start(startAt);
+          playHead = startAt + audioBuf.duration;
+          streamSourcesRef.current.add(src);
+          pending++;
+          if (!started) {
+            started = true;
+            if (requestIdRef.current === reqId) setIsPlaying(true);
+            if (!streamLevelRafRef.current)
+              streamLevelRafRef.current = requestAnimationFrame(runLevel);
+          }
+          src.onended = () => {
+            streamSourcesRef.current.delete(src);
+            pending--;
+            if (streamEnded && pending <= 0) finish(true);
+          };
+        };
+
+        void (async () => {
+          try {
+            const resp = await authFetch("/api/audio/speech/stream", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ input: sentence, voice }),
+              signal: synthAbortRef.current?.signal,
+            });
+            if (!resp.ok || !resp.body) {
+              finish(false); // let the caller fall back to the blocking blob path
+              return;
+            }
+            const reader = resp.body.getReader();
+            for (;;) {
+              const { done: rdone, value } = await reader.read();
+              if (rdone) break;
+              if (requestIdRef.current !== reqId) {
+                try {
+                  await reader.cancel();
+                } catch {
+                  /* ignore */
+                }
+                break;
+              }
+              if (value && value.length) schedule(value);
+            }
+          } catch {
+            // aborted (stop / barge-in) or a network error
+          } finally {
+            streamEnded = true;
+            if (pending <= 0) finish(true);
+          }
+        })();
+      });
+    },
+    [],
+  );
+
   // POST one sentence to /api/audio/speech and return the audio blob. If the
   // backend voice slot is gone (400 -- unloaded by a ChatPage remount, an auth
   // bounce, or a studio relaunch), reload it once via the store hook and retry,
@@ -327,34 +532,51 @@ export function useTtsPlayer(
       if (isTtsModel) {
         setIsSpeaking(true);
 
-        const synth = (sentence: string): Promise<Blob | null> =>
-          requestSpeechBlob(sentence);
-
-        // Bounded-concurrency pipeline: keep up to N sentences synthesizing at
-        // once (voiceParallelN), play them back strictly in order. N=1 is the old
-        // one-ahead behavior. The GGUF voice slot must be loaded with matching
-        // --parallel N; the backend serializes only the shared codec decode.
-        const N = Math.min(
-          sentences.length,
-          Math.max(1, useChatRuntimeStore.getState().voiceParallelN),
-        );
-        const jobs: Array<Promise<Blob | null>> = [];
-        let launched = 0;
-        const launchUpTo = (limit: number) => {
-          while (launched < sentences.length && launched < limit) {
-            jobs[launched] = synth(sentences[launched]);
-            launched++;
+        if (streamMode) {
+          // Stream each sentence's PCM and play it as it generates (first audio in
+          // ~1s). Sequential per sentence: the single voice slot generates one at a
+          // time, so there's nothing to pre-synthesize ahead.
+          for (let i = 0; i < sentences.length; i++) {
+            if (requestIdRef.current !== reqId) return;
+            const played = await playSentenceStream(sentences[i], reqId);
+            if (requestIdRef.current !== reqId) return;
+            if (!played) {
+              // Stream not usable (non-SNAC voice) -> blocking blob fallback.
+              const blob = await requestSpeechBlob(sentences[i]);
+              if (requestIdRef.current !== reqId) return;
+              if (blob) await playBlob(blob, reqId);
+            }
           }
-        };
-        launchUpTo(N); // prime N in flight
-        for (let i = 0; i < sentences.length; i++) {
-          if (requestIdRef.current !== reqId) return;  // superseded
-          const blob = await jobs[i];
-          if (requestIdRef.current !== reqId) return;
-          // Refill the window so N stay in flight ahead of playback.
-          launchUpTo(i + 1 + N);
-          if (!blob) continue;  // skip a sentence that failed to synthesize
-          await playBlob(blob, reqId);
+        } else {
+          const synth = (sentence: string): Promise<Blob | null> =>
+            requestSpeechBlob(sentence);
+
+          // Bounded-concurrency pipeline: keep up to N sentences synthesizing at
+          // once (voiceParallelN), play them back strictly in order. N=1 is the old
+          // one-ahead behavior. The GGUF voice slot must be loaded with matching
+          // --parallel N; the backend serializes only the shared codec decode.
+          const N = Math.min(
+            sentences.length,
+            Math.max(1, useChatRuntimeStore.getState().voiceParallelN),
+          );
+          const jobs: Array<Promise<Blob | null>> = [];
+          let launched = 0;
+          const launchUpTo = (limit: number) => {
+            while (launched < sentences.length && launched < limit) {
+              jobs[launched] = synth(sentences[launched]);
+              launched++;
+            }
+          };
+          launchUpTo(N); // prime N in flight
+          for (let i = 0; i < sentences.length; i++) {
+            if (requestIdRef.current !== reqId) return;  // superseded
+            const blob = await jobs[i];
+            if (requestIdRef.current !== reqId) return;
+            // Refill the window so N stay in flight ahead of playback.
+            launchUpTo(i + 1 + N);
+            if (!blob) continue;  // skip a sentence that failed to synthesize
+            await playBlob(blob, reqId);
+          }
         }
 
         if (requestIdRef.current !== reqId) return;
@@ -396,7 +618,7 @@ export function useTtsPlayer(
         for (const utterance of utterances) window.speechSynthesis.speak(utterance);
       }
     },
-    [isTtsModel, stop, playBlob, requestSpeechBlob],
+    [isTtsModel, streamMode, stop, playBlob, playSentenceStream, requestSpeechBlob],
   );
 
   // ── Streaming TTS ───────────────────────────────────────────────
@@ -419,7 +641,9 @@ export function useTtsPlayer(
   // a couple of stale sentences on the backend instead of a long tail.
   const pumpSynth = useCallback(() => {
     const st = streamRef.current;
-    if (!st || requestIdRef.current !== st.reqId || !isTtsModel) return;
+    // In stream mode the loop pulls each sentence straight off st.sentences and
+    // streams it, so there are no blob jobs to pre-launch.
+    if (!st || requestIdRef.current !== st.reqId || !isTtsModel || streamMode) return;
     // Keep at most ONE sentence synthesizing ahead of the one playing. The voice
     // slot is compute-bound on a single GPU even at --parallel N, so firing
     // further ahead just backs up the queue and makes a barge-in throw away more
@@ -430,7 +654,7 @@ export function useTtsPlayer(
       st.jobs[st.launched] = synthOne(st.sentences[st.launched] ?? "");
       st.launched++;
     }
-  }, [isTtsModel, synthOne]);
+  }, [isTtsModel, synthOne, streamMode]);
 
   // Start a streaming session. Sentences fed via feedText are synthesized within a
   // bounded lookahead window and played strictly in order, so the first sentence
@@ -455,12 +679,28 @@ export function useTtsPlayer(
         const st = streamRef.current;
         if (!st || st.reqId !== reqId) return;
         if (st.playIndex < st.sentences.length) {
-          pumpSynth(); // ensure the current sentence (and window) is launched
-          const blob = await st.jobs[st.playIndex];
-          if (requestIdRef.current !== reqId) return;
-          st.playIndex++;
-          pumpSynth(); // playback advanced -> refill the lookahead window
-          if (blob) await playBlob(blob, reqId);
+          if (streamMode) {
+            // Stream this sentence's PCM and play as it generates (fast first audio),
+            // keeping the per-sentence order. Fall back to a blob if the stream 400s.
+            const sentence = stripForSpeech(st.sentences[st.playIndex] ?? "");
+            st.playIndex++;
+            if (sentence) {
+              const played = await playSentenceStream(sentence, reqId);
+              if (requestIdRef.current !== reqId) return;
+              if (!played) {
+                const blob = await synthOne(sentence);
+                if (requestIdRef.current !== reqId) return;
+                if (blob) await playBlob(blob, reqId);
+              }
+            }
+          } else {
+            pumpSynth(); // ensure the current sentence (and window) is launched
+            const blob = await st.jobs[st.playIndex];
+            if (requestIdRef.current !== reqId) return;
+            st.playIndex++;
+            pumpSynth(); // playback advanced -> refill the lookahead window
+            if (blob) await playBlob(blob, reqId);
+          }
         } else if (st.final) {
           break;
         } else {
@@ -472,7 +712,7 @@ export function useTtsPlayer(
       streamRef.current = null;
       onPlaybackEndRef.current?.();
     })();
-  }, [stop, isTtsModel, playBlob, pumpSynth]);
+  }, [stop, isTtsModel, streamMode, playBlob, pumpSynth, playSentenceStream, synthOne]);
 
   // Feed the growing assistant text; records newly-complete sentences and lets the
   // pump launch synth for them within the lookahead window (not all at once).
@@ -520,9 +760,10 @@ export function useTtsPlayer(
       requestIdRef.current += 1;
       synthAbortRef.current?.abort();
       stopTts();
+      stopStream();
       stopSynth();
     };
-  }, [stopTts, stopSynth]);
+  }, [stopTts, stopStream, stopSynth]);
 
   return { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio };
 }

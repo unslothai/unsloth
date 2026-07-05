@@ -9019,6 +9019,45 @@ class LlamaCppBackend:
         return not any(bad in tag for bad in ("iq1", "iq2", "q2_k"))
 
     @staticmethod
+    def _trim_leading_silence(wav_bytes: bytes, sample_rate: int) -> bytes:
+        """Cut the dead air Orpheus emits before speech starts, keeping a ~40 ms
+        pre-roll so the first consonant's attack isn't clipped. This is straight
+        first-audio latency: the user waits through it before hearing anything.
+        Returns the audio unchanged on any failure or if there's no clear onset."""
+        try:
+            import io
+
+            import numpy as np
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes), dtype = "float32")
+            mono = data.mean(axis = 1) if data.ndim > 1 else data
+            frame = max(1, int(sr * 0.02))
+            n = mono.size // frame
+            if n < 3:
+                return wav_bytes
+            energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
+            peak = float(energy.max())
+            if peak <= 0:
+                return wav_bytes
+            voiced = energy > peak * 0.05
+            if not voiced.any():
+                return wav_bytes
+            onset = int(np.argmax(voiced))
+            preroll = max(1, int(0.04 / 0.02))  # keep ~40 ms before the onset
+            cut = max(0, onset - preroll)
+            if cut <= 0:
+                return wav_bytes  # already starts promptly; nothing to trim
+            trimmed = mono[cut * frame:]
+            if trimmed.size < frame:
+                return wav_bytes
+            buf = io.BytesIO()
+            sf.write(buf, trimmed, sr, format = "WAV")
+            return buf.getvalue()
+        except Exception:
+            return wav_bytes
+
+    @staticmethod
     def _leading_voiced_ms(wav_bytes: bytes, sample_rate: int) -> Optional[float]:
         """Length in ms of the first voiced run at the very start of a clip (onset
         to the first silence gap). Used to CALIBRATE how long the spoken speaker
@@ -9172,12 +9211,17 @@ class LlamaCppBackend:
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
+        seed: int = 42,
         _calibration: bool = False,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
         Returns (wav_bytes, sample_rate).
 
+        seed: fixed by default so the same text yields the SAME audio every time --
+        deterministic output (reproducible benchmarks, a stable voice) and no
+        occasional slow/rambling take. Temperature is unchanged, so voice quality is
+        the same; only the RNG is pinned.
         _calibration: internal. Skips the low-quant name-trim so this call can be
         used to MEASURE the spoken name length (see _orpheus_name_length_ms) without
         recursing back into calibration.
@@ -9223,6 +9267,7 @@ class LlamaCppBackend:
             "top_k": top_k if top_k >= 0 else 0,
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
+            "seed": seed,
         }
         if stop:
             payload["stop"] = stop
@@ -9250,10 +9295,125 @@ class LlamaCppBackend:
             wav_bytes, sample_rate = LlamaCppBackend._codec_mgr.decode(
                 audio_type, device, token_ids = token_ids, text = data.get("content", "")
             )
-        if trim_name and not _calibration:
-            # Calibrate the exact spoken-name length for this voice (once, cached),
-            # then trim only a leading run that matches it -- so real short first
-            # words aren't clipped.
-            expected = self._orpheus_name_length_ms(v, audio_type)
-            wav_bytes = self._trim_leading_word(wav_bytes, sample_rate, expected)
+        if audio_type == "snac" and not _calibration:
+            if trim_name:
+                # Low quant: calibrate this voice's spoken-name length (once, cached),
+                # then trim only a leading run that matches it -- real short first
+                # words aren't clipped. This also removes the leading silence.
+                expected = self._orpheus_name_length_ms(v, audio_type)
+                wav_bytes = self._trim_leading_word(wav_bytes, sample_rate, expected)
+            else:
+                # High quant (no spoken name): Orpheus still emits ~0.3-0.6s of dead
+                # air before speech, which is pure first-audio latency. Trim it (keep
+                # a small pre-roll so the first consonant isn't clipped).
+                wav_bytes = self._trim_leading_silence(wav_bytes, sample_rate)
         return wav_bytes, sample_rate
+
+    def generate_audio_response_stream(
+        self,
+        text: str,
+        audio_type: str,
+        voice: str = "tara",
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.1,
+        seed: int = 42,
+    ):
+        """Stream TTS audio for `text` as it generates: yields raw 16-bit PCM (mono,
+        24 kHz) so playback can start on the first fraction of a second instead of
+        waiting for the whole clip to synthesize. SNAC (Orpheus) only.
+
+        The llama-server completion is consumed token-by-token; every ~8 SNAC frames
+        we re-decode the growing code list and emit the newly-finished samples, with
+        an 80 ms right-context holdback so chunk seams stay click-free. Decoding from
+        frame 0 each step keeps full left context (no boundary artifacts); SNAC decode
+        is cheap next to token generation, so the re-decode overhead is negligible.
+
+        Note: this does NOT apply the low-quant spoken-name trim (that needs the whole
+        clip). Use the one-shot generate_audio_response where the name-trim matters."""
+        if audio_type != "snac":
+            raise RuntimeError("Streaming TTS is currently SNAC (Orpheus) only.")
+        if (
+            LlamaCppBackend._codec_mgr is None
+            or not LlamaCppBackend._codec_mgr.has_codec(audio_type)
+        ):
+            self.init_audio_codec(audio_type)
+
+        tpl, stop, _need_ids = self._TTS_PROMPTS[audio_type]
+        v = voice if voice in self._ORPHEUS_VOICES else "tara"
+        clean = text.replace(":", " ")
+        prompt_text = f"{v}: {clean}"
+        payload: dict = {
+            "prompt": tpl.format(text = prompt_text),
+            "stream": True,
+            "n_predict": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k if top_k >= 0 else 0,
+            "min_p": min_p,
+            "repeat_penalty": repetition_penalty,
+            "seed": seed,
+            "n_probs": 1,
+        }
+        if stop:
+            payload["stop"] = stop
+
+        import json as _json
+
+        import numpy as _np
+        import torch as _torch
+
+        device = "cuda" if _torch.cuda.is_available() else "cpu"
+        HOLDBACK = int(0.08 * 24000)  # 80 ms right-context held back for clean seams
+        DECODE_EVERY = 56             # ~8 SNAC frames (7 tokens each) between decodes
+
+        ids: list = []
+        state = {"emitted": 0}
+
+        def _decode_emit(final: bool) -> bytes:
+            wave = LlamaCppBackend._codec_mgr.decode_snac_pcm(ids, device)
+            if wave is None:
+                return b""
+            end = len(wave) if final else max(0, len(wave) - HOLDBACK)
+            if end <= state["emitted"]:
+                return b""
+            chunk = wave[state["emitted"]:end]
+            state["emitted"] = end
+            pcm = _np.clip(chunk, -1.0, 1.0)
+            return (pcm * 32767.0).astype("<i2").tobytes()
+
+        since_decode = 0
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
+        ) as client:
+            with client.stream(
+                "POST", f"{self.base_url}/completion", json = payload
+            ) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"llama-server returned {resp.status_code}")
+                for line in resp.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    try:
+                        obj = _json.loads(line[len("data:"):].strip())
+                    except _json.JSONDecodeError:
+                        continue
+                    for p in obj.get("completion_probabilities", []) or []:
+                        if "id" in p:
+                            ids.append(p["id"])
+                            since_decode += 1
+                    if since_decode >= DECODE_EVERY:
+                        since_decode = 0
+                        with LlamaCppBackend._codec_decode_lock:
+                            pcm = _decode_emit(final = False)
+                        if pcm:
+                            yield pcm
+                    if obj.get("stop"):
+                        break
+        with LlamaCppBackend._codec_decode_lock:
+            pcm = _decode_emit(final = True)
+        if pcm:
+            yield pcm

@@ -188,12 +188,30 @@ class AudioCodecManager:
     # ── Decoders ─────────────────────────────────────────────────
 
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
-        """Decode SNAC tokens (Orpheus) into WAV bytes.
+        """Decode SNAC tokens (Orpheus) into WAV bytes. Returns (wav_bytes, 24000)."""
+        waveform = self._snac_ids_to_waveform(generated_ids, device)
+        return _numpy_to_wav_bytes(waveform, 24000), 24000
 
-        Finds the START_OF_SPEECH (128257) marker, extracts codes after it,
-        strips EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers.
-        Returns (wav_bytes, 24000).
-        """
+    def decode_snac_pcm(self, token_ids: list, device: str):
+        """Decode a list of Orpheus token ids into a float32 waveform (numpy), 24kHz.
+
+        Same math as decode_snac but returns the raw samples, so the streaming path
+        can decode the growing token list and slice off the newly-finished samples.
+        Returns None if there aren't enough valid codes yet (fewer than one frame)."""
+        try:
+            import torch as _torch
+
+            return self._snac_ids_to_waveform(
+                _torch.tensor([token_ids], dtype = _torch.long), device
+            )
+        except ValueError:
+            return None
+
+    def _snac_ids_to_waveform(self, generated_ids: torch.Tensor, device: str):
+        """Token ids -> float32 waveform (numpy). Shared by one-shot + streaming decode.
+
+        Finds the START_OF_SPEECH (128257) marker, extracts codes after it, strips
+        EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers, decodes."""
         # Find START_OF_SPEECH token (128257)
         token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
@@ -232,8 +250,7 @@ class AudioCodecManager:
         with torch.no_grad():
             audio = self._snac_model.decode(snac_codes)
 
-        waveform = audio.squeeze().cpu().numpy()
-        return _numpy_to_wav_bytes(waveform, 24000), 24000
+        return audio.squeeze().cpu().numpy()
 
     def decode_csm(self, audio_values: torch.Tensor) -> Tuple[bytes, int]:
         """Decode CSM output (already a waveform). Returns (wav_bytes, 24000)."""

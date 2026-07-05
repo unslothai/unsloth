@@ -11,7 +11,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from auth.authentication import get_current_subject
@@ -132,6 +132,51 @@ async def create_speech(
         raise HTTPException(status_code = 500, detail = str(e))
 
     return Response(content = wav_bytes, media_type = "audio/wav")
+
+
+@router.post("/speech/stream")
+async def create_speech_stream(
+    payload: SpeechRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Streaming TTS: yields raw 16-bit PCM (mono, 24 kHz) as it synthesizes, so the
+    client can start playback on the first fraction of a second instead of waiting
+    for the whole clip. SNAC (Orpheus) voice slot only; other engines / non-SNAC
+    should use the blocking /speech endpoint. Response is raw PCM
+    (little-endian int16, mono, 24000 Hz -- see the X-Sample-Rate header)."""
+    from routes.inference import get_llama_cpp_backend, get_voice_llama_backend
+
+    text = payload.input.strip()
+    if not text:
+        raise HTTPException(status_code = 400, detail = "input must not be empty.")
+    voice_name = (payload.voice or "").strip().lower() or "tara"
+
+    backend = None
+    vb = get_voice_llama_backend()
+    if vb.is_loaded and getattr(vb, "_audio_type", None) == "snac":
+        backend = vb
+    else:
+        lb = get_llama_cpp_backend()
+        if lb.is_loaded and getattr(lb, "_audio_type", None) == "snac":
+            backend = lb
+    if backend is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Streaming speech requires a loaded SNAC (Orpheus) voice.",
+        )
+
+    def gen():
+        try:
+            yield from backend.generate_audio_response_stream(
+                text = text, audio_type = "snac", voice = voice_name
+            )
+        except Exception as e:  # a mid-stream failure just ends the stream
+            logger.error("Streaming speech error: %s", e, exc_info = True)
+
+    return StreamingResponse(
+        gen(),
+        media_type = "application/octet-stream",
+        headers = {"X-Sample-Rate": "24000", "X-Audio-Format": "pcm_s16le_mono"},
+    )
 
 
 class TranscriptionResponse(BaseModel):
