@@ -124,7 +124,8 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
-        "/embedding-model", json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True}
+        "/embedding-model",
+        json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
     )
     assert r.status_code == 200
     assert called["scanned"] is False  # the ST pickle scan never ran on the llama path
@@ -145,7 +146,9 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
 
     import core.rag.embeddings as embeddings
 
-    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",))
+    monkeypatch.setattr(
+        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
+    )
     seen = {}
 
     def _capture(*a, **k):
@@ -226,7 +229,9 @@ def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: None)
-    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",))
+    monkeypatch.setattr(
+        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
+    )
     embeddings._guard_model_security("acme/embed-with-module-dir")
     assert "0_Transformer" in seen["subdirs"]
 

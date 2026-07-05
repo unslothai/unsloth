@@ -126,18 +126,15 @@ def _guard_model_security(name: str) -> None:
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
+
         token = _ambient_hf_token()
         # Union the audio-model load roots with the ST module dirs so a flagged pickle
         # directly under a Transformer module dir (0_Transformer/) blocks instead of
         # passing as an unreferenced nested shard.
         load_subdirs = tuple(
-            dict.fromkeys(
-                (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
-            )
+            dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
         )
-        blocked = evaluate_file_security(
-            name, hf_token = token, load_subdirs = load_subdirs
-        ).blocked
+        blocked = evaluate_file_security(name, hf_token = token, load_subdirs = load_subdirs).blocked
     except Exception:
         return
     if blocked:

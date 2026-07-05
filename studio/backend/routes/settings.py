@@ -416,9 +416,7 @@ def update_embedding_model(
                 )
             )
         )
-        if evaluate_file_security(
-            model, hf_token = scan_token, load_subdirs = load_subdirs
-        ).blocked:
+        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
             raise HTTPException(
