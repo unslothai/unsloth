@@ -597,7 +597,7 @@ def _plan_cache_variants(
 # fallback. Over this budget the default falls back to per-step VAE encoding. A fixed
 # constant (rather than a psutil RAM fraction) keeps the gate dependency-free and identical
 # across hosts; it is deliberately conservative, well under a typical training host's RAM.
-_LATENT_CACHE_BUDGET_BYTES = 4 * 1024 ** 3  # 4 GiB
+_LATENT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GiB
 
 # Returned by the cache builders when the estimated cache exceeds the budget: the caller
 # keeps the VAE resident and encodes each step's latents in-loop. A distinct sentinel from
@@ -614,7 +614,9 @@ def _latent_cache_forced() -> bool:
 
 
 def _latent_cache_over_budget(
-    per_variant_bytes: int, total_variants: int, budget_bytes: Optional[int] = None
+    per_variant_bytes: int,
+    total_variants: int,
+    budget_bytes: Optional[int] = None,
 ) -> bool:
     """True when a cache of ``total_variants`` entries, each two fp32 tensors totalling
     ``per_variant_bytes``, is estimated to exceed ``budget_bytes``. ``per_variant_bytes`` is
