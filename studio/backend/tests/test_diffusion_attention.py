@@ -290,6 +290,41 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
     assert "--only-binary" in cmd and ":all:" in cmd and "sageattention" in cmd
 
 
+def test_install_invalidates_import_caches_on_success(monkeypatch):
+    # A wheel written to site-packages after the finder cached that directory can be
+    # missed by the very next import, so a successful install must invalidate the caches
+    # (otherwise set_attention_backend imports the missing package and falls back).
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_subprocess(monkeypatch, _Recorder())
+    invalidated = []
+    monkeypatch.setattr(importlib, "invalidate_caches", lambda: invalidated.append(True))
+    att._ensure_attention_backend_installed("sage")
+    assert invalidated == [True]
+
+
+def test_install_failure_skips_cache_invalidation(monkeypatch):
+    # A failed install left nothing to import, so the finder caches must be left alone.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(returncode = 1, cmd = cmd)
+
+    _stub_subprocess(monkeypatch, _boom)
+    invalidated = []
+    monkeypatch.setattr(importlib, "invalidate_caches", lambda: invalidated.append(True))
+    att._ensure_attention_backend_installed("sage")
+    assert invalidated == []
+
+
 def test_install_never_attempted_for_builtin_backends(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     run = _Recorder()
