@@ -428,8 +428,21 @@ class VideoBackend:
 
                 probe = checkpoint_local
                 if probe is None:
+                    # Local repos: a bare file, or a directory whose child the same
+                    # resolver load_pipeline uses picks out. Unresolvable here means
+                    # load_pipeline will surface the real error; keep the wide pull.
                     root = Path(kwargs["repo_id"]).expanduser()
-                    probe = root if root.is_file() else None
+                    if root.is_file():
+                        probe = root
+                    elif root.is_dir():
+                        try:
+                            probe = self._resolve_checkpoint_path(
+                                kwargs["repo_id"],
+                                kwargs.get("gguf_filename"),
+                                kwargs.get("hf_token"),
+                            )
+                        except Exception:  # noqa: BLE001 -- surfaced by load_pipeline
+                            probe = None
                 ltx23 = probe is not None and is_ltx23_checkpoint(probe)
                 if ltx23:
                     expected = self._estimate_download_bytes(
@@ -490,7 +503,11 @@ class VideoBackend:
         files: list[tuple[str, int]] = []
         for sibling in info.siblings or []:
             name, size = sibling.rfilename, sibling.size or 0
-            if not name.endswith((".safetensors", ".json", ".model", ".txt")):
+            # .jinja: tokenizer/chat_template.jinja ships as a standalone file in the
+            # LTX-2 and HunyuanVideo-1.5 repos (not embedded in tokenizer_config.json)
+            # and apply_chat_template needs it at generation time, so a snapshot
+            # without it loads fine and then crashes the first generation.
+            if not name.endswith((".safetensors", ".json", ".model", ".txt", ".jinja")):
                 continue
             if "/" not in name and name.endswith(".safetensors"):
                 continue
@@ -560,6 +577,11 @@ class VideoBackend:
 
             snapshot_root: Optional[Path] = None
             for name, _ in files:
+                # Explicit per-file check: a fully-cached file returns without ever
+                # consulting the event, so a warm-cache sweep would otherwise run to
+                # completion after an unload already cancelled this load.
+                if self._cancel_event.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
                     hf_hub_download_with_xet_fallback(
                         base, name, hf_token, cancel_event = self._cancel_event
