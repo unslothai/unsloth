@@ -243,9 +243,7 @@ def build_group_layout(
         (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
     )
     if contiguous:
-        real_cols_cpu = [
-            list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())
-        ]
+        real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())]
     else:
         keep_cpu = keep.tolist()
         real_cols_cpu = [[c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)]
