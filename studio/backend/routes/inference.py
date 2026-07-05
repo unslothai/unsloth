@@ -1363,12 +1363,7 @@ def _sf_reasoning_prefill_mode(
     template: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
 ) -> bool:
-    """Whether this request begins INSIDE an unclosed ``<think>`` (Qwen3/Qwen3.5/GLM prefill it).
-
-    Gated on the STANDARD ``<think>``/``</think>`` markers: a bespoke reasoning channel (e.g. gemma)
-    never emits ``</think>``, so prefilled mode would swallow the whole answer -- excluded, as are
-    gpt-oss and thinking-disabled requests. ``enable_thinking=None`` defaults ON, so plain requests prefill.
-    """
+    """Whether this request begins inside an unclosed ``<think>`` (Qwen3/GLM prefill it). Gated on the standard markers; bespoke channels, gpt-oss, and thinking-disabled requests are excluded. ``enable_thinking=None`` defaults ON."""
     if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
         return False
     tpl = template or ""
@@ -1684,16 +1679,14 @@ _TOOL_XML_RE = _re.compile(
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Mistral balanced-brace helper + guarded function-XML scan + ``_TOOL_XML_RE``; the scan skips
-    ``<function=`` openers inside an open ``<parameter>`` value so a literal nested call doesn't truncate the strip."""
+    """Mistral balanced-brace helper + guarded function-XML scan + ``_TOOL_XML_RE`` (skips openers inside an open ``<parameter>``)."""
     return _TOOL_XML_RE.sub(
         "", _strip_function_xml_calls(_strip_mistral_closed_calls(text), final = True)
     )
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
-    """Route-level tool-call leak cleanup (Auto-Heal only), via ``_strip_tool_xml`` so the Mistral
-    ``[TOOL_CALLS]`` balanced-brace pass runs too (``_TOOL_XML_RE`` alone would leak those)."""
+    """Route-level tool-call leak cleanup (Auto-Heal only) via ``_strip_tool_xml``."""
     if not auto_heal_tool_calls:
         return text
     return _strip_tool_xml(text)

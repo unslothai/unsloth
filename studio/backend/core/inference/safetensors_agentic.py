@@ -127,8 +127,7 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
 
 
 def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) -> bool:
-    """True when ``text`` opens with a markerless bare-JSON call whose name is an ENABLED tool;
-    an ordinary JSON answer returns False so it streams as content (GGUF parity). ``None`` = unrestricted."""
+    """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
         return False

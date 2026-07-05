@@ -218,8 +218,7 @@ def _skip_mistral_call_id(text: str, pos: int) -> int:
 
 
 def _strip_mistral_reasoning(content: str) -> str:
-    """Drop a leading Magistral ``[THINK]...[/THINK]`` so a ``[TOOL_CALLS]`` inside
-    reasoning is not taken as a real call; an unclosed ``[THINK]`` drops from it on."""
+    """Drop a leading Magistral ``[THINK]`` block so rehearsed calls inside reasoning are not promoted; unclosed drops to EOF."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -233,10 +232,7 @@ def _strip_mistral_reasoning(content: str) -> str:
 
 
 def _strip_mistral_closed_calls(text: str) -> str:
-    """Strip cleanly-closed ``[TOOL_CALLS]`` blocks (array, ``name{json}``,
-    ``name[ARGS]{json}``) via balanced scanning -- a non-greedy ``\\{.*?\\}`` would
-    truncate at the first ``}`` and lose nested JSON. Unclosed runs are left for
-    ``final=True`` cleanup."""
+    """Strip cleanly-closed ``[TOOL_CALLS]`` blocks via balanced scanning (a non-greedy regex would truncate nested JSON); unclosed runs wait for ``final=True``."""
     n = len(text)
     out = []
     cursor = 0
@@ -306,11 +302,7 @@ _FUNC_CLOSE_TAG_RE = re.compile(r"</function>")
 
 
 def _strip_function_xml_calls(text: str, *, final: bool) -> str:
-    """Strip ``<function=NAME>...</function>`` (and ``<function name="NAME">``) calls
-    by mirroring the parser, not a regex: a ``<function=...>`` inside an open
-    ``<parameter>`` value is literal data, not a new call, and each call closes at its
-    REAL (last) ``</function>``. ``final`` also drops a trailing unclosed call to EOF;
-    otherwise it stays buffered (still streaming)."""
+    """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open ``<parameter>`` is data and each call closes at its REAL last ``</function>``; ``final`` drops a trailing unclosed call."""
     starts = [
         m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
     ]
@@ -339,8 +331,7 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
 
 
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
-    """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
-    ``final=True`` also drops trailing unclosed runs and trims."""
+    """Strip tool-call markup; ``final=True`` also drops trailing unclosed runs and trims."""
     if final:
         # End-of-turn only: drop a leading Magistral ``[THINK]...[/THINK]`` block.
         # Its bracket form is not the ``<think>`` the reasoning channel renders, so
@@ -363,9 +354,7 @@ def has_tool_signal(text: str) -> bool:
 
 
 def _mistral_region_end(text: str, idx: int) -> int | None:
-    """Exclusive end of the balanced ``[TOOL_CALLS]`` call starting at ``idx``,
-    or ``None`` when truncated/unrecognised (same shapes as the strip scan:
-    array, single-object, and named ``name [CALL_ID]? [ARGS]? {json}``)."""
+    """Exclusive end of the balanced ``[TOOL_CALLS]`` call at ``idx``, or ``None`` when truncated (array, object, and named forms)."""
     n = len(text)
     i = idx + len(_MISTRAL_TRIGGER)
     while i < n and text[i] in " \t\n\r":
@@ -394,13 +383,7 @@ def _mistral_region_end(text: str, idx: int) -> int | None:
 
 
 def _xml_signal_inside_leading_mistral(content: str) -> bool:
-    """True when the first foreign tool signal sits inside the balanced body of
-    an earlier Mistral ``[TOOL_CALLS]`` call -- i.e. it is that call's argument
-    data (a query quoting tool markup), not a real call. The shared XML parser
-    (or the python_tag parser) would otherwise promote the literal and execute
-    the wrong tool, so the Mistral parser must take the outer call first. A
-    signal BEFORE the trigger keeps the normal order (the outer XML call wins
-    and a ``[TOOL_CALLS]`` literal inside its arguments stays data)."""
+    """True when the first foreign signal sits inside a leading Mistral call's balanced body: it is argument data, so the Mistral parser takes the outer call first. A signal BEFORE the trigger keeps normal order."""
     trig = content.find(_MISTRAL_TRIGGER)
     if trig < 0:
         return False
@@ -421,11 +404,7 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
 
 
 def _first_foreign_tool_signal(content: str) -> int | None:
-    """Offset of the first tool signal a non-envelope parser would fire on:
-    the XML forms plus the Llama-3 ``<|python_tag|>`` marker
-    (``_parse_llama3_python_tag`` also runs before the Mistral parser, so a
-    python_tag literal inside a leading envelope's arguments needs the same
-    protection as XML literals)."""
+    """Offset of the first signal a non-envelope parser would fire on (XML forms plus the Llama-3 ``<|python_tag|>`` marker)."""
     first = None
     for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>"):
         p = content.find(sig)
@@ -438,12 +417,7 @@ def _first_foreign_tool_signal(content: str) -> int | None:
 
 
 def _xml_signal_inside_leading_bare_json(content: str) -> bool:
-    """True when the first foreign tool signal sits inside the balanced body of
-    a LEADING bare-JSON call object -- i.e. it is a string argument quoting
-    tool markup (a ``code`` value citing ``<function=...>``), not a real call.
-    The shared XML parser would otherwise promote the literal and execute the
-    wrong tool, so the bare-JSON parser must take the outer call first
-    (sibling of ``_xml_signal_inside_leading_mistral``)."""
+    """True when the first foreign signal sits inside a LEADING bare-JSON call's balanced body: quoted argument data, so the bare-JSON parser takes the outer call first."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -481,10 +455,7 @@ def parse_tool_calls_from_text(
     allow_incomplete: bool = True,
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
-    """Return OpenAI-format tool calls, first-match wins so calls are never double-counted.
-
-    ``allow_incomplete`` heals truncated calls; ``False`` accepts only closed calls (llama-server
-    strict path). ``enabled_tool_names`` gates only the markerless Llama-3.2 bare-JSON form."""
+    """Return OpenAI-format tool calls, first-match wins. ``allow_incomplete`` heals truncated calls (``False`` = strict closed-only); ``enabled_tool_names`` gates the markerless bare-JSON form."""
     # Magistral reasoning is dropped BEFORE any parser dispatch: a rehearsed
     # call inside [THINK]...[/THINK] (in any format, e.g. a <function=...>
     # snippet while the real [TOOL_CALLS] follows the think block) must never
@@ -606,10 +577,7 @@ def _parse_tool_call_json(
 
 
 def _trim_param_value(val: str) -> str:
-    """Trim one wrapping newline the template adds around an XML parameter value
-    (``<parameter=k>\nVALUE\n</parameter>``), preserving inner indentation.
-    ``str.strip()`` destroyed code/diff indentation; SGLang's qwen3_coder trims only
-    the wrapping newline."""
+    """Trim only the template's wrapping newline around an XML parameter value; ``str.strip()`` destroyed code/diff indentation."""
     if val.startswith("\n"):
         val = val[1:]
     if val.endswith("\n"):
@@ -618,11 +586,7 @@ def _trim_param_value(val: str) -> str:
 
 
 def _inside_open_parameter(text: str, pos: int) -> bool:
-    """True if ``pos`` sits inside an unclosed ``<parameter>``/``<param>`` block --
-    i.e. a ``<function>`` / ``<parameter>`` opener at ``pos`` is a literal inside an
-    argument value (e.g. code that prints tool-call XML), not a real nested call.
-    Compares the last parameter opener before ``pos`` against the last
-    parameter/function close before it."""
+    """True if ``pos`` is inside an unclosed ``<parameter>`` block, i.e. the opener at ``pos`` is literal argument data, not a nested call."""
     last_param_open = -1
     for m in _TC_PARAM_START_RE.finditer(text, 0, pos):
         last_param_open = m.start()
@@ -719,8 +683,7 @@ def _parse_function_xml(
 
 
 def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
-    """One ``.call`` value (string/number/true/false/null) at ``body[p:]``.
-    Returns ``(value, consumed_len)`` or ``(None, None)`` if none matches."""
+    """One ``.call`` value at ``body[p:]``; returns ``(value, len)`` or ``(None, None)``."""
     if p >= n:
         return None, None
     if body[p] == '"':
@@ -757,8 +720,7 @@ def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
 
 
 def _parse_llama3_kv_args(body: str) -> dict[str, Any]:
-    """``k=v, ...`` kwargs from a ``.call(...)`` body, left to right (later keys win).
-    Linear hand-scan replacing the quadratic ``_LLAMA3_KV_RE.finditer`` walk."""
+    """Left-to-right ``k=v`` kwargs from a ``.call(...)`` body (linear scan; later keys win)."""
     args: dict[str, Any] = {}
     n = len(body)
     i = 0
@@ -787,9 +749,7 @@ def _parse_llama3_python_tag(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Parse the Llama-3 emissions: ``<|python_tag|>NAME.call(...)`` (built-in),
-    ``<|python_tag|>{"name":..., "parameters":...}`` (custom), multi-call via
-    ``; ``, ``parameters`` or ``arguments`` key."""
+    """Parse Llama-3 ``<|python_tag|>`` emissions: ``NAME.call(...)``, bare JSON, ``; `` multi-call, ``parameters``/``arguments`` keys."""
     out: list[dict] = []
     if _LLAMA3_PYTHON_TAG not in content:
         return out
@@ -916,10 +876,7 @@ _LLAMA3_HEADER_ROLES = ("assistant", "user", "system", "tool", "ipython")
 
 
 def strip_llama3_leading_sentinels(content: str) -> str:
-    """Strip leading Llama-3 special-token sentinels (and the role label after
-    ``<|start_header_id|>``) that can leak from a prior turn before a bare-JSON tool
-    call. Shared by the parser and the streaming buffering guards so a
-    sentinel-prefixed ``{"name":...}`` is recognised the same everywhere."""
+    """Strip leading Llama-3 sentinels leaked from a prior turn; shared by the parser and the streaming guards."""
     stripped = content.lstrip()
     while True:
         stripped = stripped.lstrip()
@@ -945,9 +902,7 @@ def _parse_llama3_bare_json(
     allow_incomplete: bool = True,
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
-    """Llama-3.2 ``custom_tools`` bare ``{"name":.., "parameters":{..}}`` (no ``<|python_tag|>``),
-    strict so prose/echoes don't fire. ``enabled_tool_names`` gates on the parsed name so an
-    ordinary JSON answer isn't misread as a call to a disabled tool; ``None`` is name-agnostic."""
+    """Llama-3.2 bare ``{"name":.., "parameters":..}`` (strict). ``enabled_tool_names`` keeps ordinary JSON answers from being misread; ``None`` is name-agnostic."""
     out: list[dict] = []
     stripped = strip_llama3_leading_sentinels(content)
     if not stripped.startswith("{"):
@@ -1016,8 +971,7 @@ def _parse_mistral_tool_calls(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` / ``[TOOL_CALLS]{...}``
-    and v11+ ``[TOOL_CALLS]name{json}`` / ``[TOOL_CALLS]name[ARGS]{json}``."""
+    """Parse Mistral ``[TOOL_CALLS]`` emissions: pre-v11 array/object and v11+ named forms."""
     out: list[dict] = []
     content = _strip_mistral_reasoning(content)
     idx = content.find(_MISTRAL_TRIGGER)
@@ -1254,10 +1208,7 @@ _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
 
 def _top_level_bare_json_name(probe: str) -> Optional[str]:
-    """TOP-LEVEL ``"name"`` (or ``"function"`` alias, name wins) of a bare-JSON object, else None.
-
-    Skips nested objects/arrays so a nested ``"name"`` isn't mistaken for the call name; a
-    truncated tail returns None so the caller keeps the text."""
+    """Top-level ``"name"`` (or ``"function"`` alias) of a bare-JSON object, else None; nested objects are skipped and truncated tails return None."""
     if not probe.startswith("{"):
         return None
     decoder = json.JSONDecoder()
@@ -1329,10 +1280,7 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Remove a leading (optionally sentinel-prefixed) Llama-3.2 bare-JSON call that
-    ``strip_tool_markup`` (XML/bracket only) misses. Non-call text is returned unchanged;
-    a truncated call collapses to ``""``. ``enabled_tool_names`` gates the strip like the
-    parser: a name not in it stays as an ordinary JSON answer (``None`` keeps prior behaviour)."""
+    """Remove a leading Llama-3.2 bare-JSON call that ``strip_tool_markup`` misses; non-call text is unchanged and ``enabled_tool_names`` gates like the parser."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
         return text
