@@ -439,6 +439,47 @@ def resolve_train_steps(cfg: "DiffusionLoraConfig", n_images: int) -> int:
     return cfg.train_steps
 
 
+class PermutationBatchSampler:
+    """Yields batch indices as consecutive slices of a reshuffled permutation of
+    ``range(n)``, so every index is visited exactly once per cycle before any repeats --
+    an epoch-style full pass instead of the with-replacement draw that leaves part of a
+    small dataset unseen at low step counts (num_epochs converts to a step budget, but the
+    per-batch index draw is what decides coverage). When a cycle is exhausted the order is
+    reshuffled from the run's own ``rng`` so the index stream stays seed-deterministic and
+    each cycle differs.
+
+    Both trainers share this so the SDXL ``_next_batch`` path and the DiT per-sample draw
+    select indices the same way. Only the index selection changes (with-replacement ->
+    permutation cycles); step count and batch shapes are unchanged.
+    """
+
+    def __init__(self, n: int, rng: random.Random) -> None:
+        if n <= 0:
+            raise ValueError("PermutationBatchSampler needs at least one item")
+        self._n = n
+        self._rng = rng
+        self._order: list[int] = []
+        self._pos = 0
+
+    def _reshuffle(self) -> None:
+        self._order = list(range(self._n))
+        self._rng.shuffle(self._order)
+        self._pos = 0
+
+    def next_batch(self, k: int) -> list[int]:
+        # k may exceed n (batch larger than the dataset): the permutation is refilled across
+        # as many cycles as needed so the caller always gets exactly k indices and the batch
+        # never shrinks, matching the old sampler's fixed batch shape.
+        out: list[int] = []
+        while len(out) < k:
+            if self._pos >= len(self._order):
+                self._reshuffle()
+            take = min(k - len(out), len(self._order) - self._pos)
+            out.extend(self._order[self._pos : self._pos + take])
+            self._pos += take
+        return out
+
+
 def discover_image_caption_pairs(
     data_dir: str | os.PathLike[str],
     *,
@@ -542,6 +583,42 @@ def _plan_cache_variants(
                 variants.append(key)
         plan.append(variants)
     return plan
+
+
+# Host-memory budget for the AUTOMATIC latent cache. The cache holds two fp32 posterior
+# tensors (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA
+# host. At 1024px an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times
+# that, so a few thousand images x cache_variants can exhaust host or pinned RAM with no
+# fallback. Over this budget the default falls back to per-step VAE encoding. A fixed
+# constant (rather than a psutil RAM fraction) keeps the gate dependency-free and identical
+# across hosts; it is deliberately conservative, well under a typical training host's RAM.
+_LATENT_CACHE_BUDGET_BYTES = 4 * 1024 ** 3  # 4 GiB
+
+# Returned by the cache builders when the estimated cache exceeds the budget: the caller
+# keeps the VAE resident and encodes each step's latents in-loop. A distinct sentinel from
+# ``None`` (which means a stop was requested mid-build) so the two are not conflated.
+LATENT_CACHE_OVER_BUDGET: Any = object()
+
+
+def _latent_cache_forced() -> bool:
+    """The user explicitly forced the latent cache on, bypassing the size gate. This is the
+    explicit opt-in counterpart to ``UNSLOTH_DIFFUSION_NO_LATENT_CACHE`` (the explicit
+    opt-out); only the automatic default is size-gated, so an explicit choice is honoured
+    verbatim in either direction."""
+    return os.environ.get("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "") in ("1", "true")
+
+
+def _latent_cache_over_budget(
+    per_variant_bytes: int, total_variants: int, budget_bytes: Optional[int] = None
+) -> bool:
+    """True when a cache of ``total_variants`` entries, each two fp32 tensors totalling
+    ``per_variant_bytes``, is estimated to exceed ``budget_bytes``. ``per_variant_bytes`` is
+    measured from a real encoded latent, so the estimate tracks the actual per-family tensor
+    shape (SDXL 4-channel vs. a packed 16-channel DiT latent) rather than a guess. The budget
+    is read from the module constant at call time when not given, so tests can override it."""
+    if budget_bytes is None:
+        budget_bytes = _LATENT_CACHE_BUDGET_BYTES
+    return per_variant_bytes * max(0, total_variants) > budget_bytes
 
 
 def _apply_perf_flags(
