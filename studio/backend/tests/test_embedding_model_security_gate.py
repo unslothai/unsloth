@@ -83,7 +83,6 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
 def test_load_sink_refuses_flagged_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     import core.rag.embeddings as embeddings
-
     with pytest.raises(embeddings.UnsafeEmbeddingModelError):
         embeddings._guard_model_security("attacker/malicious-embed")
 
@@ -99,8 +98,12 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
     # loader's own token to the scan, or it fails open for the repo that still loads.
     seen = {}
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None: seen.setdefault("subdirs_token", token) or ()
-    mod.evaluate_file_security = lambda *a, **k: seen.setdefault("scan_token", k.get("hf_token")) or _Decision(False)
+    mod.security_load_subdirs = (
+        lambda name, token = None: seen.setdefault("subdirs_token", token) or ()
+    )
+    mod.evaluate_file_security = lambda *a, **k: seen.setdefault(
+        "scan_token", k.get("hf_token")
+    ) or _Decision(False)
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 
@@ -119,7 +122,8 @@ def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):
 
     monkeypatch.setattr(embeddings, "_st_encode", _boom)
     monkeypatch.setattr(
-        embeddings, "_switch_to_llama_fallback",
+        embeddings,
+        "_switch_to_llama_fallback",
         lambda err: pytest.fail("security block must not fall back to llama-server"),
     )
     with pytest.raises(embeddings.UnsafeEmbeddingModelError):

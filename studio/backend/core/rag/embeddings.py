@@ -74,7 +74,6 @@ def _ambient_hf_token() -> str | None:
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
     try:
         from huggingface_hub import get_token
-
         return get_token()
     except Exception:
         return None
@@ -88,7 +87,6 @@ def _guard_model_security(name: str) -> None:
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
-
         token = _ambient_hf_token()
         blocked = evaluate_file_security(
             name, hf_token = token, load_subdirs = security_load_subdirs(name, token)

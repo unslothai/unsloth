@@ -265,7 +265,6 @@ def _ambient_hf_token() -> Optional[str]:
     repo is scanned rather than failing open. None if unavailable."""
     try:
         from huggingface_hub import get_token
-
         return get_token()
     except Exception:
         return None
