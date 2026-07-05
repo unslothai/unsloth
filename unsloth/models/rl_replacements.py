@@ -1420,6 +1420,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 try:
                     # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
                     # entirely for softcap models (e.g. gemma2) before building any layout.
+                    # Hybrid SSM models (FalconH1 etc.) are excluded too: only attention gets the
+                    # shared-prefix isolation, a Mamba branch would leak state across suffixes.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
                         _pg_enabled_fn()
@@ -1429,6 +1431,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and _pg_num_gen is not None
                         and _pg_num_gen >= 2
                         and not getattr(_pg_cfg, "attn_logit_softcapping", None)
+                        and not any(
+                            getattr(_pg_cfg, _pg_a, None) is not None
+                            for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
+                        )
                     )
                 except Exception:
                     _pg_engage = False
@@ -1492,7 +1498,20 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 if _pg_result.shape[1] > _pg_W
                                 else _pg_result
                             )
-                        if (not _pg_verify_on()) or _pg_sig in _pg_verified:
+                        # trust needs the verified envelope to cover this batch's lengths too
+                        # (re-verify when T or the longest segment grows, like the packed path)
+                        _pg_T = int(_pg_layout.flat_ids.shape[1])
+                        _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
+                        _pg_env = (
+                            _pg_verified.get(_pg_sig)
+                            if isinstance(_pg_verified, dict)
+                            else None
+                        )
+                        if (not _pg_verify_on()) or (
+                            _pg_env is not None
+                            and _pg_T <= _pg_env[0]
+                            and _pg_maxseg <= _pg_env[1]
+                        ):
                             _pg_use = True
                             _pg_skip_pk = True  # trusted shape -> no full-row forward needed
                 except Exception as _pg_err:
@@ -1754,9 +1773,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pg_v = getattr(
                                 unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
                             )
-                            if _pg_v is None:
-                                _pg_v = set()
-                            _pg_v.add(_pg_layout.signature)
+                            if not isinstance(_pg_v, dict):
+                                _pg_v = {}
+                            _pg_vT = int(_pg_layout.flat_ids.shape[1])
+                            _pg_vS = int(_pg_layout.position_ids.max()) + 1
+                            _pg_old = _pg_v.get(_pg_layout.signature, (0, 0))
+                            _pg_v[_pg_layout.signature] = (
+                                max(_pg_vT, _pg_old[0]),
+                                max(_pg_vS, _pg_old[1]),
+                            )
                             unwrapped_model._unsloth_prefix_grouper_nograd_verified = _pg_v
                             _pg_use = True
                         else:
