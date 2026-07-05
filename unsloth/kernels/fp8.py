@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from contextlib import nullcontext
 import torch
 import torch.nn as nn
 import triton
@@ -23,6 +24,15 @@ from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 
 torch_matmul = torch.matmul
+
+
+def _fp8_triton_device_context(tensor: torch.Tensor):
+    if tensor.device.type == "cuda" and torch.cuda.device_count() > 1:
+        return torch.cuda.device(tensor.device)
+    if tensor.device.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.device_count() > 1:
+        return torch.xpu.device(tensor.device)
+    return nullcontext()
+
 
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
@@ -93,7 +103,8 @@ def weight_dequant_block(
         triton.cdiv(M, meta["BLOCK_SIZE"]),
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
-    weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+    with _fp8_triton_device_context(x):
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
     return y
 
 
@@ -147,7 +158,8 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
     def grid(meta):
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
-    act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
+    with _fp8_triton_device_context(x):
+        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
 
 
@@ -272,32 +284,33 @@ def w8a8_block_fp8_matmul_triton(
     def grid(META):
         return (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
 
-    _w8a8_block_fp8_matmul[grid](
-        A,
-        B,
-        C,
-        As,
-        Bs,
-        M,
-        N,
-        K,
-        block_n,
-        block_k,
-        A.stride(-2),
-        A.stride(-1),
-        B.stride(1),
-        B.stride(0),
-        C.stride(-2),
-        C.stride(-1),
-        As.stride(-2),
-        As.stride(-1),
-        Bs.stride(1),
-        Bs.stride(0),
-        BLOCK_SIZE_M = BLOCK_SIZE_M,
-        BLOCK_SIZE_N = BLOCK_SIZE_N,
-        BLOCK_SIZE_K = BLOCK_SIZE_K,
-        GROUP_SIZE_M = 8,
-    )
+    with _fp8_triton_device_context(A):
+        _w8a8_block_fp8_matmul[grid](
+            A,
+            B,
+            C,
+            As,
+            Bs,
+            M,
+            N,
+            K,
+            block_n,
+            block_k,
+            A.stride(-2),
+            A.stride(-1),
+            B.stride(1),
+            B.stride(0),
+            C.stride(-2),
+            C.stride(-1),
+            As.stride(-2),
+            As.stride(-1),
+            Bs.stride(1),
+            Bs.stride(0),
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            GROUP_SIZE_M = 8,
+        )
     return C
 
 
@@ -492,7 +505,8 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
                     f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
                 )
 
-        xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
+        with _fp8_triton_device_context(X):
+            xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
         # TODO: WARNING - diverges from baseline for high X values, producing
         # gibberish / high starting loss. Do not use until resolved; kept for a
         # future headstart.
