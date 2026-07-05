@@ -12,6 +12,18 @@ import os
 import sys
 
 
+def _safe_print(text: str) -> None:
+    """Print text without crashing on terminals that cannot encode Unicode."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        try:
+            print(text.encode(encoding, errors = "replace").decode(encoding))
+        except LookupError:
+            print(text.encode("ascii", errors = "replace").decode("ascii"))
+
+
 def stdout_supports_color() -> bool:
     """True if we should emit ANSI colors."""
     if os.environ.get("NO_COLOR", "").strip():
@@ -28,9 +40,9 @@ def print_port_in_use_notice(original_port: int, new_port: int) -> None:
     """Message when the requested port is taken and another is chosen."""
     msg = f"Port {original_port} is in use, using port {new_port} instead."
     if stdout_supports_color():
-        print(f"\033[38;5;245m{msg}\033[0m")
+        _safe_print(f"\033[38;5;245m{msg}\033[0m")
     else:
-        print(msg)
+        _safe_print(msg)
 
 
 def print_studio_stop_hint() -> None:
@@ -44,7 +56,7 @@ def print_studio_stop_hint() -> None:
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    print(
+    _safe_print(
         "\n".join(
             [
                 "",
@@ -180,4 +192,4 @@ def print_studio_access_banner(
             ]
         )
 
-    print("\n".join(lines))
+    _safe_print("\n".join(lines))

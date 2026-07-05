@@ -67,7 +67,7 @@ def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
-    name = model_name or config.EMBEDDING_MODEL
+    name = model_name or config.effective_embedding_model()
     with _lock:
         if _model is None or _name != name:
             _install_torchao_stub_once()
