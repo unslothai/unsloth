@@ -333,6 +333,32 @@ export function canonicalKeyFor(repoId: string): string {
   return owner + name;
 }
 
+/** Case-preserving display name: the artifact suffixes stripped off the name part
+ *  while keeping the original casing and the owner prefix. Used by the diffusion
+ *  pickers so rows OUTSIDE the curated catalog (arbitrary hub or cached repos)
+ *  still read as their base model name ("ERNIE-Image-Turbo-GGUF" ->
+ *  "ERNIE-Image-Turbo"); the format badge next to the row carries the artifact
+ *  kind. The id used for loading is never touched. */
+export function stripArtifactSuffixesForDisplay(repoId: string): string {
+  const trimmed = repoId.trim();
+  const slash = trimmed.indexOf("/");
+  const owner = slash >= 0 ? trimmed.slice(0, slash + 1) : "";
+  let name = slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+  let stripped = true;
+  while (stripped) {
+    stripped = false;
+    const lowered = name.toLowerCase();
+    for (const suffix of ARTIFACT_SUFFIXES) {
+      if (lowered.endsWith(suffix) && name.length > suffix.length) {
+        name = name.slice(0, -suffix.length);
+        stripped = true;
+        break;
+      }
+    }
+  }
+  return owner + name;
+}
+
 interface CatalogIndex {
   /** exact lowercased artifact/alias/canonical id -> group */
   byId: Map<string, CatalogGroup>;

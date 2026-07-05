@@ -119,6 +119,7 @@ import {
   groupMatchesQuery,
   pickDefaultArtifact,
   pickDefaultQuant,
+  stripArtifactSuffixesForDisplay,
 } from "./model-catalog";
 import type {
   DeletedModelRef,
@@ -2879,7 +2880,11 @@ export function HubModelPicker({
         <div className={downloadedRowShellClassName(isSelected)}>
           <div className="min-w-0 flex-1">
             <ModelRow
-              label={c.repo_id}
+              label={
+                catalog
+                  ? stripArtifactSuffixesForDisplay(c.repo_id)
+                  : c.repo_id
+              }
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               selected={isSelected}
@@ -2935,7 +2940,9 @@ export function HubModelPicker({
       >
         <div className="min-w-0 flex-1">
           <ModelRow
-            label={c.repo_id}
+            label={
+              catalog ? stripArtifactSuffixesForDisplay(c.repo_id) : c.repo_id
+            }
             meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
               c.size_bytes,
             )}`}
@@ -4005,7 +4012,12 @@ export function HubModelPicker({
                       return (
                         <div key={id}>
                           <ModelRow
-                            label={id}
+                            // Diffusion pickers standardize hub rows to the base
+                            // model name; the GGUF/format badge carries the
+                            // artifact kind. The id used on click is untouched.
+                            label={
+                              catalog ? stripArtifactSuffixesForDisplay(id) : id
+                            }
                             hideOwner={true}
                             downloaded={downloadedSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}

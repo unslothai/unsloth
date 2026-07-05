@@ -20,6 +20,7 @@ import {
   loadSpecFor,
   pickDefaultArtifact,
   pickDefaultQuant,
+  stripArtifactSuffixesForDisplay,
 } from "./model-catalog.ts";
 
 // ── canonicalKeyFor: suffix stripping, owner preserved ─────────────────────────
@@ -44,6 +45,35 @@ assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-nvfp4"), "unsloth/qwen-ima
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-NVFP4"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/qwen-image-2512-gguf"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/qwen-image-2512-fp8"), "unsloth/qwen-image-2512");
+
+// ── stripArtifactSuffixesForDisplay: case-preserving base name for row labels ──
+
+assert.equal(
+  stripArtifactSuffixesForDisplay("unsloth/ERNIE-Image-Turbo-GGUF"),
+  "unsloth/ERNIE-Image-Turbo",
+);
+assert.equal(
+  stripArtifactSuffixesForDisplay("unsloth/FLUX.2-klein-base-9B-GGUF"),
+  "unsloth/FLUX.2-klein-base-9B",
+);
+assert.equal(
+  stripArtifactSuffixesForDisplay("unsloth/Qwen-Image-2512-FP8"),
+  "unsloth/Qwen-Image-2512",
+);
+assert.equal(
+  stripArtifactSuffixesForDisplay("unsloth/Some-Model-int8"),
+  "unsloth/Some-Model",
+);
+assert.equal(
+  stripArtifactSuffixesForDisplay("unsloth/Some-Model-NVFP4"),
+  "unsloth/Some-Model",
+);
+// Non-suffixed names and suffix-only names come back unchanged, casing intact.
+assert.equal(
+  stripArtifactSuffixesForDisplay("krea/Krea-2-Turbo"),
+  "krea/Krea-2-Turbo",
+);
+assert.equal(stripArtifactSuffixesForDisplay("someone/FP8"), "someone/FP8");
 // Non-suffixed ids come back unchanged (lowercased).
 assert.equal(canonicalKeyFor("krea/Krea-2-Turbo"), "krea/krea-2-turbo");
 // Stripping never merges owners.
