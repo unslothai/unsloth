@@ -122,8 +122,8 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     (same route as ``packed_seq_lengths``). When present, the forward must route Q/K/V
     through the FlexAttention shared-prefix kernel via ``AttentionContext.prefix_seg_info``.
 
-    Returns the seg table (or ``None`` when the gate is off -- the default, byte-identical
-    path). Hardened: the shared-prefix stream is NOT a plain causal sequence, so running
+    Returns the seg table (or ``None`` when PrefixGrouper did not group this batch -- the
+    unchanged path). Hardened: the shared-prefix stream is NOT a plain causal sequence, so running
     it under a KV cache or an explicit padding mask would silently produce wrong logprobs.
     That combination can only arise from misuse (PrefixGrouper only rides in via the GRPO
     logprob forward, which is mask-free prefill), so we RAISE loudly instead of degrading
@@ -159,7 +159,8 @@ def run_attention(
     # shared-prefix kernel. Q/K/V here are [bsz, n_heads/n_kv, T, head_dim]; the kernel
     # takes [1, T, H, D] and returns [1, T, H, D] (== every other backend's return shape
     # after transpose(1,2)). Env-gated upstream (this field is only ever set when
-    # UNSLOTH_GRPO_PREFIX_GROUPER is on and grouping succeeded), so default is byte-identical.
+    # UNSLOTH_GRPO_PREFIX_GROUPER is on and grouping succeeded), so None leaves every backend
+    # byte-identical to before.
     if context.prefix_seg_info is not None:
         flex_shared_prefix_attention = _flex_shared_prefix_attention
         if flex_shared_prefix_attention is None:

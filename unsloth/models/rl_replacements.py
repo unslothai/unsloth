@@ -1400,22 +1400,22 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             logprobs = None
 
-            # ---- PrefixGrouper (GRPO shared-prompt dedup; default OFF => byte-identical) ----
+            # ---- PrefixGrouper (GRPO shared-prompt dedup; default ON, exact + self-verified) ----
             # In GRPO every prompt spawns G=num_generations completions that share the prompt
             # prefix. The full-row packed path below forwards that prefix G times; PrefixGrouper
             # stores it ONCE and concatenates only the G suffixes (FlexAttention shared-prefix
             # mask), cutting the trunk forward from G*(P+R) to P+G*R tokens. Gated behind
-            # UNSLOTH_GRPO_PREFIX_GROUPER (requires seq-packing on). tok_r auto-gate + first-use
-            # self-verify vs the full-row packed path (fall back + mark-unsafe on mismatch), so a
-            # mask/isolation regression can never ship silently. When off / grouping fails / not
-            # yet verified, the full-row packed path below runs exactly as before.
+            # UNSLOTH_GRPO_PREFIX_GROUPER (default on, requires seq-packing on). tok_r auto-gate +
+            # first-use self-verify vs the full-row packed path (fall back + mark-unsafe on
+            # mismatch), so a mask/isolation regression can never ship silently. When off / grouping
+            # fails / not yet verified, the full-row packed path below runs exactly as before.
             _pg_result = None
             _pg_use = False
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
             # One-time env gate + import, hoisted to the module level (mirrored into the
-            # generated cache via RL_PRE_ITEMS); the default-off path runs zero PG code.
+            # generated cache via RL_PRE_ITEMS); when the env gate is off the path runs zero PG code.
             # Also skip PG when vLLM drives generation (fast_inference=True): the colocated
             # rollout dominates the step, so the shared-prefix forward saves little end-to-end
             # and its first-use self-verify (which runs the full-row path too) is net overhead.
@@ -1424,11 +1424,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 try:
                     # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
                     # entirely for softcap models (e.g. gemma2) before building any layout.
-                    # Hybrid SSM models (FalconH1 etc.) are excluded too: only attention gets the
-                    # shared-prefix isolation, a Mamba branch would leak state across suffixes.
+                    # Hybrid SSM (FalconH1) and MoE (Qwen3-MoE, Mixtral, Llama4) models are
+                    # excluded too: only the threaded attention forwards get the shared-prefix
+                    # isolation, so a Mamba branch or a MoE decoder that does not forward
+                    # prefix_seg_info would let suffixes leak across completions. PG also rides on
+                    # sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
                         _pg_enabled_fn()
+                        and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
                         and pixel_values is None
                         and token_type_ids is None
                         and mm_token_type_ids is None
@@ -1437,7 +1441,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and not getattr(_pg_cfg, "attn_logit_softcapping", None)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
-                            for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
+                            for _pg_a in (
+                                "mamba_d_ssm",
+                                "mamba_d_state",
+                                "mamba_expand",
+                                "num_experts",
+                                "num_local_experts",
+                                "n_routed_experts",
+                                "moe_intermediate_size",
+                            )
                         )
                     )
                 except Exception:
