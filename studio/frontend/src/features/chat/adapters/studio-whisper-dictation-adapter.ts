@@ -20,7 +20,14 @@ import { toast } from "sonner";
 // transcript per utterance, mirroring how the Web Speech adapter ends a session
 // on silence and lets the voice loop re-arm.
 
-const SILENCE_RMS = 0.012;       // RMS below this counts as silence
+const SILENCE_RMS = 0.012;       // RMS below this counts as silence (ends the utterance)
+// A frame only counts as real SPEECH toward the transcribe gate (voicedMs /
+// heardSpeech) at or above this, comfortably over the ambient-noise floor. Frames
+// between SILENCE_RMS and SPEECH_RMS keep the utterance alive but don't count, so
+// room noise or a mic click can't quietly accumulate the 350ms of "speech" that
+// would get fed to Whisper (which then hallucinates "Thank you." etc. from noise).
+// Lower it if genuinely soft speech is being dropped.
+const SPEECH_RMS = 0.02;
 const SILENCE_HANG_MS = 1000;    // silence after speech ends the utterance
 const MAX_UTTERANCE_MS = 30000;  // hard cap so a stuck mic can't record forever
 const NO_SPEECH_TIMEOUT_MS = 8000;  // give up quietly if no speech is heard
@@ -335,11 +342,15 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           const now = performance.now();
 
           const frameMs = (input.length / sampleRate) * 1000;
-          const voiced = rms >= SILENCE_RMS;
-          chunkVoiced.push(voiced);
-          if (voiced) {
+          // notSilent keeps the utterance alive (resets the silence-hang timer);
+          // speech is the stricter bar that actually counts toward transcription,
+          // so noise/clicks between the two thresholds never reach Whisper.
+          const notSilent = rms >= SILENCE_RMS;
+          const speech = rms >= SPEECH_RMS;
+          chunkVoiced.push(speech);
+          if (notSilent) lastVoiceAt = now;
+          if (speech) {
             voicedMs += frameMs;
-            lastVoiceAt = now;
             if (!heardSpeech) {
               heardSpeech = true;
               // Light the orb's salmon "hearing you" state the instant the mic

@@ -9010,6 +9010,64 @@ class LlamaCppBackend:
         self._owns_codec = True
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
+    def _orpheus_voice_prefix_ok(self) -> bool:
+        """Whether the loaded Orpheus GGUF quant is high enough to treat a
+        "voice: " prefix as a speaker cue. Ultra-low quants (IQ1/IQ2/Q2) read the
+        prefix aloud instead, stapling the speaker name into the audio, so skip it
+        for those. The quant tag lives in both the variant and the file name."""
+        tag = f"{self._hf_variant or ''} {self._gguf_path or ''}".lower()
+        return not any(bad in tag for bad in ("iq1", "iq2", "q2_k"))
+
+    @staticmethod
+    def _trim_leading_word(wav_bytes: bytes, sample_rate: int) -> bytes:
+        """Slice the leading spoken speaker name off Orpheus audio on low quants.
+        The name is one short word at the very start followed by the colon's pause,
+        so cut everything up to the first clear silence gap after speech onset.
+        Conservative: if no name+gap is found in the first ~1.2s, or anything goes
+        wrong, return the audio unchanged (better to keep a stray name than clip
+        the reply)."""
+        try:
+            import io
+
+            import numpy as np
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes), dtype = "float32")
+            mono = data.mean(axis = 1) if data.ndim > 1 else data
+            frame = max(1, int(sr * 0.02))  # 20 ms frames
+            n = mono.size // frame
+            if n < 3:
+                return wav_bytes
+            energy = np.abs(mono[: n * frame]).reshape(n, frame).mean(axis = 1)
+            peak = float(energy.max())
+            if peak <= 0:
+                return wav_bytes
+            voiced = energy > peak * 0.08
+            if not voiced.any():
+                return wav_bytes
+            onset = int(np.argmax(voiced))
+            limit = min(n, onset + int(1.2 / 0.02))  # look for the name in first ~1.2s
+            gap_frames = max(1, int(0.10 / 0.02))  # need >= 100 ms of silence
+            i = onset + 1
+            while i < limit:
+                if not voiced[i]:
+                    j = i
+                    while j < n and not voiced[j]:
+                        j += 1
+                    if j - i >= gap_frames:
+                        trimmed = mono[j * frame:]
+                        if trimmed.size < frame:
+                            return wav_bytes
+                        buf = io.BytesIO()
+                        sf.write(buf, trimmed, sr, format = "WAV")
+                        return buf.getvalue()
+                    i = j
+                else:
+                    i += 1
+            return wav_bytes
+        except Exception:
+            return wav_bytes
+
     def generate_audio_response(
         self,
         text: str,
@@ -9041,12 +9099,16 @@ class LlamaCppBackend:
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
 
-        # Orpheus (snac) pins its speaker via a "voice: " prefix; without it the
-        # model randomizes the voice each call. Other codecs carry no such prefix.
+        # Orpheus (snac) selects a speaker with a "voice: text" prefix. High quants
+        # use it as a SILENT cue; ultra-low quants (IQ1/IQ2/Q2) read the name aloud.
+        # Keep the prefix either way so the speaker stays pinned, and on the low
+        # quants trim the spoken name off the front of the audio (see below).
         prompt_text = text
+        trim_name = False
         if audio_type == "snac":
             v = voice if voice in self._ORPHEUS_VOICES else "tara"
             prompt_text = f"{v}: {text}"
+            trim_name = not self._orpheus_voice_prefix_ok()
 
         payload: dict = {
             "prompt": tpl.format(text = prompt_text),
@@ -9081,6 +9143,9 @@ class LlamaCppBackend:
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         with LlamaCppBackend._codec_decode_lock:
-            return LlamaCppBackend._codec_mgr.decode(
+            wav_bytes, sample_rate = LlamaCppBackend._codec_mgr.decode(
                 audio_type, device, token_ids = token_ids, text = data.get("content", "")
             )
+        if trim_name:
+            wav_bytes = self._trim_leading_word(wav_bytes, sample_rate)
+        return wav_bytes, sample_rate
