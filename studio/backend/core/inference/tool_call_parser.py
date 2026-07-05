@@ -102,12 +102,23 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
         r"<\|python_tag\|>(?=\s*(?:\{|[A-Za-z_][\w.]*\()|\s*$).*$",
         re.DOTALL,
     ),
-    # DeepSeek envelopes truncated mid-stream (any opener variant).
-    re.compile(_DEEPSEEK_OPEN_RE_SRC + r".*$", re.DOTALL),
-    re.compile(r"<｜tool▁call▁begin｜>.*$", re.DOTALL),
+    # DeepSeek envelopes truncated mid-stream (any opener variant). Same
+    # call-shaped lookahead rule as the bare-word markers above: a prose
+    # answer mentioning the marker keeps its tail.
+    re.compile(
+        _DEEPSEEK_OPEN_RE_SRC + r"(?=\s*(?:<｜tool▁call▁begin｜>|function)|\s*$).*$",
+        re.DOTALL,
+    ),
+    re.compile(r"<｜tool▁call▁begin｜>(?=\s*function|\s*$).*$", re.DOTALL),
     # Kimi K2 envelope truncated.
-    re.compile(r"<\|tool_calls_section_begin\|>.*$", re.DOTALL),
-    re.compile(r"<\|tool_call_begin\|>.*$", re.DOTALL),
+    re.compile(
+        r"<\|tool_calls_section_begin\|>(?=\s*<\|tool_call_begin\|>|\s*$).*$",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"<\|tool_call_begin\|>(?=\s*[A-Za-z_][\w.\-]*:\d|\s*$).*$",
+        re.DOTALL,
+    ),
     # Gemma wrapper-less ``call:NAME{...}`` is handled solely by
     # ``_strip_gemma_wrapperless_calls`` (honours the enabled-name gate).
 ]

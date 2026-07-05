@@ -976,3 +976,24 @@ def test_glm_heal_bounds_unclosed_value_at_tool_call_close():
     )
     calls_lit = parse_tool_calls_from_text(lit, allow_incomplete = True)
     assert json.loads(calls_lit[0]["function"]["arguments"]) == {"city": 'print("</tool_call>")'}
+
+
+def test_prose_mentioning_ds_kimi_markers_survives_final_strip():
+    # False-alarm literals: the trailing strip arms require a call-shaped
+    # lookahead, so an answer documenting a marker keeps its tail.
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    for text in [
+        "The Kimi marker <|tool_calls_section_begin|> starts a section.",
+        "DeepSeek uses <｜tool▁calls▁begin｜> to open calls.",
+        "See <|tool_call_begin|> in the docs.",
+    ]:
+        assert strip_tool_markup(text, final = True) == text
+
+    # Truncated REAL calls still drop, and a bare marker at EOF is a fragment.
+    truncated_kimi = (
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.web_search:0"
+        '<|tool_call_argument_begin|>{"q'
+    )
+    assert strip_tool_markup(truncated_kimi, final = True) == ""
+    assert strip_tool_markup("prefix <|tool_calls_section_begin|>", final = True) == "prefix"
