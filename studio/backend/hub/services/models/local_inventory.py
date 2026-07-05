@@ -50,6 +50,7 @@ _capabilities_for_format = model_common._capabilities_for_format
 _apply_format_aware_partial = model_common._apply_format_aware_partial
 _classify_local_path = model_common._classify_local_path
 _is_main_gguf_filename = model_common._is_main_gguf_filename
+_main_gguf_files = model_common._main_gguf_files
 _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
@@ -374,6 +375,25 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
 
             # Child is itself a model dir: surface it directly, not as a publisher.
             if _is_model_directory(child):
+                try:
+                    updated_at = child.stat().st_mtime
+                except OSError:
+                    updated_at = None
+                found.extend(
+                    _classify_local_path(
+                        child,
+                        "lmstudio",
+                        updated_at = updated_at,
+                    )
+                )
+                continue
+
+            # A config-less GGUF folder (e.g. a split/sharded export: many
+            # ``-NNN-of-NNN.gguf`` files with no config.json) is a single model,
+            # not an LM Studio publisher. _classify_local_path collapses the
+            # split into one row, so surface it directly rather than descending
+            # and fanning the shards out into one entry per file.
+            if _main_gguf_files(child):
                 try:
                     updated_at = child.stat().st_mtime
                 except OSError:

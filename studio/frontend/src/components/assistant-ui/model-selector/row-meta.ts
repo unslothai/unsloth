@@ -10,6 +10,7 @@ export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
 // so "Full finetune" resolves via "full".
 export const FORMAT_TONE: Record<string, FormatTone> = {
   gguf: "gguf",
+  sharded: "gguf",
   mlx: "mlx",
   local: "checkpoint",
   safetensors: "checkpoint",

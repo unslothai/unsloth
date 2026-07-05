@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import quote
@@ -359,6 +360,16 @@ def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path
     ]
 
 
+# llama.cpp split naming: ``model-00001-of-00013.gguf``.
+_GGUF_SPLIT_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+
+
+def _gguf_files_are_sharded(gguf_files: list[Path]) -> bool:
+    """True when the main GGUF files form a multi-part split (any shard carries
+    the ``-NNN-of-NNN`` suffix)."""
+    return any(_GGUF_SPLIT_RE.search(entry.name) for entry in gguf_files)
+
+
 def _format_label(model_format: ModelFormat) -> str:
     if model_format == "gguf":
         return "GGUF"
@@ -432,6 +443,7 @@ def _local_model_info(
     base_model_source: Optional[str] = None,
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
+    is_sharded: bool = False,
 ) -> LocalModelInfo:
     load_id = model_id if source == "hf_cache" and model_id else str(load_path)
     semantic_id = model_id or str(load_path)
@@ -458,6 +470,7 @@ def _local_model_info(
         model_format = model_format,
         runtime = _runtime_for_format(model_format),
         format_variant = format_variant,
+        is_sharded = is_sharded,
         capabilities = _capabilities_for_format(
             model_format,
             source,
@@ -512,6 +525,7 @@ def _classify_local_path(
                 requires_variant = scan_path.is_dir(),
                 format_variant = variant,
                 size_bytes = gguf_size_bytes,
+                is_sharded = _gguf_files_are_sharded(gguf_files),
             )
         )
 
