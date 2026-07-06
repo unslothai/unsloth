@@ -274,7 +274,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-base-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          name: digests-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -301,7 +301,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-base-*
+          pattern: digests-core-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
@@ -322,17 +322,17 @@ jobs:
           # and collide with the Studio image that legitimately owns :latest.
           flavor: latest=false
           tags: |
-            # The lean training image publishes under the base- prefix; the
+            # The lean training image publishes under the core- prefix; the
             # full Studio image (build-studio/merge-studio below) owns
             # :latest, matching what the previous production image shipped.
-            # Only tag :base when the workflow ran on the default branch
+            # Only tag :core when the workflow ran on the default branch
             # AND the operator did NOT override unsloth_ref on dispatch.
             # Without the second condition a maintainer testing a feature
-            # SHA from main could overwrite :base with non-main source.
-            type=raw,value=base,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
-            type=ref,event=tag,prefix=base-
-            type=schedule,pattern=base-nightly
-            type=sha,prefix=base-sha-,format=short
+            # SHA from main could overwrite :core with non-main source.
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=ref,event=tag,prefix=core-
+            type=schedule,pattern=core-nightly
+            type=sha,prefix=core-sha-,format=short
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
@@ -489,8 +489,10 @@ jobs:
           flavor: latest=false
           tags: |
             # The full Studio image owns the unprefixed namespace, headed by
-            # :latest (default branch only). Tag pushes publish the version tag.
+            # :latest plus a stable :studio alias (default branch only). Tag
+            # pushes publish the version tag. Same gating rationale as the core job.
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short
@@ -541,19 +543,19 @@ jobs:
           # tag list the merge step pushed, so the smoke test pulls the right ref).
           flavor: latest=false
           tags: |
-            type=raw,value=base,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
-            type=ref,event=tag,prefix=base-
-            type=schedule,pattern=base-nightly
-            type=sha,prefix=base-sha-,format=short
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=ref,event=tag,prefix=core-
+            type=schedule,pattern=core-nightly
+            type=sha,prefix=core-sha-,format=short
 
       - name: Pull and smoke-test the base image
         run: |
           # Use the first tag from the metadata output -- that is the image we
-          # just published. Falls back to :base only when the metadata is
+          # just published. Falls back to :core only when the metadata is
           # empty (defensive; should not happen on default-branch runs).
           TAG="$(jq -r '.tags[0] // ""' <<<"$STEPS_META_BASE_JSON")"
           if [ -z "$TAG" ]; then
-              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:base"
+              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:core"
           fi
           echo "smoke-testing $TAG"
           docker pull "$TAG"
@@ -571,6 +573,7 @@ jobs:
           flavor: latest=false
           tags: |
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short

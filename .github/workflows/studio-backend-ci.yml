@@ -30,6 +30,11 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
+      # The "Docker JupyterLab/notebook feature validation" step below runs
+      # tests/validate_studio_features.py, which checks docker/jupyter (the
+      # labextension, overrides.json, login branding) and the docker notebook
+      # helpers. Without docker/** here a docker-only change skips that guard.
+      - 'docker/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
@@ -238,3 +243,9 @@ jobs:
               echo "::endgroup::"
           done
 
+      - name: Docker JupyterLab/notebook feature validation
+        # Named validate_studio_features.py (not test_*.py) so pytest's default
+        # discovery skips it; run it explicitly here so a regression in the
+        # notebook view, Colab compat, strip, JupyterLab defaults or login
+        # branding fails CI instead of only when someone runs it by hand.
+        run: python tests/validate_studio_features.py

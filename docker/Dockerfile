@@ -681,21 +681,24 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
 #   * unsloth-run: headless `unsloth-run <notebook|url>` that auto-picks the
 #     sidecar and executes every cell -- the robust driven path.
 # ---------------------------------------------------------------------------
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
  && cp /opt/unsloth-nb/unsloth_nb_pip_magic.py "$SP/unsloth_nb_pip_magic.py" \
- && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py \
+ && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
  && mkdir -p /opt/unsloth-nb/bin \
  && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
  && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \
+ && ln -sf /opt/unsloth-nb/unsloth_nb_view.py /usr/local/bin/unsloth-nb-view \
+ && ln -sf /opt/unsloth-nb/unsloth_nb_strip_colab.py /usr/local/bin/unsloth-nb-strip-colab \
  && mkdir -p /opt/unsloth-nb/ipython/profile_default/startup \
  && cp /opt/unsloth-nb/unsloth_ipython_startup.py /opt/unsloth-nb/ipython/profile_default/startup/00-unsloth-nb.py \
  && chmod -R a+rX /opt/unsloth-nb/ipython \
- && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
+ && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat, unsloth_colab_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
 # Shim dir AHEAD of the venv bin so `!pip`/`!uv` resolve to the shim, not the real tool.
 ENV PATH=/opt/unsloth-nb/bin:${PATH}
 # Load the notebook startup hook (sidecar activation + %pip/%uv magic re-point)

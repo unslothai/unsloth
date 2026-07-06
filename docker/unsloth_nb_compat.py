@@ -28,6 +28,20 @@ SIDECAR_ROOT = os.environ.get("UNSLOTH_TF_SIDECAR_ROOT", "/opt/unsloth-venv/tf-s
 # The pip/uv shim writes the transformers version a notebook asked for here.
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
 
+
+def _logging_enabled() -> bool:
+    """Sidecar activation is silent by default; users found the per-cell
+    `[unsloth-nb] activated transformers sidecar ...` line noisy. Set
+    UNSLOTH_ENABLE_LOGGING=1 to surface it (and other [unsloth-nb] diagnostics)."""
+    return os.environ.get("UNSLOTH_ENABLE_LOGGING", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 # Model-name -> minimum transformers tier, ported from Studio's
 # transformers_version.py (substring match on the lowered model id). Used as a
 # fallback when a notebook does not pin transformers but names a new-family model.
@@ -117,7 +131,7 @@ def activate(version: str | None, *, quiet: bool = False):
     if d not in sys.path:
         sys.path.insert(0, d)
     os.environ["PYTHONPATH"] = d + os.pathsep + os.environ.get("PYTHONPATH", "")
-    if not quiet:
+    if not quiet and _logging_enabled():
         print(f"[unsloth-nb] activated transformers sidecar for {version}: {d}")
     return d
 

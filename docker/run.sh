@@ -26,8 +26,8 @@
 # The full image (unsloth/unsloth:latest) starts Studio (8000) + JupyterLab
 # (8888) by default; publish the ports when you want them:
 #   UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
-# JupyterLab on the lean base image (unsloth/unsloth:base):
-#   UNSLOTH_PORTS="-p 8888:8888" UNSLOTH_IMAGE=unsloth/unsloth:base \
+# JupyterLab on the lean core image (unsloth/unsloth:core):
+#   UNSLOTH_PORTS="-p 8888:8888" UNSLOTH_IMAGE=unsloth/unsloth:core \
 #       bash docker/run.sh jupyter lab --ip 0.0.0.0 --port 8888 --allow-root
 # CPU-only hosts (Docker Desktop on macOS, Windows without WSL2 GPU, plain
 # CPU Linux): no --gpus and set UNSLOTH_ALLOW_CPU=1. Training is unavailable

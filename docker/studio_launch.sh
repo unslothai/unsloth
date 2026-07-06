@@ -63,6 +63,29 @@ c.ServerApp.open_browser = False
 c.ServerApp.root_dir = "/workspace"
 c.PasswordIdentityProvider.hashed_password = "${HASH}"
 EOF
+    # Land straight in the categorized notebook view, but only when it is enabled
+    # AND lives under root_dir (so it is expressible as a /lab/tree path). Mirror
+    # unsloth_sync_notebooks.sh's gating -- UNSLOTH_NOTEBOOKS_VIEW_DIR plus both
+    # UNSLOTH_SKIP_NOTEBOOK_VIEW (no view built) and UNSLOTH_SKIP_NOTEBOOK_SYNC
+    # (entrypoint skips sync entirely, so nothing under the view dir exists) -- so
+    # a relocated, disabled, or unsynced view never points JupyterLab at a missing
+    # dir; in those cases JupyterLab just opens on its default (/lab) over /workspace.
+    _root_dir="/workspace"
+    _view_dir="${UNSLOTH_NOTEBOOKS_VIEW_DIR:-/workspace/Unsloth Notebooks}"
+    if [[ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" != "1" \
+          && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
+          && "${_view_dir}" == "${_root_dir}/"* ]]; then
+        _view_rel="${_view_dir#${_root_dir}/}"
+        # default_url must be set on BOTH ServerApp and LabApp -- the lab
+        # extension app otherwise overrides ServerApp's value back to /lab.
+        # preferred_dir points the file browser at that folder. A literal space
+        # is URL-encoded to %20 in the redirect itself.
+        cat >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<EOF
+c.ServerApp.default_url = "/lab/tree/${_view_rel}"
+c.LabApp.default_url = "/lab/tree/${_view_rel}"
+c.ServerApp.preferred_dir = "${_view_dir}"
+EOF
+    fi
 fi
 
 # --- sshd (opt-in) -----------------------------------------------------------
@@ -80,6 +103,21 @@ if [[ -n "${PUBLIC_SSH_KEY}" ]] && command -v sshd >/dev/null 2>&1; then
 fi
 
 mkdir -p /workspace
+
+# --- Branding / AGPLv3 attribution integrity gate (whole container) -----------
+# This image is built by Unsloth and ships under the GNU AGPLv3. Refuse to start
+# anything if the Unsloth attribution (Help/About, spinning-logo splash, branded
+# login, theme, AGPLv3 license text + source links) has been stripped or altered.
+# The same checker also runs as a jupyter_server extension (refuses JupyterLab on
+# its own) and at image-build time. Bypass for local development if ever needed:
+# UNSLOTH_SKIP_BRANDING_CHECK=1 (intended for Unsloth's own debugging, not resale).
+if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
+    if ! /opt/unsloth-venv/bin/python -m unsloth_branding --verify; then
+        echo "Refusing to start the container." >&2
+        exit 1
+    fi
+fi
+
 echo "Unsloth Studio  -> http://localhost:8000   (first-boot password below)"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
