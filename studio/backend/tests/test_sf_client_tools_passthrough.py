@@ -422,6 +422,43 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     assert finishes == ["tool_calls"]
 
 
+def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
+    # A stream cancelled via the registry ("Stop") mid-emission must NOT promote the
+    # buffered-but-unclosed tool markup at finalize -- otherwise the client executes a
+    # tool the user just cancelled. Guarded on cancel_event at the finalize/_finish step.
+    import routes.inference as inf
+
+    cancel_id = "cancel-me-6870"
+    # Balanced JSON but no closing </tool_call> -> healer HOLDS it until finalize.
+    held = '<tool_call>{"name": "lookup", "arguments": {"q": "cats"}}'
+
+    class _CancelMidStream(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed(held))
+
+        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            yield held                                  # healer holds the unclosed call
+            inf._cancel_by_cancel_id_or_stash(cancel_id)  # user hits Stop before EOF
+
+    backend = _CancelMidStream()
+    payload = _request(tools = [LOOKUP_TOOL], stream = True, cancel_id = cancel_id)
+    response = _call(payload, monkeypatch, backend)
+    objs = _sse_objects(_collect_sse(response))
+    tool_deltas = [
+        tc
+        for o in objs
+        for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
+    ]
+    assert tool_deltas == []  # no tool promoted after cancel
+    finishes = [
+        o["choices"][0]["finish_reason"]
+        for o in objs
+        if o["choices"] and o["choices"][0].get("finish_reason")
+    ]
+    assert "tool_calls" not in finishes  # ends with finish_reason=stop, not tool_calls
+
+
 def test_streaming_no_tools_verbatim(monkeypatch):
     backend = _ScriptedBackend(_fixed("hello ", "hello world"))
     payload = _request(stream = True)

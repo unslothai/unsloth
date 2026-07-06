@@ -7039,7 +7039,14 @@ async def openai_chat_completions(
                         ):
                             yield line
 
-                if healer is not None:
+                # A cancelled stream must not promote buffered-but-incomplete tool
+                # markup: finalize() heals partial markup at EOF (allow_incomplete),
+                # which would emit a tool_calls delta + finish_reason=tool_calls and make
+                # the client execute a tool the user just cancelled. The disconnect path
+                # already returns before here; the registry "Stop" path only sets
+                # cancel_event and breaks, so guard finalize/_finish on it too.
+                _cancelled = cancel_event.is_set()
+                if healer is not None and not _cancelled:
                     for line in _sf_heal_events_to_sse(
                         healer.finalize(),
                         completion_id,
@@ -7051,7 +7058,11 @@ async def openai_chat_completions(
                     ):
                         yield line
 
-                _finish = "tool_calls" if (healer is not None and healer.healed) else "stop"
+                _finish = (
+                    "tool_calls"
+                    if (healer is not None and not _cancelled and healer.healed)
+                    else "stop"
+                )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
