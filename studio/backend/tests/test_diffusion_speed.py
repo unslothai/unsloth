@@ -427,6 +427,20 @@ def test_fp16_accum_respects_kill_switch(monkeypatch):
     assert applied["fp16_accum"] is False
 
 
+@pytest.mark.parametrize("value", ["TRUE", "Yes", "On", " true "])
+def test_fp16_accum_kill_switch_is_case_insensitive(monkeypatch, value):
+    # The documented safety escape hatch must honor the common boolean spellings, not only
+    # lowercase "1"/"true"/"yes": an operator setting UNSLOTH_DISABLE_FP16_ACCUM=TRUE to stop
+    # fp16-accumulation drift would otherwise be silently ignored.
+    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", value)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+    )
+    assert applied["fp16_accum"] is False
+
+
 def test_fp16_accum_respects_family_deny_list(monkeypatch):
     _stub_torch_fp16_accum(monkeypatch, consumer = True)
     _stub_gguf_accel(monkeypatch)
