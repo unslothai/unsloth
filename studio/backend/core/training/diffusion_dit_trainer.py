@@ -430,7 +430,6 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         if mode == "mxfp8" and device == "cuda":
             try:
                 import torch
-
                 blackwell = torch.cuda.get_device_capability() >= (10, 0)
             except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
                 blackwell = False

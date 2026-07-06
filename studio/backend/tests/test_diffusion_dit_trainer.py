@@ -143,7 +143,11 @@ def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkey
 
 
 # ── mxfp8 base precision (DiT dense speed mode) ───────────────────────────────
-def _linear(in_features, out_features, bias = False):
+def _linear(
+    in_features,
+    out_features,
+    bias = False,
+):
     import torch.nn as nn
     return nn.Linear(in_features, out_features, bias = bias)
 
