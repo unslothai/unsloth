@@ -68,6 +68,7 @@ def _build_env(
     base_source = None,
     kaggle = False,
     colab = False,
+    hub_cache = None,
 ):
     """Exec the extracted helper with stubbed collaborators; returns (fn, stubs)."""
     shards = (
@@ -108,7 +109,9 @@ def _build_env(
         HfFileSystem = _FS,
         hf_hub_download = hf_hub_download,
         snapshot_download = snapshot_download,
-        constants = types.SimpleNamespace(HF_HUB_CACHE = str(cache_dir)),
+        constants = types.SimpleNamespace(
+            HF_HUB_CACHE = hub_cache if hub_cache is not None else str(cache_dir)
+        ),
     )
     zoo_module = types.SimpleNamespace(determine_base_model_source = determine_base_model_source)
     monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", hf_module)
@@ -118,6 +121,7 @@ def _build_env(
         disk_usage = lambda path: types.SimpleNamespace(free = free_bytes)
     )
 
+    prints = []
     namespace = {
         "os": os,
         "shutil": fake_shutil,
@@ -125,7 +129,7 @@ def _build_env(
         "get_model_name": lambda name, load_in_4bit: name.removesuffix("-bnb-4bit"),
         "IS_KAGGLE_ENVIRONMENT": kaggle,
         "IS_COLAB_ENVIRONMENT": colab,
-        "print": lambda *a, **k: None,
+        "print": lambda *a, **k: prints.append(" ".join(str(x) for x in a)),
     }
     exec(
         compile(_extract_function("_prewarm_base_model_hub_cache"), str(_SAVE_PY), "exec"),
@@ -135,6 +139,7 @@ def _build_env(
         snapshot_download = snapshot_download,
         hf_hub_download = hf_hub_download,
         determine_base_model_source = determine_base_model_source,
+        prints = prints,
     )
     return namespace["_prewarm_base_model_hub_cache"], stubs
 
@@ -263,6 +268,30 @@ def test_gpt_oss_bf16_mxfp4_swap_skips(monkeypatch, tmp_path):
         save_method = "mxfp4",
     )
     assert stubs.snapshot_download.calls == []
+
+
+def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
+    # A model whose config is None must skip silently, not fall into the outer
+    # exception handler that prints a misleading "Could not pre-cache" warning.
+    fn, stubs = _build_env(monkeypatch, tmp_path)
+    model = _FakePeftModel()  # a PeftModel instance so the isinstance guard passes
+    model.config = None
+    fn(model, save_method = "merged_16bit")
+    assert stubs.determine_base_model_source.calls == []
+    assert stubs.snapshot_download.calls == []
+    assert not any("Could not pre-cache" in p for p in stubs.prints), (
+        "missing config took the error path instead of a clean skip"
+    )
+
+
+def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
+    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a
+    # real root for the disk-space probe; without abspath the walk-up hits "" and
+    # the pre-warm is wrongly skipped. Run from a real dir so abspath has a base.
+    monkeypatch.chdir(tmp_path)
+    fn, stubs = _build_env(monkeypatch, tmp_path, hub_cache = "relcache/hub")
+    fn(_FakePeftModel(), save_method = "merged_16bit")
+    assert len(stubs.snapshot_download.calls) == 1, "relative cache path falsely skipped pre-warm"
 
 
 def test_generic_save_calls_prewarm_before_merge():

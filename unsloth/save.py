@@ -3724,10 +3724,14 @@ def _prewarm_base_model_hub_cache(
         return
 
     try:
+        # getattr so a model without a config / _name_or_path skips instead of raising.
+        name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+        if not name_or_path:
+            return
         try:
-            model_name = get_model_name(model.config._name_or_path, load_in_4bit = False)
+            model_name = get_model_name(name_or_path, load_in_4bit = False)
         except Exception:
-            model_name = model.config._name_or_path
+            model_name = name_or_path
         if not model_name or os.path.isdir(model_name):
             return  # local checkpoints are copied, never downloaded
 
@@ -3775,7 +3779,8 @@ def _prewarm_base_model_hub_cache(
         # The cache copy is extra disk on top of the merge working copy; need room for both.
         from huggingface_hub import constants as _hf_constants
 
-        cache_probe = os.path.expanduser(str(_hf_constants.HF_HUB_CACHE))
+        # abspath so a relative HF_HUB_CACHE walks up to an existing root, not "".
+        cache_probe = os.path.abspath(os.path.expanduser(str(_hf_constants.HF_HUB_CACHE)))
         while cache_probe and not os.path.exists(cache_probe):
             parent = os.path.dirname(cache_probe)
             if parent == cache_probe:
