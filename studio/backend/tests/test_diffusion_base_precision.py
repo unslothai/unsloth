@@ -81,7 +81,9 @@ def test_base_precision_denies_fp8_for_corrupted_family():
     # The deny is fp8-specific: int8 (per-token, unaffected) and the other dense modes stay
     # allowed for the same Qwen base.
     for mode in ("nf4", "bf16", "int8", "auto"):
-        norm = _cfg(base_model = _QWEN_DENSE, base_precision = mode, mixed_precision = "bf16").normalized()
+        norm = _cfg(
+            base_model = _QWEN_DENSE, base_precision = mode, mixed_precision = "bf16"
+        ).normalized()
         assert norm.resolved_family == "qwen-image"
         assert norm.base_precision == mode
 

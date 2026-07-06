@@ -264,7 +264,6 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
         return None
     try:
         import torch
-
         if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
