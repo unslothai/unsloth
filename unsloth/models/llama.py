@@ -1809,7 +1809,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         rope_scaling = getattr(config, "rope_scaling", None) if config is not None else None
         if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
             config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
-                config, rope_scaling,
+                config,
+                rope_scaling,
             )
         if config_inv_freq is not None:
             return config_inv_freq
