@@ -411,7 +411,7 @@ function LiveGpuPanel({
                   value={index}
                   className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
                 >
-                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GB` : "N/A"})
+                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GiB` : "N/A"})
                 </option>
               ))}
             </select>
@@ -446,7 +446,7 @@ function LiveGpuPanel({
           icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
           value={
             currentGpu.vram_used_gb != null && currentGpu.vram_total_gb != null
-              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GB`
+              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GiB`
               : "--"
           }
           pct={currentGpu.vram_utilization_pct ?? 0}

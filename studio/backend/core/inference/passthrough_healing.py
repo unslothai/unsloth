@@ -32,6 +32,22 @@ from typing import Any, Optional
 from core.inference.tool_loop_controller import coerce_tool_arguments
 from core.tool_healing import parse_tool_calls_from_text
 
+# Only the formats this healer's parser can promote -- narrower than the loops'
+# broader TOOL_XML_SIGNALS. A loop-only marker (Llama <|python_tag|>, bare
+# [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
+# healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
+_HEAL_SIGNALS = (
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+    "[TOOL_CALLS]",
+)
+
+
+def _has_heal_signal(text: str) -> bool:
+    return any(s in text for s in _HEAL_SIGNALS)
+
+
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
 # Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process
@@ -41,15 +57,6 @@ _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 def nudge_enabled(request_flag: Optional[bool]) -> bool:
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
-
-
-# Only signals the healer's parser can promote -- narrower than the loops' TOOL_XML_SIGNALS:
-# a loop-only marker like bare ``[ARGS]`` would hold prose until finalize without promoting.
-_HEAL_SIGNALS = ("<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]")
-
-
-def _has_heal_signal(text: str) -> bool:
-    return any(s in text for s in _HEAL_SIGNALS)
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)

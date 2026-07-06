@@ -22,15 +22,21 @@ from typing import Callable, Generator, Optional
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
-    _TOOL_ALL_PATS,
+    _balanced_brace_end,
+    _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text,
+    strip_leading_bare_json_call,
+    strip_llama3_leading_sentinels,
     strip_tool_markup,
 )
+# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
+# pattern lists, so the safetensors streaming strip stays aligned with the parser.
 from core.tool_healing import (
+    _TOOL_ALL_PATS,
     _TOOL_CLOSED_PATS,
     _strip_bracket_tag_calls,
     _think_spans_outside_tool_markup,
@@ -57,6 +63,34 @@ logger = get_logger(__name__)
 
 # Buffer cap while disambiguating a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
+
+# Memory bound for holding a leading bare-JSON object whose top-level "{" never balances.
+_MAX_BARE_JSON_BUFFER = 16384
+
+# Forward-looking intent ("I'll", "First,", "Step 1:") = planning; nudge a call. Negative
+# lookahead drops negated forms ("I will not"). Mirrors GGUF.
+_INTENT_SIGNAL = re.compile(
+    r"(?i)("
+    r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
+    r"|\b(?:first\b|step \d+:?|here['’]?s (?:my |the |a )?(?:plan|approach))"
+    r"|\b(?:now i|next i)\b"
+    r")"
+)
+_MAX_REPROMPTS = 3
+_REPROMPT_MAX_CHARS = 2000
+# Templated so the nudge names the caller's enabled tools. Mirrors GGUF tool_hint.
+_REPROMPT_INSTRUCTION_TEMPLATE = (
+    "STOP. Do NOT write code or explain. You MUST call a tool NOW. Call {tool_hint} immediately."
+)
+
+
+def _active_tool_names(active_tools: list[dict]) -> list[str]:
+    names = [
+        (tool.get("function") or {}).get("name")
+        for tool in active_tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    ]
+    return [name for name in names if name]
 
 
 def _active_tool_names(active_tools: list[dict]) -> list[str]:
@@ -214,6 +248,11 @@ def strip_tool_markup_streaming(
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
 
+    # Drop a leading Magistral ``[THINK]...[/THINK]`` block (bracket reasoning form, not the
+    # ``<think>`` channel) so raw reasoning does not leak into streamed display; an unclosed
+    # leading block is held (dropped to EOF) until its closer streams in.
+    text = _strip_mistral_reasoning(text)
+
     def _seg(segment: str, is_last: bool) -> str:
         # Balanced-brace strip first, then XML regexes; EOS-anchored tail arms run only on the
         # last segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal strip is name-gated.
@@ -241,6 +280,14 @@ def _strip_tool_markup_final(
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
     """Return a human-readable status line matching the GGUF path."""
     return status_for_tool(tool_name, arguments)
+
+
+def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) -> bool:
+    """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
+        return False
+    return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
 
 
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
@@ -409,6 +456,10 @@ def run_safetensors_tool_loop(
     kb_search_count = 0
     final_attempt_done = False
     next_call_id = 0
+    reprompt_count = 0
+    # Only turns that executed a tool count against ``max_tool_iterations``; a no-op or
+    # re-prompt turn must not consume budget (GGUF parity).
+    _executed_tool_iters = 0
 
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
@@ -426,9 +477,13 @@ def run_safetensors_tool_loop(
     _state_streaming = 1
     _state_draining = 2
 
-    for iteration in range(max_tool_iterations + 1):
+    # Reserve re-prompt slots so they don't eat the caller's tool budget.
+    _extra_iters = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+    for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
+        # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
+        _turn_executed_real_tool = False
 
         if final_attempt_done:
             active_tools: list[dict] = []
@@ -440,6 +495,8 @@ def run_safetensors_tool_loop(
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
+        # Gate the markerless bare-JSON form on enabled names so a JSON answer isn't misread as a call.
+        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
         detect_state = _state_buffering
         content_buffer = ""
@@ -617,6 +674,34 @@ def run_safetensors_tool_loop(
                 is_prefix = True
                 is_rehearsal_prefix = True
 
+            # Bare Llama-3.2 ``{"name":..,"parameters":..}`` carries no XML signal. Hold a leading
+            # ``{`` (after any sentinel) until it closes: drain if it parses as a call, else stream.
+            bare_probe = strip_llama3_leading_sentinels(stripped)
+            if (
+                not is_match
+                and not is_prefix
+                and tool_protocol_active
+                and bare_probe.startswith("{")
+            ):
+                if _balanced_brace_end(bare_probe, 0) is None:
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue  # object still open -- keep buffering
+                    elif _looks_like_enabled_bare_json(bare_probe, _enabled_tool_names):
+                        # Oversized still-open ENABLED-tool call: stop holding (memory bound) but
+                        # DRAIN, not leak; a giant ordinary JSON answer still streams.
+                        detect_state = _state_draining
+                        continue
+                elif parse_tool_calls_from_text(
+                    content_buffer,
+                    id_offset = next_call_id,
+                    allow_incomplete = auto_heal_tool_calls,
+                    enabled_tool_names = _enabled_tool_names,
+                ):
+                    # Closed object that parses as a bare-JSON call -- drain silently.
+                    detect_state = _state_draining
+                    continue
+                # Closed non-call object (or oversized non-call) -- stream as text.
+
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
@@ -681,6 +766,7 @@ def run_safetensors_tool_loop(
             # Buffer never resolved: [ARGS] is name-gated so a prose answer with a literal
             # ``foo[ARGS]{...}`` is not parsed.
             stripped = content_buffer.lstrip()
+            _bare_eos = strip_llama3_leading_sentinels(stripped)
             if (
                 stripped
                 and tool_protocol_active
@@ -692,43 +778,67 @@ def run_safetensors_tool_loop(
                 )
             ):
                 detect_state = _state_draining
+            elif tool_protocol_active and _looks_like_enabled_bare_json(
+                _bare_eos, _enabled_tool_names
+            ):
+                # Held ENABLED-tool bare-JSON fragment has no XML signal; DRAIN it (a JSON answer
+                # falls through to the else and streams, GGUF parity).
+                detect_state = _state_draining
             else:
+                # Drain and fall through to STREAMING so the intent re-prompt + safety-net parser
+                # still fire on short emissions like "Let me search." that never exit BUFFERING.
                 if content_buffer:
                     cumulative_display += content_buffer
-                    yield {
-                        "type": "content",
-                        "text": _strip_tool_markup_final(
-                            cumulative_display,
-                            auto_heal_tool_calls = auto_heal_tool_calls,
-                            tool_protocol_active = False,
-                            enabled_tool_names = _enabled_names_gate,
-                        ),
-                    }
-                yield {"type": "status", "text": ""}
-                return
+                    cleaned = strip_tool_markup(cumulative_display, final = True)
+                    if len(cleaned) > len(last_emitted):
+                        last_emitted = cleaned
+                        yield {"type": "content", "text": cleaned}
+                detect_state = _state_streaming
 
         if detect_state == _state_streaming:
-            # No tool mid-stream: late-XML check; [ARGS] name-gated to avoid a no-op extra turn.
-            safety_tc = None
-            saw_tool_signal = tool_protocol_active and _has_genuine_tool_signal(
+            # Run the parser even with no XML signal (bare-JSON carries none); it's strict so
+            # plain answers stay untouched. Mirrors GGUF.
+            safety_tc = parse_tool_calls_from_text(
                 content_accum,
-                tool_xml_signals,
-                _detect_tools,
-                unrestricted = unrestricted_tools,
+                id_offset = next_call_id,
+                allow_incomplete = auto_heal_tool_calls,
+                enabled_tool_names = _enabled_tool_names,
             )
-            if saw_tool_signal:
-                safety_tc = parse_tool_calls_from_text(
-                    content_accum,
-                    id_offset = next_call_id,
-                    allow_incomplete = auto_heal_tool_calls,
-                    enabled_tool_names = _enabled_names_gate,
-                )
             if not safety_tc:
-                # Final answer: if a literal tool marker in prose was stripped
-                # during streaming but did not parse as a real call, restore the
-                # raw cumulative text for core callers. Route-level cleanup can
-                # still apply the Auto-Heal display policy.
-                if saw_tool_signal and content_accum:
+                # Re-prompt only when the model planned without acting (intent signal);
+                # "4" / "Hello!" never trigger. Mirrors GGUF.
+                _stripped = content_accum.strip()
+                if (
+                    tools
+                    and auto_heal_tool_calls
+                    and reprompt_count < _MAX_REPROMPTS
+                    and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
+                    and _INTENT_SIGNAL.search(_stripped)
+                    and not final_attempt_done
+                ):
+                    reprompt_count += 1
+                    logger.info(
+                        "Safetensors re-prompt %d/%d: model planned without "
+                        "calling tools (%d chars)",
+                        reprompt_count,
+                        _MAX_REPROMPTS,
+                        len(_stripped),
+                    )
+                    tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
+                    conversation.append({"role": "assistant", "content": _stripped})
+                    conversation.append(
+                        {
+                            "role": "user",
+                            "content": _REPROMPT_INSTRUCTION_TEMPLATE.format(tool_hint = tool_hint),
+                        }
+                    )
+                    yield {"type": "status", "text": ""}
+                    continue
+
+                # Final answer. If a literal tool marker in prose was buffered but never
+                # parsed as a call, restore the raw text so the prose surfaces; route
+                # cleanup still applies the Auto-Heal policy.
+                if content_accum and any(sig in content_accum for sig in tool_xml_signals):
                     yield {"type": "content", "text": content_accum}
                 else:
                     # Turn ended as a plain answer (no [ARGS] followed): the held rehearsal tail is real
@@ -755,7 +865,11 @@ def run_safetensors_tool_loop(
                 len(tool_calls),
             )
         else:
-            # DRAINING: parse tool calls out of full content.
+            # DRAINING: parse tool calls out of full content. Gate the bare rehearsal on the
+            # ORIGINAL tool list (``_enabled_names_gate``), the same names detection/strip used to
+            # drain here: a spent one-shot (render_html) is off the active list but its re-emitted
+            # ``render_html[ARGS]{..}`` must still parse so it routes to the repeat no-op instead of
+            # being dropped into a blank continuation.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
@@ -767,15 +881,17 @@ def run_safetensors_tool_loop(
                 # strips unparseable tool XML; disabled Auto-Heal preserves
                 # the raw text so literal/malformed markup stays visible.
                 if content_accum:
-                    yield {
-                        "type": "content",
-                        "text": _strip_tool_markup_final(
-                            content_accum,
-                            auto_heal_tool_calls = auto_heal_tool_calls,
-                            tool_protocol_active = False,
-                            enabled_tool_names = _enabled_names_gate,
-                        ),
-                    }
+                    _drain_text = _strip_tool_markup_final(
+                        content_accum,
+                        auto_heal_tool_calls = auto_heal_tool_calls,
+                        tool_protocol_active = False,
+                    )
+                    # Drained bare-JSON call that didn't parse: with Auto-Heal on drop the fragment
+                    # (plain JSON untouched); off keeps it visible per the strict contract.
+                    if tool_protocol_active and auto_heal_tool_calls:
+                        _drain_text = strip_leading_bare_json_call(_drain_text, _enabled_tool_names)
+                    if _drain_text:
+                        yield {"type": "content", "text": _drain_text}
                 if provisional_render_html_started and not provisional_resolved:
                     provisional_resolved = True
                     yield {
@@ -796,6 +912,9 @@ def run_safetensors_tool_loop(
 
         if tool_calls:
             next_call_id += len(tool_calls)
+            # Strip a leading bare-JSON call so it isn't replayed as text or next-turn history
+            # (``_strip_tool_markup_final`` only knows XML). No-op for plain JSON answers.
+            content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.
@@ -921,6 +1040,8 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
+            # A tool ran this turn, so it counts against the caller's budget.
+            _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 
@@ -933,7 +1054,10 @@ def run_safetensors_tool_loop(
         if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
             continue
-        if iteration + 1 >= max_tool_iterations and not final_attempt_done:
+        # Count only real tool turns against the cap so a no-op turn doesn't consume budget (GGUF parity).
+        if _turn_executed_real_tool:
+            _executed_tool_iters += 1
+        if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})

@@ -604,9 +604,7 @@ def _chat_content_chunk(completion_id, created, model_name, text) -> str:
 
 
 def _chat_reasoning_chunk(completion_id, created, model_name, text) -> str:
-    """A reasoning-delta chunk carrying ``text`` (renders the UI thinking block).
-    Mirrors ``_chat_content_chunk`` but on ``reasoning_content`` so the
-    safetensors/MLX streams reach GGUF parity."""
+    """Like ``_chat_content_chunk`` but on ``reasoning_content`` (renders the UI thinking block)."""
     return _chat_chunk_sse(
         completion_id,
         created,
@@ -854,17 +852,14 @@ class _SameTaskStreamingResponse(StreamingResponse):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        # Async callable invoked when the client disconnects before the body
-        # iterator is ever advanced. A generator that never started cannot run
-        # its own try/finally, so a stream that acquires resources before its
-        # first yield (the passthrough opens an upstream httpx stream eagerly)
-        # passes this to release them.
+        # Released when the client disconnects before the body iterator starts:
+        # its try/finally never runs, so a stream that opens resources before the
+        # first yield (the passthrough's upstream httpx stream) passes this.
         self._unstarted_cleanup = unstarted_cleanup
 
     async def __call__(self, scope, receive, send) -> None:
-        # Track whether the body iterator was ever advanced: send() only emits a
-        # body message after the generator yields its first chunk, so a failure
-        # before then means it never entered its try/finally.
+        # send() emits a body message only after the first chunk, so no body
+        # message means the generator never entered its try/finally.
         body_started = False
 
         async def _tracking_send(message) -> None:
@@ -875,15 +870,11 @@ class _SameTaskStreamingResponse(StreamingResponse):
 
         try:
             await self.stream_response(_tracking_send)
-        except OSError:
-            # Client disconnected mid-send.
+        except OSError:  # client disconnected mid-send
             if body_started:
-                # The generator produced at least one chunk and is suspended in
-                # its try/finally. Throw CancelledError into it (not aclose's
-                # GeneratorExit) so its `except asyncio.CancelledError` handler
-                # runs and finishes any api_monitor entry; GeneratorExit would
-                # skip it and only run `finally`. Fall back to aclose() without
-                # athrow.
+                # Generator is suspended in its try/finally: throw CancelledError
+                # (not aclose's GeneratorExit) so its handler finishes the
+                # api_monitor entry. Fall back to aclose() without athrow.
                 athrow = getattr(self.body_iterator, "athrow", None)
                 if athrow is not None:
                     try:
@@ -895,21 +886,31 @@ class _SameTaskStreamingResponse(StreamingResponse):
                     if aclose is not None:
                         await aclose()
             else:
-                # http.response.start failed before the body iterator advanced,
-                # so its try/finally never armed and aclose()/athrow() are no-ops
-                # on an unstarted generator. Release any resources acquired
-                # before the first yield via the explicit cleanup hook.
+                # Generator never started; aclose()/athrow() are no-ops on it, so
+                # release eager resources via the hook. getattr guards a response
+                # built through __new__ without __init__ (tests, pickling).
                 aclose = getattr(self.body_iterator, "aclose", None)
                 if aclose is not None:
                     await aclose()
-                if self._unstarted_cleanup is not None:
+                cleanup = getattr(self, "_unstarted_cleanup", None)
+                if cleanup is not None:
                     try:
-                        await self._unstarted_cleanup()
+                        await cleanup()
                     except Exception:
                         pass
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
+
+
+def _tracked_cancel_unstarted_cleanup(tracker):
+    """unstarted_cleanup that exits ``tracker`` on a pre-start disconnect, when
+    the generator's finally (which normally exits it) never runs."""
+
+    async def _cleanup() -> None:
+        tracker.__exit__(None, None, None)
+
+    return _cleanup
 
 
 async def _aclose_stream_resources(
@@ -1149,6 +1150,7 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
+from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
 from core.inference.passthrough_healing import (
     StreamToolCallHealer,
     heal_gate,
@@ -1307,6 +1309,11 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
+# Whitespace/escape-tolerant bare-JSON tool-template detector: matches pretty-printed and
+# JSON-escaped ``{"name":`` plus the ``"function"`` alias.
+_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -1317,15 +1324,21 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # The safetensors loop parses XML/Gemma/Mistral/rehearsal but not <|python_tag|>; do not
-    # advertise a pill the parser can't honour. GGUF is unaffected.
+    # Markers the parser recognises; drop the pill if a template advertises tools but uses none.
+    # The bare-JSON ``{"name":`` form is matched whitespace-tolerantly below.
+    _PARSER_MARKERS = (
+        "<tool_call>",
+        "<function=",
+        "<function name=",
+        "<|python_tag|>",
+        "[TOOL_CALLS]",
+        "<|tool_call>",
+    )
     if (
         flags.get("supports_tools")
         and chat_template
-        and "<tool_call>" not in chat_template
-        and "<function=" not in chat_template
-        and "<|tool_call>" not in chat_template
-        and "[TOOL_CALLS]" not in chat_template
+        and not any(m in chat_template for m in _PARSER_MARKERS)
+        and not _BARE_JSON_NAME_MARKER_RE.search(chat_template)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -1407,6 +1420,10 @@ def _sf_reasoning_prefill_mode(
     if "</think>" not in tpl and "<think>" not in tpl:
         return False
     if features.get("reasoning_always_on"):
+        # enable_thinking_effort + always-on: the effort mechanism (not the prompt shape) keeps
+        # thinking on, so always-on wins over reasoning_effort and we prefill.
+        if features.get("reasoning_style") == "enable_thinking_effort":
+            return True
         # ``reasoning_always_on`` fires on paired ``<think>...</think>`` anywhere in the
         # template, including markup that only renders PAST assistant history (Kimi-K2-Thinking)
         # while the generation prompt opens none. Prefill only when the generation prompt opens
@@ -1414,11 +1431,13 @@ def _sf_reasoning_prefill_mode(
         return _generation_prompt_opens_think(tpl)
     if not features.get("supports_reasoning"):
         return False
-    # Thinking-off arrives as reasoning_effort "none" on enable_thinking_effort models;
-    # honor it so we don't prefill and capture the answer.
-    if reasoning_effort == "none":
+    if enable_thinking is False:
         return False
-    return enable_thinking is not False
+    # Thinking-off arrives as reasoning_effort "none" on enable_thinking_effort models; honor it
+    # so we don't prefill and capture the answer. Plain enable_thinking models ignore effort.
+    if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
+        return False
+    return True
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -1703,12 +1722,18 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
 _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
-    r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    # The ``<|python_tag|>`` arm runs to the next REAL Llama sentinel or EOF, so a literal
+    # ``<|...|>`` token in an argument (e.g. ``<|cite|>``) doesn't truncate the strip.
+    # ``<function=name>`` plus the ``<function name="name">`` attribute form; name class mirrors the parser.
+    # A CLOSED ``<function=...>...</function>`` extends to the last ``</function>`` before the next
+    # opener (so a literal ``</function>`` in a value can't truncate); this arm runs first.
+    r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*</function>'
+    r'|<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
+    r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
     r"|\[/TOOL_CALLS\]"
-    r"|</parameter>\s*\Z"
     # Truncated canonical array (closing ``]`` lost to EOS): the balanced scan cannot remove
     # it, so strip its tail here.
     r"|\[TOOL_CALLS\]\s*\[.*\Z"
@@ -1716,7 +1741,9 @@ _TOOL_XML_RE = _re.compile(
     r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
     # Rehearsal: balanced/truncated body or bare marker at EOS only (prose ``foo[ARGS]``
     # survives); NAME captured as ``reh`` for the inactive-name display gate.
-    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)",
+    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)"
+    # ``</param>`` is the attribute-form alias of ``</parameter>``; strip a tail-only orphan.
+    r"|</(?:parameter|param)>\s*\Z",
     _re.DOTALL,
 )
 
@@ -1775,11 +1802,23 @@ def _strip_tool_xml_for_display(
 
     def _strip_segment(seg: str, is_last: bool) -> str:
         seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+        # Parser-accurate function-XML scan: each ``<function=...>`` closes at its first
+        # NON-data ``</function>``, so a literal ``</function>`` (or nested ``<function=...>``)
+        # quoted inside a ``<parameter>`` value cannot truncate the strip. The regex arms below
+        # then cover the attribute form and the other markup families.
+        seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     return strip_outside_think(text, _strip_segment)
+
+
+def _strip_tool_xml(text: str) -> str:
+    # Mistral balanced-brace + guarded function-XML pre-strip, then the regex sweep. The one
+    # raw regex sub lives in _strip_tool_xml_for_display, so every route cleanup site shares it.
+    text = _strip_function_xml_calls(_strip_mistral_closed_calls(text), final = True)
+    return _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
 
 logger = get_logger(__name__)
@@ -4163,12 +4202,9 @@ async def generate_stream(
             _DONE = object()
             while True:
                 if cancel_event.is_set():
-                    # The disconnect watcher set cancel_event between chunks.
-                    # Reset the backend here: closing the Python generator does
-                    # not signal a subprocess backend, so without this it keeps
-                    # decoding after the client is gone. The finally's reset is
-                    # guarded on cancel_event being unset, so it will not run
-                    # again for this path.
+                    # Watcher set cancel_event between chunks. Reset here: closing
+                    # the generator does not signal a subprocess backend, so it would
+                    # keep decoding. The finally's reset is guarded, so no double-run.
                     backend.reset_generation_state()
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
@@ -5778,6 +5814,7 @@ async def openai_chat_completions(
 
                 return _SameTaskStreamingResponse(
                     audio_input_stream(),
+                    unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                     media_type = "text/event-stream",
                     headers = {
                         "Cache-Control": "no-cache",
@@ -6263,6 +6300,7 @@ async def openai_chat_completions(
             if payload.stream:
                 return _SameTaskStreamingResponse(
                     gguf_tool_stream(),
+                    unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                     media_type = "text/event-stream",
                     headers = {
                         "Cache-Control": "no-cache",
@@ -6520,6 +6558,7 @@ async def openai_chat_completions(
 
             return _SameTaskStreamingResponse(
                 gguf_stream_chunks(),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
@@ -6960,6 +6999,7 @@ async def openai_chat_completions(
         if payload.stream:
             return _SameTaskStreamingResponse(
                 sf_tool_stream(),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker),
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
@@ -7176,6 +7216,7 @@ async def openai_chat_completions(
 
         return _SameTaskStreamingResponse(
             stream_chunks(),
+            unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
             media_type = "text/event-stream",
             headers = {
                 "Cache-Control": "no-cache",
@@ -10097,11 +10138,8 @@ async def _anthropic_tool_stream(
         drop_until_tool_end = False
 
         gen = run_gen()
-        # Concurrent disconnect watcher: the loop only polls is_disconnected()
-        # between events, so a client disconnect during a long prefill or
-        # generation step would otherwise hold the decode slot until the next
-        # event or a failed send. The watcher sets cancel_event so the backend
-        # stops promptly.
+        # Watcher to cancel on disconnect: the in-loop poll fires only between
+        # events, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
@@ -10199,11 +10237,8 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
-        # Concurrent disconnect watcher: the loop only polls is_disconnected()
-        # between chunks, so a client disconnect during a long prefill or
-        # generation step would otherwise hold the decode slot until the next
-        # chunk or a failed send. The watcher sets cancel_event so the backend
-        # stops promptly.
+        # Watcher to cancel on disconnect: the in-loop poll fires only between
+        # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
@@ -11168,6 +11203,10 @@ async def _openai_passthrough_stream(
     response ``id``, ``finish_reason`` (including ``"tool_calls"``),
     ``delta.tool_calls``, and any client-requested trailing ``usage`` chunk so
     the client sees a standard OpenAI response.
+
+    Reasoning/tool-call splitting is delegated to llama-server (``--jinja
+    --reasoning-format auto``), so ``delta.content`` carries no raw markup and is
+    deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
@@ -11584,11 +11623,9 @@ async def _openai_passthrough_stream(
                                 delta = choice.get("delta")
                                 if isinstance(delta, dict) and delta.get("tool_calls"):
                                     saw_tool_call_delta = True
-                        # Detect an upstream error chunk independently of API
-                        # monitoring: when monitor_id is None (skip_api_monitor),
-                        # _monitor_openai_sse_line returns before inspecting the
-                        # error, so without this the synthetic-finish guard would
-                        # emit a successful finish_reason after a failed stream.
+                        # Detect an error chunk independently of API monitoring
+                        # (skip_api_monitor returns early), else the synthetic
+                        # finish would fire after a failed stream.
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
                     # With healing active, a content-bearing line may be replaced by

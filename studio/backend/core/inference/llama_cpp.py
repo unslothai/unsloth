@@ -38,6 +38,21 @@ from core.inference.llama_server_args import (
     strip_shadowing_flags,
     strip_split_mode_only,
 )
+
+# Share strip / signal constants with the multi-format parser so BUFFERING also
+# catches Llama-3 / Mistral / Gemma 4.
+from core.inference.tool_call_parser import (
+    _balanced_brace_end,
+    TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
+    parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    strip_leading_bare_json_call,
+    strip_llama3_leading_sentinels,
+    strip_tool_markup as _shared_strip_tool_markup,
+)
+# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
+# pattern lists, so the GGUF streaming strip stays aligned with the parser.
 from core.tool_healing import (
     _TOOL_ALL_PATS,
     _TOOL_CLOSED_PATS,
@@ -52,12 +67,6 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
-from core.inference.tool_call_parser import (
-    RAG_MAX_SEARCHES_PER_TURN,
-    RAG_SEARCH_CAP_NUDGE,
-    TOOL_XML_SIGNALS,
-    parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
-)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     tool_event_provenance,
@@ -224,7 +233,7 @@ _INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-_MAX_REPROMPTS = 1
+_MAX_REPROMPTS = 3
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -7955,10 +7964,9 @@ class LlamaCppBackend:
         content: str,
         *,
         allow_incomplete: bool = True,
-        enabled_tool_names = None,
+        enabled_tool_names: Optional[set] = None,
     ) -> list[dict]:
-        """Thin wrapper around the shared parser in tool_call_parser
-        so safetensors and llama_cpp pick up the same fixes."""
+        """Wrapper around the shared parser; ``enabled_tool_names`` gates the markerless bare-JSON form."""
         return _shared_parse_tool_calls_from_text(
             content,
             allow_incomplete = allow_incomplete,
@@ -8489,7 +8497,13 @@ class LlamaCppBackend:
         ) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return strip_tool_call_markup(text, final = final, enabled_tool_names = _enabled_names_gate)
+            # Delegate to the shared parser-side strip so the GGUF cleanup covers every family the
+            # parser promotes (Llama <|python_tag|>, Mistral [TOOL_CALLS], bare rehearsal, function
+            # XML, Gemma) and stays aligned with detection; tool_healing's strip omits the loop-only
+            # forms (python_tag / Mistral name) and would leak them into display.
+            return _shared_strip_tool_markup(
+                text, final = final, enabled_tool_names = _enabled_names_gate
+            )
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
@@ -8548,6 +8562,13 @@ class LlamaCppBackend:
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
 
+        def _looks_like_enabled_bare_json(text: str, enabled_tool_names: set) -> bool:
+            """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
+            probe = strip_llama3_leading_sentinels(text.lstrip())
+            if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
+                return False
+            return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
+
         tool_controller = ToolLoopController(
             tools = tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
@@ -8561,6 +8582,8 @@ class LlamaCppBackend:
             )
 
         _MAX_BUFFER_CHARS = 32
+        # Hold a leading ``{`` well past the 32-char XML cap until it balances (mirrors safetensors).
+        _MAX_BARE_JSON_BUFFER = 16384
         _append_budget_exhausted_nudge = True
         # RAG: cap knowledge-base searches per assistant turn. The controller is
         # tool-agnostic, so this gate stays in the loop.
@@ -8573,6 +8596,9 @@ class LlamaCppBackend:
         # "Hello!" won't match. Pattern compiled at module level
         # (_INTENT_SIGNAL).
         _reprompt_count = 0
+        # Gates ``max_tool_iterations`` on real tool turns so reserved re-prompt slots don't
+        # extend the budget. Mirrors the safetensors guard.
+        _tool_iters_done = 0
         _forced_tool_call_pending = False
 
         # Reserve extra iterations for re-prompts so they don't consume the
@@ -8581,12 +8607,21 @@ class LlamaCppBackend:
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
+            # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
+            _turn_executed_real_tool = False
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
-            _tool_xml_signals = TOOL_XML_SIGNALS
+            # Gate the markerless bare-JSON form on enabled names so a JSON answer isn't misread as a call.
+            _enabled_tool_names = {
+                (tool.get("function") or {}).get("name")
+                for tool in active_tools
+                if (tool.get("function") or {}).get("name")
+            }
+            # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows.
+            _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
@@ -8901,12 +8936,47 @@ class LlamaCppBackend:
                                             is_prefix = True
                                             is_rehearsal_prefix = True
 
-                                        if is_match:
-                                            # Tool signal -- flush any visible prefix before
-                                            # DRAINING so the route sends it before tool_start.
+                                        # Bare Llama-3.2 {"name":..} has no XML signal: hold an
+                                        # incomplete object, drain a complete one (mirrors safetensors).
+                                        _hold_buffer = False
+                                        # Whole buffer is the call (no visible prefix) -- drain silently.
+                                        _drain_silently = False
+                                        if not is_match and not is_prefix:
+                                            _bare = strip_llama3_leading_sentinels(stripped_buf)
+                                            if _bare.startswith("{"):
+                                                if _balanced_brace_end(_bare, 0) is None:
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    elif _looks_like_enabled_bare_json(
+                                                        _bare, _enabled_tool_names
+                                                    ):
+                                                        # Oversized still-open ENABLED-tool call: stop
+                                                        # holding (memory bound) but DRAIN, not leak;
+                                                        # a giant ordinary JSON answer still streams.
+                                                        _drain_silently = True
+                                                elif self._parse_tool_calls_from_text(
+                                                    content_buffer,
+                                                    allow_incomplete = auto_heal_tool_calls,
+                                                    enabled_tool_names = _enabled_tool_names,
+                                                ):
+                                                    _drain_silently = True
+
+                                        if _drain_silently:
+                                            # No visible prefix -- the buffered text IS
+                                            # the call; drain without yielding it.
+                                            detect_state = _S_DRAINING
+                                        elif is_match:
+                                            # Tool signal -- flush any visible
+                                            # prefix before DRAINING so the
+                                            # route sends it before tool_start.
+                                            # Use the final strip (all families incl. Llama
+                                            # <|python_tag|> / Mistral name): the buffer holds
+                                            # the whole call, so a streaming closed-only strip
+                                            # would leak its open-ended markup as display text.
                                             _flush_reasoning_and_buffer()
-                                            cleaned = _strip_tool_markup_streaming(
+                                            cleaned = _strip_tool_markup(
                                                 cumulative_display,
+                                                final = True,
                                                 force = True,
                                             )
                                             if len(cleaned) > len(_last_emitted):
@@ -8917,9 +8987,12 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
-                                        elif is_prefix and (
-                                            is_rehearsal_prefix
-                                            or len(stripped_buf) < _MAX_BUFFER_CHARS
+                                        elif _hold_buffer or (
+                                            is_prefix
+                                            and (
+                                                is_rehearsal_prefix
+                                                or len(stripped_buf) < _MAX_BUFFER_CHARS
+                                            )
                                         ):
                                             # A rehearsal prefix is self-bounded; the buffer
                                             # cap must not cut long MCP names short.
@@ -8957,9 +9030,17 @@ class LlamaCppBackend:
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
+                    # A held bare-JSON fragment has no XML signal; route it to DRAINING.
+                    _bare_eos = strip_llama3_leading_sentinels(stripped_buf)
+                    # Gate on enabled names so a JSON answer isn't routed to DRAINING and dropped.
+                    _is_bare_tc = bool(active_tools) and _looks_like_enabled_bare_json(
+                        _bare_eos, _enabled_tool_names
+                    )
                     if stripped_buf and _gguf_has_genuine_tool_signal(
                         stripped_buf, _tool_xml_signals, _detect_tools
                     ):
+                        detect_state = _S_DRAINING
+                    elif _is_bare_tc:
                         detect_state = _S_DRAINING
                     elif content_accum or reasoning_accum:
                         detect_state = _S_STREAMING
@@ -8986,23 +9067,24 @@ class LlamaCppBackend:
                                     "text": cumulative_display,
                                 }
                     else:
+                        # No tool signal and no enabled bare-JSON call: a leading ``{`` is an ordinary
+                        # JSON answer and must be shown; any other partial-markup prefix is dropped.
+                        _held = strip_llama3_leading_sentinels(content_buffer.lstrip())
+                        if _held.startswith("{") and not _suppress_visible_output:
+                            yield {"type": "content", "text": _held}
                         return
 
                 # ── STREAMING path: no tool call ──
                 if detect_state == _S_STREAMING:
-                    # Safety net: check for XML tool signals in content. The
-                    # route layer resets prev_text on tool_start, so post-tool
-                    # synthesis streams correctly even if content was emitted
-                    # before the tool XML.
-                    _safety_tc = None
-                    if _gguf_has_genuine_tool_signal(
-                        content_accum, _tool_xml_signals, _detect_tools
-                    ):
-                        _safety_tc = self._parse_tool_calls_from_text(
-                            content_accum,
-                            allow_incomplete = auto_heal_tool_calls,
-                            enabled_tool_names = _enabled_names_gate,
-                        )
+                    # Safety net: re-parse the full content for tool calls. The route layer resets
+                    # prev_text on tool_start, so post-tool synthesis streams correctly even if
+                    # content was emitted before the tool XML. Unconditional (not gated on
+                    # _tool_xml_signals): bare-JSON and Gemma wrapper-less calls carry no signal.
+                    _safety_tc = self._parse_tool_calls_from_text(
+                        content_accum,
+                        allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_tool_names,
+                    )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
                         # If the model described its intent (forward-looking
@@ -9125,19 +9207,24 @@ class LlamaCppBackend:
                             for i in sorted(tool_calls_acc)
                             if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
                         ] or None
-                    if not tool_calls and _gguf_has_genuine_tool_signal(
-                        content_accum, _tool_xml_signals, _detect_tools
-                    ):
+                    if not tool_calls:
+                        # Unconditional re-parse: DRAINING means the buffer looked like a call, and
+                        # bare-JSON / Gemma wrapper-less calls carry no XML signal to gate on.
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
-                            enabled_tool_names = _enabled_names_gate,
+                            enabled_tool_names = _enabled_tool_names,
                         )
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(
                             content_text,
                             final = True,
                             force = True,
+                        )
+                        # ``_strip_tool_markup`` only knows XML; also drop a leading bare-JSON call
+                        # so the executed call isn't replayed as text or next-turn history.
+                        content_text = strip_leading_bare_json_call(
+                            content_text, _enabled_tool_names
                         )
                     if tool_calls:
                         logger.info(
@@ -9152,6 +9239,13 @@ class LlamaCppBackend:
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.
                             content_accum = _strip_tool_markup(content_accum, final = True)
+                        # A truncated bare-JSON call has no XML to strip and didn't parse. With
+                        # Auto-Heal on drop a leading ENABLED-tool fragment (plain JSON untouched);
+                        # off keeps it visible per the strict contract.
+                        if content_accum and active_tools and auto_heal_tool_calls:
+                            content_accum = strip_leading_bare_json_call(
+                                content_accum, _enabled_tool_names
+                            )
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _meta = _build_metadata_event(
@@ -9294,6 +9388,8 @@ class LlamaCppBackend:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                    # A tool ran this turn, so it counts against the caller's budget.
+                    _turn_executed_real_tool = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
 
@@ -9317,6 +9413,12 @@ class LlamaCppBackend:
                 if tool_controller.force_final_answer or not tool_controller.active_tools():
                     _append_budget_exhausted_nudge = False
                     break
+                # Count only real tool turns against the cap so reserved re-prompt slots can't
+                # become extra tool rounds; a no-op turn doesn't consume budget (GGUF parity).
+                if _turn_executed_real_tool:
+                    _tool_iters_done += 1
+                    if _tool_iters_done >= max_tool_iterations:
+                        break
                 continue
 
             except httpx.ConnectError:
