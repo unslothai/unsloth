@@ -139,7 +139,7 @@ class TestParser:
         assert "print('hi')" in result[0]["function"]["arguments"]
 
     def test_xml_param_preserves_leading_indentation(self):
-        # Only the wrapping newline is trimmed, so code indentation survives.
+        # Only the wrapping newline is trimmed, so code-argument indentation survives (str.strip() destroyed it).
         text = (
             "<function=python><parameter=code>\n"
             "    indented = 1\n"
@@ -204,7 +204,9 @@ class TestParser:
         assert strip_tool_markup(text) == "before  after"
 
     def test_strip_named_mistral_call_consumes_trailing_eos(self):
-        # The named [TOOL_CALLS]name{json} shape must eat the optional trailing </s>.
+        # The named ``[TOOL_CALLS]name{json}`` shape must eat the optional
+        # trailing ``</s>`` like the array shape, so the EOS marker is not left
+        # behind as visible content.
         text = '[TOOL_CALLS]web_search{"query":"cats"}</s>'
         assert strip_tool_markup(text) == ""
         text = '[TOOL_CALLS]web_search{"query":"cats"}</s> and then'
@@ -235,8 +237,27 @@ class TestParser:
             == "before "
         )
 
+    def test_streaming_strip_handles_nested_mistral_json(self):
+        # The non-greedy [TOOL_CALLS]name{...} pattern truncates nested JSON at the first }; the
+        # balanced helper must remove the whole call so no trailing brace leaks to the streaming ...
+        raw = 'ok [TOOL_CALLS]foo{"a":{"b":1}} tail'
+        out = strip_tool_markup_streaming(raw)
+        assert "[TOOL_CALLS]" not in out
+        assert "}" not in out
+        assert "ok " in out and "tail" in out
+
+    def test_streaming_strip_handles_nested_wrapperless_gemma(self):
+        # Same class of bug for the wrapper-less Gemma call:NAME{...} form with a
+        # nested object argument.
+        raw = "ok call:f{loc:{city:NYC},n:3} tail"
+        out = strip_tool_markup_streaming(raw)
+        assert "call:f" not in out
+        assert "}" not in out
+        assert "ok " in out and "tail" in out
+
     def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
-        # A literal <function=...> in a value is data: the strip closes at the REAL </function>, keeping prose.
+        # A literal ``<function=...>`` in a value is data: the strip must close at the REAL
+        # ``</function>`` and keep trailing prose (the open-ended regex ate to EOF).
         raw = (
             "pref <function=python><parameter=code>"
             'print("<function=x>")</parameter></function> tail'
@@ -246,15 +267,19 @@ class TestParser:
         assert strip_tool_markup_streaming(raw) == strip_tool_markup(raw, final = True)
 
     def test_streaming_strip_drops_leading_magistral_reasoning(self):
-        # Magistral reasoning is a leading [THINK]...[/THINK] block; the streaming strip must drop it.
+        # Magistral emits reasoning as a leading ``[THINK]...[/THINK]`` bracket block
+        # (not the ``<think>`` the reasoning channel renders). The streaming display
+        # strip must drop it so the raw chain-of-thought does not leak into the
+        # safetensors content; GGUF routes it to reasoning_content natively.
         closed = "[THINK]Let me think. 2+2 is 4.[/THINK]The answer is 4."
         assert strip_tool_markup_streaming(closed) == "The answer is 4."
         assert strip_tool_markup_streaming(closed) == strip_tool_markup(closed, final = True)
-        # Unclosed mid-stream reasoning is held; cleaned text grows only after [/THINK].
+        # Unclosed mid-stream reasoning is held from the marker on (nothing leaks, and
+        # the cleaned text only grows as the answer streams in after ``[/THINK]``).
         assert strip_tool_markup_streaming("[THINK]still thinking") == ""
         assert strip_tool_markup_streaming("[THINK]r[/THINK]The") == "The"
         assert strip_tool_markup_streaming("[THINK]r[/THINK]The answer") == "The answer"
-        # A non-leading [THINK] is ordinary prose, left untouched.
+        # A non-leading ``[THINK]`` is ordinary prose and is left untouched.
         assert strip_tool_markup_streaming("hi [THINK] later") == "hi [THINK] later"
 
 
@@ -294,7 +319,7 @@ class TestParserMultiFormat:
         assert args == {"query": "hi", "n": 5}
 
     def test_llama3_python_tag_json_form_with_eom(self):
-        # Llama-3 emits <|eom_id|> after the JSON; must not break parsing.
+        # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
         import json
 
         text = '<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>'
@@ -307,10 +332,22 @@ class TestParserMultiFormat:
         text = '<|python_tag|>brave_search.call(query="x")'
         assert strip_tool_markup(text, final = True) == ""
 
-    # Llama-3.2 bare JSON ``custom_tools``
+    def test_llama3_python_tag_json_form_non_scalar_args_skipped(self):
+        # Should NOT fabricate ``{"value": args}`` when the JSON form
+        # has a non-dict / non-string ``arguments`` value.
+        for bad in (
+            '<|python_tag|>{"name":"foo","arguments":42}',
+            '<|python_tag|>{"name":"foo","arguments":[1,2,3]}',
+            '<|python_tag|>{"name":"foo","arguments":null}',
+            '<|python_tag|>{"name":"foo","arguments":true}',
+        ):
+            assert parse_tool_calls_from_text(bad) == [], bad
+
+    # ── Llama-3.2 bare JSON ``custom_tools`` ─────────────────────
 
     def test_llama3_2_bare_json_parameters(self):
-        # Llama-3.2-Instruct emits bare JSON directly as content, no <|python_tag|> prefix.
+        # Llama-3.2-Instruct emits bare JSON directly as content; no
+        # <|python_tag|> prefix per its training template.
         import json
 
         text = '{"name":"web_search","parameters":{"query":"Tokyo weather"}}'
@@ -330,7 +367,7 @@ class TestParserMultiFormat:
         assert args == {"a": 1, "b": 2}
 
     def test_llama3_2_bare_json_multi_call(self):
-        # Llama-3 may chain calls with "; " per training template.
+        # Llama-3 may chain calls with ``; `` per training template.
         text = '{"name":"a","parameters":{}}; {"name":"b","parameters":{}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 2
@@ -356,7 +393,8 @@ class TestParserMultiFormat:
         assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_embedded_in_prose_does_not_fire(self):
-        # Defensive: JSON embedded in prose must NOT fire (content must START with `{`).
+        # Defensive: JSON embedded in prose must NOT fire (parser is
+        # strict about content STARTING with `{`).
         text = 'The tool result was: {"name":"foo"}'
         assert parse_tool_calls_from_text(text) == []
 
@@ -373,12 +411,14 @@ class TestParserMultiFormat:
         assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_string_parameters_does_not_fire(self):
-        # Llama-3 spec: parameters must be a dict; a string value must NOT trigger.
+        # Llama-3 spec: parameters must be a dict. Prose like
+        # ``{"name":"foo","parameters":"a sentence"}`` must NOT trigger.
         text = '{"name":"foo","parameters":"this is a sentence"}'
         assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_string_arguments_not_json_does_not_fire(self):
-        # OpenAI arguments may be a JSON-string of a dict, but a plain non-JSON string must not pass.
+        # OpenAI ``arguments`` may be a JSON-string of a dict, but a
+        # plain non-JSON string must not pass the guard.
         text = '{"name":"foo","arguments":"not json"}'
         assert parse_tool_calls_from_text(text) == []
 
@@ -417,7 +457,8 @@ class TestParserMultiFormat:
     def test_mistral_array_parameters_key_alias(self):
         import json
 
-        # Array object keyed on parameters (not arguments) must keep its payload.
+        # Array object keyed on ``parameters`` (not ``arguments``) must keep its
+        # payload, matching the JSON/XML paths and SGLang's base detector.
         text = '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -435,7 +476,7 @@ class TestParserMultiFormat:
         assert result[1]["function"]["name"] == "b"
 
     def test_mistral_pre_v11_unclosed_array(self):
-        # Closing ] truncated: parser must heal off individual objects.
+        # Closing ``]`` truncated -- parser must heal off individual objects.
         text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -444,7 +485,7 @@ class TestParserMultiFormat:
     # Mistral v11+
 
     def test_mistral_v11_single(self):
-        # Magistral / Mistral Small 3.1: bare name{json} after trigger.
+        # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
         import json
 
         text = '[TOOL_CALLS]add{"a":3.5,"b":4}'
@@ -454,7 +495,7 @@ class TestParserMultiFormat:
         assert json.loads(result[0]["function"]["arguments"]) == {"a": 3.5, "b": 4}
 
     def test_mistral_v11_parallel(self):
-        # v11+ parallel: [TOOL_CALLS]a{...}[TOOL_CALLS]b{...}.
+        # v11+ parallel: ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``.
         text = '[TOOL_CALLS]add{"a":1}[TOOL_CALLS]sub{"b":2}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 2
@@ -462,7 +503,7 @@ class TestParserMultiFormat:
         assert result[1]["function"]["name"] == "sub"
 
     def test_mistral_v11_with_args_marker(self):
-        # Ministral / Mistral Large 3: [TOOL_CALLS]name[ARGS]{json}.
+        # Ministral / Mistral Large 3: ``[TOOL_CALLS]name[ARGS]{json}``.
         import json
 
         text = '[TOOL_CALLS]add[ARGS]{"a":1,"b":2}'
@@ -476,7 +517,9 @@ class TestParserMultiFormat:
         assert strip_tool_markup(text, final = True) == ""
 
     def test_mistral_call_id_form(self):
-        # Mistral Small 3.2: the [CALL_ID] segment must be skipped, not treated as a stop (llama.cpp test-chat.cpp:4785).
+        # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``.
+        # The ``[CALL_ID]`` segment must be skipped, not treated as a stop
+        # (llama.cpp test-chat.cpp:4785 parses this to one call).
         import json
 
         text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
@@ -501,7 +544,9 @@ class TestParserMultiFormat:
         assert strip_tool_markup(text, final = True) == ""
 
     def test_mistral_think_reasoning_ignored(self):
-        # A [TOOL_CALLS] inside [THINK]...[/THINK] is reasoning; only the call after [/THINK] counts (llama.cpp test-chat.cpp:2285).
+        # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]``
+        # inside the reasoning is chain-of-thought, not a real call; only the
+        # call after ``[/THINK]`` counts (llama.cpp test-chat.cpp:2285).
         import json
 
         text = (
@@ -514,12 +559,14 @@ class TestParserMultiFormat:
         assert json.loads(result[0]["function"]["arguments"]) == {"y": 2}
 
     def test_mistral_think_reasoning_no_real_call(self):
-        # Reasoning that mentions a call but emits none after [/THINK] yields no calls.
+        # Reasoning that merely mentions a tool call but does not emit one
+        # after ``[/THINK]`` yields no calls.
         text = '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.'
         assert parse_tool_calls_from_text(text) == []
 
     def test_mistral_think_literal_in_argument_preserved(self):
-        # A literal [THINK] inside a real tool argument must not be stripped or corrupt the parse.
+        # A literal ``[THINK]`` inside a real tool argument (after the call)
+        # must not be stripped or corrupt the parse.
         import json
 
         text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
@@ -554,7 +601,7 @@ class TestParserMultiFormat:
         assert args == {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None}
 
     def test_gemma4_nested_args(self):
-        # Gemma 4 nests dicts / lists with bare keys and <|"|> strings.
+        # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
         import json
 
         text = (
@@ -585,7 +632,65 @@ class TestParserMultiFormat:
         text = "<|tool_call>call:foo{x:1}<tool_call|>"
         assert strip_tool_markup(text, final = True) == ""
 
-    # Cross-format sentinels
+    # ── Gemma 4 wrapper-less (skip_special_tokens stripped) ───────────
+
+    def test_gemma4_bare_stripped_call(self):
+        # skip_special_tokens removes <|tool_call>/<tool_call|> and <|"|>,
+        # leaving a bare call:NAME{...} with an unquoted value.
+        import json
+
+        text = "call:web_search{query:weather in San Francisco right now}"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "weather in San Francisco right now"}
+
+    def test_gemma4_bare_code_with_commas(self):
+        # A code value with commas must not truncate at the first comma.
+        import json
+
+        text = (
+            "call:python{code:def f(n):\n    a, b = 0, 1\n"
+            "    for _ in range(2, n+1):\n        a, b = b, a + b\n"
+            "    return b\n\nprint(f(30))}"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert result[0]["function"]["name"] == "python"
+        code = json.loads(result[0]["function"]["arguments"])["code"]
+        assert "a, b = 0, 1" in code and "print(f(30))" in code
+
+    def test_gemma4_bare_quotes_normalized(self):
+        # The same value quoted vs unquoted must parse identically so the
+        # agentic loop can collapse a looping model's repeated calls.
+        import json
+
+        a = parse_tool_calls_from_text('call:web_search{query:"foo bar"}')
+        b = parse_tool_calls_from_text("call:web_search{query:foo bar}")
+        assert json.loads(a[0]["function"]["arguments"]) == {"query": "foo bar"}
+        assert json.loads(a[0]["function"]["arguments"]) == json.loads(
+            b[0]["function"]["arguments"]
+        )
+
+    def test_gemma4_bare_multi_arg(self):
+        import json
+
+        text = "call:web_search{query:pytorch latest, url:https://pytorch.org}"
+        result = parse_tool_calls_from_text(text)
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "pytorch latest", "url": "https://pytorch.org"}
+
+    def test_gemma4_bare_not_matched_in_prose(self):
+        # A word ending in "call:" must not trigger a bare tool call.
+        text = "I will recall:that the function{ } is helpful."
+        result = parse_tool_calls_from_text(text)
+        assert result == []
+
+    def test_gemma4_bare_strip_markup_final(self):
+        text = "Here you go: call:web_search{query:weather today}"
+        assert "call:web_search" not in strip_tool_markup(text, final = True)
+
+    # ── Cross-format sentinels ────────────────────────────────────
 
     def test_all_markers_in_tool_xml_signals(self):
         # Streaming buffer wakes up on every emission marker.
@@ -703,6 +808,553 @@ def _make_loop(
     ), exec_fn
 
 
+class TestParserDeepSeek:
+    """DeepSeek R1 / V3 / V3.1 coverage. Markers use full-width pipes
+    (U+FF5C) and lower-one-eighth-block (U+2581). R1 wraps args in a
+    Markdown ``` ```json ``` ``` fence; V3 / V3.1 emit bare JSON."""
+
+    def test_r1_simple_call_with_code_fence(self):
+        import json as _json
+
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>function"
+            "<｜tool▁sep｜>special_function\n"
+            "```json\n"
+            '{"arg1": 1}\n'
+            "```"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "special_function"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+
+    def test_r1_short_form_outer_marker(self):
+        # llama.cpp accepts ``<｜tool▁calls｜>`` as the short-form opener.
+        import json as _json
+
+        text = (
+            "<｜tool▁calls｜>function"
+            "<｜tool▁sep｜>get_time\n"
+            "```json\n"
+            '{"city": "Paris"}\n'
+            "```"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+
+    def test_v3_1_bare_json(self):
+        # V3 / V3.1 omit the ``function`` prefix and the code fence.
+        import json as _json
+
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_v3_1_multi_call_shares_envelope(self):
+        # Parallel calls share one outer envelope; each inner call has
+        # its own ``<｜tool▁call▁begin｜>...<｜tool▁call▁end｜>``.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁call▁begin｜>get_weather"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "get_time"
+        assert result[1]["function"]["name"] == "get_weather"
+
+    def test_v3_1_with_reasoning(self):
+        # Reasoning <think>...</think> precedes the tool block.
+        text = (
+            "<think>I'm thinking</think>\n"
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+
+    def test_v3_1_strict_rejects_unclosed_envelope(self):
+        # Envelope truncated mid-stream (no <｜tool▁calls▁end｜>): healed by
+        # default, rejected with Auto-Heal off.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Tokyo"}'
+        )
+        assert len(parse_tool_calls_from_text(text)) == 1
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+    def test_v3_1_multi_call_recovers_when_first_end_marker_missing(self):
+        # First inner call omits its <｜tool▁call▁end｜>; the second must still be parsed.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁begin｜>get_weather"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
+
+    def test_v3_1_strict_recovers_after_missing_call_end(self):
+        # Strict mode (Auto-Heal off): the FIRST inner call is missing its <｜tool▁call▁end｜>
+        # terminator, so it is skipped -- but the parser must keep scanning and still return the ...
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_weather"
+            "<｜tool▁sep｜>"
+            '{"city": "SF"}'
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"tz": "PST"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        # Auto-Heal keeps both; strict skips the truncated first, keeps the second.
+        assert [c["function"]["name"] for c in parse_tool_calls_from_text(text)] == [
+            "get_weather",
+            "get_time",
+        ]
+        strict = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert [c["function"]["name"] for c in strict] == ["get_time"]
+
+    def test_r1_strict_recovers_after_missing_close_fence(self):
+        # R1 form.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "function<｜tool▁sep｜>get_weather\n```json\n"
+            '{"city": "SF"}'
+            "function<｜tool▁sep｜>get_time\n```json\n"
+            '{"tz": "PST"}'
+            "\n```<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        strict = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert [c["function"]["name"] for c in strict] == ["get_time"]
+
+    def test_deepseek_strip_markup(self):
+        text = (
+            "before "
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>foo"
+            "<｜tool▁sep｜>"
+            "{}"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+    def test_deepseek_signal_wakes_streaming(self):
+        # The streaming buffer state machine must wake on the DeepSeek opener so the rest of the
+        # section is drained instead of leaked.
+        text = "<｜tool▁calls▁begin｜>..."
+        assert has_tool_signal(text)
+
+    def test_deepseek_short_opener_is_stripped(self):
+        # The short ``<｜tool▁calls｜>`` opener is parsed, so its markup must also be stripped (the
+        # strip patterns used to require ...calls_begin and left the short-opener markup leaking to ...
+        text = (
+            "before "
+            "<｜tool▁calls｜>"
+            "<｜tool▁call▁begin｜>foo"
+            "<｜tool▁sep｜>"
+            "{}"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+
+class TestParserGLM:
+    """GLM 4.5 / 4.6 / 4.7 coverage. Marker collides with Qwen's
+    ``<tool_call>`` but the body shape is XML kv pairs instead of JSON,
+    so the dispatch order keeps both formats working."""
+
+    def test_glm_simple_call(self):
+        import json as _json
+
+        text = (
+            "<tool_call>web_search\n"
+            "<arg_key>query</arg_key>\n"
+            "<arg_value>weather Tokyo</arg_value>\n"
+            "</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        args = _json.loads(result[0]["function"]["arguments"])
+        # Strings come through raw; the parser does not double-quote.
+        assert args == {"query": "weather Tokyo"}
+
+    def test_glm_mixed_types_decode_correctly(self):
+        # Per the chat_template.jinja, strings are emitted raw and non-strings are JSON-encoded.
+        import json as _json
+
+        text = (
+            "<tool_call>complex_function\n"
+            "<arg_key>name</arg_key>\n<arg_value>John Doe</arg_value>\n"
+            "<arg_key>age</arg_key>\n<arg_value>30</arg_value>\n"
+            "<arg_key>active</arg_key>\n<arg_value>true</arg_value>\n"
+            "<arg_key>score</arg_key>\n<arg_value>95.5</arg_value>\n"
+            "</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        args = _json.loads(result[0]["function"]["arguments"])
+        assert args == {"name": "John Doe", "age": 30, "active": True, "score": 95.5}
+
+    def test_glm_multi_call_back_to_back(self):
+        # GLM emits parallel calls as consecutive ``<tool_call>...
+        # </tool_call>`` blocks with no outer envelope.
+        text = (
+            "<tool_call>a\n<arg_key>x</arg_key>\n<arg_value>1</arg_value>\n</tool_call>"
+            "<tool_call>b\n<arg_key>y</arg_key>\n<arg_value>2</arg_value>\n</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "a"
+        assert result[1]["function"]["name"] == "b"
+
+    def test_glm_unclosed_tool_call_does_not_lose_value(self):
+        # Truncated mid-stream (no </tool_call>) -- the parser must
+        # still surface what it found rather than dropping the call.
+        text = "<tool_call>web_search\n<arg_key>query</arg_key>\n<arg_value>partial</arg_value>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    def test_glm_does_not_break_qwen_path(self):
+        # Real Qwen emission must still be parsed by the Qwen branch,
+        # not silently misrouted to GLM (the marker is shared).
+        text = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    def test_glm_strip_markup(self):
+        text = (
+            "before "
+            "<tool_call>a\n<arg_key>x</arg_key>\n<arg_value>1</arg_value>\n</tool_call>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+    def test_glm_zero_arg_inline_call(self):
+        # GLM 4.7 emits a no-argument call inline as ``<tool_call>name</tool_call>`` (name followed
+        # straight by the close tag, no \n / <arg_key>).
+        import json as _json
+
+        text = "<tool_call>get_current_date</tool_call>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_current_date"
+        assert _json.loads(result[0]["function"]["arguments"]) == {}
+
+    def test_glm_zero_arg_call_in_parallel_batch(self):
+        # A no-arg call alongside a normal one must not make either vanish.
+        text = (
+            "<tool_call>get_current_date</tool_call>"
+            "<tool_call>get_weather\n<arg_key>city</arg_key>\n"
+            "<arg_value>Tokyo</arg_value></tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "get_current_date"
+        assert result[1]["function"]["name"] == "get_weather"
+
+    def test_glm_string_value_whitespace_preserved(self):
+        # The template emits string args verbatim, so significant leading / trailing whitespace
+        # (code, diffs) must survive.
+        import json as _json
+
+        text = (
+            "<tool_call>run\n<arg_key>code</arg_key>\n"
+            "<arg_value>    indented code    </arg_value></tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = _json.loads(result[0]["function"]["arguments"])
+        assert args == {"code": "    indented code    "}
+
+
+class TestParserKimi:
+    """Kimi K2 / Moonshot coverage. ASCII pipes only (NOT full-width).
+    Name arrives as ``functions.NAME:IDX``; the parser strips the
+    prefix and the index to recover the bare callable name while
+    preserving the full id for round-trip rendering."""
+
+    def test_kimi_simple_call(self):
+        import json as _json
+
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.special_function:0"
+            "<|tool_call_argument_begin|>"
+            '{"arg1": 1}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        # Bare name recovered; full id preserved verbatim.
+        assert result[0]["function"]["name"] == "special_function"
+        assert result[0]["id"] == "functions.special_function:0"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+
+    def test_outer_tool_call_with_embedded_kimi_marker_parses_outer(self):
+        # A Qwen/Hermes <tool_call> whose argument contains literal Kimi markup (a user asking
+        # about that syntax) must execute the OUTER call, not the embedded marker via the ...
+        text = (
+            '<tool_call>{"name":"web_search","arguments":{"query":'
+            '"explain <|tool_call_begin|>functions.evil:0'
+            '<|tool_call_argument_begin|>{}<|tool_call_end|>"}}'
+            "</tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    def test_genuine_kimi_call_without_envelope_still_parses(self):
+        # Control: a real Kimi call with no leading <tool_call> envelope must
+        # still go through the pre-pass.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.web_search:0"
+            '<|tool_call_argument_begin|>{"query":"x"}<|tool_call_end|>'
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+
+    def test_kimi_multi_call_with_index(self):
+        # Multiple consecutive calls inside a single section, each
+        # with its own monotonically incrementing ``:IDX``.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.read_file:0"
+            "<|tool_call_argument_begin|>"
+            '{"path":"a"}'
+            "<|tool_call_end|>"
+            "<|tool_call_begin|>functions.web_search:1"
+            "<|tool_call_argument_begin|>"
+            '{"query":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "read_file"
+        assert result[0]["id"].endswith(":0")
+        assert result[1]["function"]["name"] == "web_search"
+        assert result[1]["id"].endswith(":1")
+
+    def test_kimi_dotted_name_keeps_full_dotted_name(self):
+        # A dotted Kimi id keeps its FULL name after stripping only the ``functions.`` prefix and
+        # ``:idx`` suffix -- matching current vLLM ...
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>a.b.c:2"
+            "<|tool_call_argument_begin|>"
+            "{}"
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "a.b.c"
+
+    def test_kimi_dotted_mcp_name_with_functions_prefix(self):
+        # ``functions.mcp.server-list:0`` must resolve to ``mcp.server-list``
+        # (only the ``functions.`` prefix and ``:idx`` are removed).
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.mcp.server-list:0"
+            "<|tool_call_argument_begin|>"
+            "{}"
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp.server-list"
+
+    def test_kimi_multi_call_recovers_when_first_end_marker_missing(self):
+        # First call omits its <|tool_call_end|>; the second must still parse.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.read_file:0"
+            "<|tool_call_argument_begin|>"
+            '{"path":"a"}'
+            "<|tool_call_begin|>functions.web_search:1"
+            "<|tool_call_argument_begin|>"
+            '{"query":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in result] == ["read_file", "web_search"]
+
+    def test_kimi_handles_unclosed_section(self):
+        # End marker missing -- the parser must still extract the call.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.foo:0"
+            "<|tool_call_argument_begin|>"
+            '{"a":1}'
+            "<|tool_call_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "foo"
+
+    def test_kimi_strip_markup(self):
+        text = (
+            "before "
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.x:0"
+            "<|tool_call_argument_begin|>"
+            "{}"
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
+    def test_kimi_signal_wakes_streaming(self):
+        text = "<|tool_calls_section_begin|>..."
+        assert has_tool_signal(text)
+
+    def test_kimi_call_without_section_wrapper(self):
+        # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper optional -- Kimi K2 can emit
+        # a bare ``<|tool_call_begin|>`` call.
+        import json as _json
+
+        text = (
+            "<|tool_call_begin|>functions.execute_command:0"
+            "<|tool_call_argument_begin|>"
+            '{"cmd":"ls"}'
+            "<|tool_call_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "execute_command"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"cmd": "ls"}
+
+    def test_kimi_malformed_json_recovers_later_calls(self):
+        # A call with malformed / truncated JSON must not drop the valid calls that follow it in
+        # the same section (the bad call is skipped, the good one is recovered).
+        import json as _json
+
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.a:0"
+            '<|tool_call_argument_begin|>{"city":"Beijing"'  # missing closing brace
+            "<|tool_call_end|>"
+            "<|tool_call_begin|>functions.b:1"
+            '<|tool_call_argument_begin|>{"city":"Shanghai"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "b"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"city": "Shanghai"}
+
+
+class TestParserCrossFormatRouting:
+    """Ensure the per-format dispatch order doesn't misroute any
+    family. Real emissions for each new family + every old family
+    must still parse correctly when intermixed."""
+
+    def test_dispatch_routes_each_family_correctly(self):
+        cases = [
+            (
+                "Qwen",
+                '<tool_call>{"name":"a","arguments":{"x":1}}</tool_call>',
+                "a",
+            ),
+            (
+                "DeepSeek V3.1",
+                "<｜tool▁calls▁begin｜>"
+                "<｜tool▁call▁begin｜>get_time"
+                "<｜tool▁sep｜>"
+                '{"city":"Tokyo"}'
+                "<｜tool▁call▁end｜>"
+                "<｜tool▁calls▁end｜>",
+                "get_time",
+            ),
+            (
+                "GLM",
+                "<tool_call>web_search\n"
+                "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
+                "</tool_call>",
+                "web_search",
+            ),
+            (
+                "Kimi",
+                "<|tool_calls_section_begin|>"
+                "<|tool_call_begin|>functions.add:0"
+                "<|tool_call_argument_begin|>"
+                '{"a":1}'
+                "<|tool_call_end|>"
+                "<|tool_calls_section_end|>",
+                "add",
+            ),
+        ]
+        for label, text, expected_name in cases:
+            result = parse_tool_calls_from_text(text)
+            assert len(result) == 1, f"{label}: parser missed the call"
+            assert result[0]["function"]["name"] == expected_name, (
+                f"{label}: got {result[0]['function']['name']!r}, " f"expected {expected_name!r}"
+            )
+
+    def test_all_new_markers_in_tool_xml_signals(self):
+        # The safetensors / MLX streaming buffer must wake on every supported emission marker --
+        # otherwise the BUFFERING state leaks tool content to the user before parse.
+        from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+        for marker in (
+            "<｜tool▁calls▁begin｜>",
+            "<｜tool▁call▁begin｜>",
+            "<|tool_calls_section_begin|>",
+            "<|tool_call_begin|>",
+        ):
+            assert marker in TOOL_XML_SIGNALS, f"streaming loop would not wake on {marker!r}"
+
+
 def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     captured_tool_names: list[list[str]] = []
     exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -739,7 +1391,8 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
 
 
 def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
-    # A late unclosed <tool_call> heals only with Auto-Heal on; off, it must not execute.
+    # A late call caught by the safety net: an unclosed ``<tool_call>`` heals only with Auto-Heal on;
+    # off, the safety net must not pass ``allow_incomplete=True`` and execute a truncated call.
     prose = "Sure, let me look that up for you right now. "
     incomplete = '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
 
@@ -764,7 +1417,9 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
 
 
 def test_bare_json_tool_call_is_not_streamed_as_content():
-    # Llama-3.2 bare form carries no XML signal: BUFFER until the object closes, never leak the JSON.
+    # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no
+    # XML signal. The loop must BUFFER it until the object closes and execute it via
+    # the safety net, never leaking the raw JSON to streaming clients as content.
     bare = '{"name":"web_search","parameters":{"query":"cats"}}'
     loop, exec_fn = _make_loop(
         turns = [[bare], ["Here are the results."]],
@@ -779,7 +1434,9 @@ def test_bare_json_tool_call_is_not_streamed_as_content():
 
 
 def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
-    # Markerless JSON whose "name" is not an enabled tool must be shown, not dropped.
+    # Markerless JSON whose "name" is not an enabled tool (e.g. a person record
+    # ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call
+    # to a disabled tool and dropped. _make_loop enables web_search/python/terminal.
     answer = '{"name":"Alice","parameters":{"age":30}}'
     loop, exec_fn = _make_loop(turns = [[answer]], max_tool_iterations = 1)
     events = _collect_events(loop)
@@ -789,7 +1446,8 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
 
 
 def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
-    # Same as above but the bare object arrives split mid-key, held across chunks until it balances.
+    # Same as above but the bare object arrives split mid-key, so the buffer is
+    # held open across chunks before it balances.
     loop, exec_fn = _make_loop(
         turns = [
             ['{"name":"web_', 'search","parameters":{"query":"cats"}}'],
@@ -804,8 +1462,68 @@ def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
     assert not any('"name"' in t or "web_search" in t for t in contents), contents
 
 
+def test_gemma_wrapperless_call_is_not_streamed_as_content():
+    # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal; the loop must hold
+    # it (BUFFERING) and execute it, never streaming the raw call text.
+    loop, exec_fn = _make_loop(
+        turns = [["call:web_search{query:cats}"], ["Found."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("call:web_search" in t for t in contents), contents
+
+
+def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
+    # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split across stream
+    # chunks.
+    loop, exec_fn = _make_loop(
+        turns = [["call", " : ", "web_search", "{query:cats}"], ["Found."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("call" in t for t in contents), contents
+
+
+def test_long_gemma_tool_name_is_not_streamed_as_content():
+    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer)
+    # must still be held: the ``call:NAME`` prefix keeps buffering until ``{``
+    # instead of leaking ``call:longname`` as visible text.
+    long_name = "mcp__github__list_repository_issues"  # 35 chars
+    turns = iter([list('call:%s{repo:"octo/hello"}' % long_name), ["Done."]])
+
+    def _gen(_messages):
+        try:
+            chunks = next(turns)
+        except StopIteration:
+            return
+        acc = ""
+        for c in chunks:
+            acc += c
+            yield acc
+
+    exec_fn = FakeExecuteTool(["RESULT"])
+    loop = run_safetensors_tool_loop(
+        single_turn = _gen,
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": long_name}}],
+        execute_tool = exec_fn,
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [(long_name, {"repo": "octo/hello"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("call:" in t for t in contents), contents
+
+
 def test_leading_json_answer_is_not_dropped():
-    # A leading {...} that is NOT a call must still surface; the hold only delays it.
+    # A leading ``{...}`` that is NOT a tool call must still surface as content:
+    # the bare-JSON hold can only ever delay it to end-of-object, never drop it.
     obj = '{"answer": 42, "note": "done"}'
     loop, exec_fn = _make_loop(
         turns = [[obj]],
@@ -844,7 +1562,8 @@ def _reprompt_loop(*, auto_heal_tool_calls):
 
 
 def test_reprompt_names_only_active_tools_not_hardcoded():
-    # The nudge must name the tools actually enabled, not hardcoded web_search/python.
+    # The plan-without-action nudge must name the tools actually enabled, never the
+    # old hardcoded ``web_search``/``python`` (which a restricted set would reject).
     captured, _events = _reprompt_loop(auto_heal_tool_calls = True)
     assert len(captured) >= 2, "intent prose should have triggered a re-prompt turn"
     reprompt = captured[1][-1]
@@ -855,7 +1574,8 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
 
 
 def test_reprompt_suppressed_when_auto_heal_disabled():
-    # With Auto-Heal off the nudge stays silent for GGUF parity, so only the initial generation runs.
+    # With Auto-Heal off the safetensors nudge must stay silent for backend parity
+    # with the GGUF loop, so only the single initial generation runs.
     captured, events = _reprompt_loop(auto_heal_tool_calls = False)
     assert len(captured) == 1, captured
     contents = [e["text"] for e in events if e["type"] == "content"]
@@ -922,7 +1642,8 @@ class TestLoopBasic:
         assert "Result: 1" in contents[-1]["text"]
 
     def test_llama3_python_tag_form(self):
-        # The loop must recognise Llama-3's <|python_tag|> marker, drain the turn, and execute the call.
+        # The agentic loop must recognise Llama-3's <|python_tag|>
+        # marker, drain the rest of the turn, and execute the call.
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -940,8 +1661,12 @@ class TestLoopBasic:
         assert "sunny" in contents[-1]["text"].lower()
 
     def test_llama3_bare_json_form_fires_tool(self):
-        # Llama-3.1/3.2 bare-JSON calls carry no XML signal; the safety-net parse must still fire
-        # the tool. Regression for the has_tool_signal gate that dropped these.
+        # Llama-3.1 / 3.2 emit a bare-JSON tool call
+        # ``{"name":..,"parameters":..}`` with NO XML signal. The loop's
+        # safety-net parse must still fire the tool instead of treating the
+        # turn as "planned without calling tools" and re-prompting the model
+        # into giving up. Regression for the has_tool_signal gate that
+        # dropped these; GGUF's llama-server parses them natively.
         loop, exec_fn = _make_loop(
             turns = [
                 ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
@@ -955,7 +1680,7 @@ class TestLoopBasic:
         assert "sunny" in contents[-1]["text"].lower()
 
     def test_mistral_pre_v11_form(self):
-        # Pre-v11 Mistral emission: [TOOL_CALLS] [{...}].
+        # Pre-v11 Mistral emission: ``[TOOL_CALLS] [{...}]``.
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -973,7 +1698,7 @@ class TestLoopBasic:
         assert tool_start["tool_call_id"] == "abc"
 
     def test_mistral_v11_form(self):
-        # v11+ Mistral emission: bare name{json} after the trigger.
+        # v11+ Mistral emission: bare ``name{json}`` after the trigger.
         loop, exec_fn = _make_loop(
             turns = [
                 ['[TOOL_CALLS]web_search{"query":"hi"}'],
@@ -985,7 +1710,7 @@ class TestLoopBasic:
         assert exec_fn.calls == [("web_search", {"query": "hi"})]
 
     def test_gemma4_form(self):
-        # Gemma 4 emission: <|tool_call>call:NAME{...}<tool_call|>.
+        # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -999,6 +1724,70 @@ class TestLoopBasic:
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "weather"})]
+
+    def test_deepseek_v3_1_form(self):
+        # DeepSeek V3.1 emission inside the agentic loop -- the buffer state machine must wake on
+        # ``<｜tool▁calls▁begin｜>`` and the parser must extract the V3.1 bare-JSON body.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<｜tool▁calls▁begin｜>",
+                    "<｜tool▁call▁begin｜>web_search",
+                    "<｜tool▁sep｜>",
+                    '{"query":"Tokyo weather"}',
+                    "<｜tool▁call▁end｜>",
+                    "<｜tool▁calls▁end｜>",
+                ],
+                ["The weather is sunny."],
+            ],
+            exec_results = ["Sunny, 22C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "Tokyo weather"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert contents and "sunny" in contents[-1]["text"].lower()
+
+    def test_glm_form(self):
+        # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<tool_call>web_search\n",
+                    "<arg_key>query</arg_key>\n",
+                    "<arg_value>Tokyo</arg_value>\n",
+                    "</tool_call>",
+                ],
+                ["found"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
+
+    def test_kimi_form(self):
+        # Kimi K2 emission ``<|tool_calls_section_begin|>...``.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<|tool_calls_section_begin|>",
+                    "<|tool_call_begin|>functions.web_search:0",
+                    "<|tool_call_argument_begin|>",
+                    '{"query":"Tokyo"}',
+                    "<|tool_call_end|>",
+                    "<|tool_calls_section_end|>",
+                ],
+                ["done"],
+            ],
+            exec_results = ["..."],
+        )
+        events = _collect_events(loop)
+        # The bare name must reach execute_tool, even though the model
+        # emitted ``functions.web_search:0`` as the formatted id.
+        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
+        # tool_start carries the original full id so the conversation
+        # roundtrip can replay it verbatim.
+        tool_start = next(e for e in events if e["type"] == "tool_start")
+        assert tool_start["tool_call_id"] == "functions.web_search:0"
 
     def test_render_html_emits_provisional_tool_start(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -1360,8 +2149,12 @@ class TestLoopBehaviour:
         assert captured_tool_names[2] == ["web_search", "python"]
 
     def test_duplicate_noop_does_not_consume_budget_at_small_cap(self):
-        # A duplicate no-op turn must NOT spend the tool budget: only turns that execute a tool
-        # count (GGUF parity), so a distinct call can still follow at max_tool_iterations=2.
+        # A duplicate/disabled no-op turn is a correction turn and must NOT spend the
+        # caller's tool budget, so with max_tool_iterations=2 the model can still make a
+        # DISTINCT valid call after repeating one. Only turns that actually execute a
+        # tool count -- matching the GGUF loop. (The budget used to be charged per
+        # non-re-prompt iteration, so the duplicate burned the second slot and the third
+        # turn was sent with no tools, dropping the ``python`` call.)
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
@@ -1657,7 +2450,8 @@ class TestLoopRePrompt:
         assert contents and contents[-1]["text"].strip() == "4"
 
     def test_max_reprompts_capped_at_three(self):
-        # Model keeps stalling with intent -- after 3 re-prompts the loop must give up.
+        # Model keeps stalling with intent -- after 3 re-prompts the
+        # loop must give up rather than burn forever.
         turns = [["Let me search for that."]] * 6  # well over the cap
         loop, exec_fn = _make_loop(
             turns = turns,
@@ -1670,7 +2464,9 @@ class TestLoopRePrompt:
         assert statuses and statuses[-1]["text"] == ""
 
     def test_short_intent_below_buffer_threshold_triggers_reprompt(self):
-        # Short emission that never exits BUFFERING must still trigger the intent re-prompt.
+        # Short emission that never exits BUFFERING (< 32 chars + no
+        # marker prefix). The unified buffer-end path must still
+        # trigger the intent re-prompt, not silently terminate.
         loop, exec_fn = _make_loop(
             turns = [
                 ["Let me check."],
@@ -1683,7 +2479,9 @@ class TestLoopRePrompt:
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
     def test_reprompt_does_not_consume_tool_budget(self):
-        # max_tool_iterations=1: the re-prompt must not eat the slot, so the real call still runs.
+        # max_tool_iterations=1: one re-prompt, then one real tool call,
+        # then the budget-exhausted final answer must still fire. If the
+        # re-prompt ate the slot the tool call would never run.
         loop, exec_fn = _make_loop(
             turns = [
                 # 1. Intent stall (re-prompt 1/3).
@@ -1714,7 +2512,8 @@ class TestLoopCanonicalHealKey:
             exec_results = ["1\n"],
         )
         events = _collect_events(loop)
-        # The bare string must heal to {"code": ...}, not {"query": ...}, so the python sandbox runs it.
+        # The bare string must heal to {"code": "print(1)"}, not
+        # {"query": ...}, so the python sandbox actually executes it.
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
 
     def test_terminal_bare_string_heals_to_command(self):
@@ -1744,7 +2543,10 @@ class TestGGUFSafetensorsHealingParity:
     """Pin GGUF vs safetensors/MLX loop parity so a regression on either side breaks CI."""
 
     def test_gguf_imports_shared_signal_markers(self):
-        # The GGUF BUFFERING machine must wake on every shared emission marker, else calls slip past as prose.
+        # The GGUF BUFFERING state machine must wake on every emission
+        # marker the shared parser knows -- otherwise Llama-3 / Mistral
+        # / Gemma 4 emissions slip past as plain prose when the
+        # llama-server structured channel fails.
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1756,7 +2558,10 @@ class TestGGUFSafetensorsHealingParity:
         )
 
     def test_gguf_uses_shared_strip_helper(self):
-        # The GGUF stream-cleanup must delegate to the shared strip_tool_markup for every family.
+        # The GGUF stream-cleanup function must delegate to the shared
+        # strip_tool_markup so closed-pair markup is removed for every
+        # emission family (Llama-3 <|python_tag|>, Mistral [TOOL_CALLS],
+        # Gemma 4 <|tool_call>...<tool_call|>).
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1767,7 +2572,11 @@ class TestGGUFSafetensorsHealingParity:
         ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
 
     def test_gguf_uses_canonical_heal_keys(self):
-        # GGUF and safetensors heal a bare-string argument to the same canonical key via the shared coerce_tool_arguments.
+        # GGUF and safetensors heal a bare-string ``arguments`` to the same
+        # per-tool canonical key -- ``code`` for python, ``command`` for
+        # terminal, ``query`` for everything else. The mapping is centralised in
+        # the shared ToolLoopController (both backends route bare-string args
+        # through ``coerce_tool_arguments``), so the two paths cannot drift.
         from core.inference.tool_loop_controller import (
             _CANONICAL_HEAL_ARG,
             coerce_tool_arguments,
@@ -1786,7 +2595,9 @@ class TestGGUFSafetensorsHealingParity:
         }
 
     def test_intent_regex_matches_same_phrases_as_gguf(self):
-        # The intent re-prompt regex must match the SAME phrases on both backends.
+        # The intent re-prompt regex must match the SAME forward-looking
+        # phrases on both backends so behaviour is the same on Mac (MLX
+        # / safetensors) and on Linux (GGUF).
         from core.inference.llama_cpp import _INTENT_SIGNAL as gguf_re
         from core.inference.safetensors_agentic import (
             _INTENT_SIGNAL as sf_re,
@@ -1811,7 +2622,8 @@ class TestGGUFSafetensorsHealingParity:
             "I can help with that.",
             "I should mention",
             "Let's go.",
-            # Negated intent is a refusal, not a plan: neither backend may re-prompt on it.
+            # Negated intent is a refusal, not a plan: neither backend may
+            # force a tool-call re-prompt on it.
             "I will not search the web for that.",
             "I'll never call that tool.",
         ):
@@ -2240,6 +3052,28 @@ class TestGuardrails:
             and event.get("type") in {"tool_start", "tool_end"}
         ]
 
+    def test_same_turn_distinct_calls_are_capped(self):
+        # >_MAX_TOOL_CALLS_PER_TURN DISTINCT calls in one turn must be capped so a runaway turn
+        # cannot fan out into many executions (the GGUF path is held back by llama-server's lazy ...
+        from core.inference.safetensors_agentic import _MAX_TOOL_CALLS_PER_TURN
+
+        n = _MAX_TOOL_CALLS_PER_TURN + 4
+        turn = "".join(
+            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+            for i in range(n)
+        )
+        loop, exec_fn = _make_loop(
+            turns = [[turn], ["final"]],
+            exec_results = ["r"] * n,
+            max_tool_iterations = 2,
+        )
+        _collect_events(loop)
+        assert len(exec_fn.calls) == _MAX_TOOL_CALLS_PER_TURN
+        # The first N distinct queries executed, in document order.
+        assert [a["query"] for _name, a in exec_fn.calls] == [
+            "q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN)
+        ]
+
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
 
@@ -2283,7 +3117,8 @@ class TestRoutesPythonTagStrip:
     """``_TOOL_XML_RE`` must consume multi-line code, embedded JSON, and bare ``<`` (earlier ``[^\n<]*`` / ``[^\n]*`` revisions leaked tails); the streaming route-level strip is the regression-prone path."""
 
     def _strip(self, text: str) -> str:
-        # Import inside the test so a routes-module import error doesn't fail collection.
+        # Import inside the test so a routes-module import error does
+        # not blow up the entire test file at collection time.
         from routes.inference import _strip_tool_xml
         return _strip_tool_xml(text)
 
@@ -2293,7 +3128,8 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_with_less_than_in_code(self):
-        # 5615 regression: a literal < inside code must NOT terminate the strip early.
+        # 5615 regression: literal ``<`` inside code must NOT terminate
+        # the strip early.
         text = '<|python_tag|>python.call(code="if x < 10: pass")'
         assert self._strip(text) == ""
 
@@ -2303,7 +3139,7 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_multiline_with_less_than(self):
-        # Combined: multi-line code AND literal < in code.
+        # Combined: multi-line code AND literal ``<`` in code.
         text = (
             '<|python_tag|>python.call(code="for i in range(10):\n'
             "    if i < 5:\n"
@@ -2312,7 +3148,8 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_stops_at_eom_sentinel(self):
-        # Strip stops at the next Llama-3 <| sentinel so trailing assistant content survives.
+        # Strip stops at the next Llama-3 ``<|`` sentinel so any
+        # trailing assistant content survives.
         text = '<|python_tag|>python.call(code="multi\nline")' "<|eom_id|>final answer text"
         assert self._strip(text) == "<|eom_id|>final answer text"
 
@@ -2326,20 +3163,25 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_with_eom_then_trailing_python_tag(self):
-        # Two python_tag emissions back-to-back across a sentinel: both strip independently.
+        # Two python_tag emissions back-to-back across a sentinel: both
+        # should strip independently.
         text = (
             '<|python_tag|>brave_search.call(query="a")'
             "<|eom_id|>"
             '<|python_tag|>python.call(code="x=1")'
         )
-        # <|eom_id|> between the two strips remains; both python_tag blocks are consumed.
+        # ``<|eom_id|>`` between the two strips remains; both
+        # python_tag blocks are fully consumed.
         assert self._strip(text) == "<|eom_id|>"
 
 
 # Robustness fixes uncovered while validating against vLLM / sglang.
 class TestParserRobustness:
     def test_tool_call_json_accepts_parameters_key(self):
-        # Hermes wrapper using parameters instead of arguments; this path now accepts both keys.
+        # Hermes wrapper around a Llama-3.2 bare-JSON object that uses
+        # ``parameters`` instead of ``arguments``. The bare-JSON and
+        # python_tag paths already accept both keys; this path now does
+        # too. Was extracting name only and silently dropping the args.
         import json
 
         text = "<tool_call>\n" '{"name": "search", "parameters": {"q": "ramen"}}\n' "</tool_call>"
@@ -2349,7 +3191,8 @@ class TestParserRobustness:
         assert json.loads(result[0]["function"]["arguments"]) == {"q": "ramen"}
 
     def test_function_xml_attribute_form(self):
-        # MiniCPM-5 / MiniMax-M2 attribute syntax: <function name="..."><param name="...">v</param></function>.
+        # MiniCPM-5 / MiniMax-M2 attribute syntax:
+        # ``<function name="..."><param name="...">v</param></function>``.
         import json
 
         text = '<function name="get_weather">' '<param name="city">Tokyo</param>' "</function>"
@@ -2373,7 +3216,8 @@ class TestParserRobustness:
         assert args == {"city": "Tokyo", "unit": "celsius"}
 
     def test_function_xml_legacy_equals_form_still_works(self):
-        # Regression guard: the old <function=name><parameter=k>v syntax must keep parsing after the regex broadening.
+        # Regression guard: the old ``<function=name><parameter=k>v``
+        # syntax must keep parsing after the regex broadening.
         import json
 
         text = "<function=get_weather><parameter=city>Tokyo</parameter></function>"
@@ -2383,17 +3227,24 @@ class TestParserRobustness:
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
     def test_function_attribute_form_has_tool_signal(self):
-        # The standalone <function name="..."> form must flip the streaming buffer, else the call is dropped.
+        # The standalone ``<function name="...">`` attribute form must flip
+        # the streaming buffer; otherwise the end-of-turn safety-net parse in
+        # the agentic loop is gated off and the real call is dropped.
         assert has_tool_signal('<function name="get_weather">') is True
 
     def test_function_attribute_form_strip_markup(self):
-        # The attribute form must also be stripped from displayed text, like <function=...>.
+        # The attribute form must also be stripped from displayed text, like
+        # the legacy ``<function=...>`` form.
         text = 'result <function name="g"><param name="c">X</param></function>'
         assert strip_tool_markup(text, final = True) == "result"
 
     def test_llama3_chat_template_round_trip(self):
-        # Llama-3.x prefixes assistant turns with <|start_header_id|>...<|end_header_id|>; the
-        # sentinel-strip must reach past the role label to the JSON body, else history calls drop.
+        # Meta's official Llama-3.x chat template prefixes every
+        # assistant turn with
+        # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The
+        # sentinel-strip in ``_parse_llama3_bare_json`` must reach past
+        # the role label to the JSON body, else every round-tripped
+        # tool call in history silently drops.
         import json
 
         text = (
@@ -2418,7 +3269,8 @@ class TestParserRobustness:
             assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
 
     def test_llama3_round_trip_with_eot_prefix(self):
-        # Prior turn closes with <|eot_id|>, then the new header opens; both sentinels + role must be consumed.
+        # Prior assistant turn closes with ``<|eot_id|>``, then the
+        # new header opens. Both sentinels + the role must be consumed.
         import json
 
         text = (
@@ -2430,7 +3282,10 @@ class TestParserRobustness:
         assert result[0]["function"]["name"] == "f"
 
     def test_function_xml_followed_by_prose(self):
-        # Body must terminate at </function> even without a </tool_call> wrapper, else prose leaks into the value.
+        # Models routinely follow a tool call with explanatory prose.
+        # Body must terminate at ``</function>`` even without a
+        # ``</tool_call>`` wrapper, else trailing prose leaks into the
+        # last parameter value.
         import json
 
         text = (
@@ -2456,8 +3311,236 @@ class TestParserRobustness:
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
 
+def test_render_with_native_template_returns_render_only_when_tools_emitted():
+    # The native-template fallback re-renders with the model's repo template when an override drops
+    # the tools schema.
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_native_template
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    model_info = {
+        "native_chat_template": "TPL",
+        "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+    }
+
+    def emitting(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|TOOLS=" + ",".join(t["function"]["name"] for t in tools) if tools else "")
+
+    def ignoring(tokenizer, msgs, *, tools, **_kw):
+        return "".join(m["content"] for m in msgs)  # never reflects tools
+
+    out = render_native_template(
+        model_info = dict(model_info),
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = emitting,
+    )
+    assert out == "hi|TOOLS=web_search"
+    # The native template must be restored on the live tokenizer after probing.
+    assert model_info["tokenizer"].chat_template == "OVERRIDE"
+
+    assert (
+        render_native_template(
+            model_info = dict(model_info),
+            active_model_name = "x",
+            messages = messages,
+            tools = tools,
+            apply_fn = ignoring,
+        )
+        is None
+    )
+
+    # No tokenizer and no processor -> return None instead of an AttributeError.
+    no_tok = {"native_chat_template": "TPL"}
+    assert (
+        render_native_template(
+            model_info = no_tok,
+            active_model_name = "x",
+            messages = messages,
+            tools = tools,
+            apply_fn = emitting,
+        )
+        is None
+    )
+
+
+def test_render_with_native_template_does_not_mutate_shared_tokenizer():
+    # The shared tokenizer must never carry the temporary native template, even mid-render: this
+    # runs outside the generation lock, so a concurrent request could otherwise render with the ...
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_native_template
+
+    shared = SimpleNamespace(chat_template = "OVERRIDE")
+    seen = []
+
+    def capture(tokenizer, msgs, *, tools, **_kw):
+        seen.append((tokenizer is shared, shared.chat_template))
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|T" if tools else "")
+
+    model_info = {"native_chat_template": "TPL", "tokenizer": shared}
+    render_native_template(
+        model_info = model_info,
+        active_model_name = "x",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        apply_fn = capture,
+    )
+    # Rendering happened on a copy, and the shared tokenizer stayed "OVERRIDE"
+    # throughout (never the temporary "TPL").
+    assert seen and all(not is_shared for is_shared, _ in seen)
+    assert all(tpl == "OVERRIDE" for _, tpl in seen)
+    assert shared.chat_template == "OVERRIDE"
+
+
+def test_native_template_loads_from_base_model_for_lora(monkeypatch):
+    # For a LoRA adapter the chat template lives on the base model; active_model_name
+    # is the adapter id and may ship no template. The loader must read base_model.
+    from types import SimpleNamespace
+
+    import transformers
+
+    from core.inference.chat_template_helpers import render_native_template
+
+    captured = {}
+
+    def fake_from_pretrained(name, *args, **kwargs):
+        captured["source"] = name
+        return SimpleNamespace(chat_template = "BASE_TPL")
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained)
+
+    def emitting(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|T" if tools else "")
+
+    model_info = {
+        "base_model": "base/model-id",
+        "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+    }
+    out = render_native_template(
+        model_info = model_info,
+        active_model_name = "adapter/path",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        apply_fn = emitting,
+    )
+    assert captured["source"] == "base/model-id"
+    assert out == "hi|T"
+
+
+def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
+    # The shared gate (used by the transformers and MLX backends): when the live render is
+    # identical with and without tools, re-render with the native template and return it.
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    # apply_fn that IGNORES tools -> live render drops the schema.
+    def ignoring(tokenizer, msgs, *, tools, **_kw):
+        return "".join(m["content"] for m in msgs)
+
+    model_info = {
+        "native_chat_template": "TPL",
+        "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+    }
+
+    # Native render emits the tools, so the fallback swaps to it.
+    def native_emits(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|TOOLS" if tools else "")
+
+    out = render_with_native_template_fallback(
+        formatted_prompt = ignoring(None, messages, tools = tools),
+        tokenizer = SimpleNamespace(),
+        model_info = dict(model_info),
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = lambda tok, msgs, *, tools, **kw: (
+            native_emits(tok, msgs, tools = tools)
+            if getattr(tok, "chat_template", None) == "TPL"
+            else ignoring(tok, msgs, tools = tools)
+        ),
+    )
+    assert out == "hi|TOOLS", out
+
+
+def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
+    # Live render already differs with vs without tools -> no fallback, returned
+    # unchanged. Also a no-tools call is a passthrough.
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    def emitting(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|T" if tools else "")
+
+    kept = render_with_native_template_fallback(
+        formatted_prompt = emitting(None, messages, tools = tools),
+        tokenizer = SimpleNamespace(),
+        model_info = {"native_chat_template": "TPL", "tokenizer": SimpleNamespace()},
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = emitting,
+    )
+    assert kept == "hi|T", kept
+
+    # No tools -> passthrough (native template never consulted).
+    passthrough = render_with_native_template_fallback(
+        formatted_prompt = "hi",
+        tokenizer = SimpleNamespace(),
+        model_info = {},
+        active_model_name = "x",
+        messages = messages,
+        tools = None,
+        apply_fn = emitting,
+    )
+    assert passthrough == "hi"
+
+
+def test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises():
+    # A template that REQUIRES tools can raise on the no-tools probe.
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    def raises_without_tools(tokenizer, msgs, *, tools, **_kw):
+        if not tools:
+            raise RuntimeError("template requires tools")
+        return "".join(m["content"] for m in msgs) + "|T"
+
+    out = render_with_native_template_fallback(
+        formatted_prompt = "hi|T",
+        tokenizer = SimpleNamespace(),
+        model_info = {"native_chat_template": "TPL", "tokenizer": SimpleNamespace()},
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = raises_without_tools,
+    )
+    assert out == "hi|T", out
+
+
 def test_truncated_bare_json_at_eof_is_not_leaked():
-    # Stream ends mid bare-JSON: the held fragment must be dropped at EOF, not flushed as content.
+    # Stream ends mid bare-JSON object: the held fragment must be dropped at the
+    # EOF resolver, not flushed as plain assistant content (GGUF parity).
     loop, _exec = _make_loop(
         turns = [['{"name":"web_search","parameters":{"query":"weather in S']],
         max_tool_iterations = 1,
@@ -2468,7 +3551,9 @@ def test_truncated_bare_json_at_eof_is_not_leaked():
 
 
 def test_oversized_bare_json_call_is_not_leaked_and_executes():
-    # A bare-JSON call exceeding _MAX_BARE_JSON_BUFFER must DRAIN, not stream the prefix, and still execute.
+    # A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER must DRAIN
+    # (suppress) rather than stream the raw JSON prefix, and still execute once
+    # the full object is parsed by the safety net.
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
@@ -2483,7 +3568,8 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
 
 
 def test_oversized_plain_json_answer_still_streams():
-    # A giant plain JSON answer (no "name" key) is NOT a call and must still stream.
+    # A giant plain JSON answer (no "name" key) is NOT a tool call and must still
+    # stream -- the oversized DRAIN route is gated on a "name" key.
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
@@ -2496,7 +3582,9 @@ def test_oversized_plain_json_answer_still_streams():
 
 
 def test_oversized_disabled_name_json_answer_still_streams():
-    # A giant still-open JSON answer whose "name" is NOT an enabled tool must stream, not drain.
+    # A giant still-open JSON answer whose "name" is NOT an enabled tool must stream:
+    # the oversized DRAIN branch was gated only on the presence of a "name" key, so a
+    # large ordinary record ({"name":"Alice",...}) was drained instead of shown.
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
@@ -2510,7 +3598,8 @@ def test_oversized_disabled_name_json_answer_still_streams():
 
 
 def test_truncated_disabled_name_json_is_shown_at_eof():
-    # A truncated JSON answer whose name is not an enabled tool must be shown at EOF.
+    # A truncated ordinary JSON answer whose name is not an enabled tool, held to EOF,
+    # must be shown -- the EOF bare-JSON DRAIN branch was gated only on a "name" key.
     truncated = '{"name":"Alice","parameters":{"age":'
     loop, exec_fn = _make_loop(turns = [[truncated]], max_tool_iterations = 1)
     events = _collect_events(loop)
@@ -2520,7 +3609,9 @@ def test_truncated_disabled_name_json_is_shown_at_eof():
 
 
 def test_truncated_plain_json_with_nested_enabled_name_is_visible():
-    # A truncated answer with only a NESTED "name" must be shown: the gate uses the TOP-LEVEL name.
+    # A truncated ordinary JSON answer with a NESTED ``"name"`` matching an enabled
+    # tool ({"result":{"name":"web_search",...) must be shown, not suppressed: the
+    # gate now extracts the TOP-LEVEL name only, so the nested field is just data.
     loop, exec_fn = _make_loop(
         turns = [['{"result":{"name":"web_search","age":']],
         max_tool_iterations = 1,
@@ -2532,7 +3623,8 @@ def test_truncated_plain_json_with_nested_enabled_name_is_visible():
 
 
 def test_bare_json_call_not_replayed_in_next_turn_content():
-    # After a bare-JSON call executes, the next-turn assistant content must not contain the raw call.
+    # After a complete bare-JSON call executes, the assistant content fed to the
+    # next turn must not contain the raw call (next-turn contamination).
     captured: list[list[dict]] = []
     exec_fn = FakeExecuteTool(["RESULT"])
 
@@ -2562,7 +3654,10 @@ if __name__ == "__main__":
 
 
 def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
-    # With Auto-Heal OFF a truncated enabled-name bare-JSON fragment stays visible; with it ON, suppressed.
+    # F3: with Auto-Heal OFF, a truncated ENABLED-name bare-JSON fragment that did
+    # not parse must stay visible (disabled-Auto-Heal contract: malformed markup is
+    # preserved), matching the XML strip in the same drain branch. With Auto-Heal ON
+    # the same fragment is suppressed.
     trunc = '{"name":"web_search","parameters":{"query":"weather'
     off, exec_off = _make_loop(turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = False)
     events_off = _collect_events(off)
@@ -2578,7 +3673,9 @@ def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
 
 
 def test_looks_like_enabled_bare_json_accepts_function_alias():
-    # The buffering gate must recognise the "function" bare-JSON alias, so it is buffered, not streamed.
+    # The safetensors buffering gate must recognise the "function" bare-JSON alias
+    # the parser accepts, so a truncated/complete {"function":<enabled tool>} call is
+    # buffered/healed instead of streaming as visible content.
     from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
 
     enabled = {"web_search"}
@@ -2591,7 +3688,8 @@ def test_looks_like_enabled_bare_json_accepts_function_alias():
 
 class TestFalseAlarmMarkerProse:
     def test_leading_marker_prose_streams_intact(self):
-        # An answer starting with a literal marker is a false alarm: the full prose must reach the client.
+        # An answer that starts with a literal marker is a false alarm: the
+        # drain finds no calls and the full prose must reach the client.
         text = "[TOOL_CALLS] is the Mistral tool marker. More prose after."
         loop, exec_fn = _make_loop(turns = [[text]])
         events = _collect_events(loop)
@@ -2600,7 +3698,8 @@ class TestFalseAlarmMarkerProse:
         assert texts and texts[-1] == text
 
     def test_chained_bare_json_calls_not_replayed_in_history(self):
-        # Both chained calls execute; the next-turn history must not contain the second call's raw JSON.
+        # Both chained calls execute; the kept content (next-turn assistant
+        # history) must not contain the second call's raw JSON.
         chained = (
             '{"name":"web_search","parameters":{"q":"first"}};'
             '{"name":"python","parameters":{"code":"x"}}'

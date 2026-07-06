@@ -269,6 +269,9 @@ class InferenceBackend:
         gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
+        # Keep the token so the native-template fallback can fetch a
+        # gated model's repo template later during generation.
+        self._hf_token = hf_token
         # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
         if max_seq_length <= 0:
             max_seq_length = 2048
@@ -279,6 +282,8 @@ class InferenceBackend:
             # Already loaded?
             if model_name in self.models and self.models[model_name].get("model"):
                 logger.info(f"Model {model_name} already loaded")
+                if hf_token:
+                    self.models[model_name]["hf_token"] = hf_token
                 self.active_model_name = model_name
                 return True
 
@@ -294,6 +299,14 @@ class InferenceBackend:
             )
 
             self.models[model_name] = {
+                # Per-model token: the native-template fallback must use the
+                # token this model was loaded with, not whichever loaded last.
+                "hf_token": hf_token,
+                # Per-model consent: the native-template reload must re-use the
+                # exact trust_remote_code this model (and a LoRA's base) was loaded
+                # with, so a custom-code tokenizer repo can be re-fetched without
+                # executing any code the user did not already consent to.
+                "trust_remote_code": trust_remote_code,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
                 "is_audio": config.is_audio,
@@ -1040,6 +1053,27 @@ class InferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
+
+            # If tools were requested but the (possibly overridden) template ignored
+            # them, fall back to the model's native template (shared with MLX).
+            from core.inference.chat_template_helpers import (
+                render_with_native_template_fallback,
+            )
+
+            formatted_prompt = render_with_native_template_fallback(
+                formatted_prompt = formatted_prompt,
+                tokenizer = tokenizer,
+                model_info = model_info,
+                active_model_name = self.active_model_name,
+                messages = template_messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                apply_fn = self._apply_chat_template_for_generation,
+                hf_token = model_info.get("hf_token"),
+            )
+
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")

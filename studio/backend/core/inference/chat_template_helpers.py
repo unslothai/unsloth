@@ -3,11 +3,17 @@
 
 """
 Dependency-light wrapper around tokenizer.apply_chat_template with a kwarg
-fallback for templates that reject reasoning/tools args.
+fallback for templates that reject reasoning/tools args, plus the shared
+native-chat-template fallback used by the transformers and MLX backends.
 """
 
+import copy
 import json
+import logging
 from typing import Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_tool_call_arguments(messages: list) -> list:
@@ -110,3 +116,179 @@ def apply_chat_template_for_generation(
         if normalized is messages:
             raise
         return _render(normalized)
+
+
+def render_native_template(
+    *,
+    model_info: dict,
+    active_model_name: Optional[str],
+    messages: list,
+    tools: list,
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+    preserve_thinking: Optional[bool] = None,
+    apply_fn = None,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Render ``messages`` + ``tools`` with the model's NATIVE chat template.
+
+    Some Unsloth override templates (e.g. ``mistral``, ``gemma-4``) do not emit
+    the ``tools`` schema, so a tool-calling turn silently stops advertising tools.
+    The native template ships in the model repo and carries the family's
+    tool-calling syntax. It is loaded straight from the repo (bypassing any
+    override on the live tokenizer) and cached on ``model_info``. Returns the
+    rendered prompt only if the native template actually emits the tools (render
+    differs with vs without tools); otherwise ``None``.
+
+    ``hf_token`` is the token the model was loaded with -- passed to the repo load
+    so a gated/private model's native template can still be fetched (otherwise the
+    fallback fails silently and keeps the override prompt that dropped tools).
+
+    ``trust_remote_code`` is sourced from ``model_info`` (the value the model was
+    actually loaded with) rather than a call-site argument, so the native-template
+    reload uses exactly the consent already granted at load. A custom-code tokenizer
+    repo raises in ``AutoTokenizer.from_pretrained`` unless ``trust_remote_code`` is
+    passed, so without this the fallback fails silently and keeps the tool-dropping
+    prompt for a model the user already consented to run remote code for. For a LoRA
+    adapter the reload targets the base model, whose remote code was gated and loaded
+    under the same stored flag, so re-passing it executes no unconsented code.
+    """
+    # ``apply_fn`` lets a backend inject its own render; defaults to the module helper.
+    if apply_fn is None:
+        apply_fn = apply_chat_template_for_generation
+    native_tpl = model_info.get("native_chat_template")
+    if native_tpl is None:
+        # A LoRA adapter's native template lives on the base model, not the adapter id.
+        template_source = model_info.get("base_model") or active_model_name
+        # Re-use the load-time trust_remote_code so a custom-code tokenizer repo can
+        # instantiate its class (the stored flag already covers template_source).
+        trust_remote_code = bool(model_info.get("trust_remote_code", False))
+        try:
+            from transformers import AutoTokenizer
+            nt = AutoTokenizer.from_pretrained(
+                template_source,
+                token = hf_token if hf_token and hf_token.strip() else None,
+                trust_remote_code = trust_remote_code,
+            )
+            native_tpl = nt.chat_template or False
+        except Exception as exc:
+            logger.warning(
+                "Could not load native chat template for '%s': %s",
+                template_source,
+                exc,
+            )
+            # A failed fetch is not "no template": leave the sentinel unset so the next
+            # call retries (caching False would pin the tool-dropping override).
+            return None
+        model_info["native_chat_template"] = native_tpl
+    if not native_tpl:
+        return None
+
+    tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+    if tokenizer is None:
+        return None
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    # Render on a shallow copy: mutating the shared tokenizer.chat_template (outside the
+    # generation lock) races concurrent requests.
+    try:
+        render_tokenizer = copy.copy(tokenizer)
+        render_tokenizer.chat_template = native_tpl
+    except Exception as exc:
+        logger.warning(
+            "Could not clone tokenizer for native-template render of '%s': %s",
+            active_model_name,
+            exc,
+        )
+        return None
+    try:
+        with_tools = apply_fn(
+            render_tokenizer,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+        no_tools = apply_fn(
+            render_tokenizer,
+            messages,
+            tools = None,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Native-template tool render failed for '%s': %s",
+            active_model_name,
+            exc,
+        )
+        return None
+    return with_tools if with_tools != no_tools else None
+
+
+def render_with_native_template_fallback(
+    *,
+    formatted_prompt: str,
+    tokenizer,
+    model_info: dict,
+    active_model_name: Optional[str],
+    messages: list,
+    tools: Optional[list],
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+    preserve_thinking: Optional[bool] = None,
+    apply_fn = None,
+    hf_token: Optional[str] = None,
+) -> str:
+    """Return ``formatted_prompt``, swapping in a native-template render when an
+    override template dropped the ``tools`` schema.
+
+    If ``tools`` were requested but the live render is identical with and without
+    them (detected by comparison, robust against tool names in the system prompt),
+    re-render with the model's native template. Shared by the transformers and MLX
+    backends so both advertise tools consistently. ``hf_token`` is forwarded so a
+    gated/private model's native template can still be fetched."""
+    if not tools:
+        return formatted_prompt
+    if apply_fn is None:
+        apply_fn = apply_chat_template_for_generation
+    # Probe whether the live template dropped the schema. A tools-requiring template
+    # can raise here; on any error keep the valid tools prompt rather than lose it.
+    try:
+        probe_no_tools = apply_fn(
+            tokenizer,
+            messages,
+            tools = None,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+    except Exception as exc:
+        logger.warning(
+            "No-tools probe failed for '%s'; keeping the existing tools prompt: %s",
+            active_model_name,
+            exc,
+        )
+        return formatted_prompt
+    if formatted_prompt != probe_no_tools:
+        return formatted_prompt  # template already emits the tools schema
+    native_prompt = render_native_template(
+        model_info = model_info,
+        active_model_name = active_model_name,
+        messages = messages,
+        tools = tools,
+        enable_thinking = enable_thinking,
+        reasoning_effort = reasoning_effort,
+        preserve_thinking = preserve_thinking,
+        apply_fn = apply_fn,
+        hf_token = hf_token,
+    )
+    if native_prompt:
+        logger.info(
+            "Override template for '%s' dropped tool schemas; using the model's "
+            "native template for this tool-calling turn.",
+            active_model_name,
+        )
+        return native_prompt
+    return formatted_prompt

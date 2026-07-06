@@ -100,6 +100,32 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     ]
     assert backend._is_vlm is False
     assert isinstance(backend._tokenizer, _DummyTokenizer)
+    # Non-LoRA text model: no base_model on the record.
+    assert backend.models["fake/text"]["base_model"] is None
+
+
+def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
+    # A LoRA adapter's own tokenizer often ships no chat template; the native tool-calling template
+    # lives on the base model.
+    _install_fake_mlx(monkeypatch)
+    calls = []
+    _install_fake_fast_mlx(monkeypatch, calls)
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    config = SimpleNamespace(
+        identifier = "fake/text-adapter",
+        is_vision = False,
+        is_lora = True,
+        base_model = "fake/text-base",
+    )
+
+    assert backend.load_model(config, max_seq_length = 4096, hf_token = "hf-token")
+
+    record = backend.models["fake/text-adapter"]
+    assert record["is_lora"] is True
+    assert record["base_model"] == "fake/text-base"
 
 
 def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewrite(
@@ -188,12 +214,12 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
 
-    captured = {}
+    # The text path renders once with tools, then the native-template fallback makes a second no-
+    # tools probe call (tools=None) to detect whether the template dropped the schema.
+    captured_calls = []
 
     def _fake_apply(tokenizer, messages, **kwargs):
-        captured["tokenizer"] = tokenizer
-        captured["messages"] = messages
-        captured["kwargs"] = kwargs
+        captured_calls.append({"tokenizer": tokenizer, "messages": messages, "kwargs": kwargs})
         return "<rendered prompt>"
 
     monkeypatch.setattr(
@@ -248,8 +274,15 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
         )
     )
     assert out == ["hi"]
-    # The toggled kwargs must reach the chat-template helper.
-    assert captured["kwargs"]["tools"] == [{"function": {"name": "web_search"}}]
-    assert captured["kwargs"]["enable_thinking"] is True
-    assert captured["kwargs"]["reasoning_effort"] == "medium"
-    assert captured["kwargs"]["preserve_thinking"] is True
+    # The toggled kwargs must reach the chat-template helper on the real render
+    # (one of the calls carries the tools; the fallback probe passes tools=None).
+    tool_renders = [
+        c
+        for c in captured_calls
+        if c["kwargs"].get("tools") == [{"function": {"name": "web_search"}}]
+    ]
+    assert tool_renders, captured_calls
+    render = tool_renders[0]
+    assert render["kwargs"]["enable_thinking"] is True
+    assert render["kwargs"]["reasoning_effort"] == "medium"
+    assert render["kwargs"]["preserve_thinking"] is True
