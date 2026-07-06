@@ -131,8 +131,13 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
     )
 
     original_list = [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     ]
     # Representative of what get_peft_regex emits for that list under
     # finetune_mlp_modules=False: attention-only path, no mlp component block.
@@ -185,8 +190,13 @@ def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
     )
 
     original_list = [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     ]
     scoped_regex = r".*self_attn.*proj"  # unused: original list is preferred
     selected = _select_moe_detection_targets(

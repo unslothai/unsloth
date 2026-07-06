@@ -3632,11 +3632,7 @@ def _select_moe_detection_targets(
     leaves -- would wrongly re-introduce them. In that case honor the scoped
     result so the frozen-MLP / vision-only request is respected.
     """
-    if (
-        original_target_modules is not None
-        and finetune_mlp_modules
-        and finetune_language_layers
-    ):
+    if original_target_modules is not None and finetune_mlp_modules and finetune_language_layers:
         return original_target_modules
     return scoped_target_modules
 
