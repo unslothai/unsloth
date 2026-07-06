@@ -973,6 +973,18 @@ class InferenceOrchestrator:
         self.active_model_name = None
         self.models.clear()
         self._shutdown_subprocess(timeout = 0.5)
+        # Clear the local mirrors again AFTER the teardown. A racing off-gate load_model
+        # may still be parked in _wait_response("loaded"): its worker already queued a
+        # successful "loaded" reply, so during the shutdown window above (the 0.5s cancel
+        # settle before the response queue is drained and nulled) that thread can consume
+        # the reply and repopulate active_model_name/models, undoing the pre-teardown
+        # clear. _shutdown_subprocess nulls the response queue but never touches those
+        # mirrors, so without this second clear /unload would report success while the
+        # backend keeps advertising a model whose worker was just killed. Once the queue is
+        # nulled no further "loaded" can be read, so re-clearing here wipes any such
+        # repopulation and leaves the backend advertising nothing loaded.
+        self.active_model_name = None
+        self.models.clear()
         return True
 
     def unload_model(self, model_name: str) -> bool:

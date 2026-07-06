@@ -1106,6 +1106,80 @@ def test_cancel_load_clears_marker_before_shutdown(monkeypatch):
     assert o.models == {}
 
 
+def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown(monkeypatch):
+    # cancel_load (off the lifecycle gate) can race a load_model whose worker already
+    # queued its successful "loaded" reply. cancel_load discards the loading marker and
+    # clears the local mirrors, then tears the subprocess down; but the still-running
+    # load_model thread can consume that "loaded" DURING the teardown window and repopulate
+    # active_model_name/models. _shutdown_subprocess nulls the queues but never touches those
+    # mirrors, so without a second clear /unload reports success while the backend keeps
+    # advertising a model whose worker was just killed. cancel_load must re-clear after the
+    # teardown so no phantom loaded model survives.
+    import types
+
+    from utils import transformers_version as _tv
+
+    o = _bare_orchestrator()
+    o.loading_models = {"m"}
+    o.active_model_name = None
+    o.models = {}
+    o._proc = None  # no prior subprocess -> load_model goes straight to the spawn loop
+
+    monkeypatch.setattr(_tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+
+    parked = threading.Event()  # load_model is parked in _wait_response("loaded")
+    release_loaded = threading.Event()  # cancel_load lets the load consume "loaded"
+    load_done = threading.Event()
+
+    def blocking_wait_response(expected, timeout = 300.0):
+        parked.set()
+        assert release_loaded.wait(timeout = 5)
+        return {
+            "type": "loaded",
+            "success": True,
+            "model_info": {"identifier": "m", "display_name": "m"},
+        }
+
+    monkeypatch.setattr(o, "_wait_response", blocking_wait_response)
+
+    load_result: dict = {}
+
+    def run_load():
+        try:
+            load_result["ok"] = o.load_model(
+                types.SimpleNamespace(identifier = "m", gguf_variant = None)
+            )
+        except Exception as exc:  # noqa: BLE001
+            load_result["exc"] = exc
+        finally:
+            load_done.set()
+
+    loader = threading.Thread(target = run_load)
+    loader.start()
+    assert parked.wait(timeout = 5), "load_model must reach _wait_response"
+
+    # The teardown IS the window in which the racing load repopulates the mirrors: the
+    # marker is already discarded here, so release the load and wait for it to finish
+    # repopulating, mirroring the 0.5s cancel-settle inside the real _shutdown_subprocess.
+    def racing_shutdown(timeout = 0.5):
+        release_loaded.set()
+        assert load_done.wait(timeout = 5), "the racing load must repopulate during teardown"
+
+    monkeypatch.setattr(o, "_shutdown_subprocess", racing_shutdown)
+
+    assert o.cancel_load("m") is True
+    loader.join(timeout = 5)
+
+    # Fail-without: load_model set active_model_name/models during racing_shutdown and
+    # cancel_load left them set, so the backend advertises a model whose worker was killed.
+    assert o.active_model_name is None, "cancel_load must not leave a repopulated active model"
+    assert o.models == {}, "cancel_load must not leave a repopulated models mirror"
+    assert "m" not in o.loading_models
+
+
 # ----------------------------------------------------------------------------
 # A dispatched (compare-mode) request that starts the dispatcher and then bails on
 # a racing unload must stop the dispatcher it started, or that orphaned dispatcher
