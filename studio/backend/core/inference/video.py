@@ -885,7 +885,6 @@ class VideoBackend:
         # the memory plan stays consistent.
         if getattr(fam, "vae_force_fp32", False) and getattr(pipe, "vae", None) is not None:
             import torch
-
             pipe.vae.to(torch.float32)
 
         if _load_token is not None and _load_token != self._load_token:
