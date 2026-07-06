@@ -192,19 +192,19 @@ def test_effective_steps_txt2img_is_full_count():
 
 
 def test_effective_steps_low_strength_shrinks_below_the_bar():
-    # A 28-step upscale at strength 0.35 denoises ~10 steps (diffusers get_timesteps),
-    # which is below FBCACHE_MIN_STEPS -> the auto policy must NOT engage FBCache there.
+    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps (diffusers get_timesteps
+    # floors the product), which is below FBCACHE_MIN_STEPS -> the auto policy must NOT engage
+    # FBCache there.
     eff = effective_denoise_steps(28, 0.35)
-    assert eff == 10
+    assert eff == 9
     assert eff < FBCACHE_MIN_STEPS
 
 
 def test_effective_steps_matches_diffusers_get_timesteps():
-    # Mirror diffusers exactly: num_inference_steps - int(num_inference_steps -
-    # min(num_inference_steps * strength, num_inference_steps)).
+    # Mirror diffusers exactly: it denoises init_timestep = min(int(num_inference_steps *
+    # strength), num_inference_steps) steps (the product is floored, not rounded).
     for steps, strength in [(28, 0.35), (28, 0.8), (50, 0.5), (20, 0.99), (30, 0.1)]:
-        init = min(steps * strength, steps)
-        expected = max(1, steps - int(max(steps - init, 0)))
+        expected = max(1, min(int(steps * strength), steps))
         assert effective_denoise_steps(steps, strength) == expected
 
 

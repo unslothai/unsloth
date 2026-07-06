@@ -97,7 +97,8 @@ def _default_threads() -> int:
     path runs, oversubscribing the hyperthreads adds scheduling contention without
     extra throughput, so pin to physical cores (``cpu_count // 2``) instead. Falls
     back to 8 when the count is unknown, and clamps to at least 1."""
-    return max(1, (os.cpu_count() or 8) // 2)
+    cpu = os.cpu_count()
+    return max(1, cpu // 2 if cpu else 8)
 
 
 def _server_binary_runnable(binary: str) -> bool:

@@ -131,17 +131,17 @@ def effective_denoise_steps(steps: int, strength: Optional[float]) -> int:
 
     An image-conditioned workflow with ``strength`` < 1 (img2img / upscale / inpaint) runs
     only a fraction of ``num_inference_steps``: diffusers' ``get_timesteps`` computes
-    ``init_timestep = min(num_inference_steps * strength, num_inference_steps)`` and denoises
-    ``num_inference_steps - int(num_inference_steps - init_timestep)`` steps. The auto
+    ``init_timestep = min(int(num_inference_steps * strength), num_inference_steps)`` and
+    denoises exactly ``init_timestep`` steps -- the product is FLOORED, not rounded. The auto
     step-cache policy must key on THIS count -- e.g. a 28-step upscale at strength 0.35 runs
-    ~10 real steps, exactly the short trajectory FBCache should stay off (each skipped step
-    is a large quality hit). ``strength`` None (txt2img / reference) or >= 1 -> the full count.
+    ``int(9.8) = 9`` real steps, exactly the short trajectory FBCache should stay off (each
+    skipped step is a large quality hit). ``strength`` None (txt2img / reference) or >= 1 -> the
+    full count.
     """
     s = int(steps)
     if strength is None or float(strength) >= 1.0:
         return s
-    init = min(s * float(strength), s)
-    return max(1, s - int(max(s - init, 0)))
+    return max(1, min(int(s * float(strength)), s))
 
 
 def maybe_toggle_step_cache(
