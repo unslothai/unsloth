@@ -1615,6 +1615,19 @@ class LlamaCppBackend:
         conversation = list(messages)
         url = f"{self.base_url}/v1/chat/completions"
 
+        # Allow-list of tool names the caller enabled for this request.
+        # Structured tool_calls are already constrained by llama-server,
+        # but healed calls (parsed from raw <function=...> text below) are
+        # not, so they must be checked against this set before execution --
+        # otherwise a model can invoke a tool that was never offered
+        # (e.g. emitting <function=terminal> as text when only web_search
+        # was enabled).
+        _allowed_tool_names = {
+            t.get("function", {}).get("name")
+            for t in (tools or [])
+            if t.get("function", {}).get("name")
+        }
+
         for iteration in range(max_tool_iterations):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -1712,6 +1725,25 @@ class LlamaCppBackend:
                     flags = re.DOTALL,
                 ).strip()
 
+            # Reject any tool calls whose name was not enabled for this
+            # request.  Healed calls come from arbitrary model text and
+            # would otherwise bypass the caller's tool allow-list.
+            if tool_calls:
+                _kept = [
+                    tc
+                    for tc in tool_calls
+                    if tc.get("function", {}).get("name") in _allowed_tool_names
+                ]
+                if len(_kept) != len(tool_calls):
+                    _dropped = [
+                        tc.get("function", {}).get("name") for tc in tool_calls
+                    ]
+                    logger.warning(
+                        "Dropped tool call(s) not in enabled tools "
+                        f"{sorted(_allowed_tool_names)}: {_dropped}"
+                    )
+                tool_calls = _kept
+
             if finish_reason == "tool_calls" or (tool_calls and len(tool_calls) > 0):
                 # Append the assistant message with tool_calls to conversation
                 assistant_msg = {"role": "assistant", "content": content_text}
@@ -1736,6 +1768,14 @@ class LlamaCppBackend:
                                 arguments = {"raw": raw_args}
                     else:
                         arguments = raw_args
+
+                    # Malformed tool calls can carry non-object arguments
+                    # (e.g. a JSON array or number parsed from a
+                    # <tool_call>{...}</tool_call> payload); normalize to a
+                    # dict so the .get() lookups below cannot raise
+                    # AttributeError and abort the response.
+                    if not isinstance(arguments, dict):
+                        arguments = {}
 
                     # Yield status update
                     if tool_name == "web_search":
