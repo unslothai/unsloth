@@ -29,9 +29,22 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from core.inference.tool_call_parser import TOOL_XML_SIGNALS, has_tool_signal
 from core.inference.tool_loop_controller import coerce_tool_arguments
 from core.tool_healing import parse_tool_calls_from_text
+
+# Only the formats this healer can promote. The parser's broader list adds Llama
+# <|python_tag|> / Mistral [TOOL_CALLS], but buffering those here would flush a
+# streamed call as prose, so keep a healer-aligned list.
+_HEAL_SIGNALS = (
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+)
+
+
+def _has_heal_signal(text: str) -> bool:
+    return any(s in text for s in _HEAL_SIGNALS)
+
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
@@ -44,7 +57,7 @@ def nudge_enabled(request_flag: Optional[bool]) -> bool:
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
-_MAX_SIGNAL_LEN = max(len(s) for s in TOOL_XML_SIGNALS)
+_MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
 # A suspected-but-unclosed tool block larger than this is declared a false
 # alarm and flushed, bounding memory on a model rambling XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
@@ -198,7 +211,7 @@ def heal_openai_message_events(
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return None
     content = msg.get("content")
-    if not isinstance(content, str) or not has_tool_signal(content):
+    if not isinstance(content, str) or not _has_heal_signal(content):
         return None
     parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
@@ -248,7 +261,7 @@ def heal_openai_message(
 
 def _earliest_signal(buffer: str) -> int:
     best = -1
-    for signal in TOOL_XML_SIGNALS:
+    for signal in _HEAL_SIGNALS:
         index = buffer.find(signal)
         if index >= 0 and (best < 0 or index < best):
             best = index
@@ -275,7 +288,7 @@ def _partial_signal_suffix(buffer: str) -> int:
     """Length of the longest buffer suffix that is a proper prefix of a signal."""
     for length in range(min(len(buffer), _MAX_SIGNAL_LEN - 1), 0, -1):
         tail = buffer[-length:]
-        if any(signal.startswith(tail) for signal in TOOL_XML_SIGNALS):
+        if any(signal.startswith(tail) for signal in _HEAL_SIGNALS):
             return length
     return 0
 
@@ -508,7 +521,7 @@ def nudge_should_retry(
     if not message or message.get("tool_calls"):
         return False
     text = message.get("content")
-    if not isinstance(text, str) or not has_tool_signal(text):
+    if not isinstance(text, str) or not _has_heal_signal(text):
         return False
     return not _heal_would_promote(text, allowed_tools, tools)
 

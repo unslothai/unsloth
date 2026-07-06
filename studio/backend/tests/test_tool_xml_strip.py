@@ -24,15 +24,34 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
-_ns = {"_re": _re}
+# Provide both helpers so the extracted _strip_tool_xml_for_display resolves.
+from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
+
+_ns = {
+    "_re": _re,
+    "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
+    "_strip_function_xml_calls": _strip_function_xml_calls,
+}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+
+_xml_helper = _re.search(
+    r"def _strip_tool_xml\(text: str\) -> str:\n(?:    .+\n)+",
+    _src,
+)
+assert _xml_helper, "could not extract _strip_tool_xml source"
+assert "_strip_mistral_closed_calls" in _xml_helper.group(
+    0
+), "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
+exec(_xml_helper.group(0), _ns)
+
 _helper = _re.search(
     r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
     r"(?:    .+\n)+",
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
+assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegates"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
@@ -44,6 +63,15 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
+def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
+    # [TOOL_CALLS] with nested JSON needs the Mistral balanced-brace strip, not the regex.
+    text = 'ok [TOOL_CALLS]web_search{"filters":{"date":"2024"},"query":"cats"} tail'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "web_search" not in out, out
+    assert out == "ok  tail"
 
 
 def test_strips_well_formed_tool_call():
@@ -71,6 +99,25 @@ def test_strips_function_only_well_formed():
     assert "<function=" not in cleaned
     assert "Setup." in cleaned
     assert "Done." in cleaned
+
+
+def test_strips_function_attribute_form():
+    # Attribute form <function name="..."> must strip from the route too; dotted/hyphenated names included.
+    text = (
+        'Sure.\n<function name="get_weather">\n'
+        "<parameter=city>\nSydney\n</parameter>\n</function>\nDone."
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "<function name=" not in cleaned
+    assert "</function>" not in cleaned
+    assert "Sure." in cleaned and "Done." in cleaned
+
+    dotted = 'A <function name="srv.list-issues">x</function> B'
+    assert _TOOL_XML_RE.sub("", dotted) == "A  B"
+
+    # Auto-Heal-disabled display contract still preserves literal markup.
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    assert "<function name=" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
 
 # ── Orphan openings ───────────────────────────────────────────────
@@ -281,3 +328,109 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
     assert "<tool_call>" not in cleaned
+
+
+# Llama-3 <|python_tag|> arm bounds on REAL sentinels only
+def test_python_tag_strip_consumes_literal_sentinel_in_arg():
+    # A literal <|...|> token inside the arg must not end the strip early.
+    text = '<|python_tag|>{"name": "send", "parameters": {"text": "use <|cite|> here"}}'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "", f"python_tag call leaked at literal sentinel: {cleaned!r}"
+
+
+@pytest.mark.parametrize(
+    "sentinel",
+    [
+        "<|eot_id|>",
+        "<|eom_id|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+    ],
+)
+def test_python_tag_strip_stops_at_real_sentinel(sentinel):
+    # A real control sentinel bounds the strip so following text survives.
+    text = f'<|python_tag|>{{"name": "x", "parameters": {{}}}}{sentinel}visible answer'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert (
+        cleaned == f"{sentinel}visible answer"
+    ), f"strip did not stop at real sentinel {sentinel!r}: {cleaned!r}"
+
+
+def test_python_tag_strip_restarts_on_second_python_tag():
+    # A second <|python_tag|> opens a new region; both are stripped.
+    text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"
+
+
+def test_route_strip_removes_param_alias_close_tag():
+    # Orphan </param> (attribute-form alias of </parameter>) must strip too.
+    assert _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True) == "answer "
+    assert (
+        _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True) == "answer "
+    )
+
+
+def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
+    # A literal <function=...></function> in a value must not truncate the strip.
+    text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
+
+
+def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
+    # The call ends at its first non-data close; prose after (even a literal </function>) survives.
+    from core.inference.tool_call_parser import strip_tool_markup
+    text = (
+        "<function=web_search><parameter=query>cats</parameter></function>"
+        " Done. The tag </function> closes a call."
+    )
+    assert strip_tool_markup(text, final = True) == "Done. The tag </function> closes a call."
+
+
+def test_final_strip_keeps_prose_mentioning_bare_markers():
+    # A false-alarm marker in prose must not drop trailing text; only call-start-shaped text drops.
+    from core.inference.tool_call_parser import strip_tool_markup
+    for text in (
+        "See [TOOL_CALLS] docs for details. More prose after.",
+        "<|python_tag|> is the Llama marker. Explanation continues.",
+        "The <|tool_call> opener wraps Gemma calls.",
+    ):
+        assert strip_tool_markup(text, final = True) == text
+    # A bare marker at end-of-text is a fragment and still drops.
+    assert strip_tool_markup("Answer text [TOOL_CALLS]", final = True) == "Answer text"
+
+
+def test_final_strip_still_drops_truncated_marker_calls():
+    from core.inference.tool_call_parser import strip_tool_markup
+    for text in (
+        '[TOOL_CALLS][{"name":"web_search","argu',
+        '[TOOL_CALLS]web_search[ARGS]{"q":"x',
+        '<|python_tag|>{"name":"web_search","par',
+        '<|python_tag|>foo.call(items=["a',
+        "<|tool_call>call:web_search{query:tru",
+    ):
+        assert strip_tool_markup(text, final = True) == ""
+
+
+def test_chained_bare_json_strip_consumes_all_calls():
+    # Next-turn history must not keep an executed call, else it replays.
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    enabled = {"web_search", "python"}
+    chained = (
+        '{"name":"web_search","parameters":{"q":"first"}};'
+        '{"name":"python","parameters":{"code":"x"}}'
+    )
+    assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
+    assert (
+        strip_leading_bare_json_call(chained + " trailing prose", enabled_tool_names = enabled)
+        == "trailing prose"
+    )
+    # The chain stops at a non-call answer object, which stays visible.
+    call_then_answer = (
+        '{"name":"web_search","parameters":{"q":"x"}};{"name":"web_search","result":"data"}'
+    )
+    assert (
+        strip_leading_bare_json_call(call_then_answer, enabled_tool_names = enabled)
+        == '{"name":"web_search","result":"data"}'
+    )

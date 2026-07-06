@@ -52,19 +52,23 @@ def strip_tool_patterns(text: str, patterns) -> str:
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-_TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w-]+)\s*\{")
+# Name class allows dots/hyphens for dotted Gemma names; whitespace-tolerant around
+# ``call`` / ``:`` since drift emits ``call: name{`` and ``call : name{``.
+_TC_GEMMA_START_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
+# Horizontal whitespace only so the newline + value indentation survive (_trim_param_value trims one newline).
+_TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>[^\S\n]*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
-# A bare Gemma value ends at `}` or a comma starting the next identifier-shaped
-# `key:`; commas before non-keys stay in the value (`New York, NY`, `10:00, 11:00`).
-_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
+# A bare (unquoted) Gemma value ends at `}` or at a comma beginning the next
+# identifier-shaped `key:` pair; a comma before a non-key (`New York, NY`,
+# `10:00, 11:00`) stays in the value. Dots let a dotted key end the value.
+_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
 
 def _balanced_brace_end(
@@ -236,7 +240,9 @@ def _quote_gemma_object_keys(src: str) -> str:
         while i < len(src) and src[i].isspace():
             i += 1
         key_name_start = i
-        while i < len(src) and (src[i].isalnum() or src[i] in "_-"):
+        # Dots match the parser's key/name charset: Gemma emits dotted argument keys
+        # (user.name:...) for namespaced schemas.
+        while i < len(src) and (src[i].isalnum() or src[i] in "_-."):
             i += 1
         key_name = src[key_name_start:i]
         colon_pos = i
@@ -275,7 +281,8 @@ def _quote_gemma_object_keys(src: str) -> str:
                     json.loads(raw.strip())
                     parts.append(raw)
                 except (json.JSONDecodeError, ValueError):
-                    parts.append(json.dumps(raw.strip()) if raw.strip() else raw)
+                    # Quote bare value; empty ({k:}) becomes "" so json.loads sees {"k":""} not invalid {"k":}.
+                    parts.append(json.dumps(raw.strip()))
         else:
             parts.append(src[key_start:i])
     return "".join(parts)
@@ -299,9 +306,35 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
         last_param_start = match.start()
     if last_param_start < 0:
         return False
-    last_param_close = content.rfind(_PARAM_CLOSE_TAG, 0, pos)
-    last_func_close = content.rfind(_FUNC_CLOSE_TAG, 0, pos)
-    return last_param_start > max(last_param_close, last_func_close)
+    # The parameter's OWN close tag decides: if it closes after ``pos`` the position is
+    # argument data (even across literal function closes); an unclosed one falls back to func close.
+    own_close = content.find(_PARAM_CLOSE_TAG, last_param_start)
+    if own_close >= 0:
+        return own_close > pos
+    func_close = content.find(_FUNC_CLOSE_TAG, last_param_start)
+    return func_close < 0 or pos < func_close
+
+
+def _func_close_index(content: str, body_start: int, body: str) -> int:
+    """Index in ``body`` of the first ``</function>`` that is not argument
+    data (not inside an open parameter value); -1 when every close is data.
+    Taking the LAST close swallowed prose between the real close and a
+    literal ``</function>`` mentioned later in the answer."""
+    idx = body.find(_FUNC_CLOSE_TAG)
+    while idx >= 0:
+        if not _inside_open_parameter(content, body_start + idx):
+            return idx
+        idx = body.find(_FUNC_CLOSE_TAG, idx + 1)
+    return -1
+
+
+def _trim_param_value(val: str) -> str:
+    """Trim only the wrapping newline (not str.strip) so code/diff argument indentation survives."""
+    if val.startswith("\n"):
+        val = val[1:]
+    if val.endswith("\n"):
+        val = val[:-1]
+    return val
 
 
 def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
@@ -342,6 +375,30 @@ def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
     return coverage
 
 
+def _build_markers(content: str):
+    """JSON/Gemma tool markers as ``(start, brace_end, kind, match)`` in document
+    order; ``brace_end < 0`` marks an unbalanced (to-EOF) open."""
+    markers = []
+    for start_re, gemma, kind in (
+        (_TC_JSON_START_RE, False, "json"),
+        (_TC_GEMMA_START_RE, True, "gemma"),
+    ):
+        for m in start_re.finditer(content):
+            if _inside_open_parameter(content, m.start()):
+                continue
+            brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
+            markers.append((m.start(), brace_end, kind, m))
+    markers.sort(key = lambda c: c[0])
+    return markers
+
+
+def marker_coverage(content: str) -> list[tuple[int, int]]:
+    """Coverage spans of JSON/Gemma tool markers so other parsers can treat markup
+    inside a marker's coverage (even a marker that failed to parse) as that call's
+    data rather than a sibling call."""
+    return _marker_coverage(content, _build_markers(content))
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -365,18 +422,7 @@ def parse_tool_calls_from_text(
     call_spans: list[tuple] = []
     # Collect JSON/Gemma markers; _marker_coverage decides nesting. A marker inside
     # another call's coverage, or an open <parameter=> value, is data not executed.
-    markers = []  # (start, brace_end, kind, match); brace_end < 0 = unclosed
-    for start_re, gemma, kind in (
-        (_TC_JSON_START_RE, False, "json"),
-        (_TC_GEMMA_START_RE, True, "gemma"),
-    ):
-        for m in start_re.finditer(content):
-            if _inside_open_parameter(content, m.start()):
-                continue
-            brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
-            markers.append((m.start(), brace_end, kind, m))
-    markers.sort(key = lambda c: c[0])
-
+    markers = _build_markers(content)
     coverage = _marker_coverage(content, markers)
     parsed_items = []  # (start, span_end, name, arguments) in document order
     for idx, (start, brace_end, kind, m) in enumerate(markers):
@@ -395,7 +441,10 @@ def parse_tool_calls_from_text(
             if kind == "json":
                 obj = json.loads(content[m.end() - 1 : brace_end + 1])
                 name = obj.get("name", "")
-                arguments = obj.get("arguments", {})
+                # Accept ``parameters`` alias for ``arguments`` (Llama-3.2 drift inside a Hermes <tool_call>).
+                arguments = obj.get("arguments")
+                if arguments is None:
+                    arguments = obj.get("parameters", {})
                 if isinstance(arguments, dict):
                     arguments = json.dumps(arguments)
             else:
@@ -433,7 +482,7 @@ def parse_tool_calls_from_text(
             body_end = len(content)
         body_end = min(body_end, next_func)
         body = content[body_start:body_end]
-        close_idx = body.rfind(_FUNC_CLOSE_TAG)
+        close_idx = _func_close_index(content, body_start, body)
         if close_idx >= 0:
             span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
             body = body[:close_idx]
@@ -455,7 +504,7 @@ def parse_tool_calls_from_text(
                 val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
             else:
                 val = _TC_PARAM_CLOSE_RE.sub("", val)
-            arguments[pm.group(1)] = val.strip()
+            arguments[pm.group(1)] = _trim_param_value(val)
         else:
             valid_params = True
             for pidx, pm in enumerate(param_starts):
@@ -473,7 +522,7 @@ def parse_tool_calls_from_text(
                     val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
                 else:
                     val = _TC_PARAM_CLOSE_RE.sub("", val)
-                arguments[param_name] = val.strip()
+                arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
 
@@ -495,6 +544,7 @@ def parse_tool_calls_from_text(
             }
         )
         call_spans.append((start, span_end))
+
     if with_spans:
         return tool_calls, call_spans
     return tool_calls

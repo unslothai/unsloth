@@ -27,9 +27,11 @@ function usageTextClass(percent: number): string {
   return "text-primary";
 }
 
-function formatGb(value: number): string {
+function formatGiB(value: number): string {
+  // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
+  // nvidia-smi and PyTorch, so label the readout GiB rather than GB.
   const digits = value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} GB`;
+  return `${value.toFixed(digits)} GiB`;
 }
 
 export function FloatingMonitor() {
@@ -116,7 +118,7 @@ export function FloatingMonitor() {
               </span>
             </div>
             <div className="text-xs text-muted-foreground font-mono tabular-nums">
-              {formatGb(ramUsed)} / {formatGb(ramTotal)}
+              {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
             </div>
             <Progress
               value={ramPercent}
@@ -144,7 +146,7 @@ export function FloatingMonitor() {
                 </span>
               </div>
               <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                {formatGb(vramUsed)} / {formatGb(vramTotal)}
+                {formatGiB(vramUsed)} / {formatGiB(vramTotal)}
               </div>
               <Progress
                 value={vramPercent}
