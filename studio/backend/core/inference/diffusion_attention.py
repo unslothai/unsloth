@@ -275,8 +275,11 @@ def apply_attention_backend(
     defaults to None). So a load that wants native must restore it explicitly: otherwise it
     silently inherits a backend an earlier load pinned (e.g. cuDNN under a speed profile),
     breaking the bit-identical/``off`` guarantee. Best-effort throughout."""
-    setters = [s for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))
-               if callable(s)]
+    setters = [
+        s
+        for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))
+        if callable(s)
+    ]
     if not setters:
         return None
     if backend is not None:

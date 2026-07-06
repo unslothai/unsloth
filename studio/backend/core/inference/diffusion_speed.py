@@ -294,7 +294,9 @@ def _compile_repeated_blocks(
     cache_active: bool = False,
     offload_active: bool = False,
 ) -> bool:
-    dits = [t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))]
+    dits = [
+        t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
+    ]
     if not dits:
         return False
     # default: mode="default" + dynamic=True -- fast cold start, robust to resolution
