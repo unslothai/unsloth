@@ -206,6 +206,44 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "granite,llava_next",  # Granite-vision 3
 ]
 
+# Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the
+# flash-linear-attention Triton kernels (unsloth_zoo/_vendored/fla), so no install is
+# needed; transformers uses the much slower pure PyTorch path only when they can't be enabled.
+FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
+_fla_advised = False
+
+
+def _maybe_advise_fla_install(model_types):
+    """One-time note when a gated-deltanet model loads without the fast kernels.
+
+    The kernels ship with Unsloth (no install needed); this fires only when they
+    could not be enabled on this platform (e.g. no CUDA, torch < 2.7 or
+    triton < 3.3), i.e. exactly when transformers uses the slow pure PyTorch path.
+    """
+    global _fla_advised
+    if _fla_advised:
+        return
+    if model_types is None:
+        return
+    if isinstance(model_types, str):
+        model_types = [model_types]  # a lone string would otherwise iterate chars
+    try:
+        if not any(
+            isinstance(t, str) and t.startswith(FLA_MODEL_TYPE_PREFIXES) for t in model_types
+        ):
+            return
+        from transformers.utils.import_utils import is_flash_linear_attention_available
+        if is_flash_linear_attention_available():
+            return  # bundled (or user-installed) fast kernels are active
+    except Exception:
+        return
+    _fla_advised = True
+    print(
+        "Unsloth: This model uses gated-deltanet linear attention layers. Unsloth\n"
+        "bundles the flash-linear-attention kernels, but they could not be enabled\n"
+        "on this setup (they need CUDA with torch >= 2.7 and triton >= 3.3), so\n"
+        "transformers will use a slower pure PyTorch path."
+    )
 
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
@@ -1304,6 +1342,7 @@ class FastModel(FastBaseModel):
             trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
+        _maybe_advise_fla_install(model_types)
 
         # ---- Text-diffusion models (e.g. DiffusionGemma) take a transformers-only slow path. ----
         # These use a custom block-diffusion `generate` and a novel backbone, so we skip Unsloth's
