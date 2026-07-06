@@ -1440,6 +1440,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and _pg_num_gen is not None
                         and _pg_num_gen >= 2
                         and not getattr(_pg_cfg, "attn_logit_softcapping", None)
+                        # attention dropout: the normal backends apply config.attention_dropout
+                        # when training (e.g. Granite dense flash/sdpa/xformers), but the shared
+                        # prefix FlexAttention path is deterministic, so skip PG when it is set.
+                        and not getattr(_pg_cfg, "attention_dropout", 0)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
                             for _pg_a in (

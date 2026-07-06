@@ -126,9 +126,12 @@ class GroupLayout:
     ) -> torch.Tensor:
         """hidden: [1, T, Hdim] (pre-lm_head hidden states, UNSLOTH_RETURN_HIDDEN_STATES=1).
         Returns [total_rows, W] float32, byte-compatible with the packed path result."""
+        # Index tensors are pinned to input_ids.device; hidden may live on the lm-head/last
+        # layer device in a sharded model, so move the small index maps to hidden.device
+        # before indexing (mirrors the packed path moving its metadata to the consumer device).
         device = hidden.device
-        pred_h = hidden[0, self.tgt_pred, :].unsqueeze(0)  # [1, N, Hdim]
-        tgt_ids = self.flat_ids[0, self.tgt_flat].unsqueeze(0)  # [1, N]
+        pred_h = hidden[0, self.tgt_pred.to(device), :].unsqueeze(0)  # [1, N, Hdim]
+        tgt_ids = self.flat_ids[0, self.tgt_flat].to(device).unsqueeze(0)  # [1, N]
         sel = chunked_fn(
             pred_h,
             lm_head,
@@ -139,7 +142,7 @@ class GroupLayout:
             logit_softcapping,
             temperature,
         )[0]  # [N] logprobs
-        dest = self.tgt_rows * self.L + self.tgt_cols
+        dest = self.tgt_rows.to(device) * self.L + self.tgt_cols.to(device)
         result = (
             torch.zeros(self.total_rows * self.L, dtype = torch.float32, device = device)
             .index_put((dest,), sel.to(torch.float32))

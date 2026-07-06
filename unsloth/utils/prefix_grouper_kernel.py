@@ -329,7 +329,12 @@ def get_block_mask(
     if bm is not None:
         return bm
 
-    mask_mod = _make_mask_mod(seg.group_of_kv, seg.is_prefix, seg.suffix_of_kv)
+    # Move the label tensors to the consumer (Q) device: the mask_mod closure is evaluated
+    # on `device`, so with a sharded model the seg tensors (pinned to input_ids.device) would
+    # index cross-device. Cache is keyed on (signature, device), so this copies once per device.
+    mask_mod = _make_mask_mod(
+        seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
+    )
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
         bm = builder(
