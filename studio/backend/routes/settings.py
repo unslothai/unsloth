@@ -184,9 +184,7 @@ class CodingAgentsResponse(BaseModel):
 
 
 @router.get("/coding-agents", response_model = CodingAgentsResponse)
-def get_coding_agents(
-    current_subject: str = Depends(get_current_subject),
-) -> CodingAgentsResponse:
+def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> CodingAgentsResponse:
     return CodingAgentsResponse(detected = detect_installed_coding_agents())
 
 
