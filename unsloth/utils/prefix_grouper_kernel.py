@@ -60,36 +60,23 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
-# The compiled FlexAttention kernel specialises on (T, block-mask shape). GRPO feeds
-# many distinct segment lengths, so with dynamo's default recompile_limit (8) the cache
-# is exhausted and the kernel silently falls back / reuses a mismatched specialisation
-# -> WRONG (non-bit-exact) results. Raise the limits so every shape gets a correct
-# kernel. (Production should additionally bucket sequence lengths to bound recompiles.)
+# GRPO feeds many distinct segment lengths; at dynamo's default recompile_limit (8) the
+# compiled kernel silently reuses a mismatched specialisation (wrong results). Raise it.
 torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
 torch._dynamo.config.accumulated_recompile_limit = max(
     getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
 )
 
 
-# ---------------------------------------------------------------------------
-# Compiled kernels. FlexAttention needs torch.compile to fuse the sparse mask
-# into a single kernel; create_block_mask is likewise compiled for speed.
-# dynamic=True is required for GRPO: the packed length T changes almost every
-# batch, and dynamic=False recompiles the flex fwd+bwd kernel on every new T
-# (~14s each on a 4B trunk). dynamic=True compiles once, then reuses the kernel
-# across all lengths (recompile-free after warmup); T is still padded to a
-# multiple of 128 (_pad_len) for the backward-kernel block assertion.
+# Compiled kernels: torch.compile fuses the sparse mask into one kernel. dynamic=True is
+# required: T changes almost every GRPO batch and dynamic=False recompiles per T (~14s
+# each). T is still padded to a multiple of 128 (_pad_len) for the backward kernel.
 _flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
-# FlexAttention kernel_options (block sizes), selected by Q dtype.
-#
-# The shared-prefix mask splits a query row's valid keys into two disjoint runs (prefix +
-# own-suffix), which stresses the flash online-softmax accumulation. fp32 needs
-# BLOCK_M=BLOCK_N=32 (~1e-6 floor; larger blocks drift to ~1.8e-3). bf16's parity bar is
-# looser (0.2 nats), so a Qwen3-4B-shaped sweep on B200 showed BLOCK_M=128,BLOCK_N=64
-# passes all bf16 parity cases and is ~5x faster on a 36-layer trunk (BLOCK_128/128 OOMs
-# Triton on B200). So: bf16 -> 128/64, fp32/fp64 -> 32/32. All env-overridable.
+# Flash block sizes by Q dtype (env-overridable). The two disjoint key runs (prefix +
+# own-suffix) stress online-softmax accumulation: fp32 needs 32/32 for a ~1e-6 floor;
+# bf16 passes parity at 128/64 and is ~5x faster (128/128 OOMs Triton on B200).
 _FP32_BLOCK_M = int(os.environ.get("PG_FLEX_BLOCK_M", "32"))
 _FP32_BLOCK_N = int(os.environ.get("PG_FLEX_BLOCK_N", "32"))
 _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
@@ -103,16 +90,12 @@ def _kernel_options_for_dtype(dtype):
     return {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
 
-# Kept for backward-compat with any caller reading the constant (fp32 default).
+# Backward-compat constant (fp32 default).
 _FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
-# The flash BLOCK_M=32 forward is precise, but the compiled BACKWARD kernel trips an
-# Inductor assertion when the sequence length T is not a multiple of 128 (a partial-block
-# WRITE_DQ path). We therefore pad the flat sequence up to the next multiple of
-# _PAD_MULTIPLE. Pad tokens are a dedicated group that attends to nothing and is
-# attended-to by nothing (all-masked rows return 0, not NaN, in FlexAttention), and are
-# sliced off the output. This makes the same kernel serve both forward and backward at
-# any T.
+# The compiled backward trips an Inductor assertion when T is not a multiple of 128, so
+# pad the flat sequence. Pad tokens form a group that attends to / is attended by nothing
+# (all-masked rows return 0, not NaN) and are sliced off the output.
 _PAD_MULTIPLE = 128
 _PAD_GROUP = -99  # sentinel group id / suffix id for pad tokens
 
@@ -274,12 +257,8 @@ def build_seg_info_multigroup(
 
 
 # ---------------------------------------------------------------------------
-# Block-mask builder + cache
-# ---------------------------------------------------------------------------
-#
-# Cache keyed on (signature, device). The mask depends ONLY on the per-token labels
-# (group / is_prefix / suffix ids) and T, so it is reused across all layers of a forward
-# and across steps with the same segment signature.
+# Block-mask builder + cache, keyed on (signature, device): the mask depends only on the
+# per-token labels and T, so it is reused across layers and steps.
 
 _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
@@ -329,9 +308,8 @@ def get_block_mask(
     if bm is not None:
         return bm
 
-    # Move the label tensors to the consumer (Q) device: the mask_mod closure is evaluated
-    # on `device`, so with a sharded model the seg tensors (pinned to input_ids.device) would
-    # index cross-device. Cache is keyed on (signature, device), so this copies once per device.
+    # Move labels to the consumer (Q) device: with a sharded model the seg tensors live on
+    # input_ids.device and would index cross-device. Copies once per (signature, device).
     mask_mod = _make_mask_mod(
         seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
     )
@@ -381,7 +359,7 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             kernel_options = _kernel_options_for_dtype(qp.dtype),
         )
     else:
-        # eager path (fp64 parity): no kernel_options, dense score materialisation.
+        # eager path (fp64 parity): dense scores, no kernel_options.
         out = flex_attention(
             qp,
             kp,

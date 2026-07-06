@@ -739,10 +739,9 @@ def LlamaAttention_fast_forward(
         flash_dense_kwargs = {"causal": True},
         flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True},
     )
-    # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO logprob
-    # forward (same route as packed_seq_lengths). resolve_prefix_seg_info hardens the
-    # misuse case (KV cache / padding mask -> raise). None => byte-identical default.
-    # This reuse of LlamaAttention_fast_forward also carries the branch to qwen2 & gemma.
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward (same route
+    # as packed_seq_lengths); misuse (KV cache / padding mask) raises. None => byte-identical
+    # default. Reuse of this forward also carries the branch to qwen2 & gemma.
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,

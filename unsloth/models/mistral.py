@@ -125,9 +125,8 @@ def MistralAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO logprob
-    # forward. resolve_prefix_seg_info hardens the misuse case (KV cache / padding mask ->
-    # raise). None => byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -167,9 +166,8 @@ def MistralForCausalLM_fast_forward(
     *args,
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
-    # PrefixGrouper supplies its own shared-prefix FlexAttention mask, so do not synthesize a
-    # causal attention_mask for it: on the no-xFormers path the synthesized mask would trip
-    # resolve_prefix_seg_info and force PG to fall back to the full packed/padded forward.
+    # PrefixGrouper brings its own mask: a synthesized causal attention_mask would trip
+    # resolve_prefix_seg_info on the no-xFormers path and force a fallback.
     if (
         causal_mask is None
         and past_key_values is None

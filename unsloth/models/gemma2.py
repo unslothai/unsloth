@@ -169,12 +169,10 @@ def Gemma2Attention_fast_forward(
             },
         )
 
-        # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO
-        # logprob forward. resolve_prefix_seg_info hardens the misuse case (KV cache /
-        # padding mask -> raise). None => byte-identical default. gemma2 is sliding-window and
-        # softcapped; the GRPO engage gate passes the window as max_segment_cap so the layout
-        # builder falls back whenever a group's span (prefix + longest suffix) exceeds the window,
-        # and it excludes softcap models (attn_logit_softcapping) entirely, so PG never engages here.
+        # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+        # (KV cache / padding mask) raises. None => byte-identical default. gemma2 is
+        # sliding-window and softcapped: the engage gate caps spans at the window and
+        # excludes softcap models entirely, so PG never engages here.
         _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,

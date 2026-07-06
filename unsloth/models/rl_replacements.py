@@ -52,25 +52,23 @@ from ..device_type import (
 import textwrap
 from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
 
-# One-time gates for the GRPO sequence-packing path. Mirrored into the generated
-# trainer cache via RL_PRE_ITEMS below, since inlined function bodies do not carry
-# this module's imports.
+# One-time gates for the GRPO sequence-packing path. Mirrored into the generated trainer
+# cache via RL_PRE_ITEMS below, since inlined function bodies lose this module's imports.
 UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
     "0",
     "false",
     "no",
     "off",
 )
-# Packed path needs unsloth_zoo's masked-column guard in grpo_compute_loss (zoo#840).
-# Per-process constant is correct: the installed zoo cannot change mid-process.
+# Packed path needs zoo#840's masked-column guard in grpo_compute_loss. Per-process
+# constant: the installed zoo cannot change mid-process.
 try:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = "torch.where(_keep, new" in inspect.getsource(
         RL_REPLACEMENTS["grpo_compute_loss"]
     )
 except Exception:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
-# One-time PrefixGrouper gate: only import the kernel plumbing when the env gate is on;
-# any import failure degrades to "PrefixGrouper off".
+# One-time PrefixGrouper gate; any import failure degrades to "PrefixGrouper off".
 _pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None
 UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in (
     "0",
@@ -1402,33 +1400,27 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             logprobs = None
 
             # ---- PrefixGrouper (GRPO shared-prompt dedup; default ON, exact + self-verified) ----
-            # In GRPO every prompt spawns G=num_generations completions that share the prompt
-            # prefix. The full-row packed path below forwards that prefix G times; PrefixGrouper
-            # stores it ONCE and concatenates only the G suffixes (FlexAttention shared-prefix
-            # mask), cutting the trunk forward from G*(P+R) to P+G*R tokens. Gated behind
-            # UNSLOTH_GRPO_PREFIX_GROUPER (default on, requires seq-packing on). tok_r auto-gate +
-            # first-use self-verify vs the full-row packed path (fall back + mark-unsafe on
-            # mismatch), so a mask/isolation regression can never ship silently. When off / grouping
-            # fails / not yet verified, the full-row packed path below runs exactly as before.
+            # G completions per prompt share the prefix; the packed path forwards it G times,
+            # PrefixGrouper stores it once (FlexAttention shared-prefix mask), cutting the trunk
+            # forward from G*(P+R) to P+G*R tokens. Gated by UNSLOTH_GRPO_PREFIX_GROUPER (needs
+            # seq-packing), tok_r auto-gate, and first-use self-verify vs the packed path
+            # (mismatch => fall back + mark unsafe), so a mask/isolation regression cannot ship
+            # silently. When off / ungrouped / unverified, the packed path below runs as before.
             _pg_result = None
             _pg_use = False
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
-            # One-time env gate + import, hoisted to the module level (mirrored into the
-            # generated cache via RL_PRE_ITEMS); when the env gate is off the path runs zero PG code.
-            # Also skip PG when vLLM drives generation (fast_inference=True): the colocated
-            # rollout dominates the step, so the shared-prefix forward saves little end-to-end
-            # and its first-use self-verify (which runs the full-row path too) is net overhead.
+            # Env gate hoisted to module level (mirrored via RL_PRE_ITEMS). Skip PG under vLLM
+            # (fast_inference=True): the rollout dominates the step, so PG saves little and its
+            # first-use self-verify is net overhead.
             _pg_engage = UNSLOTH_GRPO_PREFIX_GROUPER_ON and not getattr(self, "use_vllm", False)
             if _pg_engage:
                 try:
-                    # the FlexAttention kernel never applies attn_logit_softcapping, so skip PG
-                    # entirely for softcap models (e.g. gemma2) before building any layout.
-                    # Hybrid SSM (FalconH1) and MoE (Qwen3-MoE, Mixtral, Llama4) models are
-                    # excluded too: only the threaded attention forwards get the shared-prefix
-                    # isolation, so a Mamba branch or a MoE decoder that does not forward
-                    # prefix_seg_info would let suffixes leak across completions. PG also rides on
+                    # Skip softcap models (the flex kernel never applies attn_logit_softcapping)
+                    # and hybrid SSM / MoE models: only the threaded attention forwards get the
+                    # shared-prefix isolation, so a Mamba or MoE decoder that does not forward
+                    # prefix_seg_info would leak suffixes across completions. PG also rides on
                     # sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
@@ -1440,9 +1432,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and _pg_num_gen is not None
                         and _pg_num_gen >= 2
                         and not getattr(_pg_cfg, "attn_logit_softcapping", None)
-                        # attention dropout: the normal backends apply config.attention_dropout
-                        # when training (e.g. Granite dense flash/sdpa/xformers), but the shared
-                        # prefix FlexAttention path is deterministic, so skip PG when it is set.
+                        # normal backends apply config.attention_dropout in training; the flex
+                        # path is deterministic, so skip PG when it is set.
                         and not getattr(_pg_cfg, "attention_dropout", 0)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
@@ -1462,8 +1453,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if _pg_engage:
                 try:
                     _pg_pad = self.processing_class.pad_token_id
-                    # sliding-window models lose the per-sequence window in the packed stream, so
-                    # cap the PG span (P+max(R)) at the window, mirroring the packed _pk_sw guard.
+                    # cap the PG span (P+max(R)) at the sliding window, like the packed _pk_sw guard.
                     _pg_sw = getattr(
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
@@ -1512,17 +1502,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         logit_softcapping,
                                         temperature,
                                     )
-                                    # release the [1, T, H] hidden before any verify forward
-                                    _pg_hidden = None
+                                    _pg_hidden = None  # release before any verify forward
                             device_synchronize()
-                            # scatter width = the loss window [B, logits_to_keep+max_left_pad]
+                            # clip to the loss window [B, logits_to_keep+max_left_pad]
                             _pg_w = logits_to_keep + max_left_pad
                             if _pg_r.shape[1] > _pg_w:
                                 _pg_r = _pg_r[:, -_pg_w:]
                             return _pg_r
 
-                        # trust needs the verified envelope to cover this batch's lengths too
-                        # (re-verify when T or the longest segment grows, like the packed path)
+                        # trust only within the verified envelope: re-verify when T or the
+                        # longest segment grows, like the packed path
                         _pg_T = int(_pg_layout.flat_ids.shape[1])
                         _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
                         _pg_env = (
@@ -1531,15 +1520,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if (not _pg_verify_on()) or (
                             _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
                         ):
-                            # trusted shape: run the shared-prefix forward now and skip the
-                            # full-row forward below
+                            # trusted shape: run PG now and skip the full-row forward below
                             _pg_result = _pg_run_forward()
                             _pg_use = True
                             _pg_skip_pk = True
                         else:
-                            # unverified shape: defer the forward until the packed reference is
-                            # known to exist (verify site below), so a declined packed path never
-                            # costs a wasted whole-batch PG forward every step
+                            # unverified shape: defer the forward until the packed reference
+                            # exists (verify site below), so a declined packed path never wastes
+                            # a whole-batch PG forward
                             _pg_forward_fn = _pg_run_forward
                 except Exception as _pg_err:
                     _pg_result = None
@@ -1556,16 +1544,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         )
 
             # ---- Sequence packing (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
-            # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] loop: the exact
-            # per-row result, and it fixes the padded path's left-pad RoPE error. Self-verified against
-            # the per-row forward (shape/RoPE-aware, re-checked as T grows); falls back if a backend
-            # ignores packed_seq_lengths. lm_head runs on completion positions only.
+            # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] loop
+            # (exact per-row result; also fixes the padded path's left-pad RoPE error).
+            # Self-verified vs the per-row forward, re-checked as T grows; falls back if a
+            # backend ignores packed_seq_lengths. lm_head runs on completion positions only.
             _pk_result = None
             _pk_use = False
             _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
-            # Packed path needs zoo#840's masked-column guard in grpo_compute_loss, else the
-            # zeroed prompt/pad columns turn NaN in exp(). Detected once at import time
-            # (per-process constant; the installed unsloth_zoo cannot change mid-process).
+            # Needs zoo#840's masked-column guard in grpo_compute_loss, else zeroed prompt/pad
+            # columns turn NaN in exp(). Detected once at import time.
             _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
             _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
             if (
@@ -1592,21 +1579,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         getattr(unwrapped_model, "config", None), "sliding_window", None
                     )
                     _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
-                    # exact per-row completion mask (same one the loss uses); a row is active only if
-                    # it has real completion tokens, so prompt-only rows can't satisfy the >= 2 guard
+                    # exact per-row completion mask (same one the loss uses); prompt-only rows
+                    # are inactive so they can't satisfy the >= 2 guard
                     _pk_cmask = create_completion_attention_mask(
                         input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
                     )
                     _pk_active = int(_pk_cmask.any(dim = 1).sum())
-                    # read the known-unsafe length here so we can skip the packed forward entirely
-                    # (running it then falling back wastes a full pass and can OOM at large T)
+                    # skip the packed forward entirely at known-unsafe lengths (running then
+                    # falling back wastes a pass and can OOM at large T)
                     _pk_unsafe = getattr(
                         unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
                     )
-                    # cap the single flattened forward at one padded mini-batch's token budget.
-                    # B is the number of chunks, so the padded loop forwards batch_size rows at a
-                    # time; a larger batch falls back to the chunked padded loop rather than building
-                    # a [1, sum L] forward bigger than the padded [batch_size, seq_len] mini-batch.
+                    # cap the flattened forward at one padded mini-batch's token budget; larger
+                    # batches fall back to the chunked padded loop.
                     _pk_cap = batch_size * seq_len
                     if (
                         _pk_T >= 2
@@ -1623,8 +1608,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             as_tuple = False
                         )  # [T, 2] = (row, col), row-major
                         _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
-                        # completion start is per-row after left-packing: (L - logits_to_keep) minus
-                        # that row's left-pad (matches create_completion_attention_mask exactly)
+                        # per-row completion start: (L - logits_to_keep) minus that row's
+                        # left-pad (matches create_completion_attention_mask exactly)
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         with _get_inference_mode_context_manager(model):
@@ -1650,7 +1635,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 )[0]
                         # GPT-OSS offload race guard (matches the padded loop)
                         device_synchronize()
-                        # scatter each completion logprob back to its (row, col) so [:, -_pk_W:] matches padded
+                        # scatter each logprob back to its (row, col) so [:, -_pk_W:] matches padded
                         _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
                         _pk_result = (
                             torch.zeros(
@@ -1661,25 +1646,23 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
                             .view(total_rows, _pk_L)[:, -_pk_W:]
                         )
-                        # trust decision: re-verify when T or the longest segment grows past what was
-                        # verified (a LongRoPE cache switch can change the result)
+                        # re-verify when T or the longest segment grows past what was verified
+                        # (a LongRoPE cache switch can change the result)
                         _pk_vT = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
                         )
                         _pk_vS = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
                         )
-                        # debug knob (force re-verify every step) commented out; re-enable by hand
-                        # _pk_force_verify = (
-                        #     os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
-                        # )
+                        # debug knob (force re-verify every step); re-enable by hand:
+                        # _pk_force_verify = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
                         if (
                             # (not _pk_force_verify) and
                             _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS
                         ):
                             _pk_use = True  # already verified for this shape
                         else:
-                            # verify against the per-row clean forward (exact ground truth)
+                            # verify vs the per-row clean forward (exact ground truth)
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
@@ -1717,7 +1700,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             _pk_rkeep
                                         ].to(torch.float32)
                             device_synchronize()
-                            # compare over the exact loss-mask region (same mask the loss uses)
+                            # compare over the exact loss-mask region
                             _pk_cm = _pk_cmask.float()
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if UNSLOTH_ENABLE_LOGGING:
@@ -1729,8 +1712,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             if _pk_diff < 7e-1:
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 # only widen the trusted shape when >= 2 completion rows actually
-                                # exercised cross-sample packing; a < 2 row pass proves nothing, so
-                                # keep re-verifying larger shapes until a real multi-row batch clears
+                                # exercised cross-sample packing; fewer proves nothing
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
                                         _pk_vT, _pk_T
@@ -1743,12 +1725,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             else:
                                 _pk_use = False
                                 if _pk_diff >= 1.5:
-                                    # large mismatch = contamination (attention ignores the packed
-                                    # mask, e.g. some MoE): disable packing for this model
+                                    # contamination (attention ignored the packed mask, e.g. some
+                                    # MoE): disable packing for this model
                                     unwrapped_model._unsloth_seq_packing_nograd_ok = False
                                 else:
-                                    # moderate mismatch -> likely a length boundary (LongRoPE): mark
-                                    # unsafe but keep packing for smaller shapes
+                                    # likely a length boundary (LongRoPE): mark this T unsafe but
+                                    # keep packing smaller shapes
                                     unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
                                         _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
                                     )
@@ -1758,7 +1740,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         flush = True,
                                     )
                 except Exception as _pk_err:
-                    # any failure -> drop intermediates, use the padded loop, do not retry
+                    # any failure: drop intermediates, use the padded loop, do not retry
                     _pk_hidden = None
                     _pk_sel = None
                     _pk_result = None
@@ -1771,17 +1753,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
                             flush = True,
                         )
-            # ---- PrefixGrouper resolution + first-use self-verify (no-grad) ----
-            # If PrefixGrouper produced a result but the shape isn't trusted yet, compare it to
-            # the full-row packed result (_pk_result, just computed as the certified reference,
-            # itself self-verified vs per-row) over the completion mask. PASS < tol_ok -> trust
-            # the structure; >= TOL_KILL -> mark unsafe forever; borderline -> fall back this
-            # shape. Transitively this verifies PrefixGrouper vs the per-row forward.
+            # ---- PrefixGrouper first-use self-verify (no-grad) ----
+            # Compare the untrusted PG result to the full-row packed result (itself verified vs
+            # per-row) over the completion mask: < tol_ok -> trust the structure; >= TOL_KILL ->
+            # unsafe forever; borderline -> fall back this shape.
             if _pg_forward_fn is not None and not _pg_use:
                 if _pk_use and _pk_result is not None:
                     try:
-                        # deferred shared-prefix forward: only runs once the packed reference
-                        # exists, so a declined packed path costs no extra PG forward
+                        # deferred PG forward, run only now that the packed reference exists
                         _pg_result = _pg_forward_fn()
                         _pg_W2 = logits_to_keep + max_left_pad
                         _pg_cm = create_completion_attention_mask(
@@ -1835,8 +1814,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
                                 flush = True,
                             )
-                # else: no full-row reference available (packing off/failed) -> cannot verify;
-                # fall back to whatever the packed/padded path produces (conservative).
+                # else: no packed reference (packing off/failed) -> cannot verify; fall back.
 
             if _pg_use and _pg_result is not None:
                 logprobs = _pg_result  # PrefixGrouper verified/trusted -> skip the loop
@@ -1845,8 +1823,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 logprobs = _pk_result  # verified -> skip the loop
                 zipped_inputs = []
             else:
-                # fell back to the padded loop: drop the packed intermediates first so the loop does
-                # not run with the full flattened hidden state / reference buffer still resident
+                # padded-loop fallback: drop packed intermediates before the loop runs
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
 
             with _get_inference_mode_context_manager(model):
@@ -2015,15 +1992,14 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
-# Module-level constants the inlined grpo functions reference. inspect.getsource inlines the
-# function bodies but NOT the module imports, so names like UNSLOTH_ENABLE_LOGGING must be
-# (re)defined in the generated cache module. Provide it as a pre-item so the seq-packing /
-# PrefixGrouper verify logging branches resolve it (env-driven, default off).
+# inspect.getsource inlines function bodies but not module imports, so constants the
+# inlined grpo functions reference (e.g. UNSLOTH_ENABLE_LOGGING) must be redefined in the
+# generated cache module via pre-items.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "import os as _unsloth_os\n"
     "UNSLOTH_ENABLE_LOGGING = _unsloth_os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') in ('1', 'True', 'true')\n"
 )
-# One-time sequence-packing gates, same values as the module-top constants above.
+# Sequence-packing gates, same values as the module-top constants.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "UNSLOTH_GRPO_SEQ_PACKING_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_SEQ_PACKING', '1').lower() not in ('0', 'false', 'no', 'off')\n"
 )
@@ -2035,7 +2011,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
     "except Exception:\n"
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False\n"
 )
-# One-time PrefixGrouper gate, same shape as the module-top constants above.
+# PrefixGrouper gate, same shape as the module-top constants.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
     "UNSLOTH_GRPO_PREFIX_GROUPER_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER', '1').lower() not in ('0', 'false', 'no', 'off')\n"

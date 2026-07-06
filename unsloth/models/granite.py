@@ -160,9 +160,8 @@ def GraniteAttention_fast_forward(
         },
     )
 
-    # PrefixGrouper: shared-prefix segment table rides in **kwargs from the GRPO logprob
-    # forward. resolve_prefix_seg_info hardens the misuse case (KV cache / padding mask ->
-    # raise). None => byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,

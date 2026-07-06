@@ -43,8 +43,8 @@ if HAS_XFORMERS and torch.cuda.is_available():
         HAS_XFORMERS = False
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
-# PrefixGrouper FlexAttention kernel, resolved once when the env gate is on. Kept out of
-# the default import path so PG-off users never load torch flex_attention.
+# PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
+# torch flex_attention.
 _flex_shared_prefix_attention = None
 if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
     try:
@@ -96,9 +96,8 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
-    # PrefixGrouper (GRPO shared-prompt dedup): when non-None, attention routes Q/K/V
-    # through the FlexAttention shared-prefix kernel instead of the block-diagonal
-    # packed path. Defaults None so every existing construction/behavior is unchanged.
+    # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel;
+    # None leaves every existing construction/behavior unchanged.
     prefix_seg_info: Optional[Any] = None
 
 
@@ -154,18 +153,14 @@ def run_attention(
     and SDPA handle packing via a block-diagonal mask.
     """
 
-    # ---- PrefixGrouper shared-prefix attention (GRPO dedup; None => unchanged) ----
-    # When a prefix segment table is present, route Q/K/V through the FlexAttention
-    # shared-prefix kernel. Q/K/V here are [bsz, n_heads/n_kv, T, head_dim]; the kernel
-    # takes [1, T, H, D] and returns [1, T, H, D] (== every other backend's return shape
-    # after transpose(1,2)). Env-gated upstream (this field is only ever set when
-    # UNSLOTH_GRPO_PREFIX_GROUPER is on and grouping succeeded), so None leaves every backend
-    # byte-identical to before.
+    # PrefixGrouper shared-prefix attention (GRPO dedup). Q/K/V here are [bsz, H, T, D];
+    # the kernel takes/returns [1, T, H, D], matching the other backends. The field is
+    # only set when the env gate is on and grouping succeeded; None keeps every backend
+    # byte-identical.
     if context.prefix_seg_info is not None:
         flex_shared_prefix_attention = _flex_shared_prefix_attention
         if flex_shared_prefix_attention is None:
-            # gate flipped on after import (or the one-time load failed): resolve lazily,
-            # preserving the original per-call fallback semantics.
+            # gate flipped on after import (or one-time load failed): resolve lazily.
             from ..utils.prefix_grouper_kernel import flex_shared_prefix_attention
 
         scale = None

@@ -64,8 +64,7 @@ def env_on(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no", "off")
 
 
-# One-time env reads (process constants, matching the one-time gates in rl_replacements).
-# The helpers below keep their callable signatures since unsloth_zoo imports and calls them.
+# One-time env reads; the helpers stay callable since unsloth_zoo imports and calls them.
 _ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
@@ -89,9 +88,8 @@ def tol_ok() -> float:
     return _TOL_OK
 
 
-# Kill band: a diff >= this means the mask/isolation is broken (contamination), so the
-# structure is marked permanently unsafe. Between tol_ok and TOL_KILL is a conservative
-# "fall back for this shape but keep trying other shapes" band.
+# diff >= TOL_KILL = broken mask/isolation -> structure permanently unsafe; between
+# tol_ok and TOL_KILL -> fall back for this shape but keep trying others.
 TOL_KILL = 1.5
 
 
@@ -126,9 +124,8 @@ class GroupLayout:
     ) -> torch.Tensor:
         """hidden: [1, T, Hdim] (pre-lm_head hidden states, UNSLOTH_RETURN_HIDDEN_STATES=1).
         Returns [total_rows, W] float32, byte-compatible with the packed path result."""
-        # Index tensors are pinned to input_ids.device; hidden may live on the lm-head/last
-        # layer device in a sharded model, so move the small index maps to hidden.device
-        # before indexing (mirrors the packed path moving its metadata to the consumer device).
+        # In a sharded model hidden may live on the lm-head device; move the small index
+        # maps to hidden.device before indexing.
         device = hidden.device
         pred_h = hidden[0, self.tgt_pred.to(device), :].unsqueeze(0)  # [1, N, Hdim]
         tgt_ids = self.flat_ids[0, self.tgt_flat].to(device).unsqueeze(0)  # [1, N]
@@ -243,10 +240,8 @@ def build_group_layout(
     cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
     cstart_cpu = cstart.tolist()
     ids_cpu = input_ids.tolist()
-    # per-row list of ORIGINAL real (non-pad) columns, ascending. GRPO rows are one
-    # contiguous real run (left pad + real + right pad; the run does NOT necessarily
-    # start at column 0), so derive [first, first+n) on GPU and keep the O(B*L) scan
-    # only as a fallback for non-contiguous rows.
+    # per-row real (non-pad) columns. GRPO rows are one contiguous real run, so derive
+    # [first, first+n) on GPU; the O(B*L) scan is only a non-contiguous fallback.
     n_real = keep.sum(dim = 1)
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
@@ -263,8 +258,7 @@ def build_group_layout(
     if groups is None:
         return None
 
-    # sliding-window guard: a suffix token attends over prefix_len + its own suffix_len, so a
-    # group's PG attention span is P + max(R). Fall back if that exceeds the local window.
+    # sliding-window guard: a group's PG span is P + max(R); fall back if it exceeds the window.
     if max_segment_cap is not None:
         for gm in groups:
             if gm["P"] + max(gm["R_list"]) > max_segment_cap:
@@ -292,12 +286,12 @@ def build_group_layout(
         r0 = gm["prefix_row"]
         prefix_cols = gm["prefix_cols"]  # ORIGINAL real prompt columns (len P) of row0
         plast = meta["prefix_last_index"]  # base + P - 1
-        # prefix once: gather the group's first P shared real prompt tokens from row0.
+        # gather the shared prefix once, from row0.
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
         pos_list.extend(range(P))
-        # suffixes: every suffix token is a completion-region target (scattered exactly
-        # like the packed path; completion_mask masks the leading prompt-tail positions).
+        # suffixes: every suffix token is a completion-region target (scattered like the
+        # packed path; completion_mask hides prompt-tail positions).
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
@@ -306,8 +300,7 @@ def build_group_layout(
             flat_src_cols.extend(cols)
             pos_list.extend(range(P, P + r_i))
             for j in range(r_i):
-                # index map: pos 0 predicted from the shared prefix's last token; pos
-                # j>=1 from the preceding suffix token.
+                # pos 0 is predicted from the prefix's last token; j>=1 from the previous suffix token.
                 pred = plast if j == 0 else (s + j - 1)
                 tgt_rows.append(r)
                 tgt_cols.append(cols[j])  # ORIGINAL padded column in row r
@@ -324,13 +317,9 @@ def build_group_layout(
     max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
     W = logits_to_keep + max_left_pad
 
-    # signature for the self-verify cache. The shared-prefix mask/index-map/scatter logic
-    # is STRUCTURAL (identical for any P/R given the same grouping shape), so key the
-    # verify cache on the structure -- (num_groups, group_sizes) -- NOT the exact lengths.
-    # GRPO prompts vary in length every step; keying on exact T would re-verify forever.
-    # Mirrors the packed path's "verify once, then trust" model: verify the first batch of
-    # a given structure, then trust it. Length-specific bf16 drift is bounded and captured
-    # by the first verify.
+    # self-verify cache key: the mask/index-map/scatter logic is structural, so key on
+    # (num_groups, group_sizes), not exact lengths -- GRPO lengths change every step and
+    # keying on T would re-verify forever ("verify once, then trust", like the packed path).
     grp_sizes = tuple(sorted(len(gm["R_list"]) for gm in groups))
     sig = (len(groups), grp_sizes)
 
