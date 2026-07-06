@@ -1933,13 +1933,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     all_logprobs_list.append(logprobs_chunk)
                 if logprobs is None:  # padded fallback when packing was not used
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
-                
+
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
             if compute_aux_loss is not None:
                 aux_loss = torch.stack(all_aux_losses).mean() if compute_aux_loss else None
-                return logprobs.detach(), entropies, aux_loss 
+                return logprobs.detach(), entropies, aux_loss
             return logprobs.detach(), entropies  # logps, entropies
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
