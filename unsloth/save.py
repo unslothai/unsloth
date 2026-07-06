@@ -3747,6 +3747,21 @@ def _prewarm_base_model_hub_cache(
         )
         if not model_name or is_local_path:
             return
+        # Mirror the merge: an FP8 base with a 16bit sibling merges onto the sibling, so
+        # pre-warm the sibling (what the merge downloads), not the FP8 repo, else the
+        # cache-copy fast path misses and #6890 stays unfixed for FP8 bases.
+        if base_is_quantized and quant_type == "fp8" and save_method == "merged_16bit":
+            try:
+                from unsloth_zoo.saving_utils import _resolve_fp8_16bit_sibling
+                sibling = _resolve_fp8_16bit_sibling(model_name, token)
+            except Exception:
+                sibling = None
+            if sibling:
+                model_name, is_local_path, _, base_is_quantized, quant_type = (
+                    determine_base_model_source(sibling, token)
+                )
+                if not model_name or is_local_path:
+                    return
         if base_is_quantized and quant_type in ("nf4", "fp4"):
             return  # the 16bit merge refuses these bases; nothing worth caching
 

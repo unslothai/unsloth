@@ -47,15 +47,19 @@ class _Recorder:
         self,
         result = None,
         exc = None,
+        results_fn = None,
     ):
         self.calls = []
         self.result = result
         self.exc = exc
+        self.results_fn = results_fn
 
     def __call__(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         if self.exc is not None:
             raise self.exc
+        if self.results_fn is not None:
+            return self.results_fn(*args, **kwargs)
         return self.result
 
 
@@ -70,6 +74,8 @@ def _build_env(
     colab = False,
     hub_cache = None,
     live_hub_cache = "__same__",
+    fp8_sibling = None,
+    sibling_source = None,
 ):
     """Exec the extracted helper with stubbed collaborators; returns (fn, stubs)."""
     shards = (
@@ -102,6 +108,14 @@ def _build_env(
         hf_hub_download.exc = _LocalMiss("not cached")
     snapshot_download = _Recorder()
     determine_base_model_source = _Recorder(result = base_source)
+    # For the FP8 -> 16bit sibling swap: return the sibling's (16bit) source when the
+    # helper re-resolves the sibling, else the original base source.
+    if fp8_sibling is not None:
+        _sib_src = sibling_source or (fp8_sibling, False, None, False, None)
+        determine_base_model_source.results_fn = (
+            lambda name, token = None: _sib_src if name == fp8_sibling else base_source
+        )
+    resolve_fp8_16bit_sibling = _Recorder(result = fp8_sibling)
 
     cache_dir = tmp_path / "hub_cache"
     cache_dir.mkdir(exist_ok = True)
@@ -114,7 +128,10 @@ def _build_env(
             HF_HUB_CACHE = hub_cache if hub_cache is not None else str(cache_dir)
         ),
     )
-    zoo_module = types.SimpleNamespace(determine_base_model_source = determine_base_model_source)
+    zoo_module = types.SimpleNamespace(
+        determine_base_model_source = determine_base_model_source,
+        _resolve_fp8_16bit_sibling = resolve_fp8_16bit_sibling,
+    )
     # Stub the live-env cache resolver the pre-warm uses (matches what the merge reads).
     _live = (
         (hub_cache if hub_cache is not None else str(cache_dir))
@@ -148,6 +165,7 @@ def _build_env(
         snapshot_download = snapshot_download,
         hf_hub_download = hf_hub_download,
         determine_base_model_source = determine_base_model_source,
+        resolve_fp8_16bit_sibling = resolve_fp8_16bit_sibling,
         prints = prints,
     )
     return namespace["_prewarm_base_model_hub_cache"], stubs
@@ -349,3 +367,31 @@ def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
     assert all(
         kw.get("cache_dir") == "/mnt/persistent/hf/hub" for _, kw in stubs.hf_hub_download.calls
     )
+
+
+def test_fp8_base_prewarms_16bit_sibling_not_fp8_repo(monkeypatch, tmp_path):
+    # A merged_16bit export of an FP8 base with a 16bit sibling merges onto the sibling,
+    # so the pre-warm must cache the sibling (what the merge downloads), not the FP8 repo.
+    fn, stubs = _build_env(
+        monkeypatch,
+        tmp_path,
+        base_source = ("unsloth/Model-FP8", False, None, True, "fp8"),
+        fp8_sibling = "unsloth/Model",
+    )
+    fn(_FakePeftModel(name_or_path = "unsloth/Model-FP8"), save_method = "merged_16bit")
+    assert stubs.resolve_fp8_16bit_sibling.calls, "sibling resolver was not consulted"
+    assert len(stubs.snapshot_download.calls) == 1
+    assert stubs.snapshot_download.calls[0][1]["repo_id"] == "unsloth/Model"
+
+
+def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path):
+    # No sibling: the merge dequants the FP8 base in place, so caching the FP8 repo helps.
+    fn, stubs = _build_env(
+        monkeypatch,
+        tmp_path,
+        base_source = ("unsloth/Model-FP8", False, None, True, "fp8"),
+        fp8_sibling = None,
+    )
+    fn(_FakePeftModel(name_or_path = "unsloth/Model-FP8"), save_method = "merged_16bit")
+    assert len(stubs.snapshot_download.calls) == 1
+    assert stubs.snapshot_download.calls[0][1]["repo_id"] == "unsloth/Model-FP8"
