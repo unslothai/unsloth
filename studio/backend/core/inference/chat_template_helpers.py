@@ -103,12 +103,9 @@ def apply_chat_template_for_generation(
     try:
         return _render(messages)
     except Exception:
-        # Strict tool templates reject the JSON-string ``arguments`` form in
-        # different ways: TypeError (iterating ``arguments.items()``) or a Jinja
-        # ``raise_exception`` (e.g. bundled gemma-4.jinja), so the catch is broad.
-        # Retry with arguments coerced to dicts. Original messages render first, so
-        # a working template stays byte-identical; if nothing needs coercing the
-        # original error propagates.
+        # Strict tool templates reject the JSON-string ``arguments`` form via
+        # TypeError or a broad Jinja raise_exception, so retry with dicts coerced.
+        # Original messages render first, so working templates stay byte-identical.
         normalized = _normalize_tool_call_arguments(messages)
         if normalized is messages:
             raise

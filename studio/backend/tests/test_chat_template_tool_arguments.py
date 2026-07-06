@@ -105,8 +105,7 @@ class _RecordingTokenizer:
 
 
 def test_lenient_template_receives_original_string_untouched():
-    # A lenient template must see the exact original string, not a coerced dict
-    # (the fallback must not run for it, else it emits a Python dict repr).
+    # Lenient template must see the exact original string, not a coerced dict.
     tok = _RecordingTokenizer()
     apply_chat_template_for_generation(tok, _conv('{"query": "x"}'))
     assert tok.seen_arguments == '{"query": "x"}'
@@ -141,8 +140,7 @@ class _RaiseExceptionTemplateTokenizer:
 
 
 def test_render_succeeds_on_raise_exception_template_with_string_arguments():
-    # Regression: gemma-4.jinja rejects string args via a non-TypeError, so the
-    # retry must still coerce and re-render instead of letting it propagate.
+    # Regression: gemma-4.jinja rejects string args via a non-TypeError; retry must still coerce.
     result = apply_chat_template_for_generation(
         _RaiseExceptionTemplateTokenizer(), _conv('{"query": "x"}')
     )
@@ -150,8 +148,7 @@ def test_render_succeeds_on_raise_exception_template_with_string_arguments():
 
 
 def test_unrelated_template_error_still_propagates_with_dict_args():
-    # A failure unrelated to string args (dict args -> nothing to normalize) must
-    # still propagate; the retry only fires when there is a string arg to coerce.
+    # Failure unrelated to string args (dict args, nothing to coerce) must propagate.
     class _AlwaysRaises:
         def apply_chat_template(self, messages, **kw):
             raise ValueError("template is broken")
