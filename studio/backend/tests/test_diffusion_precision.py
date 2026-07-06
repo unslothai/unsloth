@@ -290,7 +290,11 @@ def _stub_transformer_quant(monkeypatch, captured):
 
     tq = types.ModuleType("torchao.quantization")
 
-    def _quantize_(module, config, filter_fn = None):
+    def _quantize_(
+        module,
+        config,
+        filter_fn = None,
+    ):
         captured["config"] = config
         captured["filter_fn"] = filter_fn
 
