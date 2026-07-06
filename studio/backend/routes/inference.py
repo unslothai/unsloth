@@ -3801,12 +3801,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
-        # model promptly. /load holds the lifecycle gate for the whole load, so taking
-        # the gate first would make the cancel wait out the entire (multi-minute) load
-        # before it could act. cancel_load only tears the loading subprocess down (it
-        # sends no unload command that could land on a freshly swapped worker), so it is
-        # safe off-gate; the wrong-model race the gate guards is limited to the
-        # active-model command round-trip below.
+        # model promptly. /load holds the lifecycle gate for the whole (multi-minute)
+        # load, so taking the gate first would make the cancel wait it out. cancel_load
+        # only tears the loading subprocess down (sending no unload command that could
+        # land on a freshly swapped worker), so it is safe off-gate.
         backend = get_inference_backend()
         loading = getattr(backend, "get_loading_model", lambda: None)()
         if (
@@ -3821,9 +3819,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now
         # runs off the event loop (asyncio.to_thread), so without this a concurrent
-        # /load could swap in a fresh subprocess/queue mid-unload and the unload
-        # command would land on the newly loaded worker (which then unloads the wrong
-        # model). The gate makes load and unload mutually exclusive.
+        # /load could swap in a fresh subprocess mid-unload and the unload command would
+        # land on the newly loaded worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()

@@ -102,10 +102,8 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
 
 def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
     # A wedged compare-mode generation bypasses _gen_lock, so the acquire guard
-    # does not catch it and _wait_dispatcher_idle leaves the dispatcher running.
-    # Proceeding to _send_cmd/_wait_response would then hang on resp_queue (the
-    # dispatcher drops the request_id-less "unloaded" reply). Unload must instead
-    # tear the subprocess down, like the wedged locked-generation path.
+    # misses it and _send_cmd/_wait_response would hang on resp_queue. Unload must
+    # instead tear the subprocess down, like the wedged locked-generation path.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.2)
@@ -422,12 +420,10 @@ def test_unload_of_stale_name_does_not_touch_active_model(monkeypatch):
 
 
 def test_unload_matches_active_model_case_insensitively(monkeypatch):
-    # The load path treats a differently-cased repo id as the same model
-    # (active_model_name.lower() == identifier.lower()) and ModelConfig
-    # canonicalizes casing to a cached repo's spelling, so active_model_name can
-    # differ in case from the raw model_path a client later sends to /unload.
-    # The stale-name guard must match case-insensitively too; otherwise it no-ops
-    # the unload and leaves the model resident while reporting success.
+    # active_model_name can differ in case from the raw model_path a client sends
+    # to /unload (the load path canonicalizes casing). The stale-name guard must
+    # match case-insensitively too; otherwise it no-ops the unload and leaves the
+    # model resident while reporting success.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     sent = []
@@ -468,10 +464,9 @@ def test_unload_of_stale_name_still_no_ops_after_case_insensitive_match(monkeypa
 def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkeypatch):
     # A load always spawns a fresh subprocess holding only the new model, so
     # self.models must mirror that instead of accumulating the previous model's name.
-    # Otherwise switching A -> B (without an explicit unload of A first, e.g. the
-    # concurrent-load race the stale-name guard targets) leaves 'A' in self.models,
-    # so a later unload('A') passes the "model_name not in self.models" guard, reaches
-    # the worker, and its absent-name fallback unloads the *active* model B.
+    # Otherwise switching A -> B leaves 'A' in self.models, so a later unload('A')
+    # passes the "not in self.models" guard and the worker's absent-name fallback
+    # unloads the *active* model B.
     import types
 
     from utils import transformers_version as _tv
