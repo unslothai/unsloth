@@ -20,7 +20,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.training.diffusion_training_service import DiffusionTrainingService
 from routes.training import router as training_router
 
@@ -265,11 +265,22 @@ def client(monkeypatch):
 
     monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = False))
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
+    # The dataset preflight runs the trainer's discovery against _BODY's fake
+    # data_dir; stub it here so wiring tests pass, and let the dedicated preflight
+    # tests below re-point it at a real tmp dataset.
+    monkeypatch.setattr(
+        "core.training.diffusion_train_common.discover_image_caption_pairs",
+        lambda data_dir, **kw: [("img.png", "caption")],
+    )
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # Default to session (UI) auth: the API-key inference-in-flight guard is a no-op there,
+    # so the wiring tests below behave as before. The guard test flips this override.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     c = TestClient(app)
     c._fake = fake  # type: ignore[attr-defined]
+    c._app = app  # type: ignore[attr-defined]
     return c
 
 
@@ -301,6 +312,20 @@ def test_route_start_forwards_extra_training_knobs(client):
     assert r.status_code == 200, r.text
     assert client._fake.started_with["max_grad_norm"] == 0.5
     assert client._fake.started_with["lora_target_modules"] == ["to_q", "to_v"]
+
+
+def test_route_start_accepts_zero_max_grad_norm(client):
+    # 0 is the documented "disable clipping" value (the trainer skips clip_grad_norm_);
+    # the request model must not reject it.
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "max_grad_norm": 0.0})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["max_grad_norm"] == 0.0
+
+
+def test_route_start_rejects_nonpositive_snr_gamma(client):
+    # gamma <= 0 zeroes/inverts the min-SNR loss weight; null is the disable value.
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "snr_gamma": 0})
+    assert r.status_code == 422
 
 
 def test_route_start_rejects_uncontained_paths(client):
@@ -342,6 +367,37 @@ def test_route_start_conflict_maps_to_409(client):
     client._fake.start = _raise  # type: ignore[assignment]
     r = client.post("/api/train/diffusion/start", json = _BODY)
     assert r.status_code == 409
+
+
+def test_route_start_over_api_with_inference_in_flight_is_409(client, monkeypatch):
+    # An API-key client must not start diffusion training (which frees VRAM by unloading
+    # chat) while an inference request is streaming; it should 409 instead of killing it.
+    client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    monkeypatch.setattr(
+        "core.inference.llama_keepwarm.other_inference_request_count",
+        lambda current_request_counted = False: 1,
+    )
+    freed = {"called": False}
+    import routes.training as tr
+
+    monkeypatch.setattr(
+        tr, "_free_gpu_for_diffusion_training", lambda: freed.__setitem__("called", True)
+    )
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 409
+    # The guard must run BEFORE any GPU is freed, so the live inference stream survives.
+    assert freed["called"] is False
+
+
+def test_route_start_over_api_without_inference_proceeds(client, monkeypatch):
+    # Same API-key path but no inference in flight: the start proceeds normally.
+    client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    monkeypatch.setattr(
+        "core.inference.llama_keepwarm.other_inference_request_count",
+        lambda current_request_counted = False: 0,
+    )
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200
 
 
 def test_route_status_and_stop(client):

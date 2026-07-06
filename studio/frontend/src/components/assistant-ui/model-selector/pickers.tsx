@@ -1982,7 +1982,9 @@ export function HubModelPicker({
   );
   // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
   // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
-  // rule). An MLX build a Mac user dropped in ./models stays selectable.
+  // rule). An MLX build a Mac user dropped in ./models stays selectable. A
+  // task-scoped picker (Images) is exempt: the image backend loads local
+  // diffusers/safetensors pipelines even on chat-only (no-GPU, native) hosts.
   const sortedLocalDir = useMemo(
     () =>
       sortLocalModels(
@@ -1990,6 +1992,7 @@ export function HubModelPicker({
           (m) =>
             passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             (!chatOnly ||
+              task != null ||
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
@@ -2279,6 +2282,14 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
+      // Curated safetensors rows render ABOVE the recommended rows (and call
+      // getOptionProps), so their keys must lead here or they fall back to the
+      // duplicate ...-option-missing id and drop out of arrow-key navigation.
+      keys.push(
+        ...curatedSafetensorsRows.map((m) =>
+          makeModelOptionKey("curated-safetensors", m.id),
+        ),
+      );
       keys.push(
         ...recommendedRows.map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -2288,6 +2299,7 @@ export function HubModelPicker({
   }, [
     cachedReady,
     chatOnly,
+    curatedSafetensorsRows,
     sortedCustomFolderModels,
     customFoldersCollapsed,
     downloadedCollapsed,

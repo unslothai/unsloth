@@ -177,10 +177,9 @@ def test_delete_image_cleans_sidecar_and_thumb(client, ds_root):
     folder.mkdir()
     _write_png(folder / "x.png")
     (folder / "x.txt").write_text("cap", encoding = "utf-8")
-    # Generate a thumbnail so we can assert it is cleaned up too.
+    # Generate a thumbnail so we can assert it is cleaned up too. Thumbs are keyed on
+    # the full filename (stem + extension) to avoid same-stem collisions across formats.
     client.get("/api/train/diffusion/dataset/d/image/x.png?thumb=32")
-    # Thumb cache key includes the extension (x.png_32.jpg), so png and jpg
-    # siblings can't collide.
     assert list((folder / ".thumbs").glob("x.png_*.jpg"))
 
     r = client.delete("/api/train/diffusion/dataset/d/image/x.png")
@@ -188,6 +187,19 @@ def test_delete_image_cleans_sidecar_and_thumb(client, ds_root):
     assert not (folder / "x.png").exists()
     assert not (folder / "x.txt").exists()
     assert not list((folder / ".thumbs").glob("x.png_*.jpg"))
+
+
+def test_thumb_cache_key_distinguishes_same_stem_extensions(client, ds_root):
+    # sample.png and sample.jpg share a stem; each must get its OWN thumbnail cache
+    # file, so the labeling grid never serves one image's thumbnail for the other.
+    folder = ds_root / "d"
+    folder.mkdir()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(folder / "sample.png", format = "PNG")
+    Image.new("RGB", (8, 8), (200, 210, 220)).save(folder / "sample.jpg", format = "JPEG")
+    client.get("/api/train/diffusion/dataset/d/image/sample.png?thumb=32")
+    client.get("/api/train/diffusion/dataset/d/image/sample.jpg?thumb=32")
+    thumbs = sorted(p.name for p in (folder / ".thumbs").glob("*.jpg"))
+    assert thumbs == ["sample.jpg_32.jpg", "sample.png_32.jpg"]
 
 
 # ── traversal / validation ───────────────────────────────────────────────────

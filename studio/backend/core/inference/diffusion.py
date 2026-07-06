@@ -59,18 +59,20 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     compile_eligible,
+    normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
     apply_attention_backend,
+    normalize_attention_backend,
     select_attention_backend,
 )
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_gguf_compile as gguf_compile
-from .diffusion_cache import apply_step_cache
-from .diffusion_precision import quantize_text_encoders
+from .diffusion_cache import apply_step_cache, normalize_transformer_cache
+from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
@@ -436,11 +438,17 @@ class DiffusionBackend:
         base: str,
         base_files: list[str],
         hf_token: Optional[str],
-    ) -> None:
+    ) -> Optional[str]:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
         WITHOUT the lock and honoring ``_cancel_event``, so load_pipeline's
         from_single_file / from_pretrained hit the cache and the heavy download can
-        be preempted by an unload/eviction. Raises ``RuntimeError("Cancelled")``."""
+        be preempted by an unload/eviction. Raises ``RuntimeError("Cancelled")``.
+
+        Returns the base repo's local snapshot dir when the prefetched set includes
+        the pipeline manifest, so from_pretrained can load from disk instead of
+        re-sweeping the hub (its own sweep also pulls files the scoped list skips,
+        e.g. the 24 GB packaged root singles in each FLUX.1 repo); None otherwise
+        (estimate failure, config-only base, local repo) -> hub id as before."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         # GGUF transformer (hub repos only; a local path is already on disk).
@@ -449,12 +457,16 @@ class DiffusionBackend:
                 repo_id, gguf_filename, hf_token, cancel_event = self._cancel_event
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
+        snapshot_root: Optional[str] = None
         for rfilename in base_files:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
-            hf_hub_download_with_xet_fallback(
+            local = hf_hub_download_with_xet_fallback(
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
+            if rfilename == "model_index.json":
+                snapshot_root = str(Path(local).parent)
+        return snapshot_root
 
     def validate_load_request(
         self,
@@ -671,7 +683,7 @@ class DiffusionBackend:
                     self._loading.expected_bytes = expected
             # Download outside the lock so unload()/an eviction can preempt the
             # multi-GB pull; load_pipeline below then assembles from the cache.
-            self._prefetch_files(
+            kwargs["_base_local_dir"] = self._prefetch_files(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
                 base,
@@ -690,6 +702,15 @@ class DiffusionBackend:
             if self._load_token != token:
                 return
             logger.error("diffusion.load_failed: %s", exc)
+            # Free the debris of a failed construction (e.g. a load-time OOM): _state was
+            # never committed, and the next load's _unload_locked early-returns on a None
+            # state, so nothing else releases the reserved VRAM. Guarded: a sticky CUDA
+            # error makes synchronize() raise, which would skip stamping the REAL error
+            # below and leave the client polling forever.
+            try:
+                clear_gpu_cache()
+            except Exception:  # noqa: BLE001
+                pass
             # Redact native paths: this error is surfaced verbatim via the
             # load-progress poll, and Studio can run as a shared server.
             from utils.native_path_leases import redact_native_paths
@@ -931,6 +952,7 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
+        _base_local_dir: Optional[str] = None,
     ) -> dict[str, Any]:
         # A blank / whitespace-only token must degrade to anonymous access, not be passed
         # as an explicit credential (from_single_file / from_pretrained / the Hub client
@@ -951,6 +973,14 @@ class DiffusionBackend:
             model_kind = model_kind,
         )
         kind = resolve_model_kind(gguf_filename, model_kind)
+        # Validate every mode string that can raise NOW, before this load evicts the
+        # previous pipeline below: their first in-line uses all sit past _unload_locked,
+        # where a bad request would cost the user their working model.
+        transformer_quant = normalize_transformer_quant(transformer_quant)
+        normalize_speed_mode(speed_mode)
+        normalize_attention_backend(attention_backend)
+        normalize_transformer_cache(transformer_cache)
+        normalize_te_quant(text_encoder_quant)
         # For a full pipeline the repo itself supplies every component, so it is its
         # own base; the single-file kinds resolve the companion base diffusers repo.
         base = (
@@ -1020,7 +1050,7 @@ class DiffusionBackend:
                 # pipeline) do not have.
                 dense_quant_requested = (
                     kind == "gguf"
-                    and normalize_transformer_quant(transformer_quant) is not None
+                    and transformer_quant is not None  # normalized above, pre-eviction
                     and dense_transformer_supported(target)
                 )
                 # `plan` budgets the GGUF file, but this path materializes the base repo's
@@ -1076,6 +1106,7 @@ class DiffusionBackend:
                             transformer_quant,
                             transformer_quant_fast_accum,
                             fam = fam,
+                            base_local_dir = _base_local_dir,
                             prequant_path = transformer_prequant_path,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
@@ -1090,7 +1121,12 @@ class DiffusionBackend:
                         # clear_gpu_cache() could not otherwise reclaim that VRAM before the
                         # GGUF build (the OOM-fallback path this cleanup exists for).
                         del exc
-                        clear_gpu_cache()
+                        # Guarded: after an OOM/sticky CUDA error synchronize() can
+                        # raise, and this fallback path must still reach the GGUF build.
+                        try:
+                            clear_gpu_cache()
+                        except Exception:  # noqa: BLE001
+                            pass
                 elif dense_quant_requested:
                     # Quant requested but the dense fast path needs a resident load that isn't
                     # available here (an explicit memory_mode offload, or the dense transformer
@@ -1111,7 +1147,12 @@ class DiffusionBackend:
                         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
                         if hf_token:
                             pipe_kwargs["token"] = hf_token
-                        pipe = pipeline_cls.from_pretrained(repo_id, **pipe_kwargs)
+                        # The prefetched snapshot dir keeps from_pretrained off the hub:
+                        # its own snapshot sweep re-downloads files the scoped prefetch
+                        # skipped (root packaged singles, e.g. 24 GB per FLUX.1 repo).
+                        pipe = pipeline_cls.from_pretrained(
+                            _base_local_dir or repo_id, **pipe_kwargs
+                        )
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline
                         # (U-Net + VAE + both text encoders), not a transformer-only file,
@@ -1147,7 +1188,7 @@ class DiffusionBackend:
                         pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
                         if hf_token:
                             pipe_kwargs["token"] = hf_token
-                        pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+                        pipe = pipeline_cls.from_pretrained(_base_local_dir or base, **pipe_kwargs)
 
                 # Resolve the effective speed mode: GGUF models default to the
                 # near-lossless `default` profile (compile is ~2.2x and sits below
@@ -1379,6 +1420,7 @@ class DiffusionBackend:
         *,
         fam: Optional[DiffusionFamily] = None,
         prequant_path: Optional[str] = None,
+        base_local_dir: Optional[str] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -1426,7 +1468,7 @@ class DiffusionBackend:
                 )
                 if transformer is not None:
                     pipe = self._assemble_pipe(
-                        pipeline_cls, base, transformer, dtype, hf_token, device
+                        pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir
                     )
                     return pipe, scheme
 
@@ -1434,7 +1476,9 @@ class DiffusionBackend:
         transformer = transformer_cls.from_pretrained(
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
-        pipe = self._assemble_pipe(pipeline_cls, base, transformer, dtype, hf_token, device)
+        pipe = self._assemble_pipe(
+            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir
+        )
         scheme = quantize_transformer(
             pipe,
             target,
@@ -1455,13 +1499,14 @@ class DiffusionBackend:
         dtype: Any,
         hf_token: Optional[str],
         device: str,
+        base_local_dir: Optional[str] = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
         if hf_token:
             pipe_kwargs["token"] = hf_token
-        pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+        pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
 
@@ -1606,6 +1651,16 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+            # resolve_controlnet accepts a bare owner/name repo without the non-GGUF base
+            # trust gate, and from_pretrained below downloads and deserializes it. A
+            # malicious pickle .bin would execute on load, so run the same Hub malware
+            # preflight the chat/export loaders use before any remote ControlNet load. A
+            # local dir the user picked has no Hub scan and is exempt (fail-open there).
+            if not getattr(resolved_cn, "is_local", False):
+                from utils.security import evaluate_file_security
+                _cn_fs = evaluate_file_security(resolved_cn.path, hf_token = state.hf_token or None)
+                if _cn_fs.blocked:
+                    raise ValueError(_cn_fs.reason)
             # Keep at most one ControlNet resident: evict the previous module + its
             # from_pipe wrapper before loading the new one, or swapping ControlNets
             # within a base-model load accumulates until OOM.
@@ -1656,7 +1711,14 @@ class DiffusionBackend:
             pipe = getattr(diffusers, pipe_cls_name).from_pipe(
                 state.pipe, controlnet = cn_model, torch_dtype = None
             )
-            self._cn_pipes[key] = pipe
+            with self._lock:
+                # Same race as the model cache above: an unload/superseding load may
+                # have cleared _cn_pipes while from_pipe ran; caching now would pin a
+                # pipeline built around the UNLOADED base and hand it to the next load.
+                if cancel.is_set() or self._state is not state:
+                    del pipe
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                self._cn_pipes[key] = pipe
         return pipe
 
     @staticmethod
@@ -2102,7 +2164,8 @@ class DiffusionBackend:
                 gen = _GenState(total_steps = steps)
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
-                    now = time.time()
+                    # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
+                    now = time.monotonic()
                     gen.step = step_index + 1
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
@@ -2179,9 +2242,8 @@ class DiffusionBackend:
         self._cancel_event.set()
         with self._lock:
             # Abort an in-flight denoise too by setting ITS cancel event, so the step
-            # callback stops it. unload does NOT take _generate_lock — it must return
-            # promptly; the running generate keeps its own pipe reference, so freeing
-            # _state here can't crash it, and its VRAM is reclaimed when it returns
+            # callback stops it. The running generate keeps its own pipe reference, so
+            # freeing _state here can't crash it; its VRAM is reclaimed when it exits
             # (within ~one step thanks to the cancel).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
@@ -2190,6 +2252,14 @@ class DiffusionBackend:
             # committing) and drop the marker so the next load starts clean.
             self._load_token += 1
             self._loading = None
+        # Wait for the signalled denoise to actually exit before reporting unloaded:
+        # callers treat this return as "VRAM is free" (the GPU arbiter hands the GPU
+        # to chat next; the training routes size their run against it), and the
+        # denoise holds its pipe until the next step callback. generate() holds
+        # _generate_lock for its full body, so a bare acquire is the exit barrier
+        # (never while holding _lock -- generate takes _lock inside _generate_lock).
+        with self._generate_lock:
+            pass
         return self.status()
 
     def _unload_locked(self) -> None:
@@ -2214,7 +2284,7 @@ class DiffusionBackend:
             uninstall_patches()
             uninstall_arch_patches()
         # NOTE: we deliberately do NOT call state.pipe.unload_lora_weights() here. unload()
-        # sets the cancel event but does not take _generate_lock, so a LoRA-backed denoise
+        # only acquires _generate_lock AFTER this teardown, so a LoRA-backed denoise
         # can still be running on this same pipe for up to one more callback; mutating its
         # adapter layers now would race that in-flight generation. The whole pipe is dropped
         # just below (self._state = None; del state; clear_gpu_cache()), so the adapter

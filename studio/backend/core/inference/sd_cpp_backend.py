@@ -241,6 +241,9 @@ class _SdLoading:
 
     repo_id: str
     base_repo: str
+    # Companion asset repos (VAE / text encoders) this load fetches, so the
+    # delete-cached guard protects them for the whole download/finalize window.
+    asset_repos: tuple[str, ...] = ()
     expected_bytes: int = 0
     downloaded_bytes: int = 0
     error: Optional[str] = None
@@ -407,7 +410,17 @@ class SdCppDiffusionBackend:
             self._load_token += 1
             token = self._load_token
             self._cancel_event.clear()
-            self._loading = _SdLoading(repo_id = repo_id, base_repo = base)
+            self._loading = _SdLoading(
+                repo_id = repo_id,
+                base_repo = base,
+                asset_repos = tuple(
+                    dict.fromkeys(
+                        r
+                        for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam)
+                        if kind != "diffusion_model"
+                    )
+                ),
+            )
 
         threading.Thread(
             target = self._run_load,
@@ -678,12 +691,14 @@ class SdCppDiffusionBackend:
     def loading_repo_ids(self) -> tuple[str, ...]:
         """Repo ids an in-flight background load is downloading (empty when idle).
         Mirrors the diffusers backend so the delete-cached guard can query whichever
-        engine is active without caring which one it got."""
+        engine is active without caring which one it got. Includes the companion
+        VAE / text-encoder repos: deleting one of those mid-load would remove files
+        the committed SdCppModelFiles paths need."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+            return tuple(r for r in (loading.repo_id, loading.base_repo, *loading.asset_repos) if r)
 
     # ── Generate ───────────────────────────────────────────────────────────
 
@@ -1085,6 +1100,13 @@ class SdCppDiffusionBackend:
             state.server.stop()
         if pending is not None and pending is not (state.server if state else None):
             pending.stop()
+        # Wait for a signalled one-shot generation to actually exit before reporting
+        # unloaded: callers (the GPU arbiter, training cleanup) treat this return as
+        # "the device is free", but a one-shot sd-cli child killed by the cancel above
+        # unwinds under _generate_lock. A bare acquire is the exit barrier (never taken
+        # while holding _lock; same pattern as DiffusionBackend.unload).
+        with self._generate_lock:
+            pass
         return self.status()
 
     def status(self) -> dict[str, Any]:
