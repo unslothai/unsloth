@@ -1913,7 +1913,10 @@ export function HubModelPicker({
   const downloadedSet = useMemo(() => {
     const s = new Set<string>();
     for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
-    for (const c of cachedModels) s.add(c.repo_id.toLowerCase());
+    // Skip partial (cancelled/incomplete) base repos: a partial snapshot has only
+    // some weights, so treating it as downloaded routes an On Device click to a fresh
+    // multi-GB re-download instead of loading the complete GGUF.
+    for (const c of cachedModels) if (!c.partial) s.add(c.repo_id.toLowerCase());
     return s;
   }, [cachedGguf, cachedModels]);
 

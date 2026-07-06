@@ -32,6 +32,10 @@ class CachedModelRepo(BaseModel):
     # drop the value the handler sets, letting image-only repos pass the chat picker's
     # task gate.
     task: Optional[str] = None
+    # True when the snapshot is incomplete (a cancelled/partial download left only some
+    # weights). The picker must not treat a partial base repo as a usable download, or an
+    # On Device click routes to a fresh multi-GB re-download instead of the complete GGUF.
+    partial: Optional[bool] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -3363,6 +3367,19 @@ def _repo_is_diffusers(repo_info) -> bool:
     return False
 
 
+def _cached_repo_partial(repo_id: str) -> bool:
+    """Whether the cached model snapshot is incomplete (cancelled/partial download).
+    Reuses the hub inventory scan's snapshot-partial detector (cancel marker, legacy
+    .incomplete blob, manifest walk -- cheapest first). Best-effort: a detection error
+    reports not-partial so a scan glitch never hides a genuinely usable repo."""
+    try:
+        from hub.utils.inventory_scan import is_snapshot_partial
+
+        return bool(is_snapshot_partial("model", repo_id))
+    except Exception:  # noqa: BLE001 -- never fail the listing over a partial probe
+        return False
+
+
 def _cached_repo_task(repo_info) -> Optional[str]:
     """Pipeline task for a cached non-GGUF repo: 'text-to-video' for repos the
     video backend can load as full pipelines (its trust list / family detector),
@@ -3433,6 +3450,8 @@ async def list_cached_models(
                             "size_bytes": total_size,
                             "task": _cached_repo_task(repo_info),
                         }
+                        if _cached_repo_partial(repo_id):
+                            row["partial"] = True
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
