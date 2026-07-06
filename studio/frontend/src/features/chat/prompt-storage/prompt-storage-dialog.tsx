@@ -749,7 +749,7 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
       threadId,
       parentId: prevId,
       role: validRole as MessageRecord["role"],
-      content: [{ type: "text", text: content }] as MessageRecord["content"],
+      content: textToContentParts(content) as MessageRecord["content"],
       createdAt: baseTs + idx,
     });
     prevId = id;
