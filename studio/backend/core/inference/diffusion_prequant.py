@@ -329,15 +329,16 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # require_bf16 (skip non-bf16 Linears) is the scaled_mm bf16 gate, derived from the scheme's
-    # use of scaled_mm. Like exclude_name_tokens it is pinned by the scheme today, but recording and
-    # verifying it guards against a future _SCALED_MM_SCHEMES change silently loading a checkpoint
-    # built under the old filter (it would carry a different quantised layer set). Absent (older
-    # artifact) is accepted since scheme already pins today's gate.
+    # require_bf16 (skip non-bf16 Linears) is the bf16-weight gate, pinned by the scheme (fp8 and
+    # mxfp8 assert a bf16 weight; nvfp4 / int8 quantise fp32 fine). Like exclude_name_tokens it is
+    # pinned by the scheme today, but recording and verifying it guards against a future
+    # _REQUIRE_BF16_SCHEMES change silently loading a checkpoint built under the old filter (it would
+    # carry a different quantised layer set). Absent (older artifact) is accepted since scheme already
+    # pins today's gate.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
-        from .diffusion_transformer_quant import _SCALED_MM_SCHEMES
-        expected_require_bf16 = scheme in _SCALED_MM_SCHEMES
+        from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES
+        expected_require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
         if bool(ckpt_require_bf16) != expected_require_bf16:
             _warn(
                 logger,
