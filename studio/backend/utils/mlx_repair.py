@@ -46,8 +46,7 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
 # mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
-# rejects q_norm/k_norm, so a self-heal must not pull it. 0.31.2 and >=0.31.4
-# are fine. See mlx-lm #1242.
+# rejects q_norm/k_norm, so a self-heal must not pull it. mlx-lm #1242.
 _MLX_BAD_VERSIONS = {"mlx-lm": ("0.31.3",)}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
@@ -156,9 +155,9 @@ def _mlx_versions_satisfy_minimums() -> bool:
             installed = Version(_dist_version(name))
             if installed < Version(minimum):
                 return False
-            # A known-broken build (e.g. mlx-lm 0.31.3, QK-norm load) counts as
-            # unsatisfied so the self-heal reinstalls a good one. Compare parsed
-            # Versions so 0.31.3 == 0.31.3.0 == 0.31.3+local all match.
+            # A known-broken build counts as unsatisfied so the self-heal
+            # reinstalls a good one. Parsed-Version compare matches
+            # 0.31.3 == 0.31.3.0 == 0.31.3+local.
             if any(installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())):
                 return False
         except PackageNotFoundError:

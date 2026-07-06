@@ -1442,13 +1442,11 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
-# Apple Silicon: exclude the broken mlx-lm 0.31.3 (QK-norm load regression for
-# gemma4 / qwen3_5; see mlx-lm #1242) directly on the base install. The
-# overrides file below only applies when it exists relative to this script,
-# which is not the case for a fresh curl-piped install, and the guarded
-# install_python_stack.py MLX step is skipped there (SKIP_STUDIO_BASE=1), so
-# this is the exclusion's only cover on that path. mlx-lm is a transitive dep on
-# Apple Silicon, so requesting it here just pins the resolver away from 0.31.3.
+# Apple Silicon: exclude broken mlx-lm 0.31.3 (QK-norm load regression for
+# gemma4 / qwen3_5; mlx-lm #1242) on the base install. A fresh curl-piped
+# install has no overrides file and skips the guarded install_python_stack.py
+# MLX step (SKIP_STUDIO_BASE=1), so this is the only cover there. mlx-lm is a
+# transitive dep, so this just pins the resolver away from 0.31.3.
 _MLX_LM_EXCLUDE_ARG=""
 
 # Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
@@ -2689,10 +2687,8 @@ if [ "$_MIGRATED" = true ]; then
             run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
-        # Pin mlx-lm away from 0.31.3 on Apple Silicon here too (mlx-lm is a
-        # transitive dep with deps enabled): a curl-piped migration has no repo
-        # overrides file, so UV_OVERRIDE is unset and this positional is the only
-        # cover, matching the fresh install at the ${_MLX_LM_EXCLUDE_ARG:-} site below.
+        # Pin mlx-lm away from 0.31.3 here too: a curl-piped migration has no
+        # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" ${_MLX_LM_EXCLUDE_ARG:-}

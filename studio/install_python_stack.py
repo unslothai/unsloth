@@ -1499,8 +1499,7 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
 # mlx-lm 0.31.3 broke gemma4 / qwen3_5 loading (strict load_weights rejects the
-# QK-norm q_norm/k_norm tensors). Exclude just that release so --upgrade still
-# gets the newest good build (0.31.2 or >=0.31.4). See mlx-lm #1242.
+# QK-norm q_norm/k_norm tensors); exclude just that release. See mlx-lm #1242.
 MLX_LM_BAD_VERSION_EXCLUSION = "!=0.31.3"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
@@ -2063,9 +2062,8 @@ def install_python_stack() -> int:
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    # mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): its strict
-    # load_weights rejects q_norm/k_norm with "Received N parameters not in
-    # model", so exclude it (0.31.2 and >=0.31.4 load fine). See mlx-lm #1242.
+    # Exclude mlx-lm 0.31.3 (see MLX_LM_BAD_VERSION_EXCLUSION); it broke
+    # gemma4 / qwen3_5 QK-norm loading. mlx-lm #1242.
     if IS_MAC_ARM and not skip_base:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
