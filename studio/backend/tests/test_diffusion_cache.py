@@ -180,6 +180,7 @@ from core.inference.diffusion_cache import (  # noqa: E402
     FBCACHE_MIN_STEPS,
     TC_AUTO,
     effective_denoise_steps,
+    effective_request_strength,
     maybe_toggle_step_cache,
 )
 
@@ -198,6 +199,25 @@ def test_effective_steps_low_strength_shrinks_below_the_bar():
     eff = effective_denoise_steps(28, 0.35)
     assert eff == 9
     assert eff < FBCACHE_MIN_STEPS
+
+
+def test_effective_request_strength_uses_pipe_default_when_omitted():
+    import inspect
+
+    # txt2img (no init image) or a pipe without the strength kwarg -> full trajectory (None).
+    assert effective_request_strength(None, False, True, 0.6) is None
+    assert effective_request_strength(0.5, True, False, None) is None
+    # img2img with an explicit strength -> that value.
+    assert effective_request_strength(0.2, True, True, 0.6) == 0.2
+    # img2img with an OMITTED strength -> the pipe's own signature default (< 1), so the auto
+    # policy keys on the real (short) trajectory, not the full step count. This is the fix:
+    # int(28 * 0.6) = 16 real steps, not 28.
+    s = effective_request_strength(None, True, True, 0.6)
+    assert s == 0.6
+    assert effective_denoise_steps(28, s) == 16
+    # A non-numeric signature default (inspect.Parameter.empty) falls back to the full count.
+    assert effective_request_strength(None, True, True, inspect.Parameter.empty) is None
+    assert effective_request_strength(None, True, True, None) is None
 
 
 def test_effective_steps_matches_diffusers_get_timesteps():

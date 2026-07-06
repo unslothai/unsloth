@@ -144,6 +144,28 @@ def effective_denoise_steps(steps: int, strength: Optional[float]) -> int:
     return max(1, min(int(s * float(strength)), s))
 
 
+def effective_request_strength(
+    request_strength: Optional[float],
+    has_init_image: bool,
+    pipe_accepts_strength: bool,
+    pipe_default_strength: Any,
+) -> Optional[float]:
+    """The strength the pipe will ACTUALLY apply, for keying the auto step-cache policy.
+
+    Only image-conditioned pipelines that take ``strength`` apply it (txt2img / a pipe without
+    the kwarg run the full trajectory -> None). When the request omits ``strength`` the loader
+    does NOT pass the kwarg, so the pipe runs its OWN signature default (< 1 for every img2img /
+    inpaint pipeline here, e.g. 0.6); the policy must key on that default, not the full step
+    count, or FBCache engages on a fraction of the advertised steps. A non-numeric default
+    (``inspect.Parameter.empty``) falls back to the full count (None).
+    """
+    if not (has_init_image and pipe_accepts_strength):
+        return None
+    if request_strength is not None:
+        return request_strength
+    return pipe_default_strength if isinstance(pipe_default_strength, (int, float)) else None
+
+
 def maybe_toggle_step_cache(
     pipe: Any,
     *,

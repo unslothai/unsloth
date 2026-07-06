@@ -79,6 +79,7 @@ from .diffusion_cache import (
     TC_FBCACHE,
     apply_step_cache,
     effective_denoise_steps,
+    effective_request_strength,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
@@ -2281,14 +2282,15 @@ class DiffusionBackend:
                     # trajectory the policy keeps uncached. Only fold in `strength` when it
                     # is ACTUALLY applied to the pipe (same gate as the kwarg below), so a
                     # stray strength on a txt2img request never shortens the count.
-                    strength_applied = (
-                        strength
-                        if (
-                            strength is not None
-                            and init_pil is not None
-                            and "strength" in call_params
-                        )
-                        else None
+                    # The pipe denoises `steps * strength`. When the request omits strength the
+                    # kwarg above is NOT passed, so the pipe runs its OWN signature default (< 1 for
+                    # every img2img/inpaint pipeline here, e.g. 0.6) -- still a short trajectory the
+                    # policy must key on, or FBCache engages on a fraction of the advertised steps.
+                    strength_applied = effective_request_strength(
+                        strength,
+                        init_pil is not None,
+                        "strength" in call_params,
+                        call_params["strength"].default if "strength" in call_params else None,
                     )
                     denoise_steps = effective_denoise_steps(steps, strength_applied)
                     toggled = maybe_toggle_step_cache(
