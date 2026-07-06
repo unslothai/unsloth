@@ -3791,9 +3791,13 @@ def _prewarm_base_model_hub_cache(
             )
             return
 
+        if total_size_in_bytes >= 0.1 * 1024**3:
+            size_str = f"{round(total_size_in_bytes / 1024**3, 1)}GB"
+        else:
+            size_str = f"{max(1, round(total_size_in_bytes / 1024**2))}MB"
         print(
             f"Unsloth: Downloading `{model_name}` into the Hugging Face cache so future "
-            f"exports skip the {round(total_size_in_bytes / 1024**3, 1)}GB download..."
+            f"exports skip the {size_str} download..."
         )
         snapshot_download(
             repo_id = model_name,
