@@ -140,7 +140,6 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
             cached = try_to_load_from_cache(repo_id, gguf_filename)
             if not isinstance(cached, str):
                 from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
-
                 for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
                     try:
                         cached = try_to_load_from_cache(
