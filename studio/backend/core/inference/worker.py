@@ -13,9 +13,9 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import json
 from loggers import get_logger
 import os
-import pickle
 import queue as _queue
 import sys
 import time
@@ -26,6 +26,8 @@ from typing import Any
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+
+_SHARE_OBJECT_MAX_BYTES = 1 << 20
 
 # studio/backend root, prepended to sys.path so the spawned subprocess can
 # import the utils/core packages.
@@ -74,6 +76,17 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
+
+
+def _encode_share_object(obj: Any) -> bytes:
+    data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
+    if len(data) > _SHARE_OBJECT_MAX_BYTES:
+        raise ValueError("Distributed object share payload is too large")
+    return data
+
+
+def _decode_share_object(data: Any) -> Any:
+    return json.loads(bytes(data.tolist()).decode("utf-8"))
 
 
 def _clean_token(value: str | None) -> str | None:
@@ -514,21 +527,21 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
             import mlx.core as mx
             if rank == 0:
                 if obj is None:
-                    mx.eval(mx.distributed.all_sum(0, group = group))
+                    mx.eval(mx.distributed.all_sum(mx.array(0), group = group))
                     shared = None
                 else:
-                    data = mx.array(pickle.dumps(obj), dtype = mx.uint8)
-                    mx.eval(mx.distributed.all_sum(data.size, group = group))
+                    data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                    mx.eval(mx.distributed.all_sum(mx.array(data.size), group = group))
                     mx.eval(mx.distributed.all_sum(data, group = group))
                     shared = obj
             else:
-                size = int(mx.distributed.all_sum(0, group = group).item())
+                size = int(mx.distributed.all_sum(mx.array(0), group = group).item())
                 if size == 0:
                     shared = None
                 else:
                     data = mx.zeros(size, dtype = mx.uint8)
                     data = mx.distributed.all_sum(data, group = group)
-                    shared = pickle.loads(bytes(data.tolist()))
+                    shared = _decode_share_object(data)
         _send_response(
             resp_queue,
             {

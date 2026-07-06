@@ -191,20 +191,26 @@ def test_worker_share_object_receives_distributed_payload(monkeypatch):
     from core.inference import worker
 
     shared_obj = {"type": "turn", "text": "hi"}
-    payload = worker.pickle.dumps(shared_obj)
+    payload = worker._encode_share_object(shared_obj)
 
     def _array(value):
-        return SimpleNamespace(item = lambda: value, tolist = lambda: list(value))
+        val = value.item() if hasattr(value, "item") else value
+        return SimpleNamespace(
+            item = lambda: val,
+            tolist = lambda: list(val) if hasattr(val, "__iter__") else [val],
+        )
 
     mlx_pkg = types.ModuleType("mlx")
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.uint8 = "uint8"
+    mlx_core.array = _array
     mlx_core.zeros = lambda *_a, **_k: _array([])
-    mlx_core.distributed = SimpleNamespace(
-        all_sum = lambda value, group = None: (
-            _array(len(payload)) if isinstance(value, int) else _array(payload)
-        )
-    )
+
+    def _all_sum(value, group = None):
+        value = value.item() if hasattr(value, "item") else value
+        return _array(len(payload)) if value == 0 else _array(payload)
+
+    mlx_core.distributed = SimpleNamespace(all_sum = _all_sum)
     mlx_pkg.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)

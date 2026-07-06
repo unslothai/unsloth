@@ -717,6 +717,11 @@ class InferenceOrchestrator:
             raise RuntimeError("Inference subprocess is not running")
 
         self._wait_dispatcher_idle()
+        with self._mailbox_lock:
+            if self._mailboxes:
+                raise RuntimeError(
+                    "Cannot share distributed objects while compare requests are active"
+                )
         request_id = str(uuid.uuid4())
         cmd = {
             "type": "share_object",
