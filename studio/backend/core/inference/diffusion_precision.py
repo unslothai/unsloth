@@ -233,9 +233,9 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
     # require_bf16: scaled_mm asserts a bf16 weight, so skip any stray non-bf16 Linear the encoder
     # keeps (belt-and-suspenders over the named T5 wo exclusion) rather than aborting the pass.
     filter_fn = make_filter_fn(
-        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16=True
+        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
-    quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn=filter_fn)
+    quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn = filter_fn)
 
 
 def _cast_fp8(encoder: Any, target: Any) -> None:
