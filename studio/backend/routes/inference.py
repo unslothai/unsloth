@@ -1346,6 +1346,46 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     return flags
 
 
+def _generation_prompt_opens_think(template: Optional[str]) -> bool:
+    """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
+
+    Distinguishes templates that PREFILL an open ``<think>`` in the assistant generation
+    prompt (DeepSeek-R1, QwQ, Qwen3-Thinking) -- where the model emits only the closing
+    ``</think>`` and the extractor must start in reasoning mode -- from templates that merely
+    render PAST assistant ``<think>...</think>`` history while leaving the generation prompt
+    open with no ``<think>`` (e.g. Kimi-K2-Thinking), where the model self-emits its own block
+    and the extractor must start in normal mode. Renders a single-user-message probe with the
+    same sandbox transformers uses; on any failure returns True, preserving the historical
+    always-on prefill for templates that cannot be rendered here.
+    """
+    if not template:
+        return False
+    try:
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+        def _raise_exception(message: str):
+            raise RuntimeError(message)
+
+        env = ImmutableSandboxedEnvironment(
+            trim_blocks = True,
+            lstrip_blocks = True,
+            extensions = ["jinja2.ext.loopcontrols"],
+        )
+        env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
+        env.globals["raise_exception"] = _raise_exception
+        rendered = env.from_string(template).render(
+            messages = [{"role": "user", "content": "hi"}],
+            add_generation_prompt = True,
+            bos_token = "",
+            eos_token = "",
+        )
+    except Exception:
+        return True
+    # ``<think>`` is not a substring of ``</think>`` (the ``/`` breaks it), so the last open
+    # tag sitting after the last close tag means the prompt ends inside an open block.
+    return rendered.rfind("<think>") > rendered.rfind("</think>")
+
+
 def _sf_reasoning_prefill_mode(
     features: dict,
     enable_thinking: Optional[bool],
@@ -1367,7 +1407,12 @@ def _sf_reasoning_prefill_mode(
     if "</think>" not in tpl and "<think>" not in tpl:
         return False
     if features.get("reasoning_always_on"):
-        return True
+        # ``reasoning_always_on`` fires on paired ``<think>...</think>`` anywhere in the
+        # template, including markup that only renders PAST assistant history (Kimi-K2-Thinking)
+        # while the generation prompt opens no ``<think>``. Prefill only when the generation
+        # prompt actually opens one, else the extractor captures a normal answer entirely as
+        # reasoning_content and returns blank visible content.
+        return _generation_prompt_opens_think(tpl)
     if not features.get("supports_reasoning"):
         return False
     # Thinking-off arrives as reasoning_effort "none" on enable_thinking_effort models;

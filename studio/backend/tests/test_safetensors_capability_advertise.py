@@ -464,6 +464,22 @@ class TestSafetensorsReasoningPrefillGate:
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."
     # gemma-style bespoke reasoning channel -- no standard markers.
     _GEMMA_TPL = "{% if enable_thinking %}<|think|>{% endif %}<|channel>thought<channel|>"
+    # always-on template whose GENERATION PROMPT opens an unclosed <think> (DeepSeek-R1 / QwQ /
+    # Qwen3-Thinking shape): the model emits only the closing </think>, so prefill.
+    _ALWAYS_ON_OPEN_TPL = (
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>\n{% endif %}"
+    )
+    # always-on template that renders PAST assistant <think>...</think> history but leaves the
+    # generation prompt open with no <think> (Kimi-K2-Thinking shape): the model self-emits its
+    # own block, so prefill mode would blank a normal answer.
+    _ALWAYS_ON_HISTORY_TPL = (
+        "{% for m in messages %}"
+        "{% if m['role'] == 'assistant' %}<think>{{ m.get('reasoning_content', '') }}</think>"
+        "{{ m['content'] }}{% endif %}"
+        "{% endfor %}"
+        "{% if add_generation_prompt %}<|im_assistant|>assistant<|im_middle|>{% endif %}"
+    )
 
     def _features(self, **over):
         base = {
@@ -507,11 +523,19 @@ class TestSafetensorsReasoningPrefillGate:
         feats = self._features(supports_reasoning = False, reasoning_style = None)
         assert _sf_reasoning_prefill_mode(feats, True, self._QWEN_TPL) is False
 
-    def test_g7_reasoning_always_on(self):
-        # G7: hardcoded-<think> template -> prefilled regardless of the flag.
+    def test_g7_reasoning_always_on_prompt_opens_think(self):
+        # G7: always-on template whose generation prompt opens <think> -> prefilled regardless of the flag.
         from routes.inference import _sf_reasoning_prefill_mode
         feats = self._features(reasoning_always_on = True)
-        assert _sf_reasoning_prefill_mode(feats, False, self._QWEN_TPL) is True
+        assert _sf_reasoning_prefill_mode(feats, False, self._ALWAYS_ON_OPEN_TPL) is True
+
+    def test_g7b_reasoning_always_on_history_only_not_prefilled(self):
+        # G7b (#5704): always-on classification from rendered assistant HISTORY <think></think>
+        # (Kimi-K2-Thinking) whose generation prompt opens no <think>. Prefill mode would capture a
+        # normal answer entirely as reasoning_content and blank the visible answer, so it must be off.
+        from routes.inference import _sf_reasoning_prefill_mode
+        feats = self._features(reasoning_always_on = True)
+        assert _sf_reasoning_prefill_mode(feats, None, self._ALWAYS_ON_HISTORY_TPL) is False
 
     def test_g8_gemma_bespoke_channel_excluded(self):
         # G8: gemma's <|think|> format has no close tag -> NOT prefilled (would swallow the answer).
