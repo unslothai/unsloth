@@ -2926,15 +2926,16 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: quantization_method can only be a string or a list of strings"
             )
         for i, quant_method in enumerate(quantization_method):
-            quant_method = quant_method.lower()
+            if quant_method is None:
+                quant_method = "q8_0"
+            else:
+                quant_method = quant_method.lower()
             if quant_method == "not_quantized":
                 quant_method = "f16"
             elif quant_method == "fast_quantized":
                 quant_method = "q8_0"
             elif quant_method == "quantized":
                 quant_method = "q4_k_m"
-            elif quant_method is None:
-                quant_method = "q8_0"
             quantization_methods.append(quant_method.lower())
 
     try:
@@ -3866,15 +3867,16 @@ def save_to_gguf_generic(
                 "Unsloth: quantization_method can only be a string or a list of strings"
             )
         for i, quant_method in enumerate(quantization_method):
-            quant_method = quant_method.lower()
+            if quant_method is None:
+                quant_method = "q8_0"
+            else:
+                quant_method = quant_method.lower()
             if quant_method == "not_quantized":
                 quant_method = "f16"
             elif quant_method == "fast_quantized":
                 quant_method = "q8_0"
             elif quant_method == "quantized":
                 quant_method = "q4_k_m"
-            elif quant_method is None:
-                quant_method = "q8_0"
             new_quantization_methods.append(quant_method.lower())
     else:
         new_quantization_methods.append(quantization_type.lower())
