@@ -100,6 +100,7 @@ def test_explicit_attention_only_list_does_not_discover_moe_parameters():
     # even for an attention-only request (see the regex below), which the
     # string fallback cannot distinguish from the fused-expert auto regex.
     from unsloth.models._utils import get_moe_target_parameters
+
     attn_only_list = ["q_proj", "k_proj", "v_proj", "o_proj"]
     assert get_moe_target_parameters(_FakeMoeModel(), attn_only_list) is None
     assert get_moe_target_parameters(_FakeMoeModel(), tuple(attn_only_list)) is None
