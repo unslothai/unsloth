@@ -286,6 +286,28 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
 
 
+def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
+    # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set
+    # than the runtime filter now produces, so it must be rejected rather than loaded.
+    ckpt = _good_ckpt(scheme = "fp8")
+    ckpt["metadata"]["require_bf16"] = False
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+
+
+def test_load_require_bf16_match_ok(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    ckpt["metadata"]["require_bf16"] = True
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is not None
+
+
+def test_load_require_bf16_int8_true_is_none(monkeypatch, tmp_path):
+    # int8 (torch._int_mm) tolerates non-bf16 weights, so it never sets the gate; a checkpoint
+    # claiming it did contradicts the runtime filter and must be rejected.
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["require_bf16"] = True
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+
+
 def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
     # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint
     # that passed the gate is silently skipped.
