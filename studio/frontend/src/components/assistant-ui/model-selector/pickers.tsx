@@ -2087,7 +2087,7 @@ export function HubModelPicker({
     [deviceBudget, isRepoDownloaded, formatFilter],
   );
   const routeGroupClick = useCallback(
-    async (group: CatalogGroup) => {
+    async (group: CatalogGroup, expandKey: string) => {
       const artifact = routedArtifactFor(group);
       if (artifact.format !== "gguf") {
         onSelect(artifact.repoId, {
@@ -2098,7 +2098,10 @@ export function HubModelPicker({
         return;
       }
       // GGUF route: resolve the quant list, then load the ladder's pick. A
-      // failed fetch falls back to opening the format list instead.
+      // failed fetch falls back to opening the format list instead -- toggle the
+      // caller's CONTEXT-SCOPED expandKey (not the context-free canonicalId), so the
+      // chevron (which toggles expandKey) can still collapse it and the same group in
+      // another list is not expanded too.
       setRoutingGroupId(group.canonicalId);
       try {
         const res = normalizeGgufVariantsResponse(
@@ -2119,10 +2122,10 @@ export function HubModelPicker({
             expectedBytes: quant.size_bytes,
           });
         } else {
-          toggleGroupExpanded(group.canonicalId);
+          toggleGroupExpanded(expandKey);
         }
       } catch {
-        toggleGroupExpanded(group.canonicalId);
+        toggleGroupExpanded(expandKey);
       } finally {
         setRoutingGroupId(null);
       }
@@ -3114,7 +3117,7 @@ export function HubModelPicker({
   const renderCatalogGroupRow = (group: CatalogGroup, keyPrefix: string) => {
     const optionKey = makeModelOptionKey(keyPrefix, group.canonicalId);
     const expandKey = `${keyPrefix}:${group.canonicalId}`;
-    const expanded = expandedGroups.has(expandKey) || expandedGroups.has(group.canonicalId);
+    const expanded = expandedGroups.has(expandKey);
     const anyDownloaded = group.artifacts.some((a) => isRepoDownloaded(a.repoId));
     const selected = group.artifacts.some((a) => a.repoId === value);
     const routed = routedArtifactFor(group);
@@ -3135,7 +3138,7 @@ export function HubModelPicker({
               tooltipText={`Loads ${routed.label} (best for this device). Open the chevron to pick a format.`}
               selected={selected}
               optionProps={hubModelList.getOptionProps(optionKey, selected)}
-              onClick={() => void routeGroupClick(group)}
+              onClick={() => void routeGroupClick(group, expandKey)}
               vramStatus={null}
               gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
               className={downloadedRowButtonClassName}
@@ -3263,7 +3266,7 @@ export function HubModelPicker({
                           return;
                         }
                       }
-                      void routeGroupClick(group);
+                      void routeGroupClick(group, expandKey);
                     }}
                     vramStatus={null}
                     className={downloadedRowButtonClassName}

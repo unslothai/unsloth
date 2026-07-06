@@ -329,6 +329,32 @@ assert.equal(
     .repoId,
   "ideogram-ai/ideogram-4-nf4-diffusers",
 );
+// A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded, even on a big GPU that
+// fits it: the download would fail without license/token access, so route to the open GGUF.
+const fluxDevRoute = groupForRepoId("unsloth/FLUX.1-dev", IMAGE_CATALOG);
+assert.ok(fluxDevRoute);
+assert.equal(
+  pickDefaultArtifact(fluxDevRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+// But an already-downloaded gated BF16 (the user clearly has access) is still returned.
+assert.equal(
+  pickDefaultArtifact(fluxDevRoute, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: (id) => id === "black-forest-labs/FLUX.1-dev",
+  }).repoId,
+  "black-forest-labs/FLUX.1-dev",
+);
+// FLUX.1-schnell is Apache-2.0 (not gated): its BF16 IS auto-routed on a GPU that fits it.
+const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
+assert.ok(fluxSchnellRoute);
+assert.equal(
+  pickDefaultArtifact(fluxSchnellRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
 // HunyuanVideo on 80 GB: highest-quality sized artifact that fits (720p, 52 GB).
 const hunyuan = groupForRepoId(
   "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -371,13 +397,22 @@ assert.equal(
     .format,
   "bf16",
 );
-// FLUX.1-dev BF16 (32 GB) is a single option beyond GGUF; fits a 48 GB GPU.
+// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU, but it is GATED: a bare click routes to the open
+// GGUF unless the BF16 is already downloaded (see the gated-routing checks above). Small GPU -> GGUF.
 const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDev);
 assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
 assert.equal(
   pickDefaultArtifact(fluxDev, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(fluxDev, {
+    gpuGb: 48,
+    systemRamGb: 64,
+    isDownloaded: (id) => id === "black-forest-labs/FLUX.1-dev",
+  }).format,
   "bf16",
 );
 assert.equal(

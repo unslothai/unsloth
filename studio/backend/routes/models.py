@@ -3447,13 +3447,21 @@ async def list_cached_models(
                     )
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
-                    if existing is None or total_size > existing["size_bytes"]:
+                    is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path))
+                    # Prefer the most COMPLETE snapshot, then the largest. The picker drops partial
+                    # rows, so a partial copy in one cache root must not shadow a smaller COMPLETE
+                    # copy in another (that would make a usable model vanish from On Device).
+                    # Completeness wins outright; size only breaks ties among equal completeness.
+                    if existing is None or (not is_partial, total_size) > (
+                        not bool(existing.get("partial")),
+                        existing["size_bytes"],
+                    ):
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "task": _cached_repo_task(repo_info),
                         }
-                        if _cached_repo_partial(repo_id, Path(repo_info.repo_path)):
+                        if is_partial:
                             row["partial"] = True
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.

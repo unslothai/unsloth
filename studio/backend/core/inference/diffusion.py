@@ -2209,7 +2209,19 @@ class DiffusionBackend:
                 # LoRA generation on this load. Compile and LoRA are mutually exclusive; keep the
                 # pipe eager and let compile defer to a later LoRA-free generation.
                 lora_requested = any(w != 0 for (_id, w) in (loras or []))
-                if state.speed_deferred and state.generation_count >= 2 and not lora_requested:
+                # Also stay eager while adapters from a PRIOR generation are still attached: this
+                # request may clear them (lora_requested False), but _apply_loras runs AFTER the
+                # engage below, so compiling here would bake the resident adapter into the graph and
+                # the subsequent unload_lora_weights() (swallowed on a compiled pipe) would leave it
+                # active forever -- silent wrong output on every later LoRA-free generation. Deferring
+                # lets _apply_loras clear it on the still-eager pipe; compile engages a gen later.
+                loras_attached = bool(getattr(state.pipe, "_unsloth_loras", ()))
+                if (
+                    state.speed_deferred
+                    and state.generation_count >= 2
+                    and not lora_requested
+                    and not loras_attached
+                ):
                     try:
                         self._engage_deferred_speed(state)
                     except Exception as exc:  # noqa: BLE001 — speed is best-effort

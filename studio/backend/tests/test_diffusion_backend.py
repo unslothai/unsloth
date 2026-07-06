@@ -559,6 +559,48 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     assert len(engaged) == 1
 
 
+def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
+    # Even a generation that requests NO LoRA must defer the compile while an adapter from a PRIOR
+    # generation is still attached: _apply_loras runs AFTER the engage, so compiling here would bake
+    # the resident adapter into the graph and the subsequent unload (swallowed on a compiled pipe)
+    # would leave it active forever -- silent wrong output. Defer until _apply_loras clears it.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    # Track the attached set on the pipe, mirroring the real _apply_loras marker (_unsloth_loras).
+    def fake_apply(self, state, loras, cancel):
+        specs = [(i, w) for (i, w) in (loras or []) if w != 0]
+        state.pipe._unsloth_loras = tuple(specs)
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    # Gens 1-2 attach an adapter, so it is still resident going into gen 3.
+    backend.generate(prompt = "one", loras = [("adapter", 1.0)])
+    backend.generate(prompt = "two", loras = [("adapter", 1.0)])
+    # Gen 3 requests NO LoRA but the adapter is still attached -> defer (no compile-with-adapter).
+    backend.generate(prompt = "three")
+    assert engaged == []
+    # Gen 3's _apply_loras([]) cleared the adapter; gen 4 is genuinely LoRA-free -> engage.
+    backend.generate(prompt = "four")
+    assert len(engaged) == 1
+
+
 def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
     # A dense model loaded with Speed left on Auto but Attention explicitly pinned
     # (e.g. "native" to avoid cuDNN) must KEEP that choice when the 3rd generation

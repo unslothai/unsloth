@@ -27,6 +27,12 @@ export interface ModelArtifact {
   approxSizeGb?: number;
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
+  /** Gated on the Hub (license acceptance + token needed to download). A bare group
+   *  click must not auto-route to it when it isn't already downloaded -- the download
+   *  would fail for a user without access -- so the not-downloaded ladder skips it and
+   *  falls through to an open artifact (e.g. the GGUF). An already-downloaded gated
+   *  artifact is still returned (the user clearly has access). */
+  gated?: boolean;
 }
 
 export interface CatalogGroup {
@@ -188,7 +194,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32),
+      // FLUX.1-dev is gated (license acceptance + token); FLUX.1-schnell above is Apache-2.0.
+      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32, { gated: true }),
       gguf("unsloth/FLUX.1-dev-GGUF"),
     ],
   },
@@ -222,7 +229,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32),
+      // FLUX.1-Kontext-dev is gated on the Hub (license acceptance + token).
+      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32, { gated: true }),
       gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
     ],
   },
@@ -653,7 +661,10 @@ export function pickDefaultArtifact(
     return ggufArtifact ?? artifacts[0];
   }
   for (const artifact of artifacts) {
-    if (artifact.format !== "gguf" && fitsResident(artifact, input.gpuGb)) {
+    // Skip a gated, NOT-downloaded artifact: auto-routing to it would fail the download for a
+    // user without license/token access, so fall through to an open artifact (the GGUF below).
+    // The downloaded branch above still returns a gated artifact the user already fetched.
+    if (artifact.format !== "gguf" && !artifact.gated && fitsResident(artifact, input.gpuGb)) {
       return artifact;
     }
   }
