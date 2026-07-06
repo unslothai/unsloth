@@ -59,6 +59,18 @@ def test_ideogram4_generation_defaults():
     assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (48, 7.0)
 
 
+def test_ideogram4_bf16_reservation_table_present():
+    # The memory planner reserves this bf16 footprint for a narrow (fp8) ideogram-4 base even
+    # when the blob-cache estimate is absent (empty cache / a best-effort download probe that
+    # swallowed a transient HF error), so the ~54 GB pipeline never plans a resident placement
+    # it cannot fit. If this constant table ever went None, that fp8 OOM safeguard would
+    # silently disable, so pin that it is present and sums to the expected ~54 GB.
+    fam = detect_family("ideogram-ai/ideogram-4-fp8")
+    table = family_bf16_components_gb(fam, fam.base_repo)
+    assert table is not None
+    assert sum(table) > 50.0  # transformer (37.2) + bf16 text encoder (16.3) + VAE (0.2)
+
+
 def test_ideogram4_memory_table_counts_both_dits():
     fam = detect_family("ideogram-ai/ideogram-4-fp8")
     components = family_bf16_components_gb(fam)

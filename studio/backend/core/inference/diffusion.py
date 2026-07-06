@@ -1714,9 +1714,17 @@ class DiffusionBackend:
                 is_narrow_base = ideogram4_repo_is_fp8(repo_id)
             if is_narrow_base:
                 table = family_bf16_components_gb(fam, fam.base_repo)
-                if table is not None and model_dense_mib is not None:
+                if table is not None:
+                    # family_bf16_components_gb is a network-free constant, so reserve the bf16
+                    # footprint even when the cache-derived estimate is absent (empty blob cache,
+                    # or a best-effort download probe that swallowed a transient HF error and
+                    # returned nothing). Otherwise model_dense_mib stays None and the planner
+                    # reads "size unknown -> stay resident", so the ~54 GB fp8 pipeline plans a
+                    # resident placement and OOMs a card that offload would have fit.
                     table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
-                    model_dense_mib = max(model_dense_mib, table_mib)
+                    model_dense_mib = (
+                        table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
+                    )
             companion_mib = None
         else:
             if transformer_resident_override_mib is not None:
