@@ -293,7 +293,6 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         # would pass the preflight, evict resident workloads, then raise only in the child.
         try:
             import torch
-
             has_cuda = torch.cuda.is_available()
         except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as no CUDA
             has_cuda = False
