@@ -235,8 +235,14 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
             # its deps an ABI-incompatible kernel simply fails to import -> native fallback,
             # which is the same best-effort outcome as an uninstallable wheel.
             [
-                sys.executable, "-m", "pip", "install",
-                "--only-binary", ":all:", "--no-deps", package,
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--only-binary",
+                ":all:",
+                "--no-deps",
+                package,
             ],
             capture_output = True,
             timeout = 600,
