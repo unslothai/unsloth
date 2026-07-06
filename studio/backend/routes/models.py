@@ -3215,7 +3215,6 @@ def _arch_to_task(arch: Optional[str]) -> Optional[str]:
         # to the unsupported bucket (hidden from chat, not surfaced in the Video/Images pickers)
         # until its family exists, rather than advertising a GGUF that cannot load.
         from core.inference.video_families import detect_video_family
-
         if detect_video_family("", override = a) is not None:
             return _VIDEO_GEN_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
