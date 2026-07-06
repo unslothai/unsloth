@@ -245,6 +245,7 @@ def _maybe_advise_fla_install(model_types):
         "transformers will use a slower pure PyTorch path."
     )
 
+
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
 
