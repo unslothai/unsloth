@@ -805,8 +805,8 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
-        # NOTE: the base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
-        # load_in_* combination fails without first downloading a snapshot. See the block after that check.
+        # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
+        # load_in_* combination fails without first downloading a snapshot.
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -905,10 +905,9 @@ class FastBaseModel:
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
 
-        # Prefetch the repo (killable child) so the in-process load below is a cache hit. Runs after
-        # the load-mode validation above. vLLM owns the weight download only when actually available;
-        # if fast_inference was requested but vLLM is missing, the load falls through in-process, so
-        # weights must still be warmed here. Resolve availability now.
+        # Prefetch the repo (killable child) so the in-process load below is a cache hit. vLLM owns the
+        # weight download only when actually available; if fast_inference was requested but vLLM is
+        # missing, the load falls through in-process, so weights must still be warmed here.
         _vllm_owns_weights = fast_inference and is_vLLM_available()
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
@@ -1252,8 +1251,7 @@ class FastBaseModel:
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
 
         # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).
-        # Now the final tokenizer repo is known, so warm it so the processor/tokenizer load below hits
-        # the cache. Re-warming an already-cached repo (or a local path) is a fast no-op.
+        # Warm the now-final tokenizer repo so the load below hits the cache (a cached/local repo is a no-op).
         if _vllm_owns_weights and isinstance(tokenizer_name, str) and tokenizer_name:
             maybe_prefetch_hf_snapshot(
                 tokenizer_name,

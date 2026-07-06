@@ -906,8 +906,8 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
 
 
-# Artifacts a Transformers/PEFT load never reads (ONNX/TF/Flax/CoreML/GGUF/training state); skip when
-# prewarming so a mixed-format repo is not pulled in full. Ignore list (not allowlist) so nothing needed is dropped.
+# Artifacts a Transformers/PEFT load never reads (ONNX/TF/Flax/CoreML/GGUF/training state), skipped
+# when prewarming so a mixed-format repo is not pulled in full.
 _PREFETCH_IGNORE_PATTERNS = (
     "*.onnx",
     "onnx/*",
@@ -945,8 +945,7 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
     "vocab.txt",
     "merges.txt",
     "spiece.model",
-    # More SentencePiece / vocab load targets (VOCAB_FILES_NAMES) the slow tokenizer Unsloth tries first
-    # may fetch: DeBERTa-v2, Whisper, Mistral, XLM-R/mBART, Marian, FSMT/XLM, GPT-2.
+    # More VOCAB_FILES_NAMES the slow tokenizer may fetch (DeBERTa-v2, Whisper, Mistral, XLM-R/mBART, Marian, FSMT/XLM, GPT-2).
     "spm.model",
     "normalizer.json",
     "tokenizer.model.v3",
@@ -972,18 +971,18 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
 )
 
 
-# Files a PEFT adapter load reads: config + weights (glob covers sharded adapters). Merged / full-model
-# weights an adapter repo may also publish match none of these.
+# Files a PEFT adapter load reads: config + weights (glob covers sharded adapters). Any merged
+# full-model weights the repo also ships match none of these.
 _ADAPTER_PREFETCH_PATTERNS = (
     "adapter_config.json",
     "adapter_model*",
 )
 
 
-# Weight files in a SUBDIRECTORY. A bare root load reads only root weights, so ignoring these drops a
-# repo's alternate-precision / experimental weight dirs (fp16/, experimental/). "*/*" spans "/" (HF
-# fnmatch) so it matches nested weights while root "model.safetensors" is kept; covers .h5/.msgpack too
-# (from_tf/from_flax keep those at root). Only applied when weights_at_root (diffusion keeps weights in subfolders).
+# Weight files in a SUBDIRECTORY. A bare root load reads only root weights, so ignoring these drops
+# alternate-precision/experimental dirs (fp16/, experimental/). "*/*" spans "/" (HF fnmatch), so nested
+# weights match while root "model.safetensors" is kept. Only applied when weights_at_root (diffusion
+# keeps weights in subfolders).
 _SUBDIR_WEIGHT_IGNORE_PATTERNS = (
     "*/*.safetensors",
     "*/*.bin",
@@ -1141,8 +1140,7 @@ def _prefetch_ignore_patterns(
         # Explicit .bin: load never reads safetensors.
         ignore_patterns.extend(("*.safetensors", "*.safetensors.index.json"))
     else:
-        # Auto: skip .bin only once in-scope safetensors are confirmed (Transformers prefers them).
-        # Best-effort: any failure leaves both formats.
+        # Auto: skip .bin only once in-scope safetensors are confirmed (best-effort; any failure keeps both).
         try:
             from huggingface_hub import HfApi
 
