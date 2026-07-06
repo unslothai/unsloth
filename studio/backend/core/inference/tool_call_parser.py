@@ -620,7 +620,14 @@ _EMBEDDED_MARKER_RE = re.compile(
 )
 # Covers both ``<function=NAME>`` and the attribute form; an attribute-form call
 # embedding a DeepSeek/Kimi marker must not be hijacked by the marker pre-pass.
-_OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")|<\|tool_call>')
+# ``<|python_tag|>`` is Llama-3's tool-call envelope too (built-in ``NAME.call(``
+# and custom ``{json}`` forms), so a DeepSeek/Kimi example quoted in its arguments
+# is data, not a call -- the call-shaped lookahead mirrors the ``_TOOL_ALL_PATS``
+# python_tag arm so a bare prose ``<|python_tag|>`` mention is not treated as one.
+_OUTER_ENVELOPE_OPEN_RE = re.compile(
+    r'<tool_call>|<function(?:=|\s+name=")|<\|tool_call>'
+    r"|<\|python_tag\|>(?=\s*(?:\{|[A-Za-z_][\w.]*\())"
+)
 # CLOSED outer envelopes, each spanning to its REAL final close so a literal
 # ``</tool_call>``/``</function>`` inside a value is data (real-close pattern, not
 # the lazy strip form). Wrapped Gemma counts too; its quoted examples are data.
@@ -969,7 +976,13 @@ def parse_tool_calls_from_text(
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None:
         first_other = None
-        for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>", _MISTRAL_TRIGGER):
+        for sig in (
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "<|python_tag|>",
+            _MISTRAL_TRIGGER,
+        ):
             p = content.find(sig)
             if p >= 0 and (first_other is None or p < first_other):
                 first_other = p
