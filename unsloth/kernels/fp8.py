@@ -95,7 +95,11 @@ def weight_dequant_block(
         triton.cdiv(M, meta["BLOCK_SIZE"]),
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
-    weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+    # Launch on the tensor's device: with multi-GPU device_map the current CUDA
+    # device may differ from x.device, and a mismatched Triton launch reads/writes
+    # through cross-device pointers (silent corruption / NaNs, or IMA).
+    with torch.cuda.device(x.device):
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
     return y
 
 
@@ -149,7 +153,8 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
     def grid(meta):
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
-    act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
+    with torch.cuda.device(x.device):
+        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
 
 
@@ -274,32 +279,33 @@ def w8a8_block_fp8_matmul_triton(
     def grid(META):
         return (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
 
-    _w8a8_block_fp8_matmul[grid](
-        A,
-        B,
-        C,
-        As,
-        Bs,
-        M,
-        N,
-        K,
-        block_n,
-        block_k,
-        A.stride(-2),
-        A.stride(-1),
-        B.stride(1),
-        B.stride(0),
-        C.stride(-2),
-        C.stride(-1),
-        As.stride(-2),
-        As.stride(-1),
-        Bs.stride(1),
-        Bs.stride(0),
-        BLOCK_SIZE_M = BLOCK_SIZE_M,
-        BLOCK_SIZE_N = BLOCK_SIZE_N,
-        BLOCK_SIZE_K = BLOCK_SIZE_K,
-        GROUP_SIZE_M = 8,
-    )
+    with torch.cuda.device(A.device):
+        _w8a8_block_fp8_matmul[grid](
+            A,
+            B,
+            C,
+            As,
+            Bs,
+            M,
+            N,
+            K,
+            block_n,
+            block_k,
+            A.stride(-2),
+            A.stride(-1),
+            B.stride(1),
+            B.stride(0),
+            C.stride(-2),
+            C.stride(-1),
+            As.stride(-2),
+            As.stride(-1),
+            Bs.stride(1),
+            Bs.stride(0),
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            GROUP_SIZE_M = 8,
+        )
     return C
 
 
