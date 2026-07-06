@@ -1040,7 +1040,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     """No-tool re-prompt attempts should not concatenate into the UI."""
 
-    # One initial response plus one stream per re-prompt; derive the count from the shared cap.
+    # One initial response plus one stream per re-prompt (count from the shared cap).
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
     streams += [
         [_sse({"content": "Understood. I will use render_html now."}), _done()]
@@ -1208,7 +1208,7 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
 
 def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch):
     # Inline Mistral ``[TOOL_CALLS]`` after a visible preface: the DRAINING flush must use the
-    # shared parser patterns; the legacy set leaked the marker to clients.
+    # shared parser patterns (the legacy set leaked the marker to clients).
     streams = [
         [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
         [_sse({"content": "done"}), _done()],
@@ -2159,8 +2159,8 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
 
 def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     """Re-prompt slots must not extend the tool budget: stop after ``max_tool_iterations`` executed rounds."""
-    # More tool-call streams than the budget: if re-prompt slots leaked into the budget (the bug) the
-    # loop would run 2+3=5 rounds; honouring it stops after 2, then a tool-less final-answer pass.
+    # More tool-call streams than the budget: leaked re-prompt slots would run 2+3=5 rounds;
+    # honouring the budget stops after 2, then a tool-less final-answer pass.
     streams = [
         _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
     ]

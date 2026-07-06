@@ -32,9 +32,9 @@ from typing import Any, Optional
 from core.inference.tool_loop_controller import coerce_tool_arguments
 from core.tool_healing import parse_tool_calls_from_text
 
-# Only the formats parse_tool_calls_from_text can promote. The parser's broader
-# list also has Llama <|python_tag|> / Mistral [TOOL_CALLS]; buffering those here
-# would hold a streamed call then flush it as prose, so keep a healer-aligned list.
+# Only the formats this healer can promote. The parser's broader list adds Llama
+# <|python_tag|> / Mistral [TOOL_CALLS], but buffering those here would flush a
+# streamed call as prose, so keep a healer-aligned list.
 _HEAL_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",

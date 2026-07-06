@@ -564,8 +564,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
             continue  # resolved -> fine
-        # `from __future__ import ...` is a compiler directive: its name is never
-        # loaded, so skip it or a legitimately-added future import gets flagged.
+        # `from __future__ import ...` is a compiler directive whose name is never loaded; skip it.
         if all(t.startswith("from:__future__:") for t in tids):
             continue
         newly_added = bool(tids - before_module_targets)
@@ -593,10 +592,9 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     #    `import urllib.error` next to `import urllib.request`). Nothing the name
     #    resolved to before is lost, so no reference is re-pointed -- skip it.
     #
-    #    A deliberate *relocation* is also benign: a name keeps its spelling but
-    #    its import source moves A -> B in THIS diff (old `from A import x` removed,
-    #    new `from B import x` added). Mirrors the TARGET-MISSING tolerance.
-    #    Re-pointing to a pre-existing target (shadow/clash) is NOT exempted.
+    #    A deliberate *relocation* is also benign: a name's import source moves A -> B in
+    #    THIS diff (old `from A import x` removed, new `from B import x` added). Mirrors the
+    #    TARGET-MISSING tolerance. Re-pointing to a pre-existing target (clash) is NOT exempted.
     removed_module_targets = before_module_targets - after_module_targets
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)

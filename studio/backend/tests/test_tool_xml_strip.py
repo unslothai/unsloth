@@ -24,8 +24,7 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
-# _strip_tool_xml_for_display delegates to _strip_tool_xml (Mistral balanced strip + _TOOL_XML_RE);
-# provide both helpers into the exec namespace so the extracted code resolves.
+# Provide both helpers so the extracted _strip_tool_xml_for_display resolves.
 from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
 
 _ns = {
@@ -67,8 +66,7 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
 
 
 def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
-    # _TOOL_XML_RE has no [TOOL_CALLS] arm, so the helper delegates to _strip_tool_xml for the Mistral
-    # balanced-brace strip (a non-greedy \{.*?\} would truncate nested JSON).
+    # [TOOL_CALLS] with nested JSON needs the Mistral balanced-brace strip, not the regex.
     text = 'ok [TOOL_CALLS]web_search{"filters":{"date":"2024"},"query":"cats"} tail'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
@@ -104,8 +102,7 @@ def test_strips_function_only_well_formed():
 
 
 def test_strips_function_attribute_form():
-    # Attribute form ``<function name="...">`` (MiniCPM-5 / MiniMax-M2) must strip from the route too
-    # (it previously leaked into the UI); a dotted/hyphenated name also strips.
+    # Attribute form <function name="..."> must strip from the route too; dotted/hyphenated names included.
     text = (
         'Sure.\n<function name="get_weather">\n'
         "<parameter=city>\nSydney\n</parameter>\n</function>\nDone."
@@ -335,8 +332,7 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
 
 # Llama-3 <|python_tag|> arm bounds on REAL sentinels only
 def test_python_tag_strip_consumes_literal_sentinel_in_arg():
-    # A <|python_tag|> call whose JSON arg carries a literal <|...|> token (<|cite|>) must strip
-    # whole; the old `<(?!\|)` arm stopped at any `<|`, leaking the call tail into display.
+    # A literal <|...|> token inside the arg must not end the strip early.
     text = '<|python_tag|>{"name": "send", "parameters": {"text": "use <|cite|> here"}}'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert cleaned == "", f"python_tag call leaked at literal sentinel: {cleaned!r}"
@@ -352,8 +348,7 @@ def test_python_tag_strip_consumes_literal_sentinel_in_arg():
     ],
 )
 def test_python_tag_strip_stops_at_real_sentinel(sentinel):
-    # A genuine Llama control sentinel still bounds the strip so following
-    # assistant text is preserved (the arm must not swallow past it).
+    # A real control sentinel bounds the strip so following text survives.
     text = f'<|python_tag|>{{"name": "x", "parameters": {{}}}}{sentinel}visible answer'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert (
@@ -362,16 +357,14 @@ def test_python_tag_strip_stops_at_real_sentinel(sentinel):
 
 
 def test_python_tag_strip_restarts_on_second_python_tag():
-    # A second <|python_tag|> opens a new tool-call region, so the whole pair is
-    # stripped (the arm bounds the first, then the next match consumes the rest).
+    # A second <|python_tag|> opens a new region; both are stripped.
     text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"
 
 
 def test_route_strip_removes_param_alias_close_tag():
-    # The parser accepts the <param name="...">...</param> attribute-form alias of
-    # <parameter=...>; the route tail cleanup must strip an orphan </param> close too.
+    # Orphan </param> (attribute-form alias of </parameter>) must strip too.
     assert _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True) == "answer "
     assert (
         _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True) == "answer "
@@ -379,8 +372,7 @@ def test_route_strip_removes_param_alias_close_tag():
 
 
 def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
-    # A literal <function=...></function> in a value must not truncate the strip: the route runs the
-    # parser's guarded function-XML scan before the regex, matching the core strip.
+    # A literal <function=...></function> in a value must not truncate the strip.
     text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
 
@@ -421,8 +413,7 @@ def test_final_strip_still_drops_truncated_marker_calls():
 
 
 def test_chained_bare_json_strip_consumes_all_calls():
-    # The loops keep this text as next-turn history: a leftover executed call
-    # would be replayed alongside the structured tool_calls.
+    # Next-turn history must not keep an executed call, else it replays.
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
     enabled = {"web_search", "python"}

@@ -127,8 +127,8 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_tools"] is False
 
 
-# Llama-3 / Mistral / Gemma 4 tool-call formats are now parser-supported, so supports_tools=True
-# must hold for all of them; only templates matching none of the five known markers are suppressed.
+# Llama-3 / Mistral / Gemma 4 tool-call formats are parser-supported, so supports_tools stays True;
+# only templates matching none of the known markers are suppressed.
 
 LLAMA3_TEMPLATE = """
 {%- if tools %}
@@ -534,8 +534,7 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_preserve_thinking"] is True
 
 
-# Templates that advertise tools ({%- if tools %}) and prompt the bare-JSON
-# call form, but whose ``{"name":`` example is pretty-printed or JSON-escaped.
+# Templates advertising tools whose ``{"name":`` example is pretty-printed or JSON-escaped.
 _WHITESPACE_BARE_JSON_TEMPLATE = (
     "{%- if tools %}\n"
     "To call a tool, output JSON of the form:\n"
@@ -555,8 +554,7 @@ _TOOLS_ADVERTISED_NO_PARSEABLE_FORM = (
 
 
 def test_detect_safetensors_features_keeps_tools_for_pretty_printed_bare_json():
-    # A pretty-printed bare-JSON example (``{ "name" :``) must keep supports_tools since the parser
-    # accepts that whitespace via raw_decode.
+    # Pretty-printed bare-JSON (``{ "name" :``) keeps supports_tools: parser accepts the whitespace.
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
@@ -573,8 +571,7 @@ def test_detect_safetensors_features_keeps_tools_for_escaped_bare_json():
 
 
 def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
-    # Negative control: tools advertised but no parser-recognised emission form at
-    # all -> the pill is still dropped (the gate is not now matching everything).
+    # Negative control: tools advertised but no parser-recognised emission form -> pill dropped.
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
@@ -583,8 +580,7 @@ def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
 
 
 def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
-    # A template documenting the parser-supported {"function":...} bare-JSON alias
-    # must keep supports_tools, mirroring the {"name":...} form.
+    # The {"function":...} bare-JSON alias keeps supports_tools, mirroring {"name":...}.
     from routes.inference import _detect_safetensors_features
 
     tpl = (
@@ -598,10 +594,9 @@ def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
     assert flags["supports_tools"] is True
 
 
-# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor so safetensors/MLX reach
-# GGUF reasoning-block parity for enable_thinking models.
+# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor for enable_thinking models.
 class TestSafetensorsReasoningPrefillGate:
-    # A minimal Qwen3-style template with the standard <think>/</think> markers.
+    # Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."
     # gemma-style bespoke reasoning channel -- no standard markers.
     _GEMMA_TPL = "{% if enable_thinking %}<|think|>{% endif %}<|channel>thought<channel|>"
@@ -655,8 +650,8 @@ class TestSafetensorsReasoningPrefillGate:
         assert _sf_reasoning_prefill_mode(feats, False, self._QWEN_TPL) is True
 
     def test_g8_gemma_bespoke_channel_excluded(self):
-        # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
-        # (would otherwise swallow the whole answer as reasoning). Regression guard.
+        # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled (else the
+        # whole answer is swallowed as reasoning). Regression guard.
         from routes.inference import _sf_reasoning_prefill_mode
         assert _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
 

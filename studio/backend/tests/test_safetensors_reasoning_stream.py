@@ -34,7 +34,7 @@ def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
     visible_deltas: list[str] = []
     monitor: list[str] = []
     tool_starts: list[dict] = []
-    order: list[str] = []  # sequence of ("reasoning"|"visible"|"tool_start") events
+    order: list[str] = []  # "reasoning" | "visible" | "tool_start" sequence
 
     def _flush():
         fr, fv = extractor.finish()
@@ -155,9 +155,8 @@ _THINK_TPL = "...{% if enable_thinking %}<think>{% endif %}...</think>..."
 
 
 def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
-    # GLM-5.2 enable_thinking_effort with reasoning_effort="none" (enable_thinking omitted)
-    # disables thinking like enable_thinking=False, so prefilled must be OFF; otherwise the
-    # model emits no </think> and the whole answer is swallowed into reasoning (the bug).
+    # GLM-5.2 enable_thinking_effort + reasoning_effort="none" disables thinking like
+    # enable_thinking=False, so prefilled must be OFF (else the answer is swallowed into reasoning).
     feats = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "none") is False
     # Thinking on (effort level or default) still prefills.
@@ -172,8 +171,7 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
     plain = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(plain, None, _THINK_TPL, "none") is True
 
-    # End-to-end: with the corrected prefilled=False, a plain no-</think> answer is
-    # emitted as visible content rather than swallowed into the thinking drawer.
+    # End-to-end: with prefilled=False, a plain no-</think> answer stays visible.
     events = [{"type": "content", "text": "The capital of France is Paris."}]
     out = _replay_sf_reasoning_stream(events, prefilled = False)
     assert out["visible"] == "The capital of France is Paris."

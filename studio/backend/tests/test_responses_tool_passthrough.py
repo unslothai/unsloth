@@ -1991,7 +1991,7 @@ class TestTranslatedMessagesValidate:
 
 
 # reasoning_prefilled: Qwen3/GLM enable_thinking templates prefill an unclosed <think>, so generation
-# begins inside the think block and emits only the closing </think>; the extractor starts in reasoning.
+# begins inside the think block and emits only the closing </think>; extractor starts in reasoning.
 class TestReasoningPrefilledExtractor:
     def test_prefilled_single_feed_splits_lone_close(self):
         # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
@@ -2055,8 +2055,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "\n\nanswer"
 
     def test_prefilled_stray_open_tag_is_suppressed(self):
-        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
-        # not leaked into the drawer (covers enable_thinking_effort full-tag output).
+        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped, not leaked.
         reasoning, visible = _extract_responses_reasoning(
             "a<think>b</think>c",
             parse_think_markers = True,
@@ -2077,8 +2076,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "hi"
 
     def test_not_prefilled_lone_close_preserves_current_behavior(self):
-        # T9: GGUF-parity guard -- WITHOUT prefilled, a lone </think> keeps pre-fix
-        # behavior (reasoning stays visible, tag dropped); GGUF/callers byte-identical.
+        # T9: without prefilled, a lone </think> keeps pre-fix behavior (reasoning stays visible, tag dropped).
         reasoning, visible = _extract_responses_reasoning(
             "reasoning</think>ans",
             parse_think_markers = True,
@@ -2098,8 +2096,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "v"
 
     def test_prefilled_ignored_when_markers_not_parsed(self):
-        # T11: a non-reasoning model (parse_think_markers False) still passes text
-        # straight through even if reasoning_prefilled were mistakenly set False.
+        # T11: a non-reasoning model (parse_think_markers False) passes text straight through.
         reasoning, visible = _extract_responses_reasoning(
             "just an answer",
             parse_think_markers = False,

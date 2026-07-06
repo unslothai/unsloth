@@ -1306,8 +1306,8 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
-# Whitespace/escape-tolerant bare-JSON tool-template detector (matches pretty-printed and
-# JSON-escaped ``{"name":`` plus the ``"function"`` alias), mirroring the parser's tolerance.
+# Whitespace/escape-tolerant bare-JSON tool-template detector: matches pretty-printed and
+# JSON-escaped ``{"name":`` plus the ``"function"`` alias.
 _BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
@@ -1321,9 +1321,8 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Markers the safetensors/MLX parser recognises; drop the pill if the template advertises tools
-    # but uses none. The bare-JSON ``{"name":`` form is matched whitespace-tolerantly (below) so a
-    # pretty-printed/escaped template isn't misread as tool-less.
+    # Markers the parser recognises; drop the pill if a template advertises tools but uses none.
+    # The bare-JSON ``{"name":`` form is matched whitespace-tolerantly below.
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -1375,9 +1374,8 @@ def _sf_reasoning_prefill_mode(
         return False
     if enable_thinking is False:
         return False
-    # A reasoning_effort="none" request disables thinking for enable_thinking_effort
-    # (GLM-5.2) models like enable_thinking=False does. Without this the model emits no
-    # ``</think>`` and a plain answer is swallowed into reasoning_content, leaving it empty.
+    # reasoning_effort="none" disables thinking on enable_thinking_effort (GLM-5.2) models like
+    # enable_thinking=False; without this the answer is swallowed into empty reasoning_content.
     if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
         return False
     return True
@@ -1653,24 +1651,24 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip leaked tool-call markup: every shared-parser format plus the four leak shapes
+# Strip leaked tool-call markup: every shared-parser format plus the leak shapes
 # ``llama_cpp.py``'s speculative buffer splits across the visible/DRAIN boundary. Mistral
-# ``[TOOL_CALLS]`` uses the parser's balanced-brace helper (a ``\{.*?\}`` would truncate nested JSON).
+# ``[TOOL_CALLS]`` uses the parser's balanced-brace helper (``\{.*?\}`` would truncate nested JSON).
 _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
-    # The ``<|python_tag|>`` arm runs to the next REAL Llama sentinel or EOF; stopping at any
-    # ``<|`` truncated the strip when an argument held a literal ``<|...|>`` token (e.g. ``<|cite|>``).
-    # ``<function=name>`` and the ``<function name="name">`` attribute form; name class mirrors the parser.
-    # A CLOSED ``<function=...>...</function>`` extends to the real close (last ``</function>`` before the
-    # next opener) so a literal ``</function>`` in a value doesn't truncate the strip. This arm runs first.
+    # The ``<|python_tag|>`` arm runs to the next REAL Llama sentinel or EOF, so a literal
+    # ``<|...|>`` token in an argument (e.g. ``<|cite|>``) doesn't truncate the strip.
+    # ``<function=name>`` plus the ``<function name="name">`` attribute form; name class mirrors the parser.
+    # A CLOSED ``<function=...>...</function>`` extends to the last ``</function>`` before the next
+    # opener (so a literal ``</function>`` in a value can't truncate); this arm runs first.
     r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*</function>'
     r'|<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
-    # ``</param>`` is the attribute-form alias of ``</parameter>``; strip a tail-only orphan close.
+    # ``</param>`` is the attribute-form alias of ``</parameter>``; strip a tail-only orphan.
     r"|</(?:parameter|param)>\s*\Z",
     _re.DOTALL,
 )
@@ -6571,7 +6569,7 @@ async def openai_chat_completions(
     _sf_features = _detect_safetensors_features(backend, _sf_tpl)
 
     # Split prefilled-``<think>`` output into reasoning_content deltas (GGUF parity) so the UI
-    # renders the thinking block for safetensors AND MLX.
+    # renders the thinking block for safetensors and MLX.
     _sf_parse_think = bool(
         _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
     )
@@ -6730,7 +6728,7 @@ async def openai_chat_completions(
                 reasoning_extractor = _new_sf_reasoning_extractor()
 
                 def _sf_flush_reasoning():
-                    # Drain the extractor at a turn boundary / stream end (GGUF parity); only visible text reaches the monitor.
+                    # Drain the extractor at a turn boundary / stream end; only visible text reaches the monitor.
                     fr, fv = reasoning_extractor.finish()
                     out = []
                     if fr:
@@ -6756,7 +6754,7 @@ async def openai_chat_completions(
 
                     if event["type"] == "status":
                         if not event["text"]:
-                            # Iteration boundary: flush reasoning, then start a fresh extractor for the next turn.
+                            # Turn boundary: flush reasoning, then start a fresh extractor.
                             for _c in _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
@@ -6772,7 +6770,7 @@ async def openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
-                            # Flush reasoning before the tool_start line so the thinking block closes ahead of the tool card.
+                            # Flush reasoning before tool_start so the thinking block closes ahead of the tool card.
                             for _c in _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
@@ -6879,7 +6877,7 @@ async def openai_chat_completions(
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
-            # Split prefilled <think> reasoning out of the visible answer (GGUF parity); monitor gets visible text only.
+            # Split prefilled <think> reasoning from the visible answer; monitor gets visible text only.
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 content_text,
                 parse_think_markers = _sf_parse_think,
@@ -6978,7 +6976,7 @@ async def openai_chat_completions(
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 prev_text = ""
-                # Split prefilled <think> into reasoning_content deltas (GGUF parity). Single turn (no per-turn reset); also serves MLX.
+                # Split prefilled <think> into reasoning_content deltas. Single turn (no per-turn reset); also MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 # Run the sync generator in a thread pool to avoid blocking the
                 # event loop. Critical for compare mode: two SSE requests arrive
@@ -7084,7 +7082,7 @@ async def openai_chat_completions(
             for token in generate():
                 full_text = token
 
-            # Split prefilled <think> reasoning from the visible answer (GGUF parity); also covers MLX.
+            # Split prefilled <think> reasoning from the visible answer; also covers MLX.
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 full_text,
                 parse_think_markers = _sf_parse_think,
@@ -7934,8 +7932,8 @@ class _ResponsesReasoningExtractor:
         reasoning_prefilled: bool = False,
     ) -> None:
         self._buffer = ""
-        # ``reasoning_prefilled``: output begins INSIDE an unclosed ``<think>`` (Qwen3/GLM prefill),
-        # so start in reasoning to capture leading text until the first ``</think>``. Callers default False.
+        # ``reasoning_prefilled``: output begins inside an unclosed ``<think>`` (Qwen3/GLM prefill),
+        # so start in reasoning to capture leading text until the first ``</think>``.
         self._in_reasoning = reasoning_prefilled
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
@@ -7967,7 +7965,7 @@ class _ResponsesReasoningExtractor:
                     self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
                     self._in_reasoning = False
                     continue
-                # Hold back a trailing partial of EITHER marker: the close (clean chunk-boundary split)
+                # Hold back a trailing partial of either marker: the close (clean chunk-boundary split)
                 # and a stray open (so a re-emitted ``<think>`` isn't leaked into the reasoning drawer).
                 keep = _responses_marker_holdback(
                     self._buffer, (_RESPONSES_THINK_CLOSE, _RESPONSES_THINK_OPEN)
@@ -10665,9 +10663,9 @@ async def _anthropic_passthrough_non_streaming(
     else:
         text = message.get("content") or ""
         if text:
-            # Keep unpromoted bytes when healing is active; legacy stripping is
-            # only for opted-out or no-client-tool requests. The full _strip_tool_xml
-            # pass also cleans Mistral [TOOL_CALLS] and guarded function-XML, not just _TOOL_XML_RE.
+            # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
+            # or no-client-tool requests. _strip_tool_xml also cleans Mistral [TOOL_CALLS] and
+            # guarded function-XML, not just _TOOL_XML_RE.
             if not healing_active:
                 text = _strip_tool_xml(text)
             text = text.strip()

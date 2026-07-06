@@ -18,16 +18,14 @@ safetensors + MLX agentic loop sees the same call shape llama-server gives GGUF:
 Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 """
 
-# `from __future__ import annotations` keeps PEP 604 `X | None` lazy for python 3.9
-# (external servers import this standalone).
+# Keeps PEP 604 `X | None` lazy for python 3.9 (imported standalone by external servers).
 from __future__ import annotations
 
 import json
 import re
 from typing import Any, Optional
 
-# Qwen/Hermes, Qwen3.5 XML, Gemma 4 use shared `core.tool_healing`; this module adds
-# Llama-3, Mistral and bare JSON.
+# Shared parser handles Qwen/Hermes, Qwen3.5 XML, Gemma 4; this module adds Llama-3, Mistral, bare JSON.
 from core import tool_healing as _tool_healing
 
 
@@ -43,12 +41,10 @@ TOOL_XML_SIGNALS = (
 
 
 # Closed pairs only (mid-stream); _TOOL_ALL_PATS eats unclosed tails at end-of-turn.
-# ``[\w-]+`` on ``<function=...>`` matches OpenAI's name class so hyphenated MCP names parse.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    # Match to the real ``</function>`` (before the next ``<function=`` or end) so a
-    # literal ``</function>`` in a value doesn't truncate; the lookahead (not greedy
-    # ``.*``) keeps each call separate.
+    # Match to the real ``</function>`` (lookahead, not greedy ``.*``) so a literal
+    # ``</function>`` in a value doesn't truncate and each call stays separate.
     re.compile(
         r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>'
         r'(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*'
@@ -60,9 +56,8 @@ _TOOL_CLOSED_PATS = [
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*$', re.DOTALL),
-    # Bare-word markers drop a trailing truncated call only when the next chars look
-    # like that family's call start, so prose mentioning the marker (``See [TOOL_CALLS]
-    # docs...``) is kept. A marker at end-of-text is a bare fragment and still drops.
+    # Bare-word markers drop a trailing truncated call only when the next chars look like
+    # a call start, so prose mentioning the marker is kept; a marker at end-of-text drops.
     re.compile(r"<\|tool_call>(?=\s*call\s*:|\s*$).*$", re.DOTALL),
     re.compile(
         r"\[TOOL_CALLS\](?=\s*(?:[\[{]|[A-Za-z_][\w.\-]*[\[{])|\s*$).*$",
@@ -122,14 +117,14 @@ RAG_SEARCH_CAP_NUDGE = (
 
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Qwen3.5 ``<function=name>`` plus attribute form ``<function name="name">``
-# (MiniCPM-5, MiniMax-M2); name in group(1) or group(2).
+# Qwen3.5 ``<function=name>`` plus attribute form ``<function name="name">`` (MiniCPM-5,
+# MiniMax-M2); name in group(1) or group(2).
 _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
 # Body ends at ``</tool_call>`` or ``</function>`` so trailing prose stays out of args.
 _TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Horizontal whitespace only (``[^\S\n]``) so the wrapping newline + first-line indent
-# survive; ``_trim_param_value`` trims one newline, preserving code indent (SGLang qwen3_coder).
+# Horizontal whitespace only so the wrapping newline + indent survive (``_trim_param_value``
+# trims one newline), preserving code indent.
 _TC_PARAM_START_RE = re.compile(
     r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>[^\S\n]*'
 )
@@ -140,28 +135,25 @@ _LLAMA3_PYTHON_TAG = "<|python_tag|>"
 _LLAMA3_PY_CALL_RE = re.compile(
     r"<\|python_tag\|>\s*([\w\.\-]+)\s*\.\s*call\s*\(",
 )
-# Anchored at the char after ``<|python_tag|>`` plus the ``; NAME.call(`` chain sep;
-# fixed offset (not a free scan) ignores ``.call(`` inside JSON args.
+# Anchored at the char after ``<|python_tag|>`` plus the ``; NAME.call(`` chain sep, so
+# a ``.call(`` inside JSON args is ignored.
 _LLAMA3_PY_CALL_HEAD_RE = re.compile(r"\s*([\w\.\-]+)\s*\.\s*call\s*\(")
 _LLAMA3_CALL_CHAIN_RE = re.compile(r"\s*;\s*([\w\.\-]+)\s*\.\s*call\s*\(")
 # ``.call(k=v)`` kwarg tokens, hand-scanned below (not finditer) to stay linear on a
-# truncated body; finditer would retry every offset of a long run (ReDoS).
+# truncated body (ReDoS).
 _LLAMA3_KEY_RE = re.compile(r"\w+")
 _LLAMA3_WS_RE = re.compile(r"\s*")
-# ints, decimals, sci notation; trailing ``(?![\w.])`` stops ``1.2.3`` truncating to
-# ``1.2`` (which would mis-parse the remainder).
+# ints, decimals, sci notation; trailing ``(?![\w.])`` stops ``1.2.3`` truncating to ``1.2``.
 _LLAMA3_NUM_RE = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])")
 _LLAMA3_LIT_RE = re.compile(r"true|false|null")
 
-# Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by a bare name
-# plus ``{json}`` (Magistral) or ``[ARGS]{json}`` (Ministral / Large 3).
+# Mistral ``[TOOL_CALLS]`` trigger. v11+ chains ``name{json}`` (Magistral) or
+# ``name[ARGS]{json}`` (Ministral / Large 3).
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
-# Mistral Small 3.2 emits ``name[CALL_ID]<id>[ARGS]{json}`` (absent on Ministral /
-# Magistral); llama.cpp distinguishes the two on ``[CALL_ID]`` (common/chat.cpp).
+# Mistral Small 3.2 emits ``name[CALL_ID]<id>[ARGS]{json}`` (absent on Ministral / Magistral).
 _MISTRAL_CALL_ID_MARKER = "[CALL_ID]"
-# Magistral wraps reasoning in ``[THINK]...[/THINK]``; a ``[TOOL_CALLS]`` inside
-# that block is chain-of-thought, not a real call.
+# Magistral wraps reasoning in ``[THINK]...[/THINK]``; a ``[TOOL_CALLS]`` inside is not a real call.
 _MISTRAL_THINK_OPEN = "[THINK]"
 _MISTRAL_THINK_CLOSE = "[/THINK]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
@@ -262,8 +254,7 @@ def _strip_mistral_closed_calls(text: str) -> str:
             if text.startswith("</s>", cursor):
                 cursor += len("</s>")
             continue
-        # Single-object shape ``[TOOL_CALLS] { json }``: the parser accepts it, so the
-        # strip must remove it too (else it leaks).
+        # Single-object shape ``[TOOL_CALLS] { json }``: the parser accepts it, so strip it too.
         if i < n and text[i] == "{":
             end = _balanced_brace_end(text, i)
             if end is None:
@@ -296,8 +287,7 @@ def _strip_mistral_closed_calls(text: str) -> str:
             out.append(text[idx:])
             break
         cursor = end + 1
-        # Consume the optional EOS marker (like the array shape) so ``...{json}</s>``
-        # doesn't leave ``</s>`` as content.
+        # Consume the optional EOS marker so ``...{json}</s>`` doesn't leave ``</s>`` as content.
         if text.startswith("</s>", cursor):
             cursor += len("</s>")
     return "".join(out)
@@ -340,13 +330,12 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call markup; ``final=True`` also drops trailing unclosed runs and trims."""
     if final:
-        # End-of-turn only: drop a leading Magistral ``[THINK]...[/THINK]`` block. Its
-        # bracket form is not the ``<think>`` the reasoning channel renders, so without
-        # this the raw reasoning leaks into the safetensors display/history (GGUF routes it natively).
+        # End-of-turn only: drop a leading Magistral ``[THINK]...[/THINK]`` block (bracket form,
+        # not the ``<think>`` reasoning channel) so raw reasoning doesn't leak into display/history.
         text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
-    # Scan-strip the function-XML form first (parser-accurate: a literal ``<function=...>``
-    # in a value is data, not a call); the regex arms below cover the other formats.
+    # Scan-strip the function-XML form first (parser-accurate: a literal ``<function=...>`` in
+    # a value is data, not a call); the regex arms below cover the other formats.
     text = _strip_function_xml_calls(text, final = final)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
@@ -395,9 +384,8 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     first_xml = _first_foreign_tool_signal(content)
     if first_xml is not None and first_xml < trig:
         return False
-    # Only plain prose precedes the trigger: a visible preface must not hand the turn to
-    # a later XML literal (preamble-tolerant). Prose merely mentioning the marker has no
-    # parseable region and keeps the normal order.
+    # Only plain prose precedes the trigger (preamble-tolerant); prose merely mentioning
+    # the marker has no parseable region and keeps the normal order.
     return _mistral_region_end(content, trig) is not None
 
 
@@ -429,23 +417,19 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     if end is None:
         return False
     if _top_level_bare_json_name(content[i : end + 1]) is None:
-        # Not a call object -- but a NAMELESS object that parses as real JSON (a
-        # structured answer) is an envelope too: markup quoted in its strings is data,
-        # and the decline-then-parse-the-tail path handles it. Non-JSON braced prose
-        # keeps the old behaviour.
+        # Not a call object, but a nameless object that parses as real JSON is an envelope
+        # too (markup in its strings is data); non-JSON braced prose keeps the old behaviour.
         try:
             json.loads(content[i : end + 1])
         except ValueError:
             return False
     first_xml = _first_foreign_tool_signal(content)
-    # The Mistral trigger is foreign to a JSON envelope too: its parser runs first, so a
-    # "[TOOL_CALLS]..." literal in the leading object's strings would otherwise be promoted.
+    # The Mistral trigger is foreign to a JSON envelope too, so fold it into first_xml.
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first_xml is None or trig < first_xml):
         first_xml = trig
-    # Inside the balanced body the signal is quoted argument data; after the closed object
-    # the leading call still owns the turn in document order. A non-call object takes the
-    # decline path (dropped, only the tail parsed), so a real call after it still wins.
+    # Inside the balanced body the signal is quoted argument data, so the leading call owns
+    # the turn; a non-call object takes the decline path (dropped, only the tail parsed).
     return first_xml is not None and i < first_xml
 
 
@@ -457,24 +441,21 @@ def parse_tool_calls_from_text(
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Return OpenAI-format tool calls, first-match wins. ``allow_incomplete`` heals truncated calls (``False`` = strict closed-only); ``enabled_tool_names`` gates the markerless bare-JSON form."""
-    # Drop Magistral reasoning BEFORE any parser dispatch: a rehearsed call inside
-    # [THINK]...[/THINK] (any format, while the real [TOOL_CALLS] follows) must not be
-    # promoted. The parse path must agree with the display strip, which already drops it.
+    # Drop Magistral reasoning before any dispatch so a rehearsed call inside
+    # [THINK]...[/THINK] is not promoted; keeps the parse path aligned with the display strip.
     content = _strip_mistral_reasoning(content)
 
-    # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup
-    # (XML or a Mistral trigger) must stay data, so the bare-JSON parser takes the outer
-    # call first. Must precede the Mistral guard, whose preamble tolerance would else
-    # claim a trigger quoted inside the leading object.
+    # A leading bare-JSON value is decided FIRST so markup quoted in its arguments stays
+    # data. Must precede the Mistral guard, whose preamble tolerance would else claim a
+    # trigger quoted inside the leading object.
     if _xml_signal_inside_leading_bare_json(content):
         calls = _parse_llama3_bare_json(
             content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
         )
         if calls:
             return calls
-        # Disabled/example name: the leading object is ordinary content, so literals
-        # quoted in it are data too. Drop the object and parse only the tail -- a real
-        # call after it still parses, while nothing inside it can be promoted below.
+        # Disabled/example name: the leading object is ordinary content. Drop it and parse
+        # only the tail -- a real call after it still parses, nothing inside it is promoted.
         i = 0
         while i < len(content) and content[i] in " \t\n\r":
             i += 1
@@ -495,10 +476,8 @@ def parse_tool_calls_from_text(
         if calls:
             return calls
 
-    # A leading MiniCPM/MiniMax attribute-form call owns the turn the same way:
-    # tool_healing does not know the <function name="..."> wrapper, so without this gate a
-    # <tool_call> literal quoted in its parameter would be promoted. Any other signal
-    # before the attribute opener keeps the normal order.
+    # A leading MiniCPM/MiniMax ``<function name="...">`` call owns the turn: tool_healing
+    # does not know the wrapper, so gate it here. A signal before the opener keeps normal order.
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None:
         first_other = None
@@ -519,11 +498,9 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # A leading Llama-3 ``<|python_tag|>`` call owns the turn like the bare-JSON / Mistral
-    # / attribute-form leading calls: markup quoted in a ``.call(...)`` string argument (or
-    # trailing prose) is not promoted. tool_healing does not know the tag, so without this
-    # gate it parses a quoted literal and executes the wrong tool. Any foreign signal
-    # before the tag keeps the normal document order.
+    # A leading Llama-3 ``<|python_tag|>`` call owns the turn like the others: markup quoted
+    # in a ``.call(...)`` argument is not promoted. tool_healing does not know the tag, so
+    # gate it here. A foreign signal before the tag keeps normal order.
     py_tag = content.find(_LLAMA3_PYTHON_TAG)
     if py_tag >= 0:
         first_other = None
@@ -541,8 +518,8 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 use the shared tool_healing parser (strict/
-    # Auto-Heal contract + nested-marker, trailing-prose, and ``<|"|>`` handling GGUF relies on).
+    # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 use the shared tool_healing parser (the
+    # strict/Auto-Heal + nested-marker + ``<|"|>`` handling GGUF relies on).
     calls = _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
@@ -551,9 +528,9 @@ def parse_tool_calls_from_text(
     if calls:
         return calls
 
-    # Formats tool_healing does not cover: the ``<function name="...">`` attribute form
-    # (MiniCPM-5 / MiniMax-M2), Llama-3 and Mistral. These run only after tool_healing
-    # finds nothing, so a call it rejected in strict mode is never re-healed here.
+    # Formats tool_healing does not cover: ``<function name="...">`` (MiniCPM-5 / MiniMax-M2),
+    # Llama-3 and Mistral. Run only after tool_healing found nothing, so a strict-rejected
+    # call is never re-healed here.
     for parser in (
         _parse_function_xml,  # <function name="..."> attribute form
         _parse_llama3_python_tag,  # Llama-3 <|python_tag|>
@@ -582,8 +559,8 @@ def _parse_tool_call_json(
         end = _balanced_brace_end(content, brace_start)
         if end is None:
             continue
-        # Strict mode: a balanced JSON body that never closed its ``<tool_call>`` is truncated,
-        # not finished. Trailing prose after the close is still tolerated (GGUF strict path).
+        # Strict mode: a balanced body that never closed its ``<tool_call>`` is truncated
+        # (trailing prose after the close is still tolerated).
         if not allow_incomplete and not content[end + 1 :].lstrip().startswith("</tool_call>"):
             continue
         try:
@@ -591,8 +568,7 @@ def _parse_tool_call_json(
         except (json.JSONDecodeError, ValueError):
             continue
         name = obj.get("name", "")
-        # Accept both ``arguments`` (Hermes/Qwen) and ``parameters`` (Llama-3 template drift)
-        # so a fine-tune that swaps the key keeps its payload instead of parsing to ``{}``.
+        # Accept both ``arguments`` (Hermes/Qwen) and ``parameters`` (Llama-3 drift).
         args = obj.get("arguments")
         if args is None:
             args = obj.get("parameters", {})
@@ -630,9 +606,8 @@ def _inside_open_parameter(text: str, pos: int) -> bool:
         last_param_open = m.start()
     if last_param_open < 0:
         return False
-    # The parameter's OWN close tag decides: while it closes after ``pos`` the position is
-    # argument data, even across several literal ``</function>`` (a code/search value can
-    # quote it repeatedly). Only an unclosed parameter falls back to the first func close.
+    # The parameter's OWN close tag decides: if it closes after ``pos`` the position is
+    # argument data (even across literal ``</function>``); an unclosed one falls back to func close.
     own_closes = [
         c
         for c in (
@@ -661,9 +636,8 @@ def _parse_function_xml(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
-    # Skip ``<function ...>`` openers that are literals inside an open parameter value
-    # (a code/search argument echoing tool-call XML), else the nested marker becomes a
-    # second call and truncates the real argument.
+    # Skip ``<function ...>`` openers that are literals inside an open parameter value,
+    # else the nested marker becomes a second call and truncates the real argument.
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
@@ -675,8 +649,8 @@ def _parse_function_xml(
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
         # The call ends at the FIRST </function> / </tool_call> not inside an open parameter:
-        # a literal close in a code/search argument is skipped as data, and prose after the
-        # real close is not folded into the last argument (mirrors _strip_function_xml_calls).
+        # a literal close in an argument is skipped as data, prose after the real close is not
+        # folded in (mirrors _strip_function_xml_calls).
         close_match = None
         for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
             if not _inside_open_parameter(content, cm.start()):
@@ -687,16 +661,14 @@ def _parse_function_xml(
             body_end = close_match.start()
         else:
             body_end = min(len(content), next_func)
-        # Strict mode: a function call that never reached its ``</function>`` /
-        # ``</tool_call>`` close is truncated, so do not heal it into a call.
+        # Strict mode: a call that never reached its close is truncated; do not heal it.
         if not allow_incomplete and not has_close:
             continue
         body = _TC_FUNC_CLOSE_RE.sub("", content[body_start:body_end])
 
         args: dict = {}
         param_unclosed = False
-        # Same nested-literal guard for parameters: a ``<parameter>`` opener inside
-        # an already-open parameter value is literal text, not a real second param.
+        # Same nested-literal guard: a ``<parameter>`` opener inside an open value is literal text.
         param_starts = [
             pm
             for pm in _TC_PARAM_START_RE.finditer(body)
@@ -721,9 +693,8 @@ def _parse_function_xml(
                 val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
                 args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
 
-        # Strict mode: every parameter must close with ``</parameter>`` / ``</param>``; a
-        # dangling one means the call was cut off. A closed call with no parameters is a valid
-        # zero-argument call (function close already required above), so do not reject it.
+        # Strict mode: every parameter must close; a dangling one means the call was cut off.
+        # A closed call with no parameters is a valid zero-argument call, so keep it.
         if not allow_incomplete and param_unclosed:
             continue
 
@@ -764,8 +735,7 @@ def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
     nm = _LLAMA3_NUM_RE.match(body, p)
     if nm:
         v = nm.group(0)
-        # Sci notation (1e-3, -2E+4) and decimals decode as float; a bare integer stays int.
-        # ``"." in v`` alone missed the exponent forms and truncated them (1e-3 -> 1).
+        # Sci notation and decimals decode as float; a bare integer stays int.
         return (float(v) if any(c in v for c in ".eE") else int(v)), nm.end() - p
     lm = _LLAMA3_LIT_RE.match(body, p)
     if lm:
@@ -808,10 +778,8 @@ def _parse_llama3_python_tag(
     if _LLAMA3_PYTHON_TAG not in content:
         return out
 
-    # 1. ``NAME.call(...)`` built-in form, anchored to ``<|python_tag|>`` and optionally
-    #    ``; ``-chained. Anchoring to the tag boundary (not a free scan) keeps a literal
-    #    ``<|python_tag|>x.call(...)`` inside a JSON string argument from being mistaken
-    #    for a real built-in call.
+    # 1. ``NAME.call(...)`` built-in form, anchored to ``<|python_tag|>`` (optionally
+    #    ``; ``-chained) so a ``.call(...)`` inside a JSON string argument isn't mistaken for one.
     pos = content.find(_LLAMA3_PYTHON_TAG)
     truncated = False
     while pos >= 0 and not truncated:
@@ -846,8 +814,7 @@ def _parse_llama3_python_tag(
                         if depth == 0:
                             break
                 i += 1
-            # Truncated ``.call(...)`` with no closing paren (depth > 0 at EOF):
-            # reject in strict mode (Auto-Heal off) instead of executing a partial.
+            # Truncated ``.call(...)`` (no closing paren): reject in strict mode.
             if not allow_incomplete and depth > 0:
                 truncated = True
                 break
@@ -871,8 +838,7 @@ def _parse_llama3_python_tag(
         # Past the consumed region: a second ``<|python_tag|>`` may carry more calls.
         pos = content.find(_LLAMA3_PYTHON_TAG, i + 1)
 
-    # 2. ``<|python_tag|>{"name":..., "parameters":...}``. ``raw_decode``
-    #    peels multiple ``; ``-separated objects from one emission.
+    # 2. ``<|python_tag|>{"name":.., "parameters":..}``; raw_decode peels ``; ``-separated objects.
     if not out:
         decoder = json.JSONDecoder()
         idx = content.find(_LLAMA3_PYTHON_TAG)
@@ -916,8 +882,7 @@ def _parse_llama3_python_tag(
     return out
 
 
-# Llama-3 special-token sentinels (chainable, any order) plus the role label the
-# template inserts between ``<|start_header_id|>`` and ``<|end_header_id|>``.
+# Llama-3 special-token sentinels (chainable, any order) plus the header role label.
 _LLAMA3_BARE_JSON_SENTINELS = (
     "<|begin_of_text|>",
     "<|eot_id|>",
@@ -979,12 +944,11 @@ def _parse_llama3_bare_json(
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
-        # Markerless JSON is ambiguous: only treat it as a call when the name is an
-        # enabled tool, else it is an ordinary JSON answer (do not steal it).
+        # Markerless JSON is ambiguous: only a call when the name is an enabled tool.
         if enabled_tool_names is not None and name not in enabled_tool_names:
             break
-        # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict or JSON-
-        # string of one (OpenAI). Looser would fire on ``{"name":"x","parameters":"sentence"}``.
+        # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict or a
+        # JSON-string of one (OpenAI).
         if "parameters" in obj:
             args = obj.get("parameters")
             if not isinstance(args, dict):
@@ -1030,8 +994,7 @@ def _parse_mistral_tool_calls(
     if idx < 0:
         return out
 
-    # Disambiguate the first occurrence: array (pre-v11), single object
-    # (pre-v11), or bare-name (v11+).
+    # Disambiguate the first occurrence: array / single object (pre-v11) or bare-name (v11+).
     j = idx + len(_MISTRAL_TRIGGER)
     k = j
     while k < len(content) and content[k] in " \t\n\r":
@@ -1043,8 +1006,7 @@ def _parse_mistral_tool_calls(
         return _parse_mistral_array(content, k, id_offset, allow_incomplete = allow_incomplete)
 
     if content[k] == "{":
-        # Pre-v11 single ``{"name":...}``; fall through if it doesn't
-        # carry a ``name`` so v11+ handling still gets a chance.
+        # Pre-v11 single ``{"name":...}``; fall through to v11+ if it carries no ``name``.
         end = _balanced_brace_end(content, k)
         if end is not None:
             try:
@@ -1055,8 +1017,7 @@ def _parse_mistral_tool_calls(
             except (json.JSONDecodeError, ValueError):
                 pass
 
-    # v11+: walk every ``[TOOL_CALLS]``, parsing ``name{json}`` or
-    # ``name[ARGS]{json}`` after each trigger.
+    # v11+: walk every ``[TOOL_CALLS]``, parsing ``name{json}`` or ``name[ARGS]{json}``.
     pos = idx
     while pos >= 0:
         cur = pos + len(_MISTRAL_TRIGGER)
@@ -1130,8 +1091,7 @@ def _parse_mistral_array(
                 if depth == 0:
                     break
         j += 1
-    # An unclosed array (no matching ]) is a truncated call. In strict mode
-    # (Auto-Heal off) reject it instead of recovering objects by hand below.
+    # An unclosed array (no matching ]) is truncated; reject in strict mode.
     if not allow_incomplete and depth != 0:
         return out
     body = content[start : j + 1] if depth == 0 else content[start:]
@@ -1148,7 +1108,7 @@ def _parse_mistral_array(
             return out
 
     # Healing path for unclosed arrays: walk top-level objects, advancing past each
-    # balanced ``{...}`` instead of re-scanning from every ``{`` (quadratic ReDoS).
+    # balanced ``{...}`` (re-scanning from every ``{`` would be quadratic ReDoS).
     pos = 0
     blen = len(body)
     while pos < blen:
@@ -1171,8 +1131,7 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
-    # Mistral uses ``arguments``; accept the ``parameters`` alias too (sibling paths
-    # and SGLang's base detector alias it) so an array object keyed on it keeps args.
+    # Mistral uses ``arguments``; accept the ``parameters`` alias too.
     args = obj.get("arguments")
     if args is None:
         args = obj.get("parameters", {})
@@ -1271,8 +1230,7 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
         while i < n and probe[i] in " \t\r\n,":
             i += 1
         if i >= n or probe[i] == "}":
-            # End of the object with no top-level ``"name"``: fall back to a recorded
-            # ``"function"`` alias if one was seen.
+            # End of object, no top-level ``"name"``: fall back to the ``"function"`` alias.
             return function_value
         if probe[i] != '"':
             return None
@@ -1299,8 +1257,7 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
                 return value if isinstance(value, str) else None
             return None
         if key == "function" and function_value is None and i < n and probe[i] == '"':
-            # ``"function"`` is an accepted alias for the call name. Record a string
-            # value but keep scanning: a top-level ``"name"`` still takes precedence.
+            # ``"function"`` is an alias; record it but keep scanning (``"name"`` wins).
             try:
                 value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
@@ -1309,8 +1266,7 @@ def _top_level_bare_json_name(probe: str) -> Optional[str]:
                 function_value = value
             i += consumed
             continue
-        # Skip a non-name top-level value; a truncated one means we cannot prove a
-        # top-level name exists, so return None (keep the text).
+        # Skip a non-name top-level value; a truncated one returns None (keep the text).
         if i < n and probe[i] == "{":
             end = _balanced_brace_end(probe, i)
             if end is None:
@@ -1348,18 +1304,16 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
             return probe.lstrip() if stripped_any else text
         if enabled_tool_names is not None:
-            # Only suppress when the leading object is (or may be) a real call, i.e. its
-            # TOP-LEVEL name is an enabled tool. A nested ``"name"`` is ordinary data, not
-            # the call name, so it must not gate the strip. An unknown name is kept.
+            # Only suppress when the leading object's TOP-LEVEL name is an enabled tool
+            # (a nested ``"name"`` is data); an unknown name is kept.
             name = _top_level_bare_json_name(probe)
             if name not in enabled_tool_names:
                 return probe.lstrip() if stripped_any else text
         end = _balanced_brace_end(probe, 0)
         if end is None:
             return ""  # truncated bare-JSON call -- nothing recoverable
-        # A closed object must have the CALL SHAPE the parser accepts (dict ``parameters``, or
-        # dict / JSON-string ``arguments``). An ordinary JSON answer the parser rejects is
-        # content, so the strip must keep it visible too.
+        # A closed object must have the CALL SHAPE the parser accepts; an ordinary JSON
+        # answer it rejects is content, so keep it visible.
         try:
             obj = json.loads(probe[: end + 1])
         except (json.JSONDecodeError, ValueError):
@@ -1374,8 +1328,7 @@ def _bare_json_call_shaped(obj) -> bool:
     """The shape gate ``_parse_llama3_bare_json`` applies to a decoded object."""
     if not isinstance(obj, dict):
         return False
-    # The parser requires a TOP-LEVEL name; a nested one (e.g. in a "result" value of an
-    # ordinary JSON answer) is data, and stripping such an answer would delete content.
+    # The parser requires a TOP-LEVEL name; a nested one is data, not the call name.
     name = obj.get("name") or obj.get("function") or ""
     if not isinstance(name, str) or not name:
         return False
@@ -1461,8 +1414,7 @@ def _gemma_parse_value(text: str, i: int):
     while end < len(text) and text[end] not in ",}]" and not text.startswith(_GEMMA_STR_BEGIN, end):
         end += 1
     if end == i:
-        # text[i] is a stray delimiter so nothing was consumed. Advance past it so callers
-        # looping on the returned index cannot spin forever on malformed input (e.g. `[},]`).
+        # Stray delimiter, nothing consumed: advance past it so callers can't spin forever.
         return "", i + 1
     raw = text[i:end].strip()
     if raw == "true":

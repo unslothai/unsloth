@@ -103,8 +103,7 @@ class TestFunctionStyleTrailingText:
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_attribute_form_literal_close_tag_is_preserved(self):
-        # Attribute form <function name="..."> ends at the LAST </function>, so a
-        # literal close tag inside a code argument survives.
+        # Attribute form ends at the LAST </function>, so a literal close inside code survives.
         text = (
             '<function name="python"><param name="code">'
             'print("</function>")'
@@ -247,8 +246,7 @@ class TestHealingPathUnaffected:
         )
 
     def test_wrapperless_fallback_calls_carry_spans(self):
-        # The wrapperless function-XML fallback must report spans too, so with_spans
-        # consumers strip exactly the promoted markup (closed vs healed end).
+        # The wrapperless fallback must report spans so consumers strip exactly the markup.
         from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
 
         closed = "before <function=web_search><parameter=query>cats</parameter></function> after"
@@ -336,8 +334,7 @@ class TestLlamaBuiltinChainAndNesting:
         assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
 
     def test_nested_python_tag_in_json_string_arg_is_not_a_call(self):
-        # A <|python_tag|> literal inside a code arg is data: the real call is the
-        # outer "python", not the nested "os" (scan stays anchored to the first tag).
+        # A <|python_tag|> literal inside a code arg is data: the outer "python" call wins.
         text = (
             '<|python_tag|>{"name":"python","parameters":'
             '{"code":"<|python_tag|>os.call(\'rm -rf /\')"}}'
@@ -424,8 +421,7 @@ def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
 def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
     from core.inference.tool_call_parser import strip_tool_markup
 
-    # Strip uses the LAST </function> so a literal </function> in a value doesn't
-    # truncate it; separate calls strip independently.
+    # Strip uses the LAST </function> so a literal in a value survives; calls strip independently.
     text = '<function=python><parameter=code>print("</function>")</parameter></function> done'
     assert strip_tool_markup(text, final = True) == "done"
     two = (
@@ -438,8 +434,7 @@ def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
 def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
     from core.inference.tool_call_parser import parse_tool_calls_from_text, strip_tool_markup
 
-    # A literal <function=x> opener inside a value is data: the strip keeps " done"
-    # (the old negative-lookahead regex ate the trailing prose).
+    # A literal <function=x> opener inside a value is data: the strip keeps " done".
     text = '<function=python><parameter=code>print("<function=x>")</parameter></function> done'
     assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
     assert strip_tool_markup(text, final = True) == "done"
@@ -451,11 +446,10 @@ def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
 def test_final_strip_removes_magistral_think_reasoning():
     from core.inference.tool_call_parser import strip_tool_markup
 
-    # Magistral reasoning is [THINK]...[/THINK] (not <think>); end-of-turn must drop
-    # it so it does not leak as raw content into the display / history.
+    # Magistral reasoning is [THINK]...[/THINK]; end-of-turn must drop it.
     text = "[THINK]The user greeted me, I should say hi.[/THINK]Hello! How can I help?"
     assert strip_tool_markup(text, final = True) == "Hello! How can I help?"
-    # A ``[TOOL_CALLS]`` living inside the reasoning goes with it.
+    # A [TOOL_CALLS] living inside the reasoning goes with it.
     with_call = '[THINK]Maybe I should search.[/THINK][TOOL_CALLS]search{"q":"x"}'
     assert strip_tool_markup(with_call, final = True) == ""
 
@@ -471,7 +465,7 @@ def test_streaming_strip_keeps_magistral_think_buffered():
 def test_final_strip_leaves_non_magistral_bracket_text_untouched():
     from core.inference.tool_call_parser import strip_tool_markup
 
-    # Only a LEADING ``[THINK]`` block is reasoning; unrelated bracketed prose stays.
+    # Only a LEADING [THINK] block is reasoning; unrelated bracketed prose stays.
     text = "See [THINK about it] later"
     assert strip_tool_markup(text, final = True) == "See [THINK about it] later"
 
@@ -479,8 +473,7 @@ def test_final_strip_leaves_non_magistral_bracket_text_untouched():
 def test_strip_leading_bare_json_call_ignores_nested_name():
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
-    # A nested "name" must NOT gate the strip (only a TOP-LEVEL name is a call); the
-    # ordinary JSON answer is kept verbatim, truncated or complete.
+    # A nested "name" must NOT gate the strip; the JSON answer is kept verbatim.
     nested_trunc = '{"result":{"name":"web_search","age":'
     nested_full = '{"result":{"name":"web_search","age":1}}'
     assert strip_leading_bare_json_call(nested_trunc, {"web_search"}) == nested_trunc
@@ -500,8 +493,7 @@ def test_mistral_single_object_call_is_stripped_for_display():
         parse_tool_calls_from_text,
     )
 
-    # The parser accepts the single-object [TOOL_CALLS]{...} shape, so the display
-    # strip must remove it too.
+    # The parser accepts single-object [TOOL_CALLS]{...}, so the strip must remove it too.
     text = '[TOOL_CALLS]{"name":"web_search","arguments":{"filters":{"date":"2024"}}} tail'
     assert [c["function"]["name"] for c in parse_tool_calls_from_text(text)] == ["web_search"]
     assert _strip_mistral_closed_calls(text) == " tail"
@@ -510,8 +502,7 @@ def test_mistral_single_object_call_is_stripped_for_display():
 
 
 def test_tool_call_parser_declares_future_annotations_for_py39_import():
-    # The dependency-light parser targets python >=3.9; its PEP 604 X | None annotations
-    # need `from __future__ import annotations` to import on 3.9. Guard it stays present.
+    # PEP 604 X | None annotations need `from __future__ import annotations` on py3.9; guard it stays.
     from pathlib import Path
     src = (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
@@ -520,9 +511,7 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
 
 
 def test_bare_json_function_alias_parses_and_strips_symmetrically():
-    # The bare-JSON parser accepts the "function" alias for the call name;
-    # strip_leading_bare_json_call must recognise it too, so an executed
-    # {"function":...} call is not left as raw content (parser/strip symmetry).
+    # The "function" alias for the call name must parse and strip symmetrically.
     from core.inference.tool_call_parser import (
         parse_tool_calls_from_text,
         strip_leading_bare_json_call,
@@ -617,8 +606,7 @@ class TestPythonTagOuterOverXmlLiteral:
     attribute-form leading-ownership rules. XML before the tag keeps normal order."""
 
     def test_call_arg_quoting_complete_function_xml(self):
-        # A closed <function=...> quoted in a .call() code arg must not be promoted
-        # over the leading python_tag call.
+        # A closed <function=...> in a .call() code arg must not beat the leading python_tag call.
         text = (
             '<|python_tag|>python.call(code="<function=render_html>'
             '<parameter=x>1</parameter></function>")'
@@ -629,8 +617,7 @@ class TestPythonTagOuterOverXmlLiteral:
         assert args["code"] == "<function=render_html><parameter=x>1</parameter></function>"
 
     def test_call_arg_quoting_bare_function_tag_in_query(self):
-        # A web_search whose query mentions <function=...> must search, not execute
-        # a phantom "foo" tool.
+        # A query mentioning <function=...> must search, not execute a phantom tool.
         text = '<|python_tag|>web_search.call(query="how do I use <function=foo> in llama")'
         calls = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in calls] == ["web_search"]
@@ -646,8 +633,7 @@ class TestPythonTagOuterOverXmlLiteral:
         assert [c["function"]["name"] for c in calls] == ["save_file"]
 
     def test_json_form_code_arg_quoting_function_xml(self):
-        # Same ownership for the JSON emission: a <function=...> in the code arg is
-        # data; the outer "python" call executes.
+        # JSON emission: a <function=...> in the code arg is data; the outer "python" call runs.
         text = (
             '<|python_tag|>{"name":"python","parameters":'
             '{"code":"<function=terminal>ls</function>"}}'
@@ -663,8 +649,7 @@ class TestPythonTagOuterOverXmlLiteral:
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_leading_call_wins_over_trailing_xml(self):
-        # A leading python_tag call owns the turn even when a real XML literal
-        # follows it (parity with leading Mistral).
+        # A leading python_tag call owns the turn even when a real XML literal follows.
         text = (
             '<|python_tag|>web_search.call(query="cats") '
             "<function=evil><parameter=x>1</parameter></function>"
@@ -906,8 +891,7 @@ class TestProseCloseTagAfterClosedFunctionCall:
         assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</function>")'}
 
     def test_attribute_form_arguments_do_not_swallow_prose(self):
-        # The attribute form shares the first-balanced-close rule: a literal close
-        # tag in prose never folds into arguments.
+        # The attribute form shares the first-balanced-close rule: prose closes never fold in.
         text = (
             '<function name="web_search"><parameter name="query">cats</parameter></function>'
             " Done. The tag </function> closes a call."

@@ -40,7 +40,7 @@ from core.inference.llama_server_args import (
 )
 
 # Share strip / signal constants with the multi-format parser so BUFFERING also
-# catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
+# catches Llama-3 / Mistral / Gemma 4.
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     _balanced_brace_end,
@@ -8422,11 +8422,11 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            # Shared parser patterns so a textual Mistral/Llama call entering DRAINING is stripped, not
-            # leaked. Mistral blocks first; no final trim so incremental length comparisons hold.
+            # Shared patterns so a textual Mistral/Llama call entering DRAINING is stripped, not
+            # leaked. Mistral first; no final trim so incremental length comparisons hold.
             text = _strip_mistral_closed_calls(text)
-            # Parser-accurate function-XML scan before the regex arms so a literal ``<function=...>`` in a
-            # value doesn't make the open-ended tail eat trailing prose after the real ``</function>``.
+            # Parser-accurate function-XML scan before the regex arms so a literal ``<function=...>``
+            # in a value doesn't make the tail eat trailing prose after the real ``</function>``.
             text = _strip_function_xml_calls(text, final = True)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
@@ -8507,8 +8507,8 @@ class LlamaCppBackend:
         # "Hello!" won't match. Pattern compiled at module level
         # (_INTENT_SIGNAL).
         _reprompt_count = 0
-        # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
-        # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
+        # Gates ``max_tool_iterations`` on real tool turns so reserved re-prompt slots don't
+        # extend the budget. Mirrors the safetensors guard.
         _tool_iters_done = 0
         _forced_tool_call_pending = False
 
@@ -8525,13 +8525,13 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
-            # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
+            # Gate the markerless bare-JSON form on enabled names so a JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
                 for tool in active_tools
                 if (tool.get("function") or {}).get("name")
             }
-            # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
+            # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows.
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
             # Build payload -- stream: True so we detect tool signals
@@ -8815,8 +8815,8 @@ class LlamaCppBackend:
                                                 is_prefix = True
                                                 break
 
-                                        # Bare Llama-3.2 {"name":..} has no XML signal, so mirror the
-                                        # safetensors loop: hold an incomplete object, drain a complete one.
+                                        # Bare Llama-3.2 {"name":..} has no XML signal: hold an
+                                        # incomplete object, drain a complete one (mirrors safetensors).
                                         _hold_buffer = False
                                         # Whole buffer is the call (no visible prefix) -- drain silently.
                                         _drain_silently = False
@@ -8890,10 +8890,9 @@ class LlamaCppBackend:
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
-                    # A held bare-JSON fragment has no XML signal; route it to DRAINING (the signal-only
-                    # gate below would flush the raw JSON to the user).
+                    # A held bare-JSON fragment has no XML signal; route it to DRAINING.
                     _bare_eos = strip_llama3_leading_sentinels(stripped_buf)
-                    # Gate on enabled names so an ordinary JSON answer isn't routed to DRAINING and dropped.
+                    # Gate on enabled names so a JSON answer isn't routed to DRAINING and dropped.
                     _is_bare_tc = bool(active_tools) and _looks_like_enabled_bare_json(
                         _bare_eos, _enabled_tool_names
                     )
@@ -8926,8 +8925,8 @@ class LlamaCppBackend:
                                     "text": cumulative_display,
                                 }
                     else:
-                        # Held buffer was no tool signal and no enabled bare-JSON call: a leading ``{`` is an
-                        # ordinary JSON answer and must be shown; any other partial-markup prefix is dropped.
+                        # No tool signal and no enabled bare-JSON call: a leading ``{`` is an ordinary
+                        # JSON answer and must be shown; any other partial-markup prefix is dropped.
                         _held = strip_llama3_leading_sentinels(content_buffer.lstrip())
                         if _held.startswith("{") and not _suppress_visible_output:
                             yield {"type": "content", "text": _held}
@@ -8935,12 +8934,10 @@ class LlamaCppBackend:
 
                 # ── STREAMING path: no tool call ──
                 if detect_state == _S_STREAMING:
-                    # Safety net: re-parse the full content for tool calls. The
-                    # route layer resets prev_text on tool_start, so post-tool
-                    # synthesis streams correctly even if content was emitted
-                    # before the tool XML.
-                    # Unconditional (not gated on _tool_xml_signals): bare-JSON and Gemma wrapper-less
-                    # calls carry no XML signal, so a signal gate would let them slip past.
+                    # Safety net: re-parse the full content for tool calls. The route layer resets
+                    # prev_text on tool_start, so post-tool synthesis streams correctly even if
+                    # content was emitted before the tool XML. Unconditional (not gated on
+                    # _tool_xml_signals): bare-JSON and Gemma wrapper-less calls carry no signal.
                     _safety_tc = self._parse_tool_calls_from_text(
                         content_accum,
                         allow_incomplete = auto_heal_tool_calls,
@@ -9063,8 +9060,8 @@ class LlamaCppBackend:
                             if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
                         ] or None
                     if not tool_calls:
-                        # Unconditional re-parse: we only reach DRAINING when the buffer looked like a
-                        # call, and bare-JSON / Gemma wrapper-less calls carry no XML signal to gate on.
+                        # Unconditional re-parse: DRAINING means the buffer looked like a call, and
+                        # bare-JSON / Gemma wrapper-less calls carry no XML signal to gate on.
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
@@ -9076,8 +9073,8 @@ class LlamaCppBackend:
                             final = True,
                             force = True,
                         )
-                        # ``_strip_tool_markup`` only knows XML; also drop a leading bare-JSON call so the
-                        # executed call isn't replayed as text or next-turn history.
+                        # ``_strip_tool_markup`` only knows XML; also drop a leading bare-JSON call
+                        # so the executed call isn't replayed as text or next-turn history.
                         content_text = strip_leading_bare_json_call(
                             content_text, _enabled_tool_names
                         )
@@ -9094,9 +9091,9 @@ class LlamaCppBackend:
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.
                             content_accum = _strip_tool_markup(content_accum, final = True)
-                        # A truncated bare-JSON call has no XML to strip and didn't parse. With Auto-Heal
-                        # on, drop a leading ENABLED-tool fragment (plain JSON untouched); off keeps it
-                        # visible per the strict contract.
+                        # A truncated bare-JSON call has no XML to strip and didn't parse. With
+                        # Auto-Heal on drop a leading ENABLED-tool fragment (plain JSON untouched);
+                        # off keeps it visible per the strict contract.
                         if content_accum and active_tools and auto_heal_tool_calls:
                             content_accum = strip_leading_bare_json_call(
                                 content_accum, _enabled_tool_names
@@ -9268,8 +9265,8 @@ class LlamaCppBackend:
                 if tool_controller.force_final_answer or not tool_controller.active_tools():
                     _append_budget_exhausted_nudge = False
                     break
-                # Count only real tool turns against the cap so reserved re-prompt slots can't become
-                # extra tool rounds; a no-op correction turn doesn't consume budget (GGUF parity).
+                # Count only real tool turns against the cap so reserved re-prompt slots can't
+                # become extra tool rounds; a no-op turn doesn't consume budget (GGUF parity).
                 if _turn_executed_real_tool:
                     _tool_iters_done += 1
                     if _tool_iters_done >= max_tool_iterations:
