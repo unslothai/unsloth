@@ -3751,6 +3751,16 @@ def _prewarm_base_model_hub_cache(
 
         from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
+        # Resolve the cache from the live env (as the merge does), not huggingface_hub's
+        # import-time-frozen constants: a runtime HF cache redirect (read-only default
+        # cache, Studio) would otherwise pre-warm the wrong dir and miss on merge (#6890).
+        try:
+            from unsloth_zoo.hf_cache import _active_caches
+            _hub_cache = _active_caches()[1]
+            hub_cache_dir = str(_hub_cache) if _hub_cache is not None else None
+        except Exception:
+            hub_cache_dir = None
+
         # Mirror the zoo's shard listing (drop consolidated.safetensors when proper
         # shards coexist) so the cached set is a superset of what the merge looks up.
         shard_names = []
@@ -3769,6 +3779,7 @@ def _prewarm_base_model_hub_cache(
                 hf_hub_download(
                     repo_id = model_name,
                     filename = filename,
+                    cache_dir = hub_cache_dir,
                     local_files_only = True,
                     token = token,
                 )
@@ -3780,7 +3791,7 @@ def _prewarm_base_model_hub_cache(
         from huggingface_hub import constants as _hf_constants
 
         # abspath so a relative HF_HUB_CACHE walks up to an existing root, not "".
-        cache_probe = os.path.abspath(os.path.expanduser(str(_hf_constants.HF_HUB_CACHE)))
+        cache_probe = os.path.abspath(os.path.expanduser(str(hub_cache_dir or _hf_constants.HF_HUB_CACHE)))
         while cache_probe and not os.path.exists(cache_probe):
             parent = os.path.dirname(cache_probe)
             if parent == cache_probe:
@@ -3808,6 +3819,7 @@ def _prewarm_base_model_hub_cache(
             repo_id = model_name,
             allow_patterns = [name for name, _ in shard_names]
             + ["model.safetensors.index.json", "tokenizer.model"],
+            cache_dir = hub_cache_dir,
             token = token,
         )
     except Exception as e:
