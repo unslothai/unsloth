@@ -16,7 +16,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "setup.ps1 has parse errors" }
 
-foreach ($name in @("Test-RocmGfx211Leaf", "Test-CudaFamilyLeaf", "Get-RocmPinStaleTags")) {
+foreach ($name in @("Test-RocmGfx211Leaf", "Test-RocmKnown211Version", "Test-CudaFamilyLeaf", "Get-RocmPinStaleTags")) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
@@ -84,6 +84,17 @@ Check "gfx90a pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx90a" "2.10.0
 # generic/untagged wheel is stale (the per-arch wheel is not).
 Check "gfx120x-all pin + 2.11.0+rocm7.2 (generic) -> stale" (IsStale "gfx120x-all" "2.11.0+rocm7.2")
 Check "gfx120x-all pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx120x-all" "2.10.0")
+
+Write-Host "Test-RocmKnown211Version + KNOWN-2.11 fallback (rocm7.2 only; no speculative rocm7.3)"
+Check "rocm7.2 -> known 2.11"  (Test-RocmKnown211Version -Major 7 -Minor 2)
+Check "rocm7.1 -> not known"   (-not (Test-RocmKnown211Version -Major 7 -Minor 1))
+Check "rocm7.3 -> not known"   (-not (Test-RocmKnown211Version -Major 7 -Minor 3))
+Check "rocm8.0 -> not known"   (-not (Test-RocmKnown211Version -Major 8 -Minor 0))
+# Unreadable-installed fallback: a rocm7.3 pin (unknown -> <2.11 line) over a <2.11
+# +rocm wheel with an unreadable version is NOT stale (both on the non-2.11 line);
+# rocm7.2 (KNOWN-2.11) over the same wheel IS stale. This is the #2534 alignment.
+Check "rocm7.3 pin + 2.10.0+rocm (unreadable ver) -> not stale" (-not (IsStale "rocm7.3" "2.10.0+rocm"))
+Check "rocm7.2 pin + 2.10.0+rocm (unreadable ver) -> stale"     (IsStale "rocm7.2" "2.10.0+rocm")
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }

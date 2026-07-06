@@ -425,6 +425,81 @@ function Get-TorchIndexLeaf {
     return ($Url.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
 }
 
+# ── Torch-index marker ───────────────────────────────────────────────────────
+# After a successful torch install this records the exact wheel --index-url used
+# at a stable per-venv path so a later `unsloth studio update` can detect a pin
+# change by an EXACT string compare rather than the wheel version-tag heuristic
+# (which cannot encode the AMD per-arch gfx family). Path/format MUST match
+# install.sh, install.ps1 and install_python_stack.py:
+#   <VenvDir>\.unsloth-torch-index   (single line = the resolved index URL)
+$TorchIndexMarkerName = ".unsloth-torch-index"
+
+# Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
+# strip ALL trailing slashes, lowercase ONLY the final path segment (the leaf).
+# Mirrors _normalize_index_url in install.sh / install_python_stack.py / install.ps1.
+function Get-NormalizedIndexUrl {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+    $u = $Url.Trim().TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($u)) { return $null }
+    $idx = $u.LastIndexOf('/')
+    if ($idx -lt 0) { return $u.ToLowerInvariant() }
+    $head = $u.Substring(0, $idx)
+    $leaf = $u.Substring($idx + 1).ToLowerInvariant()
+    return "$head/$leaf"
+}
+
+# Path to the per-venv torch-index marker.
+function Get-TorchIndexMarkerPath {
+    param([string]$VenvDir)
+    if ([string]::IsNullOrWhiteSpace($VenvDir)) { return $null }
+    return Join-Path $VenvDir $TorchIndexMarkerName
+}
+
+# Return the recorded torch --index-url from the marker, else $null (missing /
+# empty / unreadable -> "no marker", so the caller falls back to the heuristics).
+function Read-TorchIndexMarker {
+    param([string]$VenvDir)
+    $marker = Get-TorchIndexMarkerPath -VenvDir $VenvDir
+    if (-not $marker) { return $null }
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $null }
+    try {
+        $line = (Get-Content -LiteralPath $marker -Raw -ErrorAction Stop).Trim()
+    } catch { return $null }
+    if ([string]::IsNullOrWhiteSpace($line)) { return $null }
+    return $line
+}
+
+# Record the resolved torch wheel --index-url at the marker path, atomically
+# (temp file + Move). Best-effort: a write failure never aborts the install. A
+# blank URL is ignored (nothing to record).
+function Write-TorchIndexMarker {
+    param([string]$VenvDir, [string]$IndexUrl)
+    if ([string]::IsNullOrWhiteSpace($VenvDir)) { return }
+    if ([string]::IsNullOrWhiteSpace($IndexUrl)) { return }
+    if (-not (Test-Path -LiteralPath $VenvDir -PathType Container)) { return }
+    $marker = Get-TorchIndexMarkerPath -VenvDir $VenvDir
+    $tmp = "$marker.$PID.tmp"
+    try {
+        # Write a single line, LF-terminated, no BOM (parity with the sh/py writers).
+        [System.IO.File]::WriteAllText($tmp, ($IndexUrl.Trim() + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $marker -Force -ErrorAction Stop
+    } catch {
+        try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+}
+
+# Compare an explicit torch-index pin against the recorded marker.
+#   $true  -> pin resolves to a DIFFERENT index than the marker -> reinstall.
+#   $false -> pin matches the marker exactly -> no reinstall (no loop).
+#   $null  -> no usable marker -> caller falls back to the version-tag heuristics.
+function Test-MarkerPinMismatch {
+    param([string]$VenvDir, [string]$PinUrl)
+    $marker = Read-TorchIndexMarker -VenvDir $VenvDir
+    if ($null -eq $marker) { return $null }
+    return (Get-NormalizedIndexUrl $PinUrl) -ne (Get-NormalizedIndexUrl $marker)
+}
+
 # The AMD per-arch index leaves that need the torch 2.11 floor (the _grouped_mm
 # null-ptr bug lives in the <2.11 wheels for these arches). MUST match the
 # $_pinGfx211 allowlist in the install-spec path below (and install.ps1 /
@@ -434,6 +509,17 @@ function Get-TorchIndexLeaf {
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
     return @('gfx120x-all', 'gfx1151', 'gfx1150') -contains $Leaf
+}
+
+# The pytorch.org rocmX.Y versions KNOWN to ship torch 2.11 (verified against
+# download.pytorch.org): rocm7.2 is the ONLY stable 2.11 rocm index today. Do NOT
+# treat an unknown newer rocm (rocm7.3, rocm8.0, ...) as 2.11 speculatively -- it
+# does not exist yet, and that speculative floor is the mismatch bug being fixed.
+# MUST match _ROCM_KNOWN_TORCH211_VERSIONS (Python) and the rocm7.2 KNOWN-2.11 leaf
+# in install.sh / install.ps1. $Major / $Minor are integers.
+function Test-RocmKnown211Version {
+    param([int]$Major, [int]$Minor)
+    return ($Major -eq 7 -and $Minor -eq 2)
 }
 
 # True only for a real CUDA wheel-family leaf: "cu" followed by digits (cu118,
@@ -502,7 +588,9 @@ function Get-RocmPinStaleTags {
     }
     $_pinNeeds211 = $false
     if ($_pinRocm.Success) {
-        $_pinNeeds211 = ([int]$_pinRocm.Groups[1].Value -gt 7) -or ([int]$_pinRocm.Groups[1].Value -eq 7 -and [int]$_pinRocm.Groups[2].Value -ge 2)
+        # Only the KNOWN-2.11 rocm indexes (rocm7.2) are on the 2.11 line; an unknown
+        # newer rocm is NOT floored speculatively. Matches _ROCM_KNOWN_TORCH211_VERSIONS.
+        $_pinNeeds211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
     }
     # Fallback (installed rocm version unreadable): compare on the 2.11 line, but an
     # untagged (no +rocm) wheel never satisfies a rocmX.Y pin -> report it stale.
@@ -2656,8 +2744,26 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $_expectedKnown = $true
         if ($_pinnedIdx) {
             $_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx
+            # Torch-index marker: when the last install recorded an index, compare the
+            # pin against it EXACTLY. This is the only signal that catches a per-arch
+            # switch between two 2.11 gfx indexes (gfx1151 -> gfx120X-all -- both
+            # install a +rocm7.13.0 wheel, so the tag heuristic sees no difference) and
+            # a custom-URL change (/simple -> /current). $null = no usable marker ->
+            # fall back to the version-tag heuristic (old venv; backward compatible).
+            $_markerMismatch = Test-MarkerPinMismatch -VenvDir $VenvDir -PinUrl $_pinnedIdx
+            if ($null -ne $_markerMismatch) {
+                # Drive the rebuild decision purely off the marker compare.
+                $_expectedKnown = $true
+                if ($_markerMismatch) {
+                    $expectedTorchTag  = "pinned:$_pinnedIdx"
+                    $installedTorchTag = "marker-mismatch"
+                } else {
+                    $expectedTorchTag  = "pinned:$_pinnedIdx"
+                    $installedTorchTag = "pinned:$_pinnedIdx"
+                }
+            }
             # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds.
-            if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
+            elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
                 # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
                 # would match any installed +rocm wheel and mask a pin change from
                 # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
@@ -2678,8 +2784,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 $expectedTorchTag = $_pinLeaf
             } else {
                 # Custom index whose final segment is not a torch flavor (e.g. a
-                # PEP 503 mirror ending in /simple). We cannot infer the flavor, so
-                # trust the pinned URL and do not rebuild on a bogus tag comparison.
+                # PEP 503 mirror ending in /simple) and no marker to compare against.
+                # We cannot infer the flavor, so trust the pinned URL and do not
+                # rebuild on a bogus tag comparison.
                 $_expectedKnown = $false
                 $expectedTorchTag = $installedTorchTag
             }
@@ -2995,7 +3102,10 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
     $_pinLeaf = Get-TorchIndexLeaf $PinnedTorchIndexUrl
     $_pinRocm211 = $false
     if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
-        $_pinRocm211 = ([int]$Matches[1] -gt 7) -or ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -ge 2)
+        # Only KNOWN-2.11 rocm indexes (rocm7.2) get the 2.11 floor; do not floor an
+        # unknown newer rocm speculatively. Matches install.sh's rocm7.2 KNOWN-2.11
+        # leaf and Test-RocmKnown211Version / _ROCM_KNOWN_TORCH211_VERSIONS.
+        $_pinRocm211 = Test-RocmKnown211Version -Major ([int]$Matches[1]) -Minor ([int]$Matches[2])
     }
     # Only the gfx families the AMD arch map above pins to torch 2.11 need the
     # floor here (gfx120X-all, gfx1151, gfx1150 -- the _grouped_mm bug arches).
@@ -3116,6 +3226,16 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         substep "Triton for Windows installed (enables torch.compile)"
     }
 }
+
+# ── Record the resolved torch wheel index (marker) ──
+# Torch was just installed; write the exact --index-url used so a later `unsloth
+# studio update` can detect a pin change by an EXACT string compare (see the
+# stale-venv check above) instead of the version-tag heuristic. Reflects the actual
+# installed family: $ROCmIndexUrl when the ROCm path ran, else $TorchInstallIndexUrl
+# (which is the pinned/CUDA/CPU index, or the CPU index after a ROCm fallback).
+# Path/format matches install.sh, install.ps1 and install_python_stack.py.
+$MarkerIndexUrl = if ($ROCmIndexUrl) { $ROCmIndexUrl } else { $TorchInstallIndexUrl }
+Write-TorchIndexMarker -VenvDir $VenvDir -IndexUrl $MarkerIndexUrl
 
 # No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
 # running launcher only ever failed (WinError 32) and printed a scary warning. It's

@@ -87,6 +87,13 @@ def _run_cuda_repair(
             return smi_path
         return None
 
+    import tempfile as _tempfile
+
+    # Isolate the torch-index marker so _ensure_cuda_torch's post-reinstall marker
+    # write lands in a throwaway dir, never the real venv (and never leaks state).
+    _marker_dir = _tempfile.mkdtemp(prefix = "unsloth-marker-test-")
+    _marker_path = Path(_marker_dir) / ".unsloth-torch-index"
+
     with (
         patch.object(stack_mod, "_TORCH_BACKEND", backend),
         patch.object(stack_mod, "IS_MACOS", is_macos),
@@ -95,6 +102,7 @@ def _run_cuda_repair(
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)),
+        patch.object(stack_mod, "_torch_index_marker_path", return_value = _marker_path),
         patch.object(stack_mod, "pip_install") as mock_pip,
         patch.object(
             stack_mod.subprocess,
@@ -351,12 +359,12 @@ class TestTorchBackendDerivationFromPin:
     def test_source_uses_helper_not_bare_startswith(self):
         # Guard against a regression back to elif _idx_leaf.startswith("cu").
         src = _STACK_PATH.read_text(encoding = "utf-8")
-        assert (
-            "elif _is_cuda_family_leaf(_idx_leaf):" in src
-        ), "_TORCH_BACKEND derivation must classify CUDA via _is_cuda_family_leaf"
-        assert (
-            'elif _idx_leaf.startswith("cu"):' not in src
-        ), "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
+        assert "elif _is_cuda_family_leaf(_idx_leaf):" in src, (
+            "_TORCH_BACKEND derivation must classify CUDA via _is_cuda_family_leaf"
+        )
+        assert 'elif _idx_leaf.startswith("cu"):' not in src, (
+            "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
+        )
 
 
 # CUDA index ladder.

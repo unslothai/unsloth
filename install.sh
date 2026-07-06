@@ -2215,6 +2215,61 @@ _torch_index_repairable() {
     esac
 }
 
+# ── Torch-index marker ───────────────────────────────────────────────────────
+# After a successful torch install this records the exact wheel --index-url used
+# at a stable per-venv path so `unsloth studio update` / setup.ps1 /
+# install_python_stack.py can make the "did the pinned index change?" decision by
+# an EXACT string compare instead of inferring it from the wheel version tag
+# (which cannot encode the AMD per-arch gfx family). The path and format MUST match
+# install_python_stack.py, setup.ps1 and install.ps1:
+#   <venv_dir>/.unsloth-torch-index   (single line = the resolved index URL)
+_TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
+
+# Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
+# strip ALL trailing slashes, lowercase ONLY the final path segment (the leaf).
+# Mirrors _normalize_index_url in install_python_stack.py / setup.ps1 / install.ps1.
+_normalize_index_url() {
+    _n_url="$1"
+    # Trim leading/trailing whitespace.
+    _n_url="${_n_url#"${_n_url%%[![:space:]]*}"}"; _n_url="${_n_url%"${_n_url##*[![:space:]]}"}"
+    [ -n "$_n_url" ] || { printf '%s' ""; return; }
+    # Strip all trailing slashes.
+    while [ "${_n_url%/}" != "$_n_url" ]; do _n_url="${_n_url%/}"; done
+    [ -n "$_n_url" ] || { printf '%s' ""; return; }
+    case "$_n_url" in
+        */*)
+            _n_head="${_n_url%/*}"
+            _n_leaf="${_n_url##*/}"
+            _n_leaf=$(printf '%s' "$_n_leaf" | tr '[:upper:]' '[:lower:]')
+            printf '%s/%s' "$_n_head" "$_n_leaf"
+            ;;
+        *)
+            printf '%s' "$_n_url" | tr '[:upper:]' '[:lower:]'
+            ;;
+    esac
+}
+
+# Write the resolved torch --index-url ($2) into the marker under venv dir ($1),
+# atomically (temp file + mv). Best-effort: a write failure never aborts the
+# install (the repair path then falls back to the version-tag heuristics). A blank
+# URL is ignored (nothing meaningful to record).
+_write_torch_index_marker() {
+    _wm_venv="$1"
+    _wm_url="$2"
+    [ -n "$_wm_venv" ] || return 0
+    [ -d "$_wm_venv" ] || return 0
+    _wm_url="${_wm_url#"${_wm_url%%[![:space:]]*}"}"; _wm_url="${_wm_url%"${_wm_url##*[![:space:]]}"}"
+    [ -n "$_wm_url" ] || return 0
+    _wm_marker="$_wm_venv/$_TORCH_INDEX_MARKER_NAME"
+    _wm_tmp="$_wm_marker.$$.tmp"
+    if printf '%s\n' "$_wm_url" > "$_wm_tmp" 2>/dev/null; then
+        mv -f "$_wm_tmp" "$_wm_marker" 2>/dev/null || rm -f "$_wm_tmp" 2>/dev/null || true
+    else
+        rm -f "$_wm_tmp" 2>/dev/null || true
+    fi
+    return 0
+}
+
 get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
@@ -3088,6 +3143,15 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --index-url $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
+fi
+
+# ── Record the resolved torch wheel index (marker) ──
+# Torch is now fully resolved; write the exact --index-url used so `unsloth studio
+# update` (install_python_stack.py / setup.ps1) can detect a later pin change by an
+# exact string compare rather than the version-tag heuristic. Only when torch was
+# actually installed from a resolved index (skip --no-torch / no-URL fallback).
+if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
+    _write_torch_index_marker "$VENV_DIR" "$TORCH_INDEX_URL"
 fi
 
 # ── Run studio setup ──
