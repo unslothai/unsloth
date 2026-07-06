@@ -2331,7 +2331,7 @@ _wsl_amd_gpu_name() {
         printf '%s' "$_WSL_AMD_GPU_NAME_CACHE"; return 0
     fi
     command -v powershell.exe >/dev/null 2>&1 || { _WSL_AMD_GPU_NAME_CACHE="-"; return 1; }
-    _wag_n="$(powershell.exe -NoProfile -Command "(Get-CimInstance Win32_VideoController | Where-Object { \$_.Name -match 'AMD|Radeon' } | Select-Object -First 1).Name" 2>/dev/null | tr -d '\r\n\000')"
+    _wag_n="$(_run_bounded powershell.exe -NoProfile -Command "(Get-CimInstance Win32_VideoController | Where-Object { \$_.Name -match 'AMD|Radeon' } | Select-Object -First 1).Name" 2>/dev/null | tr -d '\r\n\000')"
     if [ -n "$_wag_n" ]; then _WSL_AMD_GPU_NAME_CACHE="$_wag_n"; printf '%s' "$_wag_n"; return 0; fi
     _WSL_AMD_GPU_NAME_CACHE="-"; return 1
 }
