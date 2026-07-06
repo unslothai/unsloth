@@ -17,11 +17,9 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# These tests construct InferenceBackend, pulling the full stack (unsloth ->
-# torch/bitsandbytes). The lightweight backend CI installs torch/transformers but
-# not unsloth/unsloth_zoo (ImportError), and a broken CUDA/bitsandbytes setup
-# raises RuntimeError on the same chain. Guard at module level so either just
-# skips this file instead of aborting collection for the whole session (exit 2).
+# These tests construct InferenceBackend, pulling the full stack. CI may lack
+# unsloth/unsloth_zoo (ImportError) or have a broken CUDA/bitsandbytes setup
+# (RuntimeError); skip at module level so collection is not aborted (exit 2).
 try:
     from core.inference import inference as inf_mod  # noqa: E402
     from core.inference.inference import InferenceBackend  # noqa: E402
@@ -58,9 +56,8 @@ def test_turn_end_eos_refreshed_after_generate_time_template(monkeypatch):
     backend = InferenceBackend.__new__(InferenceBackend)
     backend.active_model_name = "unsloth/qwen2.5-0.5b"
 
-    # Loaded tokenizer ships no chat_template, so the load-time cache stored only
-    # the document eos, though <|im_end|> is atomic in its vocab (just unused until
-    # the mapper installs a template).
+    # No chat_template at load, so the cache stored only the document eos, though
+    # <|im_end|> is atomic in the vocab (unused until the mapper installs a template).
     bare_tok = _FakeTokenizer(151643, chat_template = "", token_ids = {"<|im_end|>": 151645})
     model_info = {
         "tokenizer": bare_tok,
@@ -69,8 +66,7 @@ def test_turn_end_eos_refreshed_after_generate_time_template(monkeypatch):
     }
     backend.models = {backend.active_model_name: model_info}
 
-    # The mapper installs a ChatML template (ends turns with <|im_end|>) at
-    # generate time.
+    # The mapper installs a ChatML template (turns end with <|im_end|>) at generate time.
     templated_tok = _FakeTokenizer(151643, chat_template = _CHATML, token_ids = {"<|im_end|>": 151645})
     monkeypatch.setattr(inf_mod, "get_chat_template", lambda tok, chat_template = None: templated_tok)
     monkeypatch.setattr(
@@ -86,23 +82,21 @@ def test_turn_end_eos_refreshed_after_generate_time_template(monkeypatch):
 
     list(backend._generate_chat_response_inner(messages = [{"role": "user", "content": "hi"}]))
 
-    # After the effective template is applied the cache must include the ChatML
-    # turn-end id, not just the stale document eos.
+    # After the template is applied the cache must include the ChatML turn-end id.
     assert model_info["chat_turn_end_eos_ids"] == [151643, 151645]
 
 
 def test_turn_end_eos_refresh_preserves_load_time_ids_on_destructive_swap(monkeypatch):
     # Regression: get_chat_template can return a remapped tokenizer (Gemma: <end_of_turn>
     # folded onto the eos id) while generate_stream re-reads the original. Resolving on
-    # the swap yields a narrower set, so overwriting would drop the real turn-end id;
-    # the refresh must UNION into the load-time cache, never overwrite.
+    # the swap yields a narrower set, so the refresh must UNION, never overwrite.
     import utils.datasets as ds
 
     backend = InferenceBackend.__new__(InferenceBackend)
     backend.active_model_name = "unsloth/gemma-2b-it"
 
-    # Original tokenizer (the one generate_stream uses): <end_of_turn>=107 distinct
-    # from eos=1, so the load-time cache resolved to [1, 107].
+    # Original tokenizer (used by generate_stream): <end_of_turn>=107 distinct from
+    # eos=1, so the load-time cache resolved to [1, 107].
     orig_tok = _FakeTokenizer(1, chat_template = _GEMMA, token_ids = {"<end_of_turn>": 107})
     model_info = {
         "tokenizer": orig_tok,
@@ -111,8 +105,8 @@ def test_turn_end_eos_refresh_preserves_load_time_ids_on_destructive_swap(monkey
     }
     backend.models = {backend.active_model_name: model_info}
 
-    # get_chat_template returns a destructively-swapped tokenizer: <end_of_turn> now
-    # maps onto eos id 1, so resolving on it yields only [1] (drops 107).
+    # Destructively-swapped tokenizer: <end_of_turn> now maps onto eos id 1, so
+    # resolving on it yields only [1] (drops 107).
     swapped_tok = _FakeTokenizer(1, chat_template = _GEMMA, token_ids = {"<end_of_turn>": 1})
     monkeypatch.setattr(inf_mod, "get_chat_template", lambda tok, chat_template = None: swapped_tok)
     monkeypatch.setattr(
@@ -127,16 +121,15 @@ def test_turn_end_eos_refresh_preserves_load_time_ids_on_destructive_swap(monkey
 
     list(backend._generate_chat_response_inner(messages = [{"role": "user", "content": "hi"}]))
 
-    # The load-time <end_of_turn>=107 (valid in the generation tokenizer) must
-    # survive: overwriting with the swapped [1] would regress and loop past the turn.
+    # The load-time <end_of_turn>=107 must survive: overwriting with the swapped
+    # [1] would regress and loop past the turn.
     assert model_info["chat_turn_end_eos_ids"] == [1, 107]
 
 
 def test_turn_end_eos_refresh_resolves_marker_id_on_original_not_remapped(monkeypatch):
-    # Yi-style map_eos_token=True: the original tokenizer carries <|im_end|> at its
-    # own id, but get_chat_template returns a remapped one folding it onto the doc-eos
-    # id. generate_stream uses the original, so the id must be resolved there; the
-    # refresh reads marker strings from the mapped template but ids from the original.
+    # Yi-style map_eos_token=True: the original carries <|im_end|> at its own id, but
+    # get_chat_template folds it onto the doc-eos id. generate_stream uses the original,
+    # so read marker strings from the mapped template but ids from the original.
     import utils.datasets as ds
 
     backend = InferenceBackend.__new__(InferenceBackend)
@@ -151,8 +144,7 @@ def test_turn_end_eos_refresh_resolves_marker_id_on_original_not_remapped(monkey
     }
     backend.models = {backend.active_model_name: model_info}
 
-    # get_chat_template returns a remapped tokenizer: ChatML template, but <|im_end|>
-    # folded onto the doc-eos id 2 in its own vocab, eos = 2.
+    # Remapped tokenizer: ChatML template, but <|im_end|> folded onto doc-eos id 2.
     remapped_tok = _FakeTokenizer(2, chat_template = _CHATML, token_ids = {"<|im_end|>": 2})
     monkeypatch.setattr(inf_mod, "get_chat_template", lambda tok, chat_template = None: remapped_tok)
     monkeypatch.setattr(
@@ -181,11 +173,9 @@ class _FakeProcessor:
 
 
 def test_resolve_chat_eos_reads_vision_processor_template():
-    # Vision model: the chat_template lives on the processor (Gemma vision ends
-    # turns with <end_of_turn>) while the inner tokenizer ships none. _resolve_chat_eos
-    # must read the marker from the processor but resolve its id on the inner
-    # tokenizer, and repair generation_config; unwrapping first would cache only the
-    # document eos and let the vision path run past the turn.
+    # Vision model: the chat_template lives on the processor while the inner tokenizer
+    # ships none. _resolve_chat_eos must read the marker from the processor but resolve
+    # its id on the inner tokenizer, and repair generation_config.
     from types import SimpleNamespace
 
     inner_tok = _FakeTokenizer(1, chat_template = "", token_ids = {"<end_of_turn>": 107})

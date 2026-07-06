@@ -232,11 +232,9 @@ class InferenceBackend:
         tokenizer = getattr(container, "tokenizer", container)  # unwrap processors
         if model is None or tokenizer is None:
             return
-        # Vision models carry the chat_template on the ProcessorMixin while the
-        # inner tokenizer often has none. Read the markers from whichever object
-        # has a template but resolve their ids on the generation tokenizer; else
-        # the processor's turn-end token is missed and the vision path runs past
-        # the assistant boundary.
+        # Vision models carry the chat_template on the processor, not the inner
+        # tokenizer. Read markers from whichever has one, but resolve ids on the
+        # generation tokenizer, else the vision path misses the turn-end token.
         template_source = container if getattr(container, "chat_template", None) else tokenizer
         try:
             turn_end_ids = resolve_chat_turn_end_eos_ids_using(template_source, tokenizer)
@@ -997,14 +995,12 @@ class InferenceBackend:
                     tokenizer,
                     chat_template = template_name,
                 )
-                # The mapper installs the effective template here, at generate time.
-                # A mapper model whose tokenizer shipped no template of its own had
-                # only the document eos cached at load, so re-resolve now and UNION
-                # into the cache -- never overwrite. get_chat_template can return a
-                # remapped tokenizer (map_eos_token folds the turn-end onto the
-                # doc-eos id) while generate_stream re-reads the original tokenizer,
-                # so read the marker strings from the mapped template but resolve
-                # their ids on the original; else the stored id is the wrong doc-eos.
+                # The mapper installs the effective template only now, at generate
+                # time, so re-resolve and UNION into the load-time cache (never
+                # overwrite). get_chat_template can return a remapped tokenizer
+                # (turn-end folded onto doc-eos) while generate_stream reads the
+                # original, so take marker strings from the mapped template but
+                # resolve their ids on the original.
                 try:
                     _gen_tok = model_info.get("tokenizer") or tokenizer
                     refreshed = resolve_chat_turn_end_eos_ids_using(
