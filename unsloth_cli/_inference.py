@@ -90,16 +90,21 @@ def _first_mpi_env_pair() -> tuple[Optional[int], Optional[int]]:
 
 
 def _json_rank_count_from_env(name: str) -> Optional[int]:
-    path = os.environ.get(name)
-    if not path:
+    value = os.environ.get(name)
+    if not value:
         return None
     try:
-        with open(path, "r") as f:
-            data = json.load(f)
+        if value.lstrip().startswith(("[", "{")):
+            data = json.loads(value)
+        else:
+            with open(value, "r") as f:
+                data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
     if isinstance(data, list):
         return len(data)
+    if isinstance(data, dict) and isinstance(data.get("hosts"), list):
+        return len(data["hosts"])
     return None
 
 

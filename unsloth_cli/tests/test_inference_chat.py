@@ -168,6 +168,13 @@ def test_mlx_distributed_info_reads_launch_env(monkeypatch, tmp_path):
     assert mlx_distributed_uses_mpi() is False
 
     _clear_mlx_distributed_env(monkeypatch)
+    monkeypatch.setenv("MLX_RANK", "1")
+    monkeypatch.setenv("MLX_IBV_DEVICES", '[["node-a"], ["node-b"]]')
+    monkeypatch.setenv("MLX_JACCL_COORDINATOR", "node-a:12345")
+    assert mlx_distributed_info() == (True, 1, 2)
+    assert mlx_distributed_uses_mpi() is False
+
+    _clear_mlx_distributed_env(monkeypatch)
     monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "1")
     monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "2")
     assert mlx_distributed_info() == (True, 1, 2)
