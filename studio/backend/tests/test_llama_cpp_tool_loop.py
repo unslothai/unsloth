@@ -20,7 +20,11 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import _PROVISIONAL_ARGS_MIN_CHARS, LlamaCppBackend
+from core.inference.llama_cpp import (
+    _MAX_REPROMPTS,
+    _PROVISIONAL_ARGS_MIN_CHARS,
+    LlamaCppBackend,
+)
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
@@ -1036,9 +1040,11 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     """No-tool re-prompt attempts should not concatenate into the UI."""
 
-    streams = [
-        [_sse({"content": "I will use render_html now."}), _done()],
-        [_sse({"content": "Understood. I will use render_html now."}), _done()],
+    # One initial response plus one stream per re-prompt (count from the shared cap).
+    streams = [[_sse({"content": "I will use render_html now."}), _done()]]
+    streams += [
+        [_sse({"content": "Understood. I will use render_html now."}), _done()]
+        for _ in range(_MAX_REPROMPTS)
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
@@ -1073,7 +1079,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
-    assert len(payloads) == 2
+    assert len(payloads) == _MAX_REPROMPTS + 1
 
 
 def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
@@ -1198,6 +1204,66 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
         event.get("type") == "content" and "<tool_call>" in event.get("text", "")
         for event in events
     )
+
+
+def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch):
+    # Inline Mistral ``[TOOL_CALLS]`` after a visible preface: the DRAINING flush must use the
+    # shared parser patterns (the legacy set leaked the marker to clients).
+    streams = [
+        [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("[TOOL_CALLS]" not in t for t in content_texts), content_texts
+    assert any("Let me search." in t for t in content_texts)
+
+
+def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
+    # Same leak class for the Llama-3 built-in ``<|python_tag|>NAME.call(...)`` form.
+    streams = [
+        [_sse({"content": '<|python_tag|>web_search.call(query="cats")'}), _done()],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("<|python_tag|>" not in t for t in content_texts), content_texts
 
 
 def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
@@ -1738,6 +1804,189 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     assert calls == [("python", {"code": big_code})]
 
 
+def _streamed_content(text: str, frag: int = 4) -> list[str]:
+    """Stream content token-by-token like llama-server; ``frag`` sets the chunk size."""
+    chunks = [_sse({"content": text[i : i + frag]}) for i in range(0, len(text), frag)]
+    chunks.append(_done())
+    return chunks
+
+
+def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
+    """A wrapper-less bare-JSON call must be held while incomplete, drained silently, and executed with nothing leaking."""
+
+    bare_call = '{"name": "web_search", "parameters": {"query": "weather in Sydney"}}'
+    first_stream = _streamed_content(bare_call)
+    final_stream = [_sse({"content": "It is sunny in Sydney."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Weather: sunny, 22C."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather in Sydney?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "weather in Sydney"})]
+    assert any(
+        event.get("type") == "tool_end" and event.get("tool_name") == "web_search"
+        for event in events
+    )
+
+    # The bare JSON never leaked to the user-visible stream.
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all('"name"' not in t for t in content_texts), content_texts
+    assert all("web_search" not in t for t in content_texts), content_texts
+    # The post-tool synthesis is still streamed.
+    assert any("sunny in Sydney" in t for t in content_texts), content_texts
+
+
+def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypatch):
+    """Markerless JSON with a non-enabled name is the answer, not a phantom call."""
+
+    answer = '{"name": "Alice", "parameters": {"age": 30}}'
+    first_stream = _streamed_content(answer)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "give me a person record"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts
+
+
+def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
+    """If generation is cut off mid bare-JSON object (no closing brace), the held
+    fragment must be stripped at stream end rather than dumped to the user."""
+
+    truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no complete call")),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all('{"name"' not in t for t in content_texts), content_texts
+
+
+def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkeypatch):
+    """A truncated JSON answer with a non-enabled name must still be shown (resolvers are gated on enabled names)."""
+
+    truncated = '{"name": "Alice", "parameters": {"age": 30'
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "give json"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts
+
+
+def test_gguf_truncated_enabled_name_json_is_still_suppressed(monkeypatch):
+    """Counterpart guard: a truncated ENABLED-tool bare call (``web_search``) cut off
+    mid-JSON still must NOT leak -- the gate only spares disabled / non-tool names."""
+
+    truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no complete call")),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+    assert all('{"name"' not in t for t in content_texts), content_texts
+
+
+def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
+    """An oversized still-open JSON answer with a non-enabled name streams as content, not a phantom drain."""
+
+    cap = 16384
+    big = "A" * (cap + 5000)
+    answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
+    first_stream = [_sse({"content": answer[i : i + 2000]}) for i in range(0, len(answer), 2000)]
+    first_stream.append(_done())
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "long json"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts[:1]
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""
@@ -1813,3 +2062,131 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
     assert "prompt_tokens_details" not in metadata[-1]["usage"]
+
+
+def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
+    """An oversized bare-JSON call drains rather than streams, and still executes via the safety net."""
+
+    cap = 16384
+    big = "A" * (cap + 5000)
+    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
+    first_stream.append(_done())
+    final_stream = [_sse({"content": "done"}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
+    assert calls and calls[0][0] == "python"
+    assert len(calls[0][1].get("code", "")) > cap
+
+
+def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
+    """After a bare-JSON call executes, the kept assistant message must not carry the raw call as content."""
+
+    import copy
+
+    first_stream = [
+        _sse({"content": '{"name":"web_search","parameters":{"query":"cats"}}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "RESULT")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) >= 2
+    asst = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
+    assert asst and not any('"name"' in (m.get("content") or "") for m in asst), asst
+
+
+def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
+    """Auto-Heal OFF keeps a truncated enabled-name fragment visible; ON suppresses it (strip gated on auto_heal_tool_calls)."""
+
+    trunc = '{"name":"web_search","parameters":{"query":"weather'
+
+    def _run(auto_heal):
+        stream = [_sse({"content": trunc}), _done()]
+        backend = _make_backend(monkeypatch, [stream], [])
+        calls: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            "core.inference.tools.execute_tool",
+            lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        )
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "x"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations = 1,
+                auto_heal_tool_calls = auto_heal,
+            )
+        )
+        contents = "".join(e.get("text", "") for e in events if e.get("type") == "content")
+        return calls, contents
+
+    calls_off, contents_off = _run(False)
+    assert calls_off == [], calls_off
+    assert "web_search" in contents_off, contents_off
+
+    calls_on, contents_on = _run(True)
+    assert calls_on == [], calls_on
+    assert "web_search" not in contents_on, contents_on
+
+
+def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
+    """Re-prompt slots must not extend the tool budget: stop after ``max_tool_iterations`` executed rounds."""
+    # More tool-call streams than the budget: leaked re-prompt slots would run 2+3=5 rounds;
+    # honouring the budget stops after 2, then a tool-less final-answer pass.
+    streams = [
+        _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search repeatedly"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    # Exactly two executed tool rounds, then one final-answer pass.
+    assert len(calls) == 2, calls
+    assert len(payloads) == 3, len(payloads)
+    # The final pass is the budget-exhausted nudge and carries no tools.
+    assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
+    assert any(
+        m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
+        for m in payloads[2]["messages"]
+    ), payloads[2]["messages"]
