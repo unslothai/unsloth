@@ -106,9 +106,8 @@ def render_native_template(
     if native_tpl is None:
         # A LoRA adapter's native template lives on the base model, not the adapter id.
         template_source = model_info.get("base_model") or active_model_name
-        # Re-use the consent the model was loaded with: a custom-code tokenizer repo
-        # needs trust_remote_code to instantiate its class, and the stored flag already
-        # covers template_source (the loaded model, or a LoRA's gated base model).
+        # Re-use the load-time trust_remote_code so a custom-code tokenizer repo can
+        # instantiate its class (the stored flag already covers template_source).
         trust_remote_code = bool(model_info.get("trust_remote_code", False))
         try:
             from transformers import AutoTokenizer
@@ -124,8 +123,8 @@ def render_native_template(
                 template_source,
                 exc,
             )
-            # A failed fetch is not "no template": caching False would pin the
-            # tool-dropping override. Leave the sentinel unset so the next call retries.
+            # A failed fetch is not "no template": leave the sentinel unset so the next
+            # call retries (caching False would pin the tool-dropping override).
             return None
         model_info["native_chat_template"] = native_tpl
     if not native_tpl:
@@ -135,8 +134,8 @@ def render_native_template(
     if tokenizer is None:
         return None
     tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-    # Render on a shallow copy: mutating the shared tokenizer.chat_template here
-    # (outside the generation lock) races concurrent requests.
+    # Render on a shallow copy: mutating the shared tokenizer.chat_template (outside the
+    # generation lock) races concurrent requests.
     try:
         render_tokenizer = copy.copy(tokenizer)
         render_tokenizer.chat_template = native_tpl

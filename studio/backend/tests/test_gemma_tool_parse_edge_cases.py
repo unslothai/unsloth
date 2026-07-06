@@ -121,10 +121,8 @@ def test_json_marker_inside_gemma_argument_is_not_a_second_call():
 
 
 def test_nested_gemma_marker_in_unquoted_arg_does_not_run_inner_call():
-    # An UNQUOTED Gemma value containing a literal marker: the outer object fails
-    # to normalize (the inner braces/marker break the JSON), but the inner marker
-    # is nested in the outer candidate span, so it must not be promoted to a
-    # standalone `terminal` call. The safe outcome is no executed tool call.
+    # An UNQUOTED Gemma value containing a literal marker: the marker is nested in the outer
+    # candidate span, so it must not be promoted to a standalone `terminal` call (no tool call).
     content = "<|tool_call>call:python{code:<|tool_call>call:terminal{command:ls}<tool_call|>}<tool_call|>"
     calls = parse_tool_calls_from_text(content)
     assert "terminal" not in [c["function"]["name"] for c in calls], calls
@@ -185,8 +183,7 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
 
 
 def test_wrapperless_nested_object_argument_is_parsed():
-    # skip_special_tokens stream: the <|tool_call> wrapper and <|"|> string markers were stripped,
-    # so a nested object arrives bare.
+    # skip_special_tokens stream: wrapper and <|"|> markers stripped, so a nested object arrives bare.
     calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
     assert len(calls) == 1
     assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
@@ -223,9 +220,8 @@ def test_gemma_parse_array_advances_on_stray_brace():
 
 
 def test_gemma_parse_value_always_advances_on_stray_delimiter():
-    # A stray delimiter (`,`, `}`, `]`) at the primitive position consumes no
-    # characters. The parser must still advance the index by at least one, or a
-    # caller that loops on the returned index spins forever at 100% CPU (DoS).
+    # A stray delimiter (`,`, `}`, `]`) at the primitive position must still advance the
+    # index by at least one, or a caller looping on it spins forever at 100% CPU (DoS).
     for delim in (",", "}", "]"):
         text = delim + "rest"
         value, nxt, _explicit = _gemma_parse_value(text, 0)

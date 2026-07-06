@@ -72,10 +72,8 @@ class TestFunctionStyleTrailingText:
         assert call == {"name": "python", "arguments": {"code": 'print("</function>")'}}
 
     def test_closed_function_with_trailing_prose_heal_path(self):
-        # Regression: the heal / finalize path (allow_incomplete=True) used to fold
-        # </parameter></function> and the trailing prose into the argument and drop
-        # the prose from visible content. It must now match the strict path -- keep a
-        # clean argument and leave the trailing prose outside the call span.
+        # Regression: the heal path (allow_incomplete=True) must match the strict path --
+        # keep a clean argument and leave trailing prose outside the call span.
         text = "<function=web_search><parameter=query>cats</parameter></function> trailing words"
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
@@ -103,9 +101,8 @@ class TestFunctionStyleTrailingText:
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_attribute_form_literal_close_tag_is_preserved(self):
-        # The attribute form <function name="..."> (MiniCPM-5 / MiniMax-M2) must
-        # also end at the LAST </function>, so a literal close tag inside a code
-        # argument survives instead of truncating the call.
+        # The attribute form <function name="..."> (MiniCPM-5 / MiniMax-M2) also ends at the
+        # LAST </function>, so a literal close tag inside a code argument survives.
         text = (
             '<function name="python"><param name="code">'
             'print("</function>")'
@@ -234,9 +231,8 @@ class TestHealingPathUnaffected:
         assert calls[0]["function"]["name"] == "web_search"
 
     def test_closed_function_call_keeps_trailing_prose_out_of_arguments(self):
-        # allow_incomplete exists for truncated output; a call that DID close
-        # must parse identically to strict mode, leaving prose after
-        # </function> out of the last parameter and out of the removal span.
+        # A call that DID close must parse identically to strict mode, leaving prose after
+        # </function> out of the last parameter and the removal span.
         from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
 
         text = "<function=web_search><parameter=query>cats</parameter></function> trailing"
@@ -249,9 +245,8 @@ class TestHealingPathUnaffected:
         )
 
     def test_wrapperless_fallback_calls_carry_spans(self):
-        # The wrapperless function-XML fallback must report spans too, so
-        # with_spans consumers (passthrough healing) strip exactly the promoted
-        # markup: through </function> when closed, to the scanned end when healed.
+        # The wrapperless function-XML fallback must report spans too, so with_spans
+        # consumers strip exactly the promoted markup (through </function> when closed).
         from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
 
         closed = "before <function=web_search><parameter=query>cats</parameter></function> after"
@@ -343,8 +338,7 @@ class TestParserLinearity:
         assert time.perf_counter() - t0 < 2.0
 
     def test_gemma_wrapperless_deep_nesting_is_linear(self):
-        # Wrapper-less Gemma ``call:f{a:{a:{...}}}`` formerly pre-scanned each subtree with a
-        # balanced-brace walk and then re-parsed it, so doubling the nesting depth ~quadrupled the ...
+        # Wrapper-less Gemma ``call:f{a:{a:{...}}}`` deep nesting must parse in linear time (no quadratic re-scan).
         import time
 
         def nested(d):
@@ -606,9 +600,8 @@ def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
 def test_final_strip_removes_magistral_think_reasoning():
     from core.inference.tool_call_parser import strip_tool_markup
 
-    # Magistral emits reasoning as ``[THINK]...[/THINK]`` (bracket form, not the
-    # ``<think>`` the reasoning channel renders). At end-of-turn it must be dropped
-    # so it does not leak as raw content into the display / conversation history.
+    # Magistral emits reasoning as ``[THINK]...[/THINK]`` (bracket form, not ``<think>``);
+    # at end-of-turn it must be dropped so it doesn't leak into display / history.
     text = "[THINK]The user greeted me, I should say hi.[/THINK]Hello! How can I help?"
     assert strip_tool_markup(text, final = True) == "Hello! How can I help?"
     # A ``[TOOL_CALLS]`` living inside the reasoning goes with it.
@@ -667,10 +660,8 @@ def test_mistral_single_object_call_is_stripped_for_display():
 
 
 def test_tool_call_parser_declares_future_annotations_for_py39_import():
-    # F1: the parser is dependency-light (external llama-server wrappers import it
-    # standalone) and the package targets python >=3.9. Its PEP 604 ``X | None``
-    # return annotations would raise TypeError on a 3.9 import without
-    # ``from __future__ import annotations``; guard that the import stays present.
+    # F1: the parser is imported standalone on python >=3.9, where its PEP 604 ``X | None``
+    # annotations need ``from __future__ import annotations``; guard that the import stays.
     from pathlib import Path
     src = (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
@@ -679,8 +670,7 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
 
 
 def test_glm_strip_treats_literal_close_tag_in_arg_value_as_data():
-    # Core strip parity with the parser: a literal </tool_call> inside a GLM <arg_value> is
-    # argument data, so the whole call is stripped (no leaked tail), while the parser extracts the ...
+    # Core strip parity: a literal </tool_call> inside a GLM <arg_value> is argument data, so the whole call is stripped (no leaked tail).
     from core.inference.tool_call_parser import strip_tool_markup
 
     text = (
@@ -694,10 +684,8 @@ def test_glm_strip_treats_literal_close_tag_in_arg_value_as_data():
 
 
 def test_bare_json_function_alias_parses_and_strips_symmetrically():
-    # The markerless bare-JSON parser accepts the "function" alias for the call name
-    # (obj.get("name") or obj.get("function")). strip_leading_bare_json_call must
-    # recognise the same alias so an executed {"function":...} call is not left as
-    # raw content (parser/strip symmetry).
+    # The bare-JSON parser accepts the "function" alias for the call name;
+    # strip_leading_bare_json_call must recognise it too (parser/strip symmetry).
     from core.inference.tool_call_parser import (
         parse_tool_calls_from_text,
         strip_leading_bare_json_call,
