@@ -31,6 +31,7 @@ from unsloth_zoo.rl_replacements import (
     left_pack_padding,
     create_completion_attention_mask,
     chunked_selective_log_softmax,
+    chunked_hidden_states_selective_log_softmax,
     _unsloth_get_mm_token_id,
     _unsloth_fix_mm_token_type_ids,
 )
