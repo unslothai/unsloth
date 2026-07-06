@@ -1059,6 +1059,10 @@ class DiffusionBackend:
                             kind = kind,
                             repo_id = repo_id,
                             transformer_resident_override_mib = (candidate.transient_transformer_mib),
+                            # The dense path prefetches the base transformer/ shards into the
+                            # cache _companion_cache_bytes reads; pass the auto-policy's own
+                            # companion estimate so the re-plan does not double-count them.
+                            companion_override_mib = candidate.companions_mib,
                         )
                         if replanned.offload_policy == OFFLOAD_NONE:
                             quant_plan = replanned
@@ -1555,6 +1559,7 @@ class DiffusionBackend:
         kind: str = "gguf",
         repo_id: Optional[str] = None,
         transformer_resident_override_mib: Optional[int] = None,
+        companion_override_mib: Optional[int] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
@@ -1567,7 +1572,11 @@ class DiffusionBackend:
         pipeline is one cached download (transformer + companions), already compressed.
         ``transformer_resident_override_mib`` replaces the file-size transformer estimate
         when the loader is planning for a DIFFERENT artifact than the file on disk (the
-        dense transformer-quant candidate, whose footprint the auto-policy estimates)."""
+        dense transformer-quant candidate, whose footprint the auto-policy estimates);
+        ``companion_override_mib`` likewise replaces the cached companion total on that
+        re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
+        same blob cache _companion_cache_bytes sums -- are not counted as companions on
+        top of transformer_resident_override_mib (a double-count of the transformer)."""
         device_memory = snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo (transformer + companions) is one cached download; the
@@ -1600,8 +1609,17 @@ class DiffusionBackend:
             # LOCAL diffusers base -- the on-disk component weights (the blob cache is
             # empty for a local path, which would otherwise fold multi-GB companions to 0
             # and let auto planning pick a resident placement that OOMs).
-            companion = self._companion_cache_bytes(base)
-            companion_mib = int(companion // (1024 * 1024)) if companion else None
+            if companion_override_mib is not None:
+                # Re-planning the dense transformer-quant candidate: the dense path
+                # prefetches the base repo's transformer/ shards into the SAME blob cache
+                # _companion_cache_bytes sums, so reading it here would count the
+                # transformer AGAIN on top of transformer_resident_override_mib and make
+                # the resident quant plan look far too large. Use the auto-policy's own
+                # companion (text-encoder + VAE) estimate for this artifact instead.
+                companion_mib = companion_override_mib
+            else:
+                companion = self._companion_cache_bytes(base)
+                companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)

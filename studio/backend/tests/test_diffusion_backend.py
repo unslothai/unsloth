@@ -2120,6 +2120,53 @@ def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
     assert total == 150  # vae + text_encoder only; transformer/ and json excluded
 
 
+def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(monkeypatch):
+    # Re-planning the dense transformer-quant candidate: the dense path prefetches the
+    # base repo's transformer/ shards into the SAME blob cache _companion_cache_bytes
+    # sums. If the re-plan read that cache it would count the transformer TWICE (once as
+    # transformer_resident_override_mib, once as a "companion") and force offload even
+    # when the quantised artifact fits resident. The re-plan must use the auto-policy's
+    # companion estimate instead. Here the cache is stubbed to the transformer-inflated
+    # value; the plan must still stay resident.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
+
+    backend = DiffusionBackend()
+    target = types.SimpleNamespace(
+        device = "cuda", backend = "cuda", supports_model_cpu_offload = True
+    )
+    # 40 GiB discrete card, 40000 MiB free: comfortably fits transformer + real
+    # companions + headroom, but NOT a second copy of the bf16 transformer.
+    monkeypatch.setattr(
+        dmod,
+        "snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
+    # The cache is inflated by the prefetched bf16 transformer (~24000) on top of the
+    # ~8000 real companions; if the re-plan consulted it the plan would offload.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_companion_cache_bytes",
+        staticmethod(lambda base: (8000 + 24000) * 1024 * 1024),
+    )
+    fam = types.SimpleNamespace(name = "z-image")
+    plan = backend._plan_memory(
+        target,
+        None,
+        "org/base",
+        fam,
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 12000,  # int8 candidate transient (~half bf16)
+        companion_override_mib = 8000,  # auto-policy text-encoder + VAE estimate
+    )
+    # 12000 + 8000 + 4000 + 2048 overhead = 26048 MiB, fits the ~36 GiB budget.
+    # A double-count (12000 + [8000+24000] + ...) would have exceeded it and offloaded.
+    assert plan.offload_policy == OFFLOAD_NONE
+
+
 def test_reset_step_cache_helper_is_best_effort():
     # Calls the transformer's reset hook when present.
     calls = []
