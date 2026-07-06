@@ -2132,9 +2132,7 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
     from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
 
     backend = DiffusionBackend()
-    target = types.SimpleNamespace(
-        device = "cuda", backend = "cuda", supports_model_cpu_offload = True
-    )
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
     # 40 GiB discrete card, 40000 MiB free: comfortably fits transformer + real
     # companions + headroom, but NOT a second copy of the bf16 transformer.
     monkeypatch.setattr(
