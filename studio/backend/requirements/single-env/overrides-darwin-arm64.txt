@@ -13,8 +13,6 @@ anyio<4.14.0
 
 # mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
 # rejects q_norm/k_norm, so those checkpoints fail to load. mlx-lm #1242.
-# An override also excludes it from transitive resolution (install.sh pulls
-# mlx-lm via unsloth-zoo before the guarded MLX-stack step). A uv override
-# replaces the transitive constraint, so keep the >=0.22.0 floor (mirrors
-# mlx_repair.py _MLX_MIN_VERSIONS) or the resolver could drop below the minimum.
+# The override also drops it from transitive resolution; keep the >=0.22.0 floor
+# (mirrors mlx_repair.py _MLX_MIN_VERSIONS) or the resolver could go below it.
 mlx-lm>=0.22.0,!=0.31.3

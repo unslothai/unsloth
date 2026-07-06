@@ -1443,10 +1443,8 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
 fi
 
 # Apple Silicon: exclude broken mlx-lm 0.31.3 (QK-norm load regression for
-# gemma4 / qwen3_5; mlx-lm #1242) on the base install. A fresh curl-piped
-# install has no overrides file and skips the guarded install_python_stack.py
-# MLX step (SKIP_STUDIO_BASE=1), so this is the only cover there. mlx-lm is a
-# transitive dep, so this just pins the resolver away from 0.31.3.
+# gemma4 / qwen3_5; mlx-lm #1242). A curl-piped install has no overrides file
+# and skips the guarded MLX step (SKIP_STUDIO_BASE=1), so this is the only cover.
 _MLX_LM_EXCLUDE_ARG=""
 
 # Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).

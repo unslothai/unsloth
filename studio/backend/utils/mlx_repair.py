@@ -156,8 +156,7 @@ def _mlx_versions_satisfy_minimums() -> bool:
             if installed < Version(minimum):
                 return False
             # A known-broken build counts as unsatisfied so the self-heal
-            # reinstalls a good one. Parsed-Version compare matches
-            # 0.31.3 == 0.31.3.0 == 0.31.3+local.
+            # reinstalls a good one; Version compare matches 0.31.3(.0/+local).
             if any(installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())):
                 return False
         except PackageNotFoundError:
