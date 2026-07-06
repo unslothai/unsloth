@@ -268,14 +268,18 @@ def _fix_rope_inv_freq(model):
             and hasattr(module, "_apply_inv_freq_scaling")
             and hasattr(module, "multi_gpu_cos_cached")
         ):
-            inv_freq = 1.0 / (
-                module.base
-                ** (
-                    torch.arange(0, module.dim, 2, dtype = torch.int64, device = "cpu").float()
-                    / module.dim
+            if hasattr(module, "_unsloth_recompute_inv_freq"):
+                # Restore config scaling (llama3/yarn); unscaled here broke v5.
+                inv_freq = module._unsloth_recompute_inv_freq()
+            else:
+                inv_freq = 1.0 / (
+                    module.base
+                    ** (
+                        torch.arange(0, module.dim, 2, dtype = torch.int64, device = "cpu").float()
+                        / module.dim
+                    )
                 )
-            )
-            inv_freq = module._apply_inv_freq_scaling(inv_freq)
+                inv_freq = module._apply_inv_freq_scaling(inv_freq)
             module.inv_freq = inv_freq
             for device_idx in range(len(module.multi_gpu_cos_cached)):
                 if module.multi_gpu_cos_cached[device_idx] is not None:
