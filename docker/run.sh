@@ -91,6 +91,16 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+# Studio/Jupyter service config read by studio_launch.sh. Same dash-only -e VAR
+# form as the secrets above: the value comes from the parent env, so even
+# JUPYTER_PASSWORD never lands in argv (ps auxe / /proc/<pid>/cmdline). Without
+# these, `JUPYTER_PASSWORD=... bash docker/run.sh` silently got a random
+# password, PUBLIC_KEY/SSH_KEY never enabled sshd, and UNSLOTH_JUPYTER_CLOUDFLARE
+# never started the tunnel when using the bundled launcher.
+[[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
+[[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
+[[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
+[[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
 
 # Extra publish flags for the service ports (Studio 8000, Jupyter 8888).
 declare -a PORT_FLAGS=()
