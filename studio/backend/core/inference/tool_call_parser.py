@@ -772,7 +772,13 @@ def _gemma_parse_value(text: str, i: int):
             if body[k] in " \t\n\r,":
                 k += 1
                 continue
-            v, k = _gemma_parse_value(body, k)
+            v, next_k = _gemma_parse_value(body, k)
+            if next_k <= k:
+                # Malformed array (e.g. a stray ``}`` with no opening
+                # ``{``): the primitive branch consumed nothing, so stop
+                # rather than spin forever.
+                break
+            k = next_k
             items.append(v)
         return items, j + 1
     # Primitive: number / true/false/null / bare identifier.

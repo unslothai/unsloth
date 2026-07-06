@@ -419,6 +419,25 @@ class TestParserMultiFormat:
         result = parse_tool_calls_from_text(text)
         assert isinstance(result, list)
 
+    def test_gemma4_malformed_array_terminates(self):
+        # Regression: a stray ``}`` inside a Gemma array (unbalanced
+        # braces) once spun the list loop forever because
+        # ``_gemma_parse_value`` returned without advancing the index.
+        # Parsing must terminate on this malformed input.
+        import threading
+
+        text = "<|tool_call>call:foo{items:[1}}<tool_call|>"
+        box: dict = {}
+
+        def _run():
+            box["result"] = parse_tool_calls_from_text(text)
+
+        worker = threading.Thread(target = _run, daemon = True)
+        worker.start()
+        worker.join(timeout = 5)
+        assert not worker.is_alive(), "Gemma parser hung on malformed array input"
+        assert isinstance(box["result"], list)
+
     def test_gemma4_strip_markup_final(self):
         text = "<|tool_call>call:foo{x:1}<tool_call|>"
         assert strip_tool_markup(text, final = True) == ""
