@@ -916,6 +916,26 @@ class InferenceOrchestrator:
                     )
 
                 if resp.get("success"):
+                    # A cancel can land while we were parked in _wait_response above.
+                    # cancel_load (off the lifecycle gate) discards this model's loading
+                    # marker BEFORE its teardown, so a Stop-loading that fired after the
+                    # worker queued its "loaded" reply -- which we can still consume from
+                    # the in-flight queue get during cancel_load's shutdown window -- is
+                    # only visible here as the marker's removal. Without this recheck the
+                    # block below would publish active_model_name/models for a model
+                    # /unload already reported cancelled, over a subprocess cancel_load
+                    # just killed. cancel_load's post-teardown re-clear cannot undo a
+                    # publish that lands after it returns, so observe the removal and abort
+                    # the publish; cancel_load owns (and performs) the subprocess teardown.
+                    if model_name not in self.loading_models:
+                        logger.info(
+                            "Load for '%s' was cancelled while waiting for 'loaded'; "
+                            "not publishing the cancelled model",
+                            model_name,
+                        )
+                        self.active_model_name = None
+                        self.models.clear()
+                        return False
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
                     # A load always spawns a fresh subprocess holding only this

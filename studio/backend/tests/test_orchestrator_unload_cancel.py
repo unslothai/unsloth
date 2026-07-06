@@ -1343,3 +1343,88 @@ def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
     out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
+
+
+# ----------------------------------------------------------------------------
+# load_model rechecks the loading marker AFTER _wait_response("loaded") and
+# BEFORE publishing -- item #6. cancel_load's post-teardown re-clear only wipes a
+# repopulation that lands during its shutdown; a publish that lands after
+# cancel_load returns survives it, so the recheck must abort the publish itself.
+# ----------------------------------------------------------------------------
+
+
+def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatch):
+    # cancel_load (off the lifecycle gate) discards the loading marker BEFORE its teardown
+    # and re-clears the mirrors AFTER it. A racing load_model can consume its worker's
+    # already-queued "loaded" reply and reach the publish block only AFTER cancel_load has
+    # fully returned -- so cancel_load's post-teardown re-clear cannot undo that publish.
+    # Without a marker recheck between _wait_response("loaded") and the publish, load_model
+    # advertises active_model_name/models for a model /unload already reported cancelled,
+    # over a subprocess cancel_load just killed. The recheck must observe the discarded
+    # marker and abort the publish.
+    import types
+
+    from utils import transformers_version as _tv
+
+    o = _bare_orchestrator()
+    o.loading_models = {"m"}
+    o.active_model_name = None
+    o.models = {}
+    o._proc = None  # no prior subprocess -> load_model goes straight to the spawn loop
+
+    monkeypatch.setattr(_tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+    # cancel_load tears the worker down; a no-op keeps the test off real subprocesses.
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: None)
+
+    parked = threading.Event()  # load_model reached _wait_response("loaded")
+    cancel_done = threading.Event()  # cancel_load fully returned (marker discarded + re-clear)
+    load_done = threading.Event()
+
+    def blocking_wait_response(expected, timeout = 300.0):
+        parked.set()
+        # Do not consume "loaded" until cancel_load has fully returned, so the publish
+        # would land AFTER cancel_load's post-teardown re-clear -- the window the
+        # re-clear alone cannot cover.
+        assert cancel_done.wait(timeout = 5)
+        return {
+            "type": "loaded",
+            "success": True,
+            "model_info": {"identifier": "m", "display_name": "m"},
+        }
+
+    monkeypatch.setattr(o, "_wait_response", blocking_wait_response)
+
+    load_result: dict = {}
+
+    def run_load():
+        try:
+            load_result["ok"] = o.load_model(
+                types.SimpleNamespace(identifier = "m", gguf_variant = None)
+            )
+        except Exception as exc:  # noqa: BLE001
+            load_result["exc"] = exc
+        finally:
+            load_done.set()
+
+    loader = threading.Thread(target = run_load)
+    loader.start()
+    assert parked.wait(timeout = 5), "load_model must reach _wait_response"
+
+    # cancel_load runs to completion while the load is parked: it discards the marker and
+    # re-clears the mirrors (post-teardown), then returns. Only then let the load consume
+    # "loaded" and attempt to publish.
+    assert o.cancel_load("m") is True
+    cancel_done.set()
+
+    loader.join(timeout = 5)
+    assert load_done.is_set()
+
+    # Fail-without: load_model published active_model_name/models for 'm' AFTER cancel_load
+    # returned, advertising a cancelled model over a killed subprocess.
+    assert load_result.get("ok") is False, "the cancelled load must not report success"
+    assert o.active_model_name is None, "must not publish a cancelled model's active name"
+    assert o.models == {}, "must not publish a cancelled model's mirror"
+    assert "m" not in o.loading_models
