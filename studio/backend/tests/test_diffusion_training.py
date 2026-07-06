@@ -606,17 +606,17 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
-    # A DiT family on a GPU that cannot do bf16 must 400 BEFORE resident GPU workloads are
-    # freed: otherwise the pre-Ampere GPU tears down the user's chat/Images model and the run
-    # then dies deep in model load at the trainer's bf16 guard. The route imports
-    # bf16_unsupported_reason locally, so patch it on its home module.
+    # A DiT precision the host cannot run (no bf16 GPU, or explicit int8 without a functional
+    # torchao) must 400 BEFORE resident GPU workloads are freed: otherwise the host tears down the
+    # user's chat/Images model and the run then dies in the trainer child. The route imports
+    # training_precision_preflight_error locally, so patch it on its home module.
     import routes.training as tr
 
     freed = []
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setattr(
-        "core.training.diffusion_train_common.bf16_unsupported_reason",
-        lambda fam: (
+        "core.training.diffusion_train_common.training_precision_preflight_error",
+        lambda fam, prec: (
             "This trainer requires a bfloat16-capable GPU (Ampere or newer)."
             if fam != "sdxl"
             else None

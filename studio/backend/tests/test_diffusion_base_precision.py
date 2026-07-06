@@ -152,6 +152,62 @@ def test_bf16_unsupported_reason(monkeypatch):
     assert bf16_unsupported_reason("z-image") is None
 
 
+def test_training_precision_preflight_error(monkeypatch):
+    # The start route calls this BEFORE evicting resident GPU workloads: it folds the bf16-GPU
+    # requirement together with the explicit-int8 torchao requirement, so both fail fast instead
+    # of only surfacing in the trainer child after the GPU has already been freed.
+    import torch
+
+    from core.training.diffusion_train_common import training_precision_preflight_error
+
+    # Present a bf16-capable CUDA GPU so the int8 gate (not the bf16 gate) is what we exercise.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+
+    # The bf16 gate takes precedence: a non-bf16 GPU rejects any DiT precision first.
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    assert "bfloat16" in (training_precision_preflight_error("flux.1", "int8") or "")
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+
+    # Explicit int8 on a DiT family with a NON-functional torchao -> a clear int8 reason
+    # (its _int8_quantize_base has no fallback, so the child would otherwise raise post-eviction).
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: False)
+    reason = training_precision_preflight_error("qwen-image", "int8")
+    assert reason is not None and "int8" in reason and "torchao" in reason
+
+    # The same int8 request is fine once torchao is functional.
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
+    assert training_precision_preflight_error("qwen-image", "int8") is None
+
+    # With a broken torchao, only EXPLICIT int8 is gated -- nf4/bf16/auto pass, and the int8
+    # gate never applies to a non-DiT (SDXL) or unknown family.
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: False)
+    assert training_precision_preflight_error("flux.1", "nf4") is None
+    assert training_precision_preflight_error("flux.1", "auto") is None
+    assert training_precision_preflight_error("sdxl", "int8") is None
+    assert training_precision_preflight_error("", "int8") is None
+
+
+def test_family_train_infos_empties_dit_modes_on_non_bf16(monkeypatch):
+    # On a non-bf16 GPU the start route rejects EVERY DiT family (even nf4), so /info must not
+    # advertise a DiT precision option that always 400s: the modes empty, the reason surfaces in
+    # vram_note, compile is off, and the recommendation degrades to nf4. SDXL (non-DiT) is exempt.
+    from core.training.diffusion_train_common import _DIT_TRAIN_FAMILIES, family_train_infos
+
+    monkeypatch.setattr(common, "bf16_unsupported_reason", lambda name: "no bfloat16 on this GPU")
+
+    infos = {info["name"]: info for info in family_train_infos()}
+    dit_seen = False
+    for name, info in infos.items():
+        if name in _DIT_TRAIN_FAMILIES:
+            dit_seen = True
+            assert info["precision_modes"] == []
+            assert info["vram_note"] == "no bfloat16 on this GPU"
+            assert info["recommended_precision"] == "nf4"
+            assert info["supports_compile"] is False
+    assert dit_seen  # the registry must still expose at least one DiT family to have covered it
+
+
 def test_base_precision_gates_skip_sdxl():
     # SDXL ignores base_precision, so the dense-mode gates (prequant base / non-bf16 compute)
     # must not fire for it: a prequant-looking SDXL name with base_precision="bf16" does not

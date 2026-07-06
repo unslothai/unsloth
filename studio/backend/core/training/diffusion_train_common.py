@@ -274,6 +274,27 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     return None
 
 
+def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
+    """Reason the requested DiT precision cannot run on this host, else None -- checked by the
+    start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
+    child, after eviction). Two gates: the bf16-GPU requirement (bf16_unsupported_reason), and an
+    explicit int8 needing a FUNCTIONAL torchao (its _int8_quantize_base has no fallback, so
+    _resolve_base_precision would otherwise raise only after eviction). Never raises."""
+    reason = bf16_unsupported_reason(resolved_family)
+    if reason:
+        return reason
+    if (
+        (resolved_family or "").strip().lower() in _DIT_TRAIN_FAMILIES
+        and (base_precision or "").strip().lower() == "int8"
+        and not has_functional_torchao()
+    ):
+        return (
+            "base_precision='int8' needs a functional torchao install; this host's torchao is "
+            "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
+        )
+    return None
+
+
 def family_train_infos() -> list[dict[str, Any]]:
     """Describe every trainable family for the Train UI: name, label, the default + allowed
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
@@ -291,10 +312,17 @@ def family_train_infos() -> list[dict[str, Any]]:
         # base_precision / compile apply to the DiT trainer only; SDXL keeps its
         # mixed_precision lever, so the UI hides the selector for it.
         is_dit = name in _DIT_TRAIN_FAMILIES
-        # Drop any advertised scheme this family's DiT cannot use (fp8 corrupts Qwen-Image:
-        # activation outliers exceed fp8's range; the inference path denies the same set), so
-        # the UI never offers a mode that normalized() would then reject.
-        fam_modes = [m for m in dit_modes if not _family_denied(name, m)] if is_dit else []
+        # On a non-bf16 CUDA GPU the start route's preflight rejects EVERY DiT family (even nf4,
+        # since the DiT trainer requires bf16 unconditionally on CUDA), so advertise no precision
+        # for it -- otherwise /info offers an nf4 DiT option that always 400s. Otherwise drop any
+        # scheme this family's DiT corrupts (fp8 on Qwen-Image: activation outliers exceed fp8's
+        # range; the inference path denies the same set), so the UI never offers a mode
+        # normalized() would then reject.
+        dit_block = bf16_unsupported_reason(name) if is_dit else None
+        if not is_dit or dit_block:
+            fam_modes: list[str] = []
+        else:
+            fam_modes = [m for m in dit_modes if not _family_denied(name, m)]
         infos.append(
             {
                 "name": name,
@@ -302,10 +330,10 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "default_base": repos[0],
                 "base_repos": repos,
                 "defaults": train_defaults(name),
-                "vram_note": _FAMILY_VRAM_NOTES.get(name, ""),
+                "vram_note": dit_block or _FAMILY_VRAM_NOTES.get(name, ""),
                 "precision_modes": fam_modes,
-                "recommended_precision": dit_recommended if is_dit else "nf4",
-                "supports_compile": is_dit,
+                "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
+                "supports_compile": bool(is_dit and not dit_block),
             }
         )
     return infos

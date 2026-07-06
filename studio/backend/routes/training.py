@@ -1238,16 +1238,18 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
-    # Preflight bf16 support for the DiT families BEFORE freeing GPU residents: the DiT
-    # trainer requires a bf16-capable GPU (Ampere or newer) and otherwise raises deep in
-    # model load -- which, from here, would happen only AFTER _free_gpu_for_diffusion_training()
-    # already evicted the user's chat/Images model. Fail fast (400) so a pre-Ampere GPU
-    # (T4 / V100 / RTX 20xx) never tears down resident models for a run that cannot start.
-    from core.training.diffusion_train_common import bf16_unsupported_reason
+    # Preflight the requested DiT precision BEFORE freeing GPU residents: the DiT trainer's own
+    # checks (a bf16-capable GPU is required; an explicit int8 needs a functional torchao) fire
+    # only in the child, AFTER _free_gpu_for_diffusion_training() already evicted the user's
+    # chat/Images model. Fail fast (400) so a pre-Ampere GPU (T4 / V100 / RTX 20xx) or a
+    # stub-torchao host never tears down resident models for a run that cannot start.
+    from core.training.diffusion_train_common import training_precision_preflight_error
 
-    _bf16_reason = bf16_unsupported_reason(normalized_cfg.resolved_family)
-    if _bf16_reason:
-        raise HTTPException(status_code = 400, detail = _bf16_reason)
+    _precision_reason = training_precision_preflight_error(
+        normalized_cfg.resolved_family, normalized_cfg.base_precision
+    )
+    if _precision_reason:
+        raise HTTPException(status_code = 400, detail = _precision_reason)
 
     # Run the trainers' trust gate here too (both assert the same predicate before
     # from_pretrained), so an untrusted/typoed base 400s BEFORE freeing GPU residents
