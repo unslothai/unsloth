@@ -115,6 +115,7 @@ import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import {
   type CatalogGroup,
   type ModelArtifact,
+  artifactForRepoId,
   groupForRepoId,
   groupMatchesQuery,
   pickDefaultArtifact,
@@ -2238,13 +2239,17 @@ export function HubModelPicker({
       sortCachedRepos(
         cachedModels.filter(
           (c) =>
+            // A partially-downloaded snapshot is not on-device: listing it as loadable
+            // errors or triggers a silent multi-GB re-fetch on click (mirrors downloadedSet).
+            !c.partial &&
             passesTaskGate(c.task, c.repo_id, task) &&
-            // Diffusion pickers: unsloth repos plus any repo the curated
-            // catalog knows (krea / ideogram / SDXL / Lightricks / Wan /
-            // Hunyuan are loadable but not unsloth-hosted).
+            // Diffusion pickers: unsloth repos plus any repo the backend can actually LOAD.
+            // Gate on a curated ARTIFACT (artifactForRepoId, what loadSpecFor resolves), not a
+            // group-key match: a base / uncurated-quant sibling (Qwen/Qwen-Image-2512) matches
+            // the group by key but has no loadable artifact and dead-ends at the trust gate.
             (!task ||
               isUnslothRepoId(c.repo_id) ||
-              (catalog ? groupForRepoId(c.repo_id, catalog) !== null : false)),
+              (catalog ? artifactForRepoId(c.repo_id, catalog) !== null : false)),
         ),
         downloadedSort,
         loadTimes,

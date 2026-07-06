@@ -2202,7 +2202,14 @@ class DiffusionBackend:
                 # workflow wiring, matching the load-time ordering. Best-effort: a
                 # failure logs, leaves the eager pipe running, and never retries
                 # (the helper clears the flag first).
-                if state.speed_deferred and state.generation_count >= 2:
+                #
+                # But NOT when this generation requests a LoRA: a compiled transformer rejects
+                # LoRA (supports_lora is False once compiled), and _apply_loras raises before its
+                # unchanged-selection no-op, so engaging compile here would permanently break every
+                # LoRA generation on this load. Compile and LoRA are mutually exclusive; keep the
+                # pipe eager and let compile defer to a later LoRA-free generation.
+                lora_requested = any(w != 0 for (_id, w) in (loras or []))
+                if state.speed_deferred and state.generation_count >= 2 and not lora_requested:
                     try:
                         self._engage_deferred_speed(state)
                     except Exception as exc:  # noqa: BLE001 — speed is best-effort

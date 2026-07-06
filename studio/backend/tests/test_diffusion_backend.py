@@ -523,6 +523,42 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     backend.unload()
 
 
+def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkeypatch):
+    # A compiled transformer rejects LoRA (supports_lora is False once compiled), and _apply_loras
+    # raises before its unchanged-selection no-op, so engaging the deferred compile on a generation
+    # that requests a LoRA would permanently break every LoRA generation on this load. The deferral
+    # must skip while a LoRA is requested and engage only on a later LoRA-free generation.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False  # mirror the real helper: engage once, then clear
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+    # LoRA loading is covered elsewhere; stub it so this test needs no adapter file.
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", lambda self, state, loras, cancel: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    # 3rd generation requests a LoRA: the deferral must be skipped (pipe stays eager, LoRA-capable).
+    backend.generate(prompt = "three", loras = [("adapter", 1.0)])
+    assert engaged == []
+    # 4th generation without a LoRA: the deferral now engages (the guard is LoRA-specific, not off).
+    backend.generate(prompt = "four")
+    assert len(engaged) == 1
+
+
 def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
     # A dense model loaded with Speed left on Auto but Attention explicitly pinned
     # (e.g. "native" to avoid cuDNN) must KEEP that choice when the 3rd generation
