@@ -2321,19 +2321,34 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
+# Name of an AMD GPU visible to the Windows host, or empty. In WSL a discrete
+# card's arch is unknowable until ROCm is up and /proc/cpuinfo only names the CPU,
+# so ask Windows (WMI). Cached; "-" caches a negative. Requires WSL interop.
+_WSL_AMD_GPU_NAME_CACHE=""
+_wsl_amd_gpu_name() {
+    if [ -n "$_WSL_AMD_GPU_NAME_CACHE" ]; then
+        [ "$_WSL_AMD_GPU_NAME_CACHE" = "-" ] && return 1
+        printf '%s' "$_WSL_AMD_GPU_NAME_CACHE"; return 0
+    fi
+    command -v powershell.exe >/dev/null 2>&1 || { _WSL_AMD_GPU_NAME_CACHE="-"; return 1; }
+    _wag_n="$(powershell.exe -NoProfile -Command "(Get-CimInstance Win32_VideoController | Where-Object { \$_.Name -match 'AMD|Radeon' } | Select-Object -First 1).Name" 2>/dev/null | tr -d '\r\n\000')"
+    if [ -n "$_wag_n" ]; then _WSL_AMD_GPU_NAME_CACHE="$_wag_n"; printf '%s' "$_wag_n"; return 0; fi
+    _WSL_AMD_GPU_NAME_CACHE="-"; return 1
+}
+
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    # "Usable ROCm" here = rocminfo enumerates the gfx1151 agent. Don't use the
-    # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
-    # would skip this bootstrap while the real GPU is still unusable. awk consumes
-    # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
+    # "Usable ROCm" here = rocminfo enumerates a real GPU agent ("Name: gfxNNNN",
+    # not the "gfx11-generic" fallback ISA). Covers Strix (gfx1150/1151), discrete
+    # RDNA (gfx110X/gfx120X) and CDNA (gfx9xx). awk consumes all input, so rocminfo
+    # isn't SIGPIPE'd like `grep -q` would under pipefail.
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[0-9]/ && !/generic/{found=1} END{exit !found}'; then
         # rocminfo may work only via the transient env _ensure_rocm_probe_env
         # just set, which dies with the installer. Persist the drop-in so login
         # shells (Studio, llama.cpp) inherit it -- else a reinstall over an
@@ -2343,9 +2358,14 @@ _maybe_bootstrap_rocm_wsl() {
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
     [ -e /dev/dxg ] || return 0
-    # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
-    # the CPU model string WSL exposes (e.g. "AMD Ryzen AI Max+ ... Radeon 8060S").
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # Which AMD GPU? Strix APUs show up in /proc/cpuinfo (WSL exposes the CPU model,
+    # e.g. "AMD Ryzen AI Max+ ... Radeon 8060S"); discrete Radeon cards do not, so
+    # fall back to asking the Windows host. Either signal is enough to proceed --
+    # the bootstrap auto-detects the actual arch from rocminfo once ROCm is up.
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+       && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
+        return 0
+    fi
     command -v bash >/dev/null 2>&1 || return 0
 
     # Fast path: already configured (librocdxg present) but launched from a
@@ -2363,7 +2383,8 @@ _maybe_bootstrap_rocm_wsl() {
     fi
 
     echo ""
-    substep "Detected AMD Strix Halo (Radeon 8000S) in WSL with no ROCm runtime yet." "$C_WARN"
+    _rw_gpu="$(_wsl_amd_gpu_name 2>/dev/null || true)"; [ -n "$_rw_gpu" ] || _rw_gpu="an AMD GPU"
+    substep "Detected ${_rw_gpu} in WSL with no ROCm runtime yet." "$C_WARN"
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
