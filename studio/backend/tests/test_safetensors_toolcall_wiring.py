@@ -41,7 +41,7 @@ FAKE_TOOL = {
         },
     },
 }
-# One canonical emission shape; the full parser matrix lives in test_safetensors_tool_loop.py.
+# Canonical emission shape; the full parser matrix lives in test_safetensors_tool_loop.py.
 TOOL_CALL_TEXT = '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
 FINAL_ANSWER = "The weather in Paris is sunny and 22C."
 TOOL_RESULT = "Paris: sunny, 22C"
@@ -121,9 +121,8 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     conversations_seen: list = []
 
     def single_turn(conversation, *, active_tools = None):
-        # Mirror the real backend ``_single_turn`` (inference.py / mlx_inference.py): render the prompt
-        # through the REAL shared helper so tools flow to the tokenizer exactly as production does,
-        # then yield cumulative snapshots (each yield is all text so far, per the loop contract).
+        # Mirror the real backend _single_turn: render through the shared helper (so tools reach the
+        # tokenizer as in production), then yield cumulative snapshots per the loop contract.
         active_tools_seen.append(active_tools)
         conversations_seen.append([dict(m) for m in conversation])
         apply_chat_template_for_generation(tok, conversation, tools = active_tools)
@@ -144,8 +143,7 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
         )
     )
 
-    # 1. The real helper forwarded the tool schema to the tokenizer on the first render -- proving the
-    #    backend seam does not silently drop tools (e.g. on a template fallback).
+    # 1. The helper forwarded the tool schema to the tokenizer (the seam does not drop tools).
     assert tok.tools_seen, "tokenizer.apply_chat_template was never called"
     assert tok.tools_seen[0], "tool schema was dropped before reaching the tokenizer"
     assert TOOL_NAME in _tool_names(tok.tools_seen[0])
@@ -154,26 +152,22 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     assert active_tools_seen and active_tools_seen[0] is not None
     assert TOOL_NAME in _tool_names(active_tools_seen[0])
 
-    # 3 / 4 / 5. Exactly one tool_start, one dispatch with the parsed arguments, one tool_end carrying
-    #            the stub result.
+    # 3 / 4 / 5. Exactly one tool_start, one dispatch with parsed args, one tool_end with the result.
     tool_starts = [e for e in events if e["type"] == "tool_start"]
     tool_ends = [e for e in events if e["type"] == "tool_end"]
     assert len(tool_starts) == 1 and tool_starts[0]["tool_name"] == TOOL_NAME
     assert executor.calls == [(TOOL_NAME, TOOL_ARGS)], executor.calls
     assert len(tool_ends) == 1 and tool_ends[0]["result"] == TOOL_RESULT
 
-    # 6. The final answer streams AFTER the tool result -- the loop appended the tool output and
-    #    re-entered generation (the essence of the agentic loop, not just a single parse).
+    # 6. The final answer streams AFTER the tool result: the loop appended it and re-entered generation.
     contents = [e for e in events if e["type"] == "content"]
     assert contents and FINAL_ANSWER in contents[-1]["text"]
     last_tool_end_idx = max(i for i, e in enumerate(events) if e["type"] == "tool_end")
     last_content_idx = max(i for i, e in enumerate(events) if e["type"] == "content")
     assert last_content_idx > last_tool_end_idx, "final answer must stream after the tool result"
 
-    # 6b. The tool result was actually fed back into the model conversation before the final turn.
-    #     The final generation turn must have seen a message carrying the tool result -- this fails
-    #     if the loop ever stops appending the tool output before re-entering generation, which
-    #     ordering alone (6) would not catch since the fake generation ignores the conversation.
+    # 6b. The tool result was fed back into the conversation before the final turn. Ordering alone (6)
+    #     misses this because the fake generation ignores the conversation.
     assert len(conversations_seen) >= 2, "loop did not re-enter generation after the tool call"
     final_turn_convo = conversations_seen[1]
     assert any(
