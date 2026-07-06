@@ -85,6 +85,8 @@ def ui(
         port = port,
         frontend_path = frontend,
         silent = silent,
+        # CLI entrypoint: apply the torch CUDA LD_LIBRARY_PATH fix via re-exec.
+        allow_reexec = True,
     )
 
     from studio.backend.run import _shutdown_event

@@ -232,6 +232,7 @@ def run_server(
     port: int = 8000,
     frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
     silent: bool = False,
+    allow_reexec: bool = False,
 ):
     """
     Start the FastAPI server.
@@ -241,6 +242,11 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
+        allow_reexec: Re-exec the process (os.execv) to apply the torch CUDA
+            LD_LIBRARY_PATH fix. Enable ONLY from true CLI/process entrypoints.
+            Embedders (e.g. Colab via colab.start) must leave this False,
+            otherwise the re-exec replaces the notebook kernel and drops
+            in-memory state.
 
     Note:
         Signal handlers are NOT registered here so that embedders
@@ -249,7 +255,13 @@ def run_server(
     """
     global _server, _shutdown_event
 
-    _maybe_reexec_for_cuda_ld_path()
+    # Only re-exec when invoked as a real CLI/process entrypoint. Embedders
+    # (e.g. Colab via colab.start -> run_server) keep allow_reexec=False,
+    # because os.execv would replace the live notebook kernel and drop
+    # in-memory state. CLI entrypoints (run.py __main__, unsloth_cli in-venv
+    # fallback) opt in explicitly.
+    if allow_reexec:
+        _maybe_reexec_for_cuda_ld_path()
 
     import nest_asyncio
 
