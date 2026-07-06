@@ -1652,10 +1652,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
 
         if trl_version >= Version("1.7.0"):
+            # Remove only the "ref" adapter creation block (the elif branch), anchored on
+            # the final ref_param copy so we do NOT also swallow the following
+            # gradient-checkpointing enable_input_require_grads() block.
             peft_pattern = (
                 r"\s*elif is_peft_model\(model\) and args\.beta != 0\.0:"
                 r".*?"
-                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
+                r"ref_param\.data\.copy_\(param\.data\)"
             )
 
             replacement_comment = (
@@ -1702,6 +1705,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # no-op for GRPO, whose peft init block is removed above).
     RLTrainer_source = RLTrainer_source.replace(
         'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
+        "if False:",
+    )
+    # TRL >= 1.7.0 spells the same QLoRA bf16 cast as `if _is_quantized_model:`.
+    RLTrainer_source = RLTrainer_source.replace(
+        "if _is_quantized_model:",
         "if False:",
     )
 

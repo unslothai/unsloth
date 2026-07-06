@@ -1843,10 +1843,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     mm_token_type_ids_chunk,
                 ) in zipped_inputs:
                     _extra_vision_kwargs = {}
-                    if compute_aux_loss is not None:
-                        _extra_moe_kwargs["output_router_logits"] = compute_aux_loss
-                    else:
-                        _extra_moe_kwargs = {}
+                    _extra_moe_kwargs = {}
+                    if compute_aux_loss:
+                        _extra_moe_kwargs["output_router_logits"] = True
                     if token_type_ids_chunk is not None:
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
@@ -1864,7 +1863,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 **_extra_moe_kwargs,
                             )
 
-                            if compute_aux_loss is not None:
+                            if compute_aux_loss and getattr(outputs, "aux_loss", None) is not None:
                                 all_aux_losses.append(outputs.aux_loss)
 
                             logits_chunk = outputs.logits
@@ -1901,7 +1900,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 **_extra_moe_kwargs,
                             )
 
-                            if compute_aux_loss is not None:
+                            if compute_aux_loss and getattr(outputs, "aux_loss", None) is not None:
                                 all_aux_losses.append(outputs.aux_loss)
 
                             logits_chunk = outputs.logits
@@ -1937,10 +1936,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-            if compute_aux_loss is not None:
-                aux_loss = torch.stack(all_aux_losses).mean() if compute_aux_loss else None
-                return logprobs.detach(), entropies, aux_loss
-            return logprobs.detach(), entropies  # logps, entropies
+            aux_loss = (
+                torch.stack(all_aux_losses).mean()
+                if (compute_aux_loss and len(all_aux_losses) > 0)
+                else None
+            )
+            return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -1959,6 +1960,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # return  logps #  compute logprobs for the input tokens
 
     function = inspect.getsource(_get_per_token_logps_and_entropies)
+    if trl_version < Version("1.7.0"):
+        # TRL < 1.7.0 unpacks (logps, entropies) at every call site; TRL >= 1.7.0
+        # always unpacks (logps, entropies, aux_loss). Drop the aux_loss element so
+        # the return arity matches the installed TRL.
+        function = function.replace(
+            "return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss",
+            "return logprobs.detach(), entropies  # logps, entropies",
+        )
     return function
 
 
