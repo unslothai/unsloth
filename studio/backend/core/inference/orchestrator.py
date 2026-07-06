@@ -45,8 +45,8 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
-# How long unload_model waits for a cancelled generation to release _gen_lock
-# before tearing the subprocess down. Only bounds a wedged worker.
+# Max wait for a cancelled generation to release _gen_lock before unload_model
+# tears the subprocess down. Only bounds a wedged worker.
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
@@ -64,13 +64,12 @@ class InferenceOrchestrator:
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
-        # mp.Event set for the whole unload. Unlike _cancel_event (cleared at the
-        # start of every generate), the worker never clears this, so a generate
-        # queued behind the cancelled one is skipped, not run.
+        # Set for the whole unload; the worker never clears it (unlike _cancel_event),
+        # so a generate queued behind the cancelled one is skipped, not run.
         self._drain_event: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
-        # Set during a model switch so a generation that wins the _gen_lock
-        # handoff bails instead of starting on the outgoing model.
+        # Set during a switch so a generation winning the _gen_lock handoff bails
+        # instead of starting on the outgoing model.
         self._unload_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
@@ -470,9 +469,9 @@ class InferenceOrchestrator:
         cancel ack from that same source so stale events don't leak into the
         next request.
         """
-        # Latch the subprocess/queue this stream belongs to. If a wedged worker is
-        # torn down and a later load spawns a fresh one, bail instead of re-blocking
-        # on the new queue while holding _gen_lock (deadlock).
+        # Latch this stream's subprocess/queue: if a wedged worker is torn down and a
+        # later load spawns a fresh one, bail rather than re-block on the new queue
+        # under _gen_lock (deadlock).
         initial_proc = self._proc
         initial_resp_queue = self._resp_queue
         while True:
@@ -617,21 +616,21 @@ class InferenceOrchestrator:
         if not self.active_model_name:
             yield "Error: No active model"
             return
-        # Latch the model this request targets so the under-lock recheck below can
-        # detect a switch that completed while this path was between _start_dispatcher
-        # and the mailbox registration (mirrors the locked path's expected_model check).
+        # Latch the target model so the recheck below can detect a switch that completed
+        # between _start_dispatcher and mailbox registration (mirrors the locked path's
+        # expected_model check).
         expected_model = self.active_model_name
 
-        # A model switch is in flight (unload waiting on _gen_lock). This path
-        # bypasses _gen_lock, so without this early-out a compare-mode request
-        # would enqueue a generate on the outgoing model and delay the switch.
+        # Switch in flight (unload waiting on _gen_lock). This path bypasses the lock,
+        # so without this early-out a compare request would enqueue a generate on the
+        # outgoing model and delay the switch.
         if self._unload_pending:
             yield "Error: model is being unloaded"
             return
 
-        # Ensure dispatcher is running. Remember whether it was already running: if this
-        # call is the one that starts it and then bails on a racing unload, it must stop
-        # the dispatcher again (see the unloading bail below).
+        # Ensure the dispatcher runs. Track whether it was already running: if this call
+        # starts it and then bails on a racing unload, it must stop it again (see the
+        # unloading bail below).
         dispatcher_preexisting = (
             self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
         )
@@ -662,22 +661,18 @@ class InferenceOrchestrator:
             preserve_thinking = preserve_thinking,
         )
 
-        # Create mailbox BEFORE sending command, rechecking _unload_pending under
-        # _mailbox_lock. An unload sets _unload_pending before _wait_dispatcher_idle
-        # reads _mailboxes under this same lock, so either that idle check sees this
-        # mailbox (and tears the dispatcher down) or we see the pending unload and
-        # bail. Registering after the idle check stopped the dispatcher would orphan
-        # the mailbox -- nothing routes the worker's skipped-generate reply, so the
-        # compare stream would hang forever.
+        # Create the mailbox BEFORE sending, rechecking _unload_pending under
+        # _mailbox_lock: an unload sets _unload_pending before _wait_dispatcher_idle
+        # reads _mailboxes under the same lock, so either the idle check sees this
+        # mailbox (and tears the dispatcher down) or we see the unload and bail.
+        # Registering after would orphan the mailbox and hang the compare stream forever.
         mailbox: queue.Queue = queue.Queue()
         with self._mailbox_lock:
-            # _unload_pending alone is not enough: an unload that ran fully during the
-            # window since _start_dispatcher clears _unload_pending in its finally and
-            # stops the dispatcher, so it can read False here while the dispatcher is
-            # gone and the model was swapped/cleared. Also bail when the active model
-            # changed or the dispatcher is no longer alive: registering a mailbox with
-            # no dispatcher to route the worker's gen_done/gen_error would hang the
-            # compare stream (or the generate would land on a later subprocess).
+            # _unload_pending alone is not enough: an unload that ran fully since
+            # _start_dispatcher clears it in its finally and stops the dispatcher, so it
+            # reads False here though the dispatcher is gone and the model swapped. Also
+            # bail when the active model changed or the dispatcher died: a mailbox with no
+            # dispatcher to route gen_done/gen_error hangs the compare stream.
             dispatcher_alive = (
                 self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
             )
@@ -688,18 +683,16 @@ class InferenceOrchestrator:
             )
             if not unloading:
                 self._mailboxes[request_id] = mailbox
-            # If we are bailing without a mailbox, note whether any OTHER compare request
-            # is still routing through the dispatcher. If none is, and this call is the one
-            # that started the dispatcher, it must be stopped below.
+            # When bailing without a mailbox, note whether any OTHER compare request still
+            # routes through the dispatcher; if none and this call started it, stop it below.
             orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
         if unloading:
-            # A racing unload can pass its own _wait_dispatcher_idle() while the dispatcher
-            # was still stopped, then set _unload_pending. The dispatcher we just started
-            # would otherwise linger with no mailboxes, race unload_model()'s _wait_response
-            # for the worker's "unloaded" reply off the shared resp_queue, and (when it wins)
-            # drop it as unroutable -- hanging the unload until its 300s timeout. Stop it here
-            # so the unload stays the sole resp_queue reader. Done outside _mailbox_lock:
-            # _stop_dispatcher joins the dispatcher thread, which itself takes that lock.
+            # A racing unload can pass its _wait_dispatcher_idle() while the dispatcher was
+            # stopped, then set _unload_pending. The one we just started would otherwise
+            # linger with no mailboxes, race unload_model's _wait_response for the "unloaded"
+            # reply off resp_queue, and drop it as unroutable -- hanging the unload 300s. Stop
+            # it here so the unload stays the sole resp_queue reader. Outside _mailbox_lock:
+            # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
             yield "Error: model is being unloaded"
@@ -854,11 +847,10 @@ class InferenceOrchestrator:
 
             for attempt in range(2):
                 # Stop-loading (/unload -> cancel_load) aborts a load by discarding this
-                # model's loading marker. cancel_load only kills a live child; if the
-                # cancel lands before any child exists (resolving GPU placement, or
-                # between retry attempts) there is nothing to kill, and without this
-                # check the loop would spawn a fresh worker and load the model after
-                # /unload already reported it unloaded. Observe the removal and stop.
+                # model's loading marker. cancel_load only kills a live child; if the cancel
+                # lands before any child exists (GPU placement, or between retries) there is
+                # nothing to kill, and without this check the loop would spawn a worker and
+                # load the model after /unload reported it unloaded. Observe removal and stop.
                 if model_name not in self.loading_models:
                     logger.info(
                         "Load for '%s' was cancelled before spawn; not starting a worker",
@@ -878,14 +870,12 @@ class InferenceOrchestrator:
                 sub_config["disable_xet"] = disable_xet
                 self._spawn_subprocess(sub_config)
 
-                # A cancel can land AFTER the pre-spawn recheck above but while
-                # _spawn_subprocess is still creating the queues/process. cancel_load
-                # runs off the lifecycle gate, so its _shutdown_subprocess can observe
-                # _proc still None (or not yet alive) and no-op, leaving this freshly
-                # spawned worker orphaned; the load would then wait for "loaded" and
-                # publish a model /unload already reported as unloaded, with a live
-                # subprocess nothing later reaps. Recheck now that the child exists and
-                # tear it down (cancel_load's teardown missed it) before publishing.
+                # A cancel can land after the pre-spawn recheck but while _spawn_subprocess
+                # is still creating the queues/process. cancel_load runs off the lifecycle
+                # gate, so its _shutdown_subprocess can see _proc still None and no-op,
+                # orphaning this fresh worker; the load would then wait for "loaded" and
+                # publish a model /unload reported unloaded, over a live subprocess nothing
+                # reaps. Recheck now the child exists and tear it down before publishing.
                 if model_name not in self.loading_models:
                     logger.info(
                         "Load for '%s' was cancelled during spawn; tearing the worker down",
@@ -919,14 +909,12 @@ class InferenceOrchestrator:
                     # A cancel can land while we were parked in _wait_response above.
                     # cancel_load (off the lifecycle gate) discards this model's loading
                     # marker BEFORE its teardown, so a Stop-loading that fired after the
-                    # worker queued its "loaded" reply -- which we can still consume from
-                    # the in-flight queue get during cancel_load's shutdown window -- is
-                    # only visible here as the marker's removal. Without this recheck the
-                    # block below would publish active_model_name/models for a model
-                    # /unload already reported cancelled, over a subprocess cancel_load
-                    # just killed. cancel_load's post-teardown re-clear cannot undo a
-                    # publish that lands after it returns, so observe the removal and abort
-                    # the publish; cancel_load owns (and performs) the subprocess teardown.
+                    # worker queued "loaded" (which we can still consume during cancel_load's
+                    # shutdown window) shows up here only as the marker's removal. Without
+                    # this recheck we would publish active_model_name/models for a model
+                    # /unload reported cancelled, over a subprocess cancel_load just killed;
+                    # its post-teardown re-clear cannot undo a publish that lands after it
+                    # returns. Observe the removal and abort; cancel_load owns teardown.
                     if model_name not in self.loading_models:
                         logger.info(
                             "Load for '%s' was cancelled while waiting for 'loaded'; "
@@ -938,11 +926,10 @@ class InferenceOrchestrator:
                         return False
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
-                    # A load always spawns a fresh subprocess holding only this
-                    # model, so mirror that exactly. A lingering stale name would pass
-                    # unload_model's "not in self.models" guard, and the worker's
-                    # absent-name fallback would then unload its *active* model
-                    # instead of the already-gone one.
+                    # A load always spawns a fresh subprocess holding only this model, so
+                    # mirror that. A lingering stale name would pass unload_model's "not in
+                    # self.models" guard, and the worker's absent-name fallback would unload
+                    # its *active* model, not the already-gone one.
                     self.models = {}
                     self.models[self.active_model_name] = {
                         "is_vision": model_info.get("is_vision", False),
@@ -1000,45 +987,40 @@ class InferenceOrchestrator:
             target,
         )
         # Discard the loading marker (and clear local state) BEFORE the teardown, not
-        # after. cancel_load runs off the lifecycle gate, concurrently with a load_model
-        # that rechecks this marker before each spawn to observe the cancel. But
-        # _shutdown_subprocess can block (up to ~1s tearing a live child down and joining
-        # the compare dispatcher), so discarding only after it leaves a long window in
-        # which that load_model reads the marker still set, passes its pre-spawn recheck,
-        # and spawns + loads the model after /unload already reported it cancelled. Clear
-        # first so the recheck sees the cancel as soon as we commit to it.
+        # after. cancel_load runs off the lifecycle gate, alongside a load_model that
+        # rechecks this marker before each spawn. But _shutdown_subprocess can block (~1s
+        # tearing a live child down and joining the dispatcher), so clearing only after
+        # leaves a window where load_model reads the marker still set, passes its pre-spawn
+        # recheck, and loads the model after /unload reported it cancelled. Clear first.
         self.loading_models.discard(target)
         self.active_model_name = None
         self.models.clear()
         self._shutdown_subprocess(timeout = 0.5)
         # Clear the local mirrors again AFTER the teardown. A racing off-gate load_model
         # may still be parked in _wait_response("loaded"): its worker already queued a
-        # successful "loaded" reply, so during the shutdown window above (the 0.5s cancel
-        # settle before the response queue is drained and nulled) that thread can consume
-        # the reply and repopulate active_model_name/models, undoing the pre-teardown
-        # clear. _shutdown_subprocess nulls the response queue but never touches those
-        # mirrors, so without this second clear /unload would report success while the
-        # backend keeps advertising a model whose worker was just killed. Once the queue is
-        # nulled no further "loaded" can be read, so re-clearing here wipes any such
-        # repopulation and leaves the backend advertising nothing loaded.
+        # "loaded" reply, so during the shutdown window above (the 0.5s settle before the
+        # response queue is drained and nulled) that thread can consume it and repopulate
+        # active_model_name/models, undoing the pre-teardown clear. _shutdown_subprocess
+        # nulls the queue but not the mirrors, so without this second clear /unload reports
+        # success while the backend still advertises a killed model. The nulled queue lets
+        # no further "loaded" through, so re-clearing here wipes any repopulation.
         self.active_model_name = None
         self.models.clear()
         return True
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
-        # active_model_name can differ in case from the raw name a client sends to
-        # /unload (the load path canonicalizes casing). Match case-insensitively and
-        # use the canonical spelling so the stale-name guard, unload command, and
-        # local-state cleanup below all target the loaded model instead of no-oping.
+        # active_model_name can differ in case from the client's raw /unload name (the
+        # load path canonicalizes casing). Match case-insensitively and use the canonical
+        # spelling so the guard, unload command, and cleanup below hit the loaded model.
         if (
             self.active_model_name is not None
             and model_name != self.active_model_name
             and model_name.lower() == self.active_model_name.lower()
         ):
             model_name = self.active_model_name
-        # In-flight load: tear its subprocess down (shares the loading-cancel logic
-        # with the off-gate /unload fast path). No worker command is sent here.
+        # In-flight load: tear its subprocess down (shared loading-cancel logic; no
+        # worker command sent).
         if self.cancel_load(model_name):
             return True
 
@@ -1050,29 +1032,27 @@ class InferenceOrchestrator:
             return True
 
         # Nothing loaded under this name: don't unload a stale model. The worker falls
-        # back to unloading its *active* model when the requested name is absent, so a
-        # stale unload (one that lost a race to a concurrent load) would hit the wrong one.
+        # back to unloading its *active* model when the name is absent, so a stale unload
+        # (lost a race to a concurrent load) would hit the wrong one.
         if model_name != self.active_model_name and model_name not in self.models:
             self.models.pop(model_name, None)
             return True
 
-        # The subprocess runs commands sequentially, so a bare unload queues behind
-        # a running generate (a 2-3 min hang). Cancel first (via the mp.Event the
-        # worker polls each token), then take _gen_lock to be the sole resp_queue
-        # reader, matching the GGUF backend.
+        # The subprocess runs commands sequentially, so a bare unload queues behind a
+        # running generate (a 2-3 min hang). Cancel first (via the mp.Event the worker
+        # polls each token), then take _gen_lock as sole resp_queue reader (like GGUF).
         self._unload_pending = True
         # Cancelling only the running generation isn't enough: the worker clears
-        # cancel_event at the start of every generate, so a queued generation would
-        # clear the cancel and run the outgoing model to completion. drain_event,
-        # never cleared by the worker, makes any generate dequeued during the unload skip.
+        # cancel_event at each generate start, so a queued one would clear it and run the
+        # outgoing model to completion. drain_event, never cleared, makes any generate
+        # dequeued during the unload skip.
         if self._drain_event is not None:
             self._drain_event.set()
         try:
             self._cancel_generation()
             acquired = self._gen_lock.acquire(timeout = _UNLOAD_GEN_LOCK_TIMEOUT)
             if not acquired:
-                # Wedged worker: tear the subprocess down to free the GPU; the
-                # next load spawns a fresh one.
+                # Wedged worker: tear the subprocess down to free the GPU (next load respawns).
                 logger.warning(
                     "Unload: generation did not yield %.1fs after cancel; "
                     "shutting the inference subprocess down to free the model",
@@ -1085,12 +1065,11 @@ class InferenceOrchestrator:
                 return True
 
             try:
-                # Stop the compare-mode dispatcher so it can't consume the "unloaded"
-                # reply off the shared resp_queue before we read it. A dispatched
-                # generation bypasses _gen_lock, so a wedged one slips past the acquire
-                # above; if the dispatcher is still active it still owns resp_queue and
-                # the queued unload hangs _wait_response behind the stuck generate. Mirror
-                # the wedged locked path: tear the subprocess down; the next load spawns fresh.
+                # Stop the compare-mode dispatcher so it can't consume the "unloaded" reply
+                # off resp_queue before we do. A dispatched generation bypasses _gen_lock, so
+                # a wedged one slips past the acquire above; if the dispatcher is still active
+                # it owns resp_queue and the queued unload hangs _wait_response behind the
+                # stuck generate. Mirror the wedged locked path: tear the subprocess down.
                 if not self._wait_dispatcher_idle():
                     logger.warning(
                         "Unload: compare-mode dispatcher still active after idle "
@@ -1111,7 +1090,6 @@ class InferenceOrchestrator:
                 )
                 self._wait_response("unloaded")
 
-                # Update local state
                 self.models.pop(model_name, None)
                 if self.active_model_name == model_name:
                     self.active_model_name = None
@@ -1326,10 +1304,10 @@ class InferenceOrchestrator:
         # consume and drop each other's token events. Hold _gen_lock across the
         # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
-            # Recheck under the lock: an unload we raced may have cleared/swapped the
-            # model while we waited. _unload_pending is reset after the lock releases, so
-            # it can read False by now; the active-model check catches that handoff and a
-            # reload that swapped in a different model, so we never generate on the wrong one.
+            # Recheck under the lock: an unload we raced may have cleared/swapped the model.
+            # _unload_pending resets after the lock releases, so it can read False by now;
+            # the active-model check catches that handoff and a reload that swapped models,
+            # so we never generate on the wrong one.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield "Error: model is being unloaded"
@@ -1404,12 +1382,11 @@ class InferenceOrchestrator:
         expected_model = self.active_model_name
 
         # Serialize under _gen_lock (sole resp_queue reader) and refuse to start on the
-        # outgoing model once an unload is pending, matching the text (generate_chat_response)
-        # and audio-input (_generate_audio_input_inner) paths. Without this a concurrent
-        # /audio/generate could run TTS on the model being switched out.
+        # outgoing model once an unload is pending, like the text and audio-input paths.
+        # Without this a concurrent /audio/generate could run TTS on a model being switched.
         with self._gen_lock:
-            # Recheck under the lock (see _generate_inner): a raced unload/switch may
-            # have cleared or swapped the model while we waited for the lock.
+            # Recheck under the lock (see _generate_inner): a raced unload/switch may have
+            # cleared or swapped the model while we waited.
             if self._unload_pending or self.active_model_name != expected_model:
                 raise RuntimeError("model is being unloaded")
 
@@ -1431,7 +1408,6 @@ class InferenceOrchestrator:
 
             self._send_cmd(cmd)
 
-            # Wait for audio_done or audio_error
             deadline = time.monotonic() + 120.0
             while time.monotonic() < deadline:
                 remaining = max(0.1, deadline - time.monotonic())
@@ -1526,8 +1502,8 @@ class InferenceOrchestrator:
         expected_model = self.active_model_name
 
         with self._gen_lock:
-            # Recheck under the lock (see _generate_inner): a raced unload/switch may
-            # have cleared or swapped the model while we waited for the lock.
+            # Recheck under the lock (see _generate_inner): a raced unload/switch may have
+            # cleared or swapped the model while we waited.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield "Error: model is being unloaded"
