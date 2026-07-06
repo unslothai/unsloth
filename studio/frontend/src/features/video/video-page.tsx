@@ -934,6 +934,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       speedMode,
       attentionBackend,
       transformerCache,
+      transformerQuant,
     ],
   );
 
