@@ -3692,6 +3692,116 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _prewarm_base_model_hub_cache(model, save_method = "merged_16bit", token = None):
+    """Download the 16-bit base weights into the persistent HF hub cache before the merge.
+
+    merge_and_overwrite_lora fetches missing shards with hf_hub_download(local_dir = ...),
+    which never populates the hub cache. When the merge directory is temporary (GGUF
+    checkpoint exports delete it after conversion), every export re-downloads the full
+    base model (#6890). Pre-warming the cache makes the first export download once and
+    later exports copy from the cache. Best-effort: any failure or skip falls back to
+    the streaming download. Disable with UNSLOTH_PREWARM_HUB_CACHE=0.
+    """
+    _false = ("0", "false", "no", "off")
+    if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
+        return
+    if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    _true = ("1", "true", "yes", "on")
+    if (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _true
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _true
+    ):
+        return
+    # Only the 16bit / mxfp4 merges download the base model; merged_4bit and lora do not.
+    if save_method not in ("merged_16bit", "mxfp4"):
+        return
+    if not isinstance(model, PeftModel):
+        return
+
+    try:
+        try:
+            model_name = get_model_name(model.config._name_or_path, load_in_4bit = False)
+        except Exception:
+            model_name = model.config._name_or_path
+        if not model_name or os.path.isdir(model_name):
+            return  # local checkpoints are copied, never downloaded
+
+        # The merge may swap a gpt-oss "-BF16" repo for its MXFP4 variant, so skip it.
+        if save_method == "mxfp4" and model_name.endswith("-BF16"):
+            return
+
+        from unsloth_zoo.saving_utils import determine_base_model_source
+        model_name, is_local_path, _, base_is_quantized, quant_type = (
+            determine_base_model_source(model_name, token)
+        )
+        if not model_name or is_local_path:
+            return
+        if base_is_quantized and quant_type in ("nf4", "fp4"):
+            return  # the 16bit merge refuses these bases; nothing worth caching
+
+        from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
+
+        # Mirror the zoo's shard listing (drop consolidated.safetensors when proper
+        # shards coexist) so the cached set is a superset of what the merge looks up.
+        shard_names = []
+        total_size_in_bytes = 0
+        for x in HfFileSystem(token = token).ls(model_name, detail = True):
+            if x["name"].endswith(".safetensors"):
+                shard_names.append((os.path.split(x["name"])[-1], int(x.get("size") or 0)))
+        if any(name != "consolidated.safetensors" for name, _ in shard_names):
+            shard_names = [x for x in shard_names if x[0] != "consolidated.safetensors"]
+        if not shard_names:
+            return
+        total_size_in_bytes = sum(size for _, size in shard_names)
+
+        try:
+            for filename, _ in shard_names:
+                hf_hub_download(
+                    repo_id = model_name,
+                    filename = filename,
+                    local_files_only = True,
+                    token = token,
+                )
+            return  # already fully cached
+        except Exception:
+            pass
+
+        # The cache copy is extra disk on top of the merge working copy; need room for both.
+        from huggingface_hub import constants as _hf_constants
+        cache_probe = os.path.expanduser(str(_hf_constants.HF_HUB_CACHE))
+        while cache_probe and not os.path.exists(cache_probe):
+            parent = os.path.dirname(cache_probe)
+            if parent == cache_probe:
+                break
+            cache_probe = parent
+        free_space = shutil.disk_usage(cache_probe).free if os.path.exists(cache_probe) else 0
+        if free_space < 2 * total_size_in_bytes:
+            print(
+                f"Unsloth: Not enough free disk to keep `{model_name}` in the Hugging Face "
+                f"cache (need ~{round(2 * total_size_in_bytes / 1024**3, 1)}GB free, have "
+                f"{round(free_space / 1024**3, 1)}GB). Downloading straight to the merge "
+                f"directory instead; the next export will re-download it."
+            )
+            return
+
+        print(
+            f"Unsloth: Downloading `{model_name}` into the Hugging Face cache so future "
+            f"exports skip the {round(total_size_in_bytes / 1024**3, 1)}GB download..."
+        )
+        snapshot_download(
+            repo_id = model_name,
+            allow_patterns = [name for name, _ in shard_names]
+            + ["model.safetensors.index.json", "tokenizer.model"],
+            token = token,
+        )
+    except Exception as e:
+        print(
+            f"Unsloth: Could not pre-cache the base model weights ({e}). "
+            f"Falling back to downloading into the merge directory."
+        )
+
+
 @torch.inference_mode
 def save_to_gguf_generic(
     model,
@@ -3886,6 +3996,7 @@ def unsloth_generic_save(
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     else:
+        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
