@@ -1065,6 +1065,12 @@ def write_opencode_config(
         return
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
+    disabled_providers = config.get("disabled_providers")
+    config["disabled_providers"] = (
+        [provider for provider in disabled_providers if provider != "unsloth"]
+        if isinstance(disabled_providers, list)
+        else []
+    )
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1373,7 +1379,8 @@ def opencode(
         serve = serve,
         launch = launch,
     )
-    command = ["opencode", *ctx.args]
+    opencode_model = f"unsloth/{entry['id']}"
+    command = ["opencode", "--model", opencode_model, *ctx.args]
     with _session_config("opencode", launch) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
@@ -1384,7 +1391,7 @@ def opencode(
         # pin (and --yolo permissions) would silently lose to a repo config. Carry the
         # settings that must win in OPENCODE_CONFIG_CONTENT, which outranks project
         # config; the API key stays in the private file, never in the printed env.
-        inline_config: dict = {"model": f"unsloth/{entry['id']}"}
+        inline_config: dict = {"model": opencode_model, "disabled_providers": []}
         if yolo:
             inline_config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
         env = {

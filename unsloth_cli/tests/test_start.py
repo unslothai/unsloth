@@ -1380,6 +1380,7 @@ def test_write_opencode_config_fresh(tmp_path):
         MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
     }
     assert config["model"] == f"unsloth/{MODEL['id']}"
+    assert config["disabled_providers"] == []
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
 
@@ -1387,11 +1388,18 @@ def test_write_opencode_config_fresh(tmp_path):
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "opencode.json"
     path.write_text(
-        json.dumps({"theme": "tokyonight", "provider": {"anthropic": {"name": "Anthropic"}}})
+        json.dumps(
+            {
+                "theme": "tokyonight",
+                "disabled_providers": ["ollama", "unsloth"],
+                "provider": {"anthropic": {"name": "Anthropic"}},
+            }
+        )
     )
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
+    assert config["disabled_providers"] == ["ollama"]
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
     assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
     before = path.read_text()
@@ -1406,9 +1414,26 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
     # OPENCODE_CONFIG overlay points at the session file, not the user's global config.
     _assert_env_set(result.output, "OPENCODE_CONFIG", str(config_path))
+    inline_config_text = (
+        result.output.split("OPENCODE_CONFIG_CONTENT", 1)[1]
+        .splitlines()[0]
+        .split("=", 1)[1]
+        .strip()
+        .strip('"')
+        .replace("`", "")
+    )
+    inline_config = json.loads(inline_config_text)
     config = json.loads(config_path.read_text())
     assert config["provider"]["unsloth"]["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["model"] == f"unsloth/{MODEL['id']}"
+    assert config["disabled_providers"] == []
+    assert inline_config["model"] == f"unsloth/{MODEL['id']}"
+    assert inline_config["disabled_providers"] == []
+    assert _launch_command(result.output)[:3] == [
+        "opencode",
+        "--model",
+        f"unsloth/{MODEL['id']}",
+    ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
