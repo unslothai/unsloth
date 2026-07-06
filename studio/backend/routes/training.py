@@ -25,10 +25,11 @@ try:
     from core.training import get_training_backend
     from core.training.resume import (
         can_resume_run,
+        find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        resume_run_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -39,10 +40,11 @@ except ImportError:
     from core.training import get_training_backend
     from core.training.resume import (
         can_resume_run,
+        find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        resume_run_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -194,11 +196,11 @@ async def start_training(
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
-            resume_run = get_resumable_run_by_output_dir(resume_output_dir)
+            resume_run = find_resumable_run(resume_output_dir)
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped run with saved trainer state.",
+                    detail = "Resume checkpoint must belong to a stopped or errored run with saved trainer state.",
                 )
             resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
             if not resume_checkpoint:
@@ -207,6 +209,8 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
+            # New files continue in the run dir even when a checkpoint-N was targeted.
+            resume_output_dir = resume_run_dir(resume_checkpoint)
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
@@ -602,9 +606,8 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 "loss": getattr(progress, "loss", None),
                 "learning_rate": getattr(progress, "learning_rate", None),
             }
-            output_dir = getattr(backend, "_output_dir", None)
-            if output_dir:
-                details["output_dir"] = output_dir
+            # Explicit null tells the client to drop a cached path after stop-without-save.
+            details["output_dir"] = getattr(backend, "_output_dir", None) or None
 
         # Metric history for chart recovery after SSE reconnection.
         metric_history = None

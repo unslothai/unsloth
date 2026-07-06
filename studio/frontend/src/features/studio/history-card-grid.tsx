@@ -78,13 +78,17 @@ function wasContinuedInVisibleRuns(
   run: TrainingRunSummary,
   runs: TrainingRunSummary[],
 ): boolean {
-  if (run.status !== "stopped" || !run.output_dir) return false;
+  if ((run.status !== "stopped" && run.status !== "error") || !run.output_dir)
+    return false;
   const startedAt = new Date(run.started_at).getTime();
   return runs.some(
     (other) =>
       other.id !== run.id &&
       other.output_dir === run.output_dir &&
-      (other.status === "stopped" || other.status === "completed") &&
+      (other.status === "stopped" ||
+        other.status === "completed" ||
+        other.status === "error" ||
+        other.status === "running") &&
       new Date(other.started_at).getTime() > startedAt,
   );
 }

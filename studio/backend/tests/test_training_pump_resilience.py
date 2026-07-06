@@ -310,6 +310,126 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     assert b._pump_running is False
 
 
+def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
+    # Interrupted stop-without-save: /status must not keep serving the cleared output_dir.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._should_stop = True
+    b._cancel_requested = True
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert b._output_dir is None
+    assert finalized.get("status") == "stopped"
+    assert finalized.get("output_dir") is None
+    assert finalized.get("clear_output_dir") is True
+
+
+def test_interrupted_stop_and_save_finalizes_as_error_with_output_dir(monkeypatch):
+    # The stop checkpoint never completed, so the run must not claim a clean
+    # stop; 'error' keeps any older checkpoint on crash-recovery terms.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._should_stop = True
+    b._cancel_requested = False
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert b._output_dir == "/out/x"
+    assert finalized.get("status") == "error"
+    assert "stop checkpoint" in finalized.get("error_message")
+    assert finalized.get("output_dir") == "/out/x"
+    assert finalized.get("clear_output_dir") is False
+
+
+class _RecordingQueue:
+    def __init__(self):
+        self.items = []
+
+    def put(self, item):
+        self.items.append(item)
+
+
+def test_shutdown_with_checkpoint_requests_save_then_terminates(monkeypatch):
+    # Server shutdown with a live run: stop-and-save goes out before force kill.
+    b = TrainingBackend()
+    events: list = []
+    monkeypatch.setattr(b, "force_terminate", lambda: events.append("terminate"))
+    b._proc = _FakeProc(alive = True)
+    b._stop_queue = _RecordingQueue()
+
+    b.shutdown_with_checkpoint(timeout = 1.0)
+
+    assert b._stop_queue.items == [{"type": "stop", "save": True}]
+    assert events == ["terminate"]
+
+
+def test_shutdown_with_checkpoint_skips_save_for_cancelled_run(monkeypatch):
+    # Stop-without-save was already requested; shutdown must not resurrect a save.
+    b = TrainingBackend()
+    monkeypatch.setattr(b, "force_terminate", lambda: None)
+    b._proc = _FakeProc(alive = True)
+    b._stop_queue = _RecordingQueue()
+    b._should_stop = True
+    b._cancel_requested = True
+
+    b.shutdown_with_checkpoint(timeout = 1.0)
+
+    assert b._stop_queue.items == []
+
+
+def test_shutdown_with_checkpoint_does_not_resend_inflight_stop(monkeypatch):
+    # A stop-and-save already in flight is awaited, not re-sent.
+    b = TrainingBackend()
+    events: list = []
+    monkeypatch.setattr(b, "force_terminate", lambda: events.append("terminate"))
+    b._proc = _FakeProc(alive = True)
+    b._stop_queue = _RecordingQueue()
+    b._should_stop = True
+
+    b.shutdown_with_checkpoint(timeout = 1.0)
+
+    assert b._stop_queue.items == []
+    assert events == ["terminate"]
+
+
+def test_shutdown_with_checkpoint_without_active_run(monkeypatch):
+    b = TrainingBackend()
+    events: list = []
+    monkeypatch.setattr(b, "force_terminate", lambda: events.append("terminate"))
+
+    b.shutdown_with_checkpoint(timeout = 1.0)
+
+    assert events == ["terminate"]
+
+
+def test_shutdown_with_checkpoint_zero_timeout_goes_straight_to_terminate(monkeypatch):
+    b = TrainingBackend()
+    events: list = []
+    monkeypatch.setattr(b, "force_terminate", lambda: events.append("terminate"))
+    b._proc = _FakeProc(alive = True)
+    b._stop_queue = _RecordingQueue()
+
+    b.shutdown_with_checkpoint(timeout = 0)
+
+    assert b._stop_queue.items == []
+    assert events == ["terminate"]
+
+
 def test_start_training_clears_stale_pump_running_flag():
     # A prior pump that died abnormally leaves _pump_running True. The next
     # start_training must clear it during reset so the start-time watchdog can't

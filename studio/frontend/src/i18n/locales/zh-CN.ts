@@ -614,6 +614,7 @@ export const zhCN = {
       scheduleEpochsTooltip: "完整遍历数据集的次数。设为 0 则按最大步数运行。",
       saveSteps: "保存步数",
       saveStepsTooltip: "每 N 步保存一次检查点。0 表示禁用。",
+      saveStepsNoResumeHint: "当前设置在训练过程中不会保存检查点，训练中断后将无法恢复。",
       evalSteps: "评估步数",
       evalStepsTooltip:
         "评估之间间隔占总训练步数的比例（0-1）。设为 0 则禁用评估。例如 0.01 = 每 1% 步评估一次。",
@@ -657,7 +658,8 @@ export const zhCN = {
       continueAction: "继续训练",
       cancelAction: "取消训练",
       stopTitle: "停止训练",
-      stopDescription: "选择如何停止当前训练运行。",
+      stopDescription:
+        "选择如何停止当前训练运行。“停止并保存”会写入检查点，之后可从该处恢复；“停止”则无法恢复。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止并保存",

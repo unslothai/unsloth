@@ -209,20 +209,27 @@ export function useTrainingActions() {
       const detail = await getTrainingRun(runId);
       const outputDir = detail.run.output_dir;
       if (!detail.run.can_resume || !outputDir) {
-        throw new Error("Only stopped runs with a saved checkpoint can be resumed.");
+        throw new Error("Only stopped or errored runs with a saved checkpoint can be resumed.");
       }
 
       primeNativeNotificationPermission().catch(() => undefined);
 
       const config = useTrainingConfigStore.getState();
       const savedConfig = detail.config as Partial<TrainingStartRequest>;
+      // Tokens are stripped from saved configs, so fall back to the current ones.
+      const wandbToken =
+        typeof savedConfig.wandb_token === "string" && savedConfig.wandb_token
+          ? savedConfig.wandb_token
+          : config.wandbToken.trim() || null;
       const payload = {
         ...savedConfig,
         hf_token:
           typeof savedConfig.hf_token === "string"
             ? savedConfig.hf_token
             : config.hfToken.trim() || null,
-        wandb_token: null,
+        wandb_token: wandbToken,
+        // W&B without a token hangs on interactive login in the worker.
+        enable_wandb: Boolean(savedConfig.enable_wandb) && wandbToken !== null,
         resume_from_checkpoint: outputDir,
       } as TrainingStartRequest;
 

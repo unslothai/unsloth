@@ -1806,7 +1806,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import resolve_output_dir, ensure_dir
 
-    output_dir = config.get("output_dir", "")
+    output_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
     if not output_dir:
         output_dir = build_default_output_dir_name(
             model_name,
@@ -1814,6 +1816,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
@@ -2040,6 +2043,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     trainer.add_eval_callback(_on_eval)
 
+    _opt_ref = [None]
+    _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
+
+    if callable(_orig_build_optimizer):
+
+        def _capture_optimizer(total_steps):
+            _opt_ref[0] = _orig_build_optimizer(total_steps)
+            return _opt_ref[0]
+
+        trainer._build_optimizer = _capture_optimizer
+
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
@@ -2053,6 +2067,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("status", status_message = "Saving model...")
         mx.synchronize()
         trainer.save_model(output_dir)
+        if trainer.stop_requested:
+            if not _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+                _send(
+                    "error",
+                    error = (
+                        "Failed to save a resumable checkpoint after stop. "
+                        "Model files were saved, but this run cannot be resumed."
+                    ),
+                    # Keep the error status so history explains the missing checkpoint.
+                    keep_error_status = True,
+                    # Older checkpoints are stale; resuming would roll back past this stop.
+                    resume_blocked = True,
+                )
+                return
         _send("complete", output_dir = output_dir, status_message = "Training completed")
 
     if tb_writer is not None:
@@ -2067,6 +2095,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
             pass
 
 
+def _install_worker_sigint_guard() -> None:
+    """Terminal Ctrl+C hits the whole process group. The first one is the
+    parent's stop-and-save window, so the worker must survive it; a second
+    matches the terminal's force-quit and exits immediately."""
+    import signal
+
+    seen = [False]
+
+    def _on_sigint(signum, frame):
+        if seen[0]:
+            os._exit(130)
+        seen[0] = True
+
+    try:
+        signal.signal(signal.SIGINT, _on_sigint)
+    except (ValueError, OSError):
+        pass
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2075,6 +2122,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
+    _install_worker_sigint_guard()
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
@@ -3045,6 +3093,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3162,6 +3211,62 @@ def _send_status(event_queue: Any, message: str) -> None:
             "ts": time.time(),
         }
     )
+
+
+def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
+    try:
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _mlx_output_has_resume_checkpoint(output_dir) -> bool:
+    path = Path(output_dir)
+    if (path / "trainer_state.json").is_file():
+        return True
+    return any(
+        (child / "trainer_state.json").is_file()
+        for child in path.glob("checkpoint-*")
+        if child.is_dir()
+    )
+
+
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    return (Path(output_dir) / f"checkpoint-{step}" / "trainer_state.json").is_file()
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a stop checkpoint; True when the current step has one on disk."""
+    step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
+    if step <= 0 or optimizer is None:
+        return False
+    ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    try:
+        ckpt_dir.mkdir(parents = True, exist_ok = True)
+        from unsloth_zoo.mlx.utils import (
+            save_optimizer_state,
+            save_trainable_adapters,
+            save_trainer_state,
+        )
+
+        save_trainable_adapters(trainer.model, str(ckpt_dir))
+        save_optimizer_state(optimizer, str(ckpt_dir))
+        save_trainer_state(
+            {
+                "global_step": step,
+                "train_loss_history": list(getattr(trainer, "_train_loss_history", [])),
+            },
+            str(ckpt_dir),
+        )
+        logger.info("Saved stop checkpoint to %s", ckpt_dir)
+    except Exception:
+        logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3528,6 +3633,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             config.get("project_name"),
         )
     output_dir = str(resolve_output_dir(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

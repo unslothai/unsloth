@@ -57,6 +57,24 @@ def normalize_resume_output_dir(path_value: str) -> str:
     return str(path)
 
 
+def resume_run_dir(resume_checkpoint: str) -> str:
+    """Run directory a resumed run continues in; new checkpoints nest under it."""
+    path = Path(resume_checkpoint)
+    return str(path.parent) if path.name.startswith("checkpoint-") else str(path)
+
+
+def find_resumable_run(resume_dir: str) -> Optional[dict]:
+    """DB lookup for a resume target; a checkpoint-N path maps to its parent run dir."""
+    from storage.studio_db import get_resumable_run_by_output_dir
+
+    run = get_resumable_run_by_output_dir(resume_dir)
+    if run is None:
+        path = Path(resume_dir)
+        if path.name.startswith("checkpoint-"):
+            run = get_resumable_run_by_output_dir(str(path.parent))
+    return run
+
+
 def _run_config(run: dict) -> dict:
     raw_config = run.get("config_json")
     if isinstance(raw_config, dict):
@@ -78,8 +96,16 @@ def _uses_s3_dataset(run: dict) -> bool:
 def can_resume_run(run: dict) -> bool:
     if run.get("resumed_later"):
         return False
+    # Set when a stop-and-save failed to write a current-step checkpoint.
+    if run.get("resume_blocked"):
+        return False
     if _uses_s3_dataset(run):
         return False
+
+    status = run.get("status")
+    if status == "error":
+        # A save-time crash can report final_step == total_steps; the checkpoint decides.
+        return has_resume_state(run.get("output_dir"))
 
     final_step = run.get("final_step")
     total_steps = run.get("total_steps")
@@ -89,8 +115,4 @@ def can_resume_run(run: dict) -> bool:
         or total_steps <= 0
         or final_step < total_steps
     )
-    return (
-        run.get("status") == "stopped"
-        and has_remaining_steps
-        and has_resume_state(run.get("output_dir"))
-    )
+    return status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))

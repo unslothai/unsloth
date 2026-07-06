@@ -30,6 +30,16 @@ def train(
         "--dry-run",
         help = "Show resolved config and exit without training.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help = "Resume from the newest checkpoint in the run's output-dir.",
+    ),
+    resume_from_checkpoint: Optional[str] = typer.Option(
+        None,
+        "--resume-from-checkpoint",
+        help = "Resume from a specific checkpoint or output directory.",
+    ),
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
@@ -52,12 +62,53 @@ def train(
     hf_token = hf_token or cfg.logging.hf_token
     wandb_token = wandb_token or cfg.logging.wandb_token
 
+    # Resolve resume target to an on-disk checkpoint (same validators as Studio).
+    resume_checkpoint: Optional[str] = None
+    if resume and resume_from_checkpoint:
+        typer.echo("Error: use either --resume or --resume-from-checkpoint, not both.", err = True)
+        raise typer.Exit(code = 2)
+
+    resume_target = resume_from_checkpoint or (str(cfg.training.output_dir) if resume else None)
+    if resume_target is not None:
+        from studio.backend.core.training.resume import (
+            get_resume_checkpoint_path,
+            normalize_resume_output_dir,
+            resume_run_dir,
+        )
+        from utils.paths import outputs_root
+
+        try:
+            resume_dir = normalize_resume_output_dir(resume_target)
+        except ValueError as e:
+            # The trainer only writes inside the outputs root, so checkpoints
+            # can only exist (and resume) there.
+            typer.echo(
+                f"Error: {e} Training runs write checkpoints under "
+                f"'{outputs_root()}'; pass a directory beneath it.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+
+        resume_checkpoint = get_resume_checkpoint_path(resume_dir)
+        if not resume_checkpoint:
+            typer.echo(
+                f"Error: no resumable checkpoint (with trainer_state.json) found under "
+                f"'{resume_dir}'.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+
+        # New checkpoints continue in the run dir, not inside checkpoint-N/.
+        cfg.training.output_dir = Path(resume_run_dir(resume_checkpoint))
+
     if dry_run:
         import yaml
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
+        if resume_checkpoint:
+            typer.echo(f"resume_from_checkpoint: {resume_checkpoint}")
         raise typer.Exit(code = 0)
 
     if not cfg.model:
@@ -116,6 +167,9 @@ def train(
 
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
+    training_kwargs["resume_from_checkpoint"] = resume_checkpoint
+    if resume_checkpoint:
+        typer.echo(f"Resuming from checkpoint: {resume_checkpoint}")
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
