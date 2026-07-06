@@ -51,10 +51,16 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     _changed=$(find "$SCRIPT_DIR/frontend" -maxdepth 1 \
         \( -name "*.json" -o -name "*.ts" -o -name "*.js" -o -name "*.mjs" -o -name "*.html" \) \
         -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
-    # Check src/ and public/ recursively
+    # Check src/ and public/ recursively (only dirs that exist; a slimmed
+    # layout that ships dist/ without src/ or public/ must not abort under set -e)
     if [ -z "$_changed" ]; then
-        _changed=$(find "$SCRIPT_DIR/frontend/src" "$SCRIPT_DIR/frontend/public" \
-            -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+        _src_dirs=()
+        [ -d "$SCRIPT_DIR/frontend/src" ] && _src_dirs+=("$SCRIPT_DIR/frontend/src")
+        [ -d "$SCRIPT_DIR/frontend/public" ] && _src_dirs+=("$SCRIPT_DIR/frontend/public")
+        if [ "${#_src_dirs[@]}" -gt 0 ]; then
+            _changed=$(find "${_src_dirs[@]}" \
+                -type f -newer "$SCRIPT_DIR/frontend/dist" -print -quit 2>/dev/null)
+        fi
     fi
     if [ -z "$_changed" ]; then
         _NEED_FRONTEND_BUILD=false
