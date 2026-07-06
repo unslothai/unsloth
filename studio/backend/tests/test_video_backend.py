@@ -599,3 +599,41 @@ def test_predownload_base_honors_cancel_between_files(monkeypatch):
     with pytest.raises(RuntimeError, match = "cancelled"):
         backend._predownload_base("base/repo", None, "pipeline")
     assert calls == []
+
+
+def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
+    # A local GGUF is admitted to the Video picker by its general.architecture, but its path
+    # name may carry no whole-segment family token (a renamed "model.gguf"). The loader must
+    # resolve the same family the picker offered by reading the arch, not only the name.
+    from core.inference import video as vid
+    from core.inference.video_families import detect_video_family
+
+    d = tmp_path / "my-videos"
+    d.mkdir()
+    (d / "model.gguf").write_bytes(b"GGUF")  # exists; content irrelevant (reader is patched)
+
+    # Name-only detection misses it (no "ltx" token in the path or filename).
+    assert detect_video_family(str(d)) is None
+    assert detect_video_family(f"{d}/model.gguf") is None
+
+    # ltxv arch resolves to the ltx-2 family via the arch fallback.
+    monkeypatch.setattr(
+        "utils.models.gguf_metadata.read_gguf_general_metadata",
+        lambda p: {"general.architecture": "ltxv"},
+    )
+    fam = vid._detect_load_family(str(d), "model.gguf", None)
+    assert fam is not None and fam.name == "ltx-2"
+
+    # A video arch with no backend family (wan) stays None -> the loader 400s as before.
+    monkeypatch.setattr(
+        "utils.models.gguf_metadata.read_gguf_general_metadata",
+        lambda p: {"general.architecture": "wan"},
+    )
+    assert vid._detect_load_family(str(d), "model.gguf", None) is None
+
+    # An explicit family_override skips the arch read entirely (worker parity).
+    monkeypatch.setattr(
+        "utils.models.gguf_metadata.read_gguf_general_metadata",
+        lambda p: {"general.architecture": "ltxv"},
+    )
+    assert vid._detect_load_family(str(d), "model.gguf", "ltx-2").name == "ltx-2"

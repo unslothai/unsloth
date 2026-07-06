@@ -812,3 +812,51 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
     except HTTPException as e:
         assert e.status_code == 400
         assert "Unload the model before deleting" in e.detail
+
+
+def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
+    # The cached-delete guard must refuse deleting a repo the Video backend has loaded (it
+    # shares the On-Device GGUF delete UI with chat/Images), so its GGUF can't be removed from
+    # under a live video pipeline -- the same invariant the three sibling guards enforce.
+    from fastapi import HTTPException
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+    import routes.inference as routes_inference
+
+    # Chat, orchestrator, and Images all report nothing loaded; only Video holds the repo.
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "get_video_backend",
+        lambda: SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "unsloth/LTX-2.3-GGUF"}),
+    )
+
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "unsloth/LTX-2.3-GGUF",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException refusing the delete"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail

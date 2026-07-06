@@ -119,6 +119,26 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_VIDEO_REPOS
 
 
+def _local_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
+    """``general.architecture`` of a LOCAL GGUF pick (``repo_id`` is a directory), or None.
+    The Video picker admits a local GGUF by its arch (not its name), so a renamed file whose
+    path carries no family token still shows up; reading the arch lets the loader resolve the
+    same family the picker offered. Header-only, bounds-checked read (no-op for a hub repo id
+    whose path does not exist)."""
+    try:
+        from pathlib import Path
+
+        path = Path(repo_id).expanduser() / gguf_filename
+        if not path.is_file():
+            return None
+        from utils.models.gguf_metadata import read_gguf_general_metadata
+
+        arch = (read_gguf_general_metadata(str(path)) or {}).get("general.architecture")
+        return arch.strip() if isinstance(arch, str) and arch.strip() else None
+    except Exception:  # noqa: BLE001 -- a header read glitch just falls through to name detection
+        return None
+
+
 def _detect_load_family(
     repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
@@ -126,11 +146,21 @@ def _detect_load_family(
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
-    return detect_video_family(repo_id, family_override) or (
+    fam = detect_video_family(repo_id, family_override) or (
         detect_video_family(f"{repo_id}/{gguf_filename}")
         if gguf_filename and not family_override
         else None
     )
+    if fam is None and gguf_filename and not family_override:
+        # The picker admits a local GGUF by its general.architecture, but its path/name may
+        # carry no whole-segment family token (e.g. a renamed "model.gguf"), so the name-based
+        # detection above misses it. Resolve the same family the picker offered by reading the
+        # arch -- its string ("ltxv") is a family alias. A video arch with no backend family
+        # (e.g. "wan") still yields None, so an unsupported pick 400s exactly as before.
+        arch = _local_gguf_arch(repo_id, gguf_filename)
+        if arch:
+            fam = detect_video_family(repo_id, override = arch)
+    return fam
 
 
 def _ensure_mp4_encoder_available() -> None:

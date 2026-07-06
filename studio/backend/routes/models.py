@@ -3516,6 +3516,25 @@ async def delete_cached_model(
     except Exception:
         pass
 
+    # And refuse if the Video backend has this repo loaded: it shares the On-Device GGUF
+    # delete UI, so without this guard a loaded video GGUF could be removed from under a live
+    # pipeline -- the same invariant the three guards above enforce. Repo-level match.
+    try:
+        from core.inference.video import get_video_backend
+
+        video_status = get_video_backend().status()
+        if video_status.get("loaded") and video_status.get("repo_id"):
+            loaded_id = str(video_status["repo_id"]).lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     try:
         cache_scans = _all_hf_cache_scans()
 
