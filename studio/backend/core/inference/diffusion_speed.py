@@ -374,7 +374,12 @@ def _enable_fp16_accumulation(
     process-wide flag to its prior value on unload."""
     import os
 
-    if os.environ.get("UNSLOTH_DISABLE_FP16_ACCUM", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("UNSLOTH_DISABLE_FP16_ACCUM", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         return False
     name = str(getattr(family, "name", family or "")).lower()
     if name in _FP16_ACCUM_DENY:
