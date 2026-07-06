@@ -19,10 +19,21 @@ import shutil
 CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi")
 
 
+def _is_on_path(agent: str) -> bool:
+    # shutil.which is documented to return None on a miss, but PATH lookups can
+    # still raise (e.g. a permission error while probing a directory entry);
+    # this is an advisory check, so a lookup failure should read as "not
+    # installed" instead of breaking the settings endpoint.
+    try:
+        return shutil.which(agent) is not None
+    except OSError:
+        return False
+
+
 def detect_installed_coding_agents() -> list[str]:
     """Return the subset of CODING_AGENTS whose CLI binary is on PATH.
 
     Order follows CODING_AGENTS, not discovery order, so callers can treat the
     first entry as the preferred default among the installed agents.
     """
-    return [agent for agent in CODING_AGENTS if shutil.which(agent)]
+    return [agent for agent in CODING_AGENTS if _is_on_path(agent)]

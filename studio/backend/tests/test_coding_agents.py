@@ -35,3 +35,16 @@ def test_preserves_declared_order_regardless_of_path_lookup_order():
         side_effect = lambda name: name if name in ("pi", "claude", "hermes") else None,
     ):
         assert detect_installed_coding_agents() == ["claude", "hermes", "pi"]
+
+
+def test_treats_a_path_lookup_error_as_not_installed():
+    # An advisory check: shutil.which raising for one entry (e.g. a permission
+    # error walking a PATH directory) should not take down the whole endpoint,
+    # and should not stop the remaining agents from being checked.
+    def flaky_which(name: str):
+        if name == "codex":
+            raise OSError("permission denied")
+        return name if name == "claude" else None
+
+    with patch("utils.coding_agents.shutil.which", side_effect = flaky_which):
+        assert detect_installed_coding_agents() == ["claude"]

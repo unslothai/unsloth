@@ -177,7 +177,7 @@ def update_helper_precache(
 
 class CodingAgentsResponse(BaseModel):
     # All agents `unsloth start` supports, in the CLI's declared order.
-    agents: list[str] = list(CODING_AGENTS)
+    agents: tuple[str, ...] = CODING_AGENTS
     # Subset of `agents` whose CLI binary was found on PATH; the frontend uses
     # this to default the API-keys panel to a command the user can run as-is.
     detected: list[str]

@@ -25,7 +25,7 @@ import {
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
@@ -468,6 +468,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [availableAgents, setAvailableAgents] =
     useState<string[]>(DEFAULT_AGENTS);
   const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
+  // True once the user has picked an agent themselves; guards the detection
+  // effect below from clobbering that choice if it resolves afterward.
+  const agentPickedByUserRef = useRef(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
@@ -486,14 +489,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
         if (cancelled) return;
         setAvailableAgents(info.agents);
         setDetectedAgents(info.detected);
-        // Only steer the default once: prefer an agent that's actually
-        // installed over the hardcoded "claude" starting point, but never
-        // override a choice the user has already made in this session.
-        setAgent((current) =>
-          info.detected.length > 0 && !info.detected.includes(current)
-            ? info.detected[0]
-            : current,
-        );
+        // Prefer an agent that's actually installed over the hardcoded
+        // "claude" starting point, but never override a choice the user
+        // already made -- including one made while this request was in
+        // flight, which a value comparison against "claude" alone would miss.
+        if (!agentPickedByUserRef.current && info.detected.length > 0) {
+          setAgent(info.detected[0]);
+        }
       })
       .catch(() => {
         // Best-effort: keep the default agent list and let the user pick manually.
@@ -767,7 +769,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 <button
                   key={id}
                   type="button"
-                  onClick={() => setAgent(id)}
+                  onClick={() => {
+                    agentPickedByUserRef.current = true;
+                    setAgent(id);
+                  }}
                   aria-pressed={active}
                   title={
                     installed
