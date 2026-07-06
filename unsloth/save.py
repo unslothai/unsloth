@@ -3788,7 +3788,6 @@ def _prewarm_base_model_hub_cache(
             shard_names = [x for x in shard_names if x[0] != "consolidated.safetensors"]
         if not shard_names:
             return
-        total_size_in_bytes = sum(size for _, size in shard_names)
 
         try:
             for filename, _ in shard_names:
@@ -3802,6 +3801,32 @@ def _prewarm_base_model_hub_cache(
             return  # already fully cached
         except Exception:
             pass
+
+        # Mirror the merge's index filter (only needed on the download path): some repos ship
+        # a leftover shard set the index does not reference; the merge keeps only indexed
+        # shards, so cache only those, else the disk gate over-counts (can skip) and
+        # snapshot_download fetches unused shards.
+        if len(shard_names) > 1:
+            try:
+                import json as _json
+
+                _idx = hf_hub_download(
+                    repo_id = model_name,
+                    filename = "model.safetensors.index.json",
+                    cache_dir = hub_cache_dir,
+                    token = token,
+                )
+                with open(_idx, encoding = "utf-8") as _f:
+                    _indexed = {
+                        os.path.split(v)[-1] for v in _json.load(_f).get("weight_map", {}).values()
+                    }
+                if _indexed and not {n for n, _ in shard_names}.issubset(_indexed):
+                    _kept = [x for x in shard_names if x[0] in _indexed]
+                    if _kept:
+                        shard_names = _kept
+            except Exception:
+                pass
+        total_size_in_bytes = sum(size for _, size in shard_names)
 
         # The cache copy is extra disk on top of the merge working copy; need room for both.
         from huggingface_hub import constants as _hf_constants

@@ -16,6 +16,7 @@ source via ast and exec it against fakes, mirroring the other GPU-free tests.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import types
 from pathlib import Path
@@ -76,6 +77,7 @@ def _build_env(
     live_hub_cache = "__same__",
     fp8_sibling = None,
     sibling_source = None,
+    index_weight_map = None,
 ):
     """Exec the extracted helper with stubbed collaborators; returns (fn, stubs)."""
     shards = (
@@ -106,6 +108,23 @@ def _build_env(
     hf_hub_download = _Recorder(result = str(tmp_path / "cached"))
     if not cached:
         hf_hub_download.exc = _LocalMiss("not cached")
+    # Serve model.safetensors.index.json (the merge's shard filter) while shard cache
+    # probes still miss, so the index-filter path can be exercised without a network.
+    if index_weight_map is not None:
+        _idx_path = tmp_path / "model.safetensors.index.json"
+        _idx_path.write_text(json.dumps({"weight_map": index_weight_map}))
+
+        def _hub_dl(
+            repo_id = None,
+            filename = None,
+            **kw,
+        ):
+            if filename == "model.safetensors.index.json":
+                return str(_idx_path)
+            raise _LocalMiss("not cached")
+
+        hf_hub_download.exc = None
+        hf_hub_download.results_fn = _hub_dl
     snapshot_download = _Recorder()
     determine_base_model_source = _Recorder(result = base_source)
     # For the FP8 -> 16bit sibling swap: return the sibling's (16bit) source when the
@@ -395,3 +414,47 @@ def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path)
     fn(_FakePeftModel(name_or_path = "unsloth/Model-FP8"), save_method = "merged_16bit")
     assert len(stubs.snapshot_download.calls) == 1
     assert stubs.snapshot_download.calls[0][1]["repo_id"] == "unsloth/Model-FP8"
+
+
+def test_prewarm_filters_shards_through_index(monkeypatch, tmp_path):
+    # A repo with a leftover shard not referenced by the index: the merge keeps only the
+    # indexed shards, so the pre-warm must too (else the disk gate over-counts and
+    # snapshot_download fetches the unused leftover).
+    fn, stubs = _build_env(
+        monkeypatch,
+        tmp_path,
+        shards = [
+            ("model-00001-of-00002.safetensors", 10 * 1024**3),
+            ("model-00002-of-00002.safetensors", 10 * 1024**3),
+            ("leftover-00001-of-00001.safetensors", 10 * 1024**3),
+        ],
+        index_weight_map = {
+            "a.weight": "model-00001-of-00002.safetensors",
+            "b.weight": "model-00002-of-00002.safetensors",
+        },
+    )
+    fn(_FakePeftModel(), save_method = "merged_16bit")
+    allow = stubs.snapshot_download.calls[0][1]["allow_patterns"]
+    assert "leftover-00001-of-00001.safetensors" not in allow
+    assert "model-00001-of-00002.safetensors" in allow
+    assert "model-00002-of-00002.safetensors" in allow
+
+
+def test_prewarm_keeps_all_shards_when_index_matches(monkeypatch, tmp_path):
+    # No leftover: every listed shard is indexed, so none are dropped.
+    fn, stubs = _build_env(
+        monkeypatch,
+        tmp_path,
+        shards = [
+            ("model-00001-of-00002.safetensors", 10 * 1024**3),
+            ("model-00002-of-00002.safetensors", 10 * 1024**3),
+        ],
+        index_weight_map = {
+            "a.weight": "model-00001-of-00002.safetensors",
+            "b.weight": "model-00002-of-00002.safetensors",
+        },
+    )
+    fn(_FakePeftModel(), save_method = "merged_16bit")
+    allow = stubs.snapshot_download.calls[0][1]["allow_patterns"]
+    assert "model-00001-of-00002.safetensors" in allow
+    assert "model-00002-of-00002.safetensors" in allow
