@@ -90,14 +90,12 @@ def render_native_template(
     so a gated/private model's native template can still be fetched (otherwise the
     fallback fails silently and keeps the override prompt that dropped tools).
     """
-    # ``apply_fn`` lets a backend inject its own render (e.g. one that peels
-    # template-rejected kwargs); defaults to the dependency-light module helper.
+    # ``apply_fn`` lets a backend inject its own render; defaults to the module helper.
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
     native_tpl = model_info.get("native_chat_template")
     if native_tpl is None:
-        # For a LoRA adapter the native chat template lives on the base model;
-        # active_model_name is the adapter id/path and often ships no template.
+        # A LoRA adapter's native template lives on the base model, not the adapter id.
         template_source = model_info.get("base_model") or active_model_name
         try:
             from transformers import AutoTokenizer
@@ -112,9 +110,8 @@ def render_native_template(
                 template_source,
                 exc,
             )
-            # A failed FETCH is not "no template": caching False would pin the
-            # tool-dropping override for the session. Leave the sentinel unset so
-            # the next call retries; only definitive loads are cached below.
+            # A failed fetch is not "no template": caching False would pin the
+            # tool-dropping override. Leave the sentinel unset so the next call retries.
             return None
         model_info["native_chat_template"] = native_tpl
     if not native_tpl:
@@ -189,9 +186,8 @@ def render_with_native_template_fallback(
         return formatted_prompt
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
-    # The no-tools probe detects whether the live template dropped the schema. A
-    # template that REQUIRES tools can raise here; on any error keep the
-    # already-valid tools prompt rather than losing the schema.
+    # Probe whether the live template dropped the schema. A tools-requiring template
+    # can raise here; on any error keep the valid tools prompt rather than lose it.
     try:
         probe_no_tools = apply_fn(
             tokenizer,

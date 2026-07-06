@@ -1491,10 +1491,9 @@ def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
 
 
 def test_long_gemma_tool_name_is_not_streamed_as_content():
-    # A tool name longer than the small buffer cap (OpenAI allows 64 chars, MCP
-    # names are longer) must still be held: the ``call:NAME`` prefix keeps
-    # buffering until ``{`` instead of leaking ``call:longname`` as visible text
-    # before the end-of-turn parser executes it.
+    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer)
+    # must still be held: the ``call:NAME`` prefix keeps buffering until ``{``
+    # instead of leaking ``call:longname`` as visible text.
     long_name = "mcp__github__list_repository_issues"  # 35 chars
     turns = iter([list('call:%s{repo:"octo/hello"}' % long_name), ["Done."]])
 

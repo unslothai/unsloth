@@ -402,7 +402,7 @@ def test_strips_bare_kimi_call_without_section_wrapper():
     "text",
     [
         # Prose that merely names a Kimi/DeepSeek marker (no real call follows) must
-        # survive: the call-shaped lookahead only fires on a real call or a bare EOF
+        # survive: the call-shaped lookahead fires only on a real call or a bare EOF
         # fragment, so an answer discussing the protocol is never truncated.
         "See <|tool_call_begin|> in the docs. More prose after it.",
         "The <|tool_calls_section_begin|> marker opens a batch. Read on.",

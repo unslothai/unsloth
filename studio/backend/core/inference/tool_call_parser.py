@@ -89,10 +89,9 @@ _TOOL_CLOSED_PATS = [
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*$', re.DOTALL),
-    # The bare-word markers drop a trailing truncated call only when what
-    # follows looks like that family's call start -- a prose answer mentioning
-    # the marker (``See [TOOL_CALLS] docs...``) must not lose everything after
-    # it. A marker at end-of-text is a bare fragment and still drops.
+    # Bare-word markers drop a trailing truncated call only when what follows
+    # looks like that family's call start; a prose answer mentioning the marker
+    # (``See [TOOL_CALLS] docs...``) keeps its tail. A bare marker at EOF drops.
     re.compile(r"<\|tool_call>(?=\s*call\s*:|\s*$).*$", re.DOTALL),
     re.compile(
         r"\[TOOL_CALLS\](?=\s*(?:[\[{]|[A-Za-z_][\w.\-]*[\[{])|\s*$).*$",
@@ -596,14 +595,12 @@ def strip_tool_markup(
     if final:
         text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
     # Scan-strip the function-XML form (parser-accurate: a literal ``<function=...>``
-    # inside a parameter value is data, not a call), then the remaining regex arms
-    # cover the other formats. The function regex arms stay in the pattern lists for
-    # the streaming callers but no-op here once the scan ran.
+    # inside a value is data, not a call). The remaining regex arms cover the other
+    # formats; the function regex arms stay for streaming callers but no-op here.
     text = _strip_function_xml_calls(text, final = final)
-    # GLM 4.x <tool_call>NAME<arg_key>..<arg_value>..</tool_call>: scan to the call's
-    # real close so a literal </tool_call> inside an arg value is data, not a leak
-    # (the regex <tool_call>.*?</tool_call> arm would stop at that literal). Qwen
-    # <tool_call>{json} is left to the regex arms.
+    # GLM 4.x <tool_call>NAME<arg_key>..</tool_call>: scan to the call's real close so
+    # a literal </tool_call> inside a value is data, not a leak (the lazy regex arm
+    # would stop there). Qwen <tool_call>{json} is left to the regex arms.
     text = _strip_glm_calls(text, final = final)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
@@ -615,11 +612,9 @@ def has_tool_signal(text: str) -> bool:
     return any(s in text for s in TOOL_XML_SIGNALS)
 
 
-# A Qwen/Hermes ``<tool_call>`` or ``<function=...>`` envelope whose arguments
-# contain literal DeepSeek/Kimi markers (e.g. a user asking about that syntax)
-# must be parsed as the OUTER call, not the embedded marker. Detect that such an
-# envelope opens before the first DeepSeek/Kimi marker so the marker pre-pass is
-# skipped for it.
+# A Qwen/Hermes ``<tool_call>``/``<function=...>`` envelope whose arguments carry
+# literal DeepSeek/Kimi markers must parse as the OUTER call, not the embedded
+# marker. Detect it opening before the first marker so the pre-pass skips it.
 _EMBEDDED_MARKER_RE = re.compile(
     _DEEPSEEK_OPEN_RE_SRC + "|" + re.escape(_KIMI_SECTION_BEGIN) + "|" + re.escape(_KIMI_CALL_BEGIN)
 )
@@ -627,9 +622,8 @@ _EMBEDDED_MARKER_RE = re.compile(
 # embedding a DeepSeek/Kimi marker must not be hijacked by the marker pre-pass.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(r'<tool_call>|<function(?:=|\s+name=")|<\|tool_call>')
 # CLOSED outer envelopes, each spanning to its REAL final close so a literal
-# ``</tool_call>``/``</function>`` inside a value is data. A real-close
-# ``<tool_call>`` pattern is used here (the strip form is lazy); wrapped Gemma
-# counts too since quoted DS/Kimi examples in its strings are data.
+# ``</tool_call>``/``</function>`` inside a value is data (real-close pattern, not
+# the lazy strip form). Wrapped Gemma counts too; its quoted examples are data.
 _OUTER_ENVELOPE_CLOSED_PATS = (
     re.compile(r"<tool_call>(?:(?!<tool_call>).)*</tool_call>", re.DOTALL),
     _TOOL_CLOSED_PATS[1],
@@ -746,11 +740,10 @@ def _first_foreign_tool_signal(content: str) -> int | None:
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None and (first is None or attr.start() < first):
         first = attr.start()
-    # DeepSeek/Kimi markers are foreign to a JSON envelope too: their pre-pass
-    # runs before the bare-JSON parser, so a marker literal inside a leading
-    # object must route through the same guard (and, for a disabled object,
-    # the same drop-and-parse-the-tail recursion, so a real DeepSeek/Kimi call
-    # AFTER the object is still reached).
+    # DeepSeek/Kimi markers are foreign to a JSON envelope too: their pre-pass runs
+    # before the bare-JSON parser, so a marker inside a leading object routes through
+    # the same guard (and, if disabled, the same drop-and-parse-the-tail recursion,
+    # so a real call AFTER the object is still reached).
     marker = _EMBEDDED_MARKER_RE.search(content)
     if marker is not None and (first is None or marker.start() < first):
         first = marker.start()
@@ -797,11 +790,9 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first_xml is None or trig < first_xml):
         first_xml = trig
-    # Inside the balanced body the signal is quoted argument data; AFTER the
-    # closed object the leading call still owns the turn in document order
-    # (mirrors the leading-Mistral rule above). A non-call object takes the
-    # decline path: it is dropped and only the tail parsed, so a real call
-    # after it still wins.
+    # Inside the balanced body the signal is quoted data; after the closed object
+    # the leading call still owns the turn (mirrors the leading-Mistral rule). A
+    # non-call object is dropped and only its tail parsed, so a later call wins.
     return first_xml is not None and i < first_xml
 
 
@@ -972,11 +963,9 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # A leading MiniCPM/MiniMax attribute-form call owns the turn the same
-    # way: tool_healing does not know the <function name="..."> wrapper, so
-    # without this gate a <tool_call> literal quoted inside its parameter
-    # would be promoted over the outer call. Any other signal before the
-    # attribute opener keeps the normal order.
+    # A leading MiniCPM/MiniMax attribute-form call owns the turn: tool_healing
+    # does not know the <function name="..."> wrapper, so a <tool_call> quoted in
+    # its parameter would beat the outer call. Any earlier signal keeps normal order.
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None:
         first_other = None
@@ -1014,11 +1003,9 @@ def parse_tool_calls_from_text(
         if calls:
             return calls
 
-    # Llama-3.2 bare ``{"name":..., "parameters":...}`` (strict shape; prose is
-    # untouched). Runs before the markerless Gemma scan: it only matches a
-    # LEADING call object, which owns the turn in document order, so an enabled
-    # ``call:NAME{...}`` quoted in its arguments stays data. A leading Gemma
-    # call never starts with ``{`` and is unaffected.
+    # Llama-3.2 bare ``{"name":..., "parameters":...}`` (strict shape; prose
+    # untouched). Only matches a LEADING call object, which owns the turn, so an
+    # enabled ``call:NAME{...}`` in its arguments stays data (Gemma never starts ``{``).
     calls = _parse_llama3_bare_json(
         content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
     )
@@ -1732,11 +1719,9 @@ def _parse_gemma_tool_calls(
     indistinguishable from prose documenting the syntax, so a disabled/example
     name must not be stolen as a call. ``None`` keeps the name-agnostic behaviour."""
     out: list[dict] = []
-    # The WRAPPED form (incl. strict + nested-marker handling) is owned by
-    # tool_healing, which runs first: defer content carrying a wrapped opener.
-    # Marker literals alone are not enough -- a wrapper-less call merely
-    # mentioning ``<|tool_call>`` has nothing tool_healing can parse, and
-    # deferring it would lose the call.
+    # The WRAPPED form (strict + nested-marker handling) is tool_healing's, which
+    # runs first: defer content with a wrapped opener. A marker literal alone is not
+    # enough -- a wrapper-less call mentioning ``<|tool_call>`` would be lost if deferred.
     if _GEMMA_TC_RE.search(content):
         return out
     # A whole-content JSON value is a structured answer: quoted examples inside
@@ -2345,9 +2330,8 @@ def _parse_deepseek_tool_calls(
             pos = brace_end + 1
             continue
         # The closing fence + <｜tool▁call▁end｜> must IMMEDIATELY follow the JSON:
-        # an unbounded search would land on a LATER call's terminator and skip it.
-        # Absent close: heal and advance past the JSON (strict rejects); either
-        # way later well-formed calls are kept, matching the V3/Kimi parsers.
+        # an unbounded search would land on a LATER call's terminator. Absent close:
+        # heal past the JSON (strict rejects); later well-formed calls are still kept.
         after = brace_end + 1
         while after < len(body) and body[after] in " \t\r\n":
             after += 1
@@ -2490,10 +2474,9 @@ def _parse_glm_tool_calls(
                 if not allow_incomplete:
                     valid = False
                     break
-                # Bound the healed value at the next structural tag, not EOF: a
-                # value missing only its </arg_value> must not swallow the markup
-                # and everything after it. Resuming at the tag lets the block
-                # close normally.
+                # Bound the healed value at the next structural tag, not EOF: a value
+                # missing only its </arg_value> must not swallow the markup after it.
+                # Resuming at the tag lets the block close normally.
                 nk = content.find(_GLM_ARG_KEY_OPEN, vs)
                 tc = content.find(_GLM_TC_CLOSE, vs)
                 bounds = [b for b in (nk, tc) if b >= 0]

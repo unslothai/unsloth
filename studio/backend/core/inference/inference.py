@@ -221,8 +221,8 @@ class InferenceBackend:
         gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
-        # Keep the load token so the native-template fallback can fetch a
-        # gated/private model's repo template later (during generation).
+        # Keep the token so the native-template fallback can fetch a
+        # gated model's repo template later during generation.
         self._hf_token = hf_token
         # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
         if max_seq_length <= 0:
@@ -251,8 +251,8 @@ class InferenceBackend:
             )
 
             self.models[model_name] = {
-                # Per-model load token: the native-template fallback must use the
-                # token this model was loaded with, not whichever model loaded last.
+                # Per-model token: the native-template fallback must use the
+                # token this model was loaded with, not whichever loaded last.
                 "hf_token": hf_token,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,

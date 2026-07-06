@@ -104,8 +104,8 @@ class MLXInferenceBackend:
     ) -> bool:
         import mlx.core as mx
 
-        # Keep the load token so the native-template fallback can fetch a
-        # gated/private model's repo template later (during generation).
+        # Keep the token so the native-template fallback can fetch a
+        # gated model's repo template later during generation.
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
@@ -171,8 +171,7 @@ class MLXInferenceBackend:
 
         self.active_model_name = model_name
         self.models[model_name] = {
-            # Per-model load token for the native-template fallback (matches the
-            # transformers backend).
+            # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
             "model": self._model,
             "tokenizer": self._tokenizer,
@@ -379,12 +378,11 @@ class MLXInferenceBackend:
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
-        # If tools were requested but the (possibly overridden) template ignored
-        # them, fall back to the model's native template -- same parity fix the
-        # transformers backend applies, so MLX text models keep advertising tools.
-        # ``self._tokenizer`` is this entry's ``model_info["tokenizer"]``, so the
-        # probe and native render use the same renderer. (The VLM path renders via
-        # the processor for image tokens and is intentionally not wired here.)
+        # Same parity fix as the transformers backend: if the template dropped the
+        # requested tools, fall back to the native template so MLX text models keep
+        # advertising them. ``self._tokenizer`` is this entry's model_info tokenizer,
+        # so probe and native render share a renderer. (The VLM path renders via the
+        # processor for image tokens and is intentionally not wired here.)
         model_info = self.models.get(self.active_model_name, {})
         prompt = render_with_native_template_fallback(
             formatted_prompt = prompt,

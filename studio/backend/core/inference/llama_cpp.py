@@ -242,10 +242,9 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
-# Cap on tool calls executed from a single TEXTUAL-fallback turn (mirrors the
-# safetensors loop). Structured delta.tool_calls are grammar-bounded by
-# llama-server; text parsed from content is not, so one runaway turn could fan
-# out into dozens of executions/events without this.
+# Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
+# loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
+# parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
     r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
@@ -560,10 +559,8 @@ _TOOL_TEMPLATE_MARKERS = (
     "'role' == 'tool'",
     'message.role == "tool"',
     "message.role == 'tool'",
-    # DeepSeek-style: subscripted access + tool_calls field checks.
-    # DeepSeek's chat template has no top-level ``{% if tools %}`` block
-    # and uses ``message['role'] == 'tool'`` plus ``message['tool_calls']
-    # is defined`` to gate the emission.
+    # DeepSeek: no top-level ``{% if tools %}`` block; it gates emission on
+    # ``message['role'] == 'tool'`` plus ``message['tool_calls'] is defined``.
     "message['role'] == 'tool'",
     'message["role"] == "tool"',
     "message['tool_calls']",
@@ -8447,9 +8444,8 @@ class LlamaCppBackend:
             if not (auto_heal_tool_calls or force):
                 return text
             # Shared parser patterns (not the legacy tool_healing set) so textual
-            # Mistral/python_tag calls entering DRAINING never leak. Balanced
-            # strips first (nested JSON removed whole); no final trim so
-            # incremental length comparisons hold.
+            # Mistral/python_tag calls entering DRAINING never leak. Balanced strips
+            # first (nested JSON removed whole); no final trim so length compares hold.
             text = _strip_mistral_closed_calls(text)
             text = _strip_gemma_wrapperless_calls(text, _enabled_tool_names)
             # Parser-accurate scans close at each call's REAL terminator before
@@ -8843,10 +8839,9 @@ class LlamaCppBackend:
                                                 is_prefix = True
                                                 break
 
-                                        # Signal-less call shapes (mirror the
-                                        # safetensors loop): Llama-3.2 bare
-                                        # {"name":..} and Gemma call:NAME{...}
-                                        # would otherwise stream raw.
+                                        # Signal-less call shapes (mirror the safetensors
+                                        # loop): Llama-3.2 bare {"name":..} and Gemma
+                                        # call:NAME{...} would otherwise stream raw.
                                         _hold_buffer = False
                                         # Whole buffer is the call (no visible prefix) -- drain silently.
                                         _drain_silently = False
@@ -8859,9 +8854,9 @@ class LlamaCppBackend:
                                                     elif _looks_like_enabled_bare_json(
                                                         _bare, _enabled_tool_names
                                                     ):
-                                                        # Oversized still-open enabled call:
-                                                        # drain rather than leak; a giant
-                                                        # ordinary JSON answer still streams.
+                                                        # Oversized still-open enabled call: drain
+                                                        # rather than leak; a giant ordinary JSON
+                                                        # answer still streams.
                                                         _drain_silently = True
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
@@ -9160,10 +9155,7 @@ class LlamaCppBackend:
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
-                # fallback (mirrors the safetensors loop). Structured delta.tool_calls
-                # are grammar-bounded by llama-server, but text parsed straight from
-                # content has no such limit, so one runaway turn could fan out into
-                # dozens of executions/events.
+                # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _deduped: list = []

@@ -107,12 +107,11 @@ def strip_tool_markup_streaming(
         return text
     # Mirror the final strip's scan order so streaming and final display agree:
     # balanced strips first (nested JSON removed whole), then the guarded
-    # function-XML/GLM scans that close at each call's REAL terminator, so
-    # literal markup inside argument values is data and trailing prose survives.
-    # No final trim so incremental length comparisons in the streaming loop hold.
-    # Leading Magistral [THINK]...[/THINK] is dropped (bracket form, not the
-    # reasoning channel's <think>); an unclosed [THINK] holds until [/THINK]
-    # arrives so the cleaned text stays monotonic.
+    # function-XML/GLM scans that close at each call's REAL terminator, so literal
+    # markup inside argument values is data and trailing prose survives. No final
+    # trim so streaming length comparisons hold. Leading Magistral [THINK]...[/THINK]
+    # is dropped (bracket form, not the reasoning channel's <think>); an unclosed
+    # [THINK] holds until [/THINK] so the cleaned text stays monotonic.
     text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
     text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
@@ -478,8 +477,7 @@ def run_safetensors_tool_loop(
 
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
-            # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-
-            # tolerant like the parser.
+            # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
             if (
                 not is_match
                 and not is_prefix
@@ -493,14 +491,11 @@ def run_safetensors_tool_loop(
                 if _GEMMA_BARE_TC_RE.match(stripped):
                     detect_state = _state_draining
                     continue
-                # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet:
-                # keep buffering the variable-length name instead of leaking
-                # ``call:longname`` as visible content. Tool names can exceed 32
-                # chars (OpenAI allows 64, MCP names longer), so the fixed cap
-                # below flushed real long-named calls raw. The prefix regex
-                # self-terminates once the text becomes ordinary prose, and the
-                # ``{`` drains via the branch above; bound generously like the
-                # bare-JSON path right above.
+                # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep
+                # buffering the variable-length name instead of leaking ``call:longname``.
+                # Names can exceed 32 chars (OpenAI 64, MCP longer), so a fixed cap would
+                # flush real calls raw. The prefix regex self-terminates on ordinary prose
+                # and the ``{`` drains above; bound generously like the bare-JSON path.
                 if _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None:
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue
