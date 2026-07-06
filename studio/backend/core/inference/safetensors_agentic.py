@@ -192,8 +192,8 @@ def run_safetensors_tool_loop(
         for _ev in _auto["events"]:
             yield _ev
         conversation.extend(_auto["messages"])
-    # Autoinject already ran a knowledge-base search outside the controller, so
-    # it counts as an executed tool for the plan-without-action gate.
+    # Autoinject ran a KB search outside the controller, so it counts as an
+    # executed tool for the plan-without-action gate.
     rag_autoinjected = bool(_auto)
 
     unrestricted_tools = not tools
@@ -463,16 +463,12 @@ def run_safetensors_tool_loop(
                     allow_incomplete = auto_heal_tool_calls,
                 )
             if not safety_tc:
-                # Re-prompt on plan-without-action (GGUF loop parity): the
-                # model described what it will do without acting. Fires at
-                # most once per request, only before any tool has executed
-                # (RAG autoinject counts as executed), never after the user
-                # denied a tool confirmation, and only on short
-                # forward-looking replies while tools are active with
-                # Auto-Heal on and the nudge explicitly requested. Unlike the
-                # GGUF loop (where the re-prompt predates the flag, so None
-                # keeps it on), this retry is new here: omitting the flag must
-                # not change existing API behavior. Studio sends True.
+                # Re-prompt on plan-without-action (GGUF loop parity): the model
+                # described what it will do without acting; the conditions below
+                # fire it at most once, before any tool runs. Unlike the GGUF
+                # loop (where the re-prompt predates the flag, so None keeps it
+                # on), this retry is new here, so omitting nudge_tool_calls must
+                # not change API behavior. Studio sends True.
                 stripped_answer = content_accum.strip()
                 if (
                     auto_heal_tool_calls
@@ -505,7 +501,7 @@ def run_safetensors_tool_loop(
                             "content": reprompt_to_act_message(tool_hint),
                         }
                     )
-                    # Empty status clears the badge AND resets the route's
+                    # Empty status clears the badge and resets the route's
                     # per-turn text cursor before the re-prompted turn streams.
                     yield {"type": "status", "text": ""}
                     continue

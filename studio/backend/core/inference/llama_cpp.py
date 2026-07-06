@@ -206,9 +206,8 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
-# Plan-without-action re-prompt: intent signal, caps, and the re-prompt
-# message live in core.inference.tool_call_parser (shared with the
-# safetensors loop) and are imported above under their old aliases.
+# Plan-without-action re-prompt state (intent signal, caps, message) lives in
+# core.inference.tool_call_parser, imported above under its old aliases.
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -8862,8 +8861,7 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
-                        # ``nudge_tool_calls`` None keeps the default-on loop
-                        # behavior; explicit False disables the re-prompt.
+                        # None keeps the default-on re-prompt; False disables it.
                         if (
                             auto_heal_tool_calls
                             and (nudge_tool_calls is None or nudge_tool_calls)
