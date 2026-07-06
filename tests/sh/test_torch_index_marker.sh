@@ -18,6 +18,8 @@ _TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
 # Extract the marker helpers from install.sh and source them.
 _FUNC_FILE=$(mktemp)
 {
+    sed -n '/^_normalize_family_leaf()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_normalize_index_url()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_write_torch_index_marker()/,/^}/p' "$INSTALL_SH"
@@ -42,8 +44,8 @@ assert_eq "trailing slashes stripped + leaf lowered" \
 assert_eq "whitespace trimmed" \
     "https://download.pytorch.org/whl/cu128" \
     "$(_normalize_index_url '  https://download.pytorch.org/whl/cu128  ')"
-assert_eq "host case preserved, only leaf lowered" \
-    "https://Mirror.Local/simple" \
+assert_eq "host + custom (unknown-family) leaf case preserved" \
+    "https://Mirror.Local/Simple" \
     "$(_normalize_index_url 'https://Mirror.Local/Simple/')"
 # gfx120X-all (capital X) and AMD's lowercase pip leaf normalise equal.
 assert_eq "gfx120X-all == gfx120x-all after normalize" \

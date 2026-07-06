@@ -436,16 +436,26 @@ $TorchIndexMarkerName = ".unsloth-torch-index"
 
 # Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
 # strip ALL trailing slashes, lowercase ONLY the final path segment (the leaf).
-# Mirrors _normalize_index_url in install.sh / install_python_stack.py / install.ps1.
+# Lowercase ONLY a known wheel-family leaf (rocm* / gfx* / cpu / cuXXX); a custom
+# mirror leaf keeps its case so a verbatim URL pin is not falsely matched equal.
+# Mirrors _normalize_family_leaf in install.sh / install_python_stack.py.
+function Get-NormalizedFamilyLeaf {
+    param([string]$Leaf)
+    $low = $Leaf.ToLowerInvariant()
+    if ($low -match '^(rocm|gfx)' -or $low -eq 'cpu' -or $low -match '^cu[0-9]') { return $low }
+    return $Leaf
+}
+
+# Mirrors _normalize_index_url in install.sh / install_python_stack.py.
 function Get-NormalizedIndexUrl {
     param([string]$Url)
     if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
     $u = $Url.Trim().TrimEnd('/')
     if ([string]::IsNullOrWhiteSpace($u)) { return $null }
     $idx = $u.LastIndexOf('/')
-    if ($idx -lt 0) { return $u.ToLowerInvariant() }
+    if ($idx -lt 0) { return (Get-NormalizedFamilyLeaf $u) }
     $head = $u.Substring(0, $idx)
-    $leaf = $u.Substring($idx + 1).ToLowerInvariant()
+    $leaf = Get-NormalizedFamilyLeaf ($u.Substring($idx + 1))
     return "$head/$leaf"
 }
 

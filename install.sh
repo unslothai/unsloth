@@ -2225,9 +2225,20 @@ _torch_index_repairable() {
 #   <venv_dir>/.unsloth-torch-index   (single line = the resolved index URL)
 _TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
 
+# Lowercase ONLY a known wheel-family leaf (rocm* / gfx* / cpu / cuXXX); a custom
+# mirror leaf keeps its case so a verbatim URL pin is not falsely matched equal.
+# Mirrors _normalize_family_leaf in install_python_stack.py / setup.ps1.
+_normalize_family_leaf() {
+    _l_low=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    case "$_l_low" in
+        rocm*|gfx*|cpu|cu[0-9]*) printf '%s' "$_l_low" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
-# strip ALL trailing slashes, lowercase ONLY the final path segment (the leaf).
-# Mirrors _normalize_index_url in install_python_stack.py / setup.ps1 / install.ps1.
+# strip ALL trailing slashes, lowercase ONLY a known-family final path segment.
+# Mirrors _normalize_index_url in install_python_stack.py / setup.ps1.
 _normalize_index_url() {
     _n_url="$1"
     # Trim leading/trailing whitespace.
@@ -2240,11 +2251,11 @@ _normalize_index_url() {
         */*)
             _n_head="${_n_url%/*}"
             _n_leaf="${_n_url##*/}"
-            _n_leaf=$(printf '%s' "$_n_leaf" | tr '[:upper:]' '[:lower:]')
+            _n_leaf=$(_normalize_family_leaf "$_n_leaf")
             printf '%s/%s' "$_n_head" "$_n_leaf"
             ;;
         *)
-            printf '%s' "$_n_url" | tr '[:upper:]' '[:lower:]'
+            _normalize_family_leaf "$_n_url"
             ;;
     esac
 }
@@ -3098,6 +3109,13 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
+                    # The repair reinstalled torch from $TORCH_INDEX_URL (the generic
+                    # ROCm index), not the Radeon --find-links repo, so record THAT as
+                    # the marker source. A Radeon --find-links install set
+                    # _TORCH_MARKER_INDEX_URL to its repo.radeon.com base earlier;
+                    # leaving it would make the marker misreport Radeon wheels and let a
+                    # later Radeon pin compare-equal and skip a needed reinstall.
+                    _TORCH_MARKER_INDEX_URL="$TORCH_INDEX_URL"
                 fi
                 ;;
         esac

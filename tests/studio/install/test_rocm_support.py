@@ -1016,8 +1016,11 @@ class TestTorchIndexMarkerHelpers:
         assert f("https://repo.amd.com/rocm/whl/gfx120X-all///") == (
             "https://repo.amd.com/rocm/whl/gfx120x-all"
         )
-        # Host case preserved (only the leaf is lowered).
-        assert f("https://Mirror.Local/Simple/") == "https://Mirror.Local/simple"
+        # Host case preserved; a custom (unknown-family) leaf keeps its case so a
+        # verbatim URL pin is not falsely matched equal (only known families lower).
+        assert f("https://Mirror.Local/Simple/") == "https://Mirror.Local/Simple"
+        # A custom mirror leaf differing only in case must NOT compare equal.
+        assert f("https://mirror.local/Current") != f("https://mirror.local/current")
         # Whitespace trimmed.
         assert f("  https://download.pytorch.org/whl/cu128  ") == (
             "https://download.pytorch.org/whl/cu128"

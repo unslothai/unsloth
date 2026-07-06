@@ -137,15 +137,31 @@ _PYTORCH_WHL_BASE = (
 _TORCH_INDEX_MARKER_NAME = ".unsloth-torch-index"
 
 
+def _normalize_family_leaf(leaf: str) -> str:
+    """Lowercase ONLY a known wheel-family leaf (rocm* / gfx* / cpu / cuXXX).
+
+    The canonical gfx120X-all (capital X) must match AMD's lowercase gfx120x-all, so
+    known-family leaves are lowercased. A custom mirror leaf (/Current, /simple, ...)
+    keeps its case: an unknown-family URL pin is applied verbatim, so /Current and
+    /current must NOT compare equal. Same known-family set as
+    _explicit_unknown_family_torch_index_url. Mirrors the gate in install.sh /
+    setup.ps1. Pure function.
+    """
+    low = leaf.lower()
+    if low.startswith(("rocm", "gfx")) or low == "cpu" or re.match(r"^cu[0-9]", low):
+        return low
+    return leaf
+
+
 def _normalize_index_url(url: "str | None") -> "str | None":
     """Canonicalise a wheel index URL for exact marker/pin comparison.
 
-    Trims surrounding whitespace, strips ALL trailing slashes, and lowercases only
-    the FINAL path segment (the wheel-family leaf: cu128 / cpu / rocm7.2 / gfx1151 /
-    gfx120X-all). The host part is left untouched (it may be case-sensitive on some
-    mirrors); the leaf is lowercased so the canonical gfx120X-all (capital X) and
-    AMD's lowercase pip leaf gfx120x-all compare equal. MUST match the same
-    normalization in install.sh / setup.ps1 / install.ps1. Returns None for an
+    Trims surrounding whitespace, strips ALL trailing slashes, and lowercases the
+    FINAL path segment ONLY when it is a known wheel-family leaf (cu128 / cpu /
+    rocm7.2 / gfx1151 / gfx120X-all) -- see _normalize_family_leaf. The host part is
+    left untouched (case-sensitive on some mirrors), and a custom (unknown-family)
+    leaf keeps its case so a verbatim URL pin is not falsely matched equal. MUST
+    match the same normalization in install.sh / setup.ps1. Returns None for an
     empty/whitespace-only input. Pure function.
     """
     if url is None:
@@ -158,8 +174,8 @@ def _normalize_index_url(url: "str | None") -> "str | None":
         return None
     head, sep, leaf = url.rpartition("/")
     if sep:
-        return f"{head}/{leaf.lower()}"
-    return url.lower()
+        return f"{head}/{_normalize_family_leaf(leaf)}"
+    return _normalize_family_leaf(url)
 
 
 def _torch_index_marker_path() -> Path:
@@ -1504,6 +1520,13 @@ def _ensure_cuda_torch() -> None:
         # build simply re-lands on the same family (idempotent).
         _installed_desc = _installed_cu if _installed_cu else "an untagged CUDA build"
         _why = f"torch is {_installed_desc} but the pinned CUDA index is {_pin_leaf}"
+    elif _marker == "cuda" and _pinned_cuda and _marker_pin_mismatch(_pin) is True:
+        # Same cuXXX leaf but the marker records a DIFFERENT full index URL (e.g. the
+        # official cu128 index vs an internal mirror's cu128). The +cuXXX tag cannot
+        # see the host change, so consult the exact-URL marker and reinstall from the
+        # pinned URL (via _detect_cuda_torch_index_url, which honours the override) so
+        # an explicit mirror pin is applied and re-recorded, not skipped.
+        _why = f"the pinned CUDA index URL differs from the recorded marker (leaf {_pin_leaf})"
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
