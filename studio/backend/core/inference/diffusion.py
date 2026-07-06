@@ -434,19 +434,29 @@ class DiffusionBackend:
             mode = normalize_transformer_quant(raw)
         if mode is None:
             return False
+        # An explicit Speed="off" (bit-exact) load suppresses the auto-dtype default in
+        # load_pipeline and stays GGUF-as-is, so the dense path never runs -- don't widen the
+        # prefetch for it either.
+        speed = kwargs.get("speed_mode")
+        if speed is not None and str(speed).strip().lower() == SPEED_OFF:
+            return False
         try:
             target = self._resolve_device_target(fam)
-            if not dense_transformer_supported(target):
-                return False
-            scheme = select_transformer_quant_scheme(
-                target, mode, family = getattr(fam, "name", None)
+            # Only widen the prefetch when the loader would actually take the dense path: resolve
+            # the SAME dense-quant candidate load_pipeline re-plans against, which also checks the
+            # cache volume has room for the extra bf16 transformer/ shards. When disk (or scheme /
+            # support / a prequant checkpoint) rules the dense build out, do NOT eagerly pull those
+            # shards -- otherwise the widened prefetch fills the disk and hard-fails the load in a
+            # spot unload/cancel cannot preempt, instead of the disk guard falling back to the GGUF.
+            candidate = resolve_dense_quant_candidate(
+                fam = fam,
+                target = target,
+                requested = mode,
+                base_repo = kwargs.get("base_repo"),
+                prequant_path = kwargs.get("transformer_prequant_path"),
+                logger = None,
             )
-            if scheme is None:
-                return False
-            source = resolve_prequant_source(
-                fam, scheme, path_override = kwargs.get("transformer_prequant_path")
-            )
-            return source is None
+            return candidate is not None
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
@@ -1015,7 +1025,14 @@ class DiffusionBackend:
                     "",
                     "auto",
                 ):
-                    transformer_quant = TQ_AUTO
+                    # An explicit Speed="off" (bit-exact) load must stay GGUF-as-is: promoting the
+                    # unset dtype to auto-quant here would engage int8/fp8 + compile and silently
+                    # break the user's bit-exact request (an auto DEFAULT overriding an EXPLICIT
+                    # control). Suppress the auto default when speed was explicitly pinned off;
+                    # otherwise auto (the dense-capable default) applies.
+                    speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+                    # "off" normalizes to None (no dense quant), keeping the GGUF-as-is path.
+                    transformer_quant = "off" if speed_off else TQ_AUTO
 
                 # Default-on fast path: load the DENSE bf16 transformer and torchao-quantise it
                 # (int8 / fp8 / fp4 tensor cores), which beats GGUF's bf16-rate per-matmul
