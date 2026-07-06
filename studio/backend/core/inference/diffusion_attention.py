@@ -178,6 +178,15 @@ _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
 #   0                  - never install; a missing kernel falls back to native
 _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
+# Packages a pip install has already been attempted for in THIS process (success or
+# failure). The loader pre-installs the kernel OUTSIDE its locks and then re-resolves the
+# same backend under _generate_lock, where apply_attention_backend would otherwise call
+# pip a SECOND time -- for a package with no matching wheel / an offline host that repeat
+# runs the full (up to 600s) install while holding the load lock, blocking unload/cancel/
+# new loads for exactly the failure the pre-install was added to keep off the lock. Record
+# each attempt so a retry is a no-op and set_attention_backend falls back to native at once.
+_INSTALL_ATTEMPTED: set[str] = set()
+
 
 def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
     """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
@@ -202,6 +211,14 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
             return
     except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
         pass
+    # Only ever attempt each package's install once per process. The loader pre-installs
+    # this backend outside its locks; if that failed (no wheel / offline) the module is
+    # still missing here, so without this guard the in-lock apply path would re-run the
+    # whole install under _generate_lock and block unload/cancel. A recorded attempt makes
+    # the retry a no-op -> set_attention_backend raises on the missing package -> native.
+    if package in _INSTALL_ATTEMPTED:
+        return
+    _INSTALL_ATTEMPTED.add(package)
     import subprocess
     import sys
 
@@ -211,7 +228,16 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
         )
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--only-binary", ":all:", package],
+            # --no-deps: install ONLY this best-effort kernel wheel, never its declared
+            # dependencies. xformers/flash-attn pin an exact torch (e.g. torch==2.x), so
+            # normal resolution would upgrade/replace the running torch/triton and leave
+            # later loads on a different, possibly CUDA-mismatched dependency stack. Without
+            # its deps an ABI-incompatible kernel simply fails to import -> native fallback,
+            # which is the same best-effort outcome as an uninstallable wheel.
+            [
+                sys.executable, "-m", "pip", "install",
+                "--only-binary", ":all:", "--no-deps", package,
+            ],
             capture_output = True,
             timeout = 600,
             check = True,

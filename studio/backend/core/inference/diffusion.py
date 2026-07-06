@@ -78,6 +78,7 @@ from .diffusion_cache import (
     TC_AUTO,
     TC_FBCACHE,
     apply_step_cache,
+    effective_denoise_steps,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
@@ -2273,9 +2274,26 @@ class DiffusionBackend:
                 # schedule kept it off, and a few-step turbo request drops it (skipping
                 # a step there is a large quality hit). Explicit choices never toggle.
                 if state.cache_auto:
+                    # Key the policy on the EFFECTIVE denoise steps: an img2img/upscale/
+                    # inpaint request at strength < 1 only denoises a fraction of `steps`
+                    # (e.g. a 28-step upscale at strength 0.35 runs ~10 steps), so passing
+                    # the raw request would wrongly engage FBCache on exactly the short
+                    # trajectory the policy keeps uncached. Only fold in `strength` when it
+                    # is ACTUALLY applied to the pipe (same gate as the kwarg below), so a
+                    # stray strength on a txt2img request never shortens the count.
+                    strength_applied = (
+                        strength
+                        if (
+                            strength is not None
+                            and init_pil is not None
+                            and "strength" in call_params
+                        )
+                        else None
+                    )
+                    denoise_steps = effective_denoise_steps(steps, strength_applied)
                     toggled = maybe_toggle_step_cache(
                         state.pipe,
-                        steps = steps,
+                        steps = denoise_steps,
                         quant_active = state.cache_quant_active,
                         threshold = state.cache_threshold,
                         logger = logger,
@@ -2289,7 +2307,7 @@ class DiffusionBackend:
                         if isinstance(entry, dict):
                             entry["value"] = toggled or "off"
                             entry["reason"] = (
-                                f"auto: {steps}-step generation "
+                                f"auto: {denoise_steps}-step generation "
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )

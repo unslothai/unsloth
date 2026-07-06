@@ -179,8 +179,42 @@ def test_diffusers_unavailable_runs_uncached(monkeypatch):
 from core.inference.diffusion_cache import (  # noqa: E402
     FBCACHE_MIN_STEPS,
     TC_AUTO,
+    effective_denoise_steps,
     maybe_toggle_step_cache,
 )
+
+
+# ── effective_denoise_steps (strength-aware step count for the auto policy) ─────────
+def test_effective_steps_txt2img_is_full_count():
+    # No strength (txt2img / reference) -> the full requested step count.
+    assert effective_denoise_steps(28, None) == 28
+    assert effective_denoise_steps(28, 1.0) == 28  # full redraw denoises every step
+
+
+def test_effective_steps_low_strength_shrinks_below_the_bar():
+    # A 28-step upscale at strength 0.35 denoises ~10 steps (diffusers get_timesteps),
+    # which is below FBCACHE_MIN_STEPS -> the auto policy must NOT engage FBCache there.
+    eff = effective_denoise_steps(28, 0.35)
+    assert eff == 10
+    assert eff < FBCACHE_MIN_STEPS
+
+
+def test_effective_steps_matches_diffusers_get_timesteps():
+    # Mirror diffusers exactly: num_inference_steps - int(num_inference_steps -
+    # min(num_inference_steps * strength, num_inference_steps)).
+    for steps, strength in [(28, 0.35), (28, 0.8), (50, 0.5), (20, 0.99), (30, 0.1)]:
+        init = min(steps * strength, steps)
+        expected = max(1, steps - int(max(steps - init, 0)))
+        assert effective_denoise_steps(steps, strength) == expected
+
+
+def test_toggle_stays_off_for_low_strength_workflow(monkeypatch):
+    # End to end: a 28-step request would engage FBCache, but at strength 0.35 the
+    # effective ~10 steps keep it uncached.
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(_pipe(t), steps = effective_denoise_steps(28, 0.35))
+    assert mode is None and t.enables == 0
 
 
 class _ToggleTransformer(_MixinTransformer):
