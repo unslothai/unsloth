@@ -5221,6 +5221,32 @@ def _has_command(command: str) -> bool:
     return _resolve_command_path(command) is not None
 
 
+_bwrap_sandbox_capability: dict[str, bool] = {}
+
+
+def _bwrap_can_sandbox(bwrap_path: str) -> bool:
+    # A present bwrap is not always usable: where unprivileged user namespaces are
+    # restricted (Ubuntu >= 23.10 AppArmor default, nested/unprivileged containers,
+    # hardened cloud VMs) a non-setuid bwrap fails to set up its uid map or loopback.
+    # Probe once and cache so a broken sandbox degrades like an absent one instead of
+    # failing every prebuilt validation and forcing a source build.
+    cached = _bwrap_sandbox_capability.get(bwrap_path)
+    if cached is not None:
+        return cached
+    ok = False
+    try:
+        result = subprocess.run(
+            [bwrap_path, "--ro-bind", "/", "/", "--unshare-all", "--die-with-parent",
+             _resolve_command_path("true") or "/bin/true"],
+            stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, timeout = 20,
+        )
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+    _bwrap_sandbox_capability[bwrap_path] = ok
+    return ok
+
+
 def _append_existing_bwrap_bind(
     args: list[str], *, source: str | Path, readonly: bool, seen: set[str]
 ) -> None:
@@ -5677,7 +5703,7 @@ def build_validation_sandbox_plan(
     )
     if _host_is_linux(host):
         bwrap_path = _resolve_command_path("bwrap")
-        if bwrap_path is not None:
+        if bwrap_path is not None and _bwrap_can_sandbox(bwrap_path):
             payload_command = _resolve_sandbox_command(command)
             if (
                 purpose == _VALIDATION_PURPOSE_SERVER

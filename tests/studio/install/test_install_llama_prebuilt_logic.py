@@ -58,6 +58,13 @@ LINUX_LDD_PROBE_ERROR = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_ERROR
 preflight_linux_installed_binaries = INSTALL_LLAMA_PREBUILT.preflight_linux_installed_binaries
 
 
+@pytest.fixture(autouse = True)
+def _bwrap_usable_by_default(monkeypatch):
+    # A mocked-present bwrap represents a working sandbox; the real usability probe
+    # (which would exec bwrap) is out of scope here and covered by its own test.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_can_sandbox", lambda _p: True)
+
+
 def linux_host() -> HostInfo:
     return HostInfo(
         system = "Linux",
@@ -3223,6 +3230,29 @@ def test_build_validation_sandbox_plan_linux_without_bwrap_falls_back_validation
     )
     assert plan.is_fallback
     assert plan.reason is not None
+
+
+def test_build_validation_sandbox_plan_linux_unusable_bwrap_skips_ldd(monkeypatch):
+    # bwrap present but unable to create namespaces (restricted userns) must degrade
+    # like an absent bwrap so the mandatory ldd preflight does not reject the prebuilt.
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/usr/bin/bwrap" if command == "bwrap" else "/usr/bin/" + command,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_can_sandbox", lambda _p: False)
+    plan = build_validation_sandbox_plan(
+        ["ldd", "/tmp/bin"],
+        binary_path = Path("/tmp/bin"),
+        install_dir = Path("/tmp/install"),
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_LDD,
+        runtime_line = None,
+        env = {},
+    )
+    assert plan.is_skipped
+    assert plan.reason is not None
+    assert "skip ldd probe" in plan.reason
 
 
 def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_path):
