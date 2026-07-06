@@ -1169,7 +1169,9 @@ def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch)
     o._unload_pending = False
     o._dispatcher_thread = None
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(o, "_start_dispatcher", lambda: setattr(o, "_dispatcher_thread", _AliveDispatcher()))
+    monkeypatch.setattr(
+        o, "_start_dispatcher", lambda: setattr(o, "_dispatcher_thread", _AliveDispatcher())
+    )
     monkeypatch.setattr(
         o,
         "_stop_dispatcher",

@@ -691,9 +691,7 @@ class InferenceOrchestrator:
             # If we are bailing without a mailbox, note whether any OTHER compare request
             # is still routing through the dispatcher. If none is, and this call is the one
             # that started the dispatcher, it must be stopped below.
-            orphaned_dispatcher = (
-                unloading and not dispatcher_preexisting and not self._mailboxes
-            )
+            orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
         if unloading:
             # A racing unload can pass its own _wait_dispatcher_idle() while the dispatcher
             # was still stopped, then set _unload_pending. The dispatcher we just started
