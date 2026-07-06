@@ -1061,3 +1061,163 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
         "a mismatched-target unload must not use the off-gate GGUF fast path; "
         "it would cancel the wrong in-flight load"
     )
+
+
+# ----------------------------------------------------------------------------
+# cancel_load clears its loading marker BEFORE tearing the subprocess down, so a
+# racing off-gate load_model observes the cancel during the shutdown window.
+# ----------------------------------------------------------------------------
+
+
+def test_cancel_load_clears_marker_before_shutdown(monkeypatch):
+    # cancel_load runs off the lifecycle gate, concurrently with a load_model that
+    # rechecks the loading marker before each spawn to observe the cancel.
+    # _shutdown_subprocess can block (tearing a live child down / joining the compare
+    # dispatcher), so discarding the marker only AFTER it leaves a long window in which
+    # that load_model reads the marker still set, passes its pre-spawn recheck, and
+    # spawns + loads the model after /unload already reported it cancelled. The marker
+    # (and local state) must be cleared before the teardown.
+    o = _bare_orchestrator()
+    o.loading_models = {"m"}
+    o.active_model_name = "m"
+    o.models = {"m": {}}
+
+    at_shutdown = {}
+
+    def record_shutdown(timeout = 5):
+        at_shutdown["marker_present"] = "m" in o.loading_models
+        at_shutdown["active"] = o.active_model_name
+        at_shutdown["models"] = dict(o.models)
+
+    monkeypatch.setattr(o, "_shutdown_subprocess", record_shutdown)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("cancel_load must not send a worker command")
+    )
+
+    assert o.cancel_load("m") is True
+    assert at_shutdown.get("marker_present") is False, (
+        "the loading marker must be cleared before _shutdown_subprocess so a concurrent "
+        "load_model pre-spawn recheck observes the cancel during the shutdown window"
+    )
+    assert at_shutdown.get("active") is None
+    assert at_shutdown.get("models") == {}
+    assert "m" not in o.loading_models
+    assert o.active_model_name is None
+    assert o.models == {}
+
+
+# ----------------------------------------------------------------------------
+# A dispatched (compare-mode) request that starts the dispatcher and then bails on
+# a racing unload must stop the dispatcher it started, or that orphaned dispatcher
+# steals the worker's "unloaded" reply and hangs unload_model on its 300s timeout.
+# ----------------------------------------------------------------------------
+
+
+def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
+    # The request passes the pre-work _unload_pending check and starts the dispatcher
+    # (none was running), then an unload sets _unload_pending so the under-lock recheck
+    # bails. The just-started dispatcher, left running with no mailboxes, competes with
+    # unload_model()'s _wait_response for the worker's "unloaded" reply off the shared
+    # resp_queue and drops it as unroutable, hanging the unload until its 300s timeout.
+    # The bail must stop the dispatcher it started.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    o._dispatcher_thread = None  # none running -> this call starts it
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+
+    started = {"v": False}
+    stopped = {"v": False}
+
+    def fake_start():
+        started["v"] = True
+        o._dispatcher_thread = _AliveDispatcher()
+
+    def fake_stop():
+        stopped["v"] = True
+        o._dispatcher_thread = None
+
+    monkeypatch.setattr(o, "_start_dispatcher", fake_start)
+    monkeypatch.setattr(o, "_stop_dispatcher", fake_stop)
+
+    # An unload flips _unload_pending after the pre-work check but before registration.
+    def flip(*a, **k):
+        o._unload_pending = True
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", flip)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
+    )
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert started["v"], "this call started the dispatcher"
+    assert stopped["v"], "the bail must stop the dispatcher it started (no other mailboxes)"
+    assert o._mailboxes == {}
+
+
+def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch):
+    # Guard against over-stopping: if another compare request registered a mailbox on the
+    # dispatcher this call started, the bail must NOT stop it, or that request's token
+    # routing dies mid-stream.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    o._dispatcher_thread = None
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: setattr(o, "_dispatcher_thread", _AliveDispatcher()))
+    monkeypatch.setattr(
+        o,
+        "_stop_dispatcher",
+        lambda: pytest.fail("must not stop a dispatcher another compare request is using"),
+    )
+
+    # A concurrent compare request registers its mailbox, then an unload flips the flag.
+    def flip(*a, **k):
+        o._mailboxes["other"] = object()
+        o._unload_pending = True
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", flip)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
+    )
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert set(o._mailboxes) == {"other"}, "the other request's mailbox is untouched"
+
+
+def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
+    # Guard: if the dispatcher was already running before this request (an earlier compare
+    # request started it), a bail must not stop it even with no mailboxes now -- this
+    # request did not start it and another may re-use it. Only the call that starts an
+    # otherwise-idle dispatcher during the race is responsible for stopping it.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    o._dispatcher_thread = _AliveDispatcher()  # already running
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
+    monkeypatch.setattr(
+        o, "_stop_dispatcher", lambda: pytest.fail("must not stop a pre-existing dispatcher")
+    )
+
+    def flip(*a, **k):
+        o._unload_pending = True
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", flip)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
+    )
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)

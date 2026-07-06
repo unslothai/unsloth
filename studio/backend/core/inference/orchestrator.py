@@ -629,7 +629,12 @@ class InferenceOrchestrator:
             yield "Error: model is being unloaded"
             return
 
-        # Ensure dispatcher is running
+        # Ensure dispatcher is running. Remember whether it was already running: if this
+        # call is the one that starts it and then bails on a racing unload, it must stop
+        # the dispatcher again (see the unloading bail below).
+        dispatcher_preexisting = (
+            self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
+        )
         self._start_dispatcher()
 
         request_id = str(uuid.uuid4())
@@ -683,7 +688,22 @@ class InferenceOrchestrator:
             )
             if not unloading:
                 self._mailboxes[request_id] = mailbox
+            # If we are bailing without a mailbox, note whether any OTHER compare request
+            # is still routing through the dispatcher. If none is, and this call is the one
+            # that started the dispatcher, it must be stopped below.
+            orphaned_dispatcher = (
+                unloading and not dispatcher_preexisting and not self._mailboxes
+            )
         if unloading:
+            # A racing unload can pass its own _wait_dispatcher_idle() while the dispatcher
+            # was still stopped, then set _unload_pending. The dispatcher we just started
+            # would otherwise linger with no mailboxes, race unload_model()'s _wait_response
+            # for the worker's "unloaded" reply off the shared resp_queue, and (when it wins)
+            # drop it as unroutable -- hanging the unload until its 300s timeout. Stop it here
+            # so the unload stays the sole resp_queue reader. Done outside _mailbox_lock:
+            # _stop_dispatcher joins the dispatcher thread, which itself takes that lock.
+            if orphaned_dispatcher:
+                self._stop_dispatcher()
             yield "Error: model is being unloaded"
             return
 
@@ -943,10 +963,18 @@ class InferenceOrchestrator:
             "Cancelling in-flight load for model '%s' by terminating subprocess",
             target,
         )
-        self._shutdown_subprocess(timeout = 0.5)
+        # Discard the loading marker (and clear local state) BEFORE the teardown, not
+        # after. cancel_load runs off the lifecycle gate, concurrently with a load_model
+        # that rechecks this marker before each spawn to observe the cancel. But
+        # _shutdown_subprocess can block (up to ~1s tearing a live child down and joining
+        # the compare dispatcher), so discarding only after it leaves a long window in
+        # which that load_model reads the marker still set, passes its pre-spawn recheck,
+        # and spawns + loads the model after /unload already reported it cancelled. Clear
+        # first so the recheck sees the cancel as soon as we commit to it.
         self.loading_models.discard(target)
         self.active_model_name = None
         self.models.clear()
+        self._shutdown_subprocess(timeout = 0.5)
         return True
 
     def unload_model(self, model_name: str) -> bool:
