@@ -1459,6 +1459,7 @@ class DiffusionBackend:
                         target,
                         mode = text_encoder_quant,
                         family = fam.name,
+                        offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
 
