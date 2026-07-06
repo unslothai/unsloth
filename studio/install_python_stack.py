@@ -1414,6 +1414,11 @@ def _ensure_cuda_torch() -> None:
     # (or any unrecognised value) are deliberate and must not be overridden.
     if _TORCH_BACKEND not in ("", "cuda"):
         return
+    # An explicit custom-index pin whose leaf names no known torch family wins
+    # VERBATIM (_ensure_verbatim_torch_index applies it); do not override it with
+    # auto-detected CUDA wheels here.
+    if _explicit_unknown_family_torch_index_url() is not None:
+        return
     # No CUDA torch on macOS; Windows venv/torch lifecycle is owned by
     # install.ps1 (and the KFD poisoning bug is Linux-only), so skip both.
     if IS_MACOS or IS_WINDOWS or NO_TORCH:
@@ -1610,6 +1615,14 @@ def _ensure_rocm_torch() -> None:
     # and avoids re-running GPU detection in a subprocess that may see a
     # different environment (different PATH, CUDA_VISIBLE_DEVICES, etc.).
     if _TORCH_BACKEND in ("cuda", "cpu"):
+        return
+    # An explicit custom-index pin whose leaf names no known torch family (a private
+    # PEP 503 mirror, /simple, /current, ...) wins VERBATIM -- _ensure_verbatim_torch_index()
+    # applies it. Never override such a pin with the auto-detected ROCm index here: the
+    # user chose that index (a valid cross-install / custom-mirror case), and installing
+    # ROCm wheels over it before the verbatim pass runs would leave the URL override
+    # unhonored (the marker then matches the pin, so verbatim skips the restore).
+    if _explicit_unknown_family_torch_index_url() is not None:
         return
     # setup.ps1 sets this after installing AMD wheels; skip the probe only when
     # torch is actually importable as ROCm. If the venv was wiped between runs,
@@ -1823,10 +1836,19 @@ def _ensure_rocm_torch() -> None:
     _rocm_pin_mismatch = False
     if has_hip_torch and _rocm_pin is not None:
         _marker_verdict = _marker_pin_mismatch(_rocm_pin)
-        if _marker_verdict is None:
-            _rocm_pin_mismatch = _rocm_pin_family_mismatch(_rocm_pin, _installed_torch_ver)
+        if _marker_verdict is True:
+            # Marker records a DIFFERENT index than the pin -> reinstall. This is the
+            # only signal that catches a per-arch gfx switch (gfx1151 -> gfx120X-all,
+            # both +rocm7.13.0) the version-tag heuristic below cannot see.
+            _rocm_pin_mismatch = True
         else:
-            _rocm_pin_mismatch = _marker_verdict
+            # Marker matches OR is absent: the marker is an ADDITIONAL rebuild signal,
+            # not a substitute for validating the installed wheel. Still run the
+            # family/version check so a stale wheel (torch swapped after the marker was
+            # written -- e.g. marker records gfx1151 but the venv now carries generic
+            # +rocm7.2 or an older +rocm6.4) is caught. Mirrors setup.ps1, which keeps
+            # the flavor check alongside the marker for this reason.
+            _rocm_pin_mismatch = _rocm_pin_family_mismatch(_rocm_pin, _installed_torch_ver)
 
     rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
 

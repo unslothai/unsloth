@@ -2080,6 +2080,11 @@ exit 0
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
+    # Set when a pinned ROCm install fails and a CPU base is installed instead; the
+    # marker must then record the CPU index actually used, not the ROCm pin left in
+    # $TorchIndexUrl (else the next managed setup sees CPU torch under a ROCm pin and
+    # aborts as stale rather than continuing with the intended CPU base/retry path).
+    $RocmCpuFallbackIndexUrl = $null
     $PinnedRocmVisionSpec = $null
     $PinnedRocmAudioSpec = $null
     if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
@@ -2305,6 +2310,9 @@ exit 0
                 # reinstalls ROCm afterwards (recomputes its own index URL).
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
+                # Record the CPU index actually installed from, so the marker below
+                # reflects the CPU base rather than the ROCm pin still in $TorchIndexUrl.
+                $RocmCpuFallbackIndexUrl = $CpuFallbackIndexUrl
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
@@ -2439,10 +2447,11 @@ exit 0
     # Torch is now resolved; write the exact --index-url used so setup.ps1 /
     # install_python_stack.py can detect a later pin change by an EXACT string
     # compare instead of the version-tag heuristic. Reflects the installed family:
-    # $ROCmIndexUrl when the ROCm path ran, else the CUDA/CPU/pinned $TorchIndexUrl.
+    # $ROCmIndexUrl when the ROCm path ran, the CPU fallback index when a pinned
+    # ROCm install failed over to a CPU base, else the CUDA/CPU/pinned $TorchIndexUrl.
     # Skipped for --no-torch (nothing installed). Matches install.sh / setup.ps1.
     if (-not $SkipTorch) {
-        $MarkerIndexUrl = if ($ROCmIndexUrl) { $ROCmIndexUrl } else { $TorchIndexUrl }
+        $MarkerIndexUrl = if ($ROCmIndexUrl) { $ROCmIndexUrl } elseif ($RocmCpuFallbackIndexUrl) { $RocmCpuFallbackIndexUrl } else { $TorchIndexUrl }
         Write-TorchIndexMarker -VenvDir $VenvDir -IndexUrl $MarkerIndexUrl
     }
 

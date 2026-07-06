@@ -2700,6 +2700,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
+    # Set when a stale venv under an explicit torch-index pin is repaired in place
+    # (force-reinstall torch from the pin) instead of wiped -- see the rebuild block.
+    $script:PinChangedForceReinstall = $false
 
     if (Test-Path -LiteralPath $VenvPyExe) {
         try {
@@ -2828,6 +2831,19 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         if ($_expectedKnown -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
             $shouldRebuild = $true
         }
+    }
+
+    # A stale venv under an explicit torch-index pin, whose torch still imports, is
+    # repaired IN PLACE: the dependency pass below force-reinstalls torch from the pin
+    # instead of wiping. setup.ps1's rebuild path only removes the venv and delegates
+    # to install.ps1, so on a direct `unsloth studio update` a wipe would strand the
+    # user at "Virtual environment not found" rather than applying the new pin. Only a
+    # broken venv (torch unimportable) or an unpinned GPU-detected drift falls through
+    # to the wipe/delegate path below.
+    if ($shouldRebuild -and $_pinnedIdx -and $installedTorchTag) {
+        substep "Torch-index pin changed ($installedTorchTag) -- reinstalling torch from the pin in place." "Cyan"
+        $script:PinChangedForceReinstall = $true
+        $shouldRebuild = $false
     }
 
     if ($shouldRebuild) {
@@ -2994,6 +3010,11 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
 #     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
 #     pip install unsloth 2>&1 | Out-Null
 # }
+
+# A torch-index pin change repairs in place: force the dependency pass so the torch
+# install below force-reinstalls from the new pin (the fast "up to date" path would
+# otherwise skip it and leave the old wheel under the changed pin).
+if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 
 if (-not $SkipPythonDeps) {
 
@@ -3184,7 +3205,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # Build the array directly: an if-expression collapses @("x") to a scalar string,
     # which @splat would then enumerate char-by-char into broken single-letter args.
     $cpuForce = @()
-    if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
+    # --force-reinstall also on a pin change: a stale +cu / +rocm wheel still
+    # satisfies the CPU torch>= range, so uv would keep it and only swap companions.
+    if ($ROCmCpuFallback -or $script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
@@ -3201,12 +3224,17 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
 } elseif (-not $ROCmIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
+    # --force-reinstall on a pin change: an installed cuXXX wheel satisfies the bare
+    # torch requirement (PEP 440 ignores the +cuXXX local tag), so without it uv would
+    # keep the old build and the changed CUDA pin (e.g. cu126 -> cu128) never applies.
+    $cudaForce = @()
+    if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url $TorchInstallIndexUrl
+        Fast-Install torch torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install torch torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
