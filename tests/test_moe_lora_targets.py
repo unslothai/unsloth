@@ -90,3 +90,29 @@ def test_auto_regex_mlp_tag_block_discovers_moe_on_fused_models():
         "mlp.experts.gate_up_proj",
         "mlp.experts.down_proj",
     ]
+
+
+def test_explicit_attention_only_list_does_not_discover_moe_parameters():
+    # An explicit attention-only leaf list names no MLP projection, so experts
+    # must never be targeted. get_peft_model routes this ORIGINAL list (not the
+    # scoped regex) into detection precisely because family scoping makes
+    # get_peft_regex emit its full "mlp|feed_forward|ffn|dense" component block
+    # even for an attention-only request (see the regex below), which the
+    # string fallback cannot distinguish from the fused-expert auto regex.
+    from unsloth.models._utils import get_moe_target_parameters
+    attn_only_list = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    assert get_moe_target_parameters(_FakeMoeModel(), attn_only_list) is None
+    assert get_moe_target_parameters(_FakeMoeModel(), tuple(attn_only_list)) is None
+
+    # The regex get_peft_regex emits for that same attention-only list under a
+    # vision-off family scope carries the mlp component block, so the string
+    # path would wrongly enable experts -- hence detection must use the list.
+    scoped_regex = (
+        r"(?:.*?(?:language|text).*?"
+        r"(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer).*?"
+        r"(?:q_proj|k_proj|v_proj|o_proj))"
+    )
+    assert get_moe_target_parameters(_FakeMoeModel(), scoped_regex) == [
+        "mlp.experts.gate_up_proj",
+        "mlp.experts.down_proj",
+    ]

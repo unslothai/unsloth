@@ -1629,6 +1629,16 @@ class FastBaseModel:
             )
         else:
             _audio_kwargs = {}
+        # Remember the caller's ORIGINAL explicit leaf list for MoE expert
+        # detection. When an explicit list is routed through get_peft_regex for
+        # family scoping below, the generated regex carries get_peft_regex's full
+        # "mlp|feed_forward|ffn|dense" component block even when the caller named
+        # only attention leaves (q/k/v/o_proj). Keying expert detection on that
+        # regex would train the experts for an attention-only request. The
+        # original list carries the true leaf intent, so use it for MoE detection;
+        # only the auto (None / "all-linear") path relies on the regex, whose mlp
+        # block is the sole remaining MLP-intent signal on fused-expert models.
+        _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1706,9 +1716,12 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
 
-        # Auto-detect MoE models and populate target_parameters for expert layers
+        # Auto-detect MoE models and populate target_parameters for expert layers.
+        # For an explicit leaf list use the ORIGINAL list, not the scoped regex, so
+        # attention-only requests do not train experts via get_peft_regex's mlp block.
         if target_parameters is None:
-            target_parameters = get_moe_target_parameters(model, target_modules)
+            _moe_targets = _moe_detect_target if _moe_detect_target is not None else target_modules
+            target_parameters = get_moe_target_parameters(model, _moe_targets)
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
