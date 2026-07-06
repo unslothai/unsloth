@@ -116,3 +116,48 @@ def test_lenient_template_receives_original_string_untouched():
 def test_messages_without_tool_calls_pass_through_unchanged():
     conv = [{"role": "user", "content": "hi"}]
     assert _normalize_tool_call_arguments(conv) is conv
+
+
+class _RaiseExceptionTemplateTokenizer:
+    """Mimics the bundled gemma-4.jinja: rejects string tool_call arguments via
+    ``raise_exception(...)``, which surfaces as a Jinja error, NOT a TypeError."""
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        for msg in messages:
+            for call in msg.get("tool_calls", []) or []:
+                args = call.get("function", {}).get("arguments")
+                if isinstance(args, str):
+                    raise ValueError(
+                        "chat_template: tool_calls[].function.arguments must be a "
+                        "JSON object (mapping), not a string."
+                    )
+        return "RENDERED"
+
+
+def test_render_succeeds_on_raise_exception_template_with_string_arguments():
+    # The regression: gemma-4.jinja rejects string args via raise_exception (a
+    # non-TypeError), so the retry must still coerce to a dict and re-render instead
+    # of letting the Jinja error propagate and fail the tool turn.
+    result = apply_chat_template_for_generation(
+        _RaiseExceptionTemplateTokenizer(), _conv('{"query": "x"}')
+    )
+    assert result == "RENDERED"
+
+
+def test_unrelated_template_error_still_propagates_with_dict_args():
+    # A template failure unrelated to string arguments (dict args -> nothing to
+    # normalize) must still propagate; the broadened catch only retries when there
+    # is actually a string arg to coerce.
+    class _AlwaysRaises:
+        def apply_chat_template(self, messages, **kw):
+            raise ValueError("template is broken")
+
+    with pytest.raises(ValueError, match = "broken"):
+        apply_chat_template_for_generation(_AlwaysRaises(), _conv({"query": "x"}))
