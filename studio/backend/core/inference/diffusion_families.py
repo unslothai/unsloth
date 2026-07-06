@@ -461,9 +461,13 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 # (studio/frontend/src/features/images/images-page.tsx); keep the two in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
-    # Krea 2 Turbo is distilled (TDM): 8 steps, no CFG -- matching the Create UI seed, so
-    # the OpenAI /v1/images/generations route uses the documented recipe instead of falling
-    # through to the generic (9, 0.0). "krea" collides with no other model id.
+    # Krea 2 Raw is the undistilled base (both Turbo and Raw are in _TRUSTED_NON_GGUF_REPOS, so
+    # either is inference-loadable): its model card runs 52 steps at guidance 3.5. It must precede
+    # the generic "krea" key, or the distilled recipe below would degrade a Raw load to garbage.
+    ("krea-2-raw", 52, 3.5),
+    # Krea 2 Turbo is distilled (TDM): 8 steps, no CFG -- matching the Create UI seed, so the
+    # OpenAI /v1/images/generations route uses the documented recipe instead of falling through
+    # to the generic (9, 0.0). "krea" then covers Turbo and any other krea id but Raw (above).
     ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
     # Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).

@@ -155,9 +155,10 @@ def test_krea2_family_wiring():
     assert fam.deploy_base_repo == "krea/Krea-2-Turbo"
     # The OpenAI /v1/images/generations route reads (steps, guidance) from this table; Krea
     # Turbo is distilled (8 steps, no CFG), matching the Create UI seed instead of the
-    # generic (9, 0.0) fallback.
+    # generic (9, 0.0) fallback. Raw is the undistilled base (also inference-loadable) and runs
+    # its full 52-step / CFG 3.5 recipe, so its more specific key must win over the "krea" one.
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
-    assert default_generation_params("krea/Krea-2-Raw") == (8, 0.0)
+    assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
 # ── training wiring ──────────────────────────────────────────────────────────
