@@ -119,12 +119,12 @@ def test_chunk_data_uninitialized_error_names_real_class():
             raise AssertionError("expected RuntimeError when max_seq_length is unset")
         except RuntimeError as e:
             msg = str(e)
-            assert "SyntheticDataKit.from_pretrained" in msg, (
-                f"error must name SyntheticDataKit.from_pretrained, got: {msg}"
-            )
-            assert "SynthetidDataKit" not in msg, (
-                f"error must not misspell the class name, got: {msg}"
-            )
+            assert (
+                "SyntheticDataKit.from_pretrained" in msg
+            ), f"error must name SyntheticDataKit.from_pretrained, got: {msg}"
+            assert (
+                "SynthetidDataKit" not in msg
+            ), f"error must not misspell the class name, got: {msg}"
     finally:
         os.unlink(path)
 
