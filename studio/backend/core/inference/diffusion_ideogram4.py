@@ -359,6 +359,7 @@ def load_ideogram4_transformer(
     """
     import diffusers
     import safetensors
+    import torch
 
     token = hf_token or None
     config = _read_transformer_config(repo_id, subfolder, token)
@@ -391,7 +392,19 @@ def load_ideogram4_transformer(
 
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    model = diffusers.Ideogram4Transformer2DModel.from_config(config)
+    # from_config materializes the full ~9B-param module before the dequantized weights
+    # are copied in. At the process default (fp32) that scaffold is ~2x the bf16 model
+    # (~37 GB vs ~18 GB) on host RAM, and the second (unconditional) DiT builds while the
+    # first DiT and the text encoder are already resident, so the fp32 transient can OOM
+    # smaller hosts. Build at the target dtype instead; the only __init__ state absent from
+    # the checkpoint is rotary_emb.inv_freq (computed in explicit fp32), so a bf16 default
+    # leaves it correct while halving each DiT's transient peak.
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        model = diffusers.Ideogram4Transformer2DModel.from_config(config)
+    finally:
+        torch.set_default_dtype(default_dtype)
     state_dict = _convert_fp8_state_dict(raw, hidden_size, dtype)
     missing, unexpected = model.load_state_dict(state_dict, strict = False)
     # rotary_emb.inv_freq is a non-persistent buffer built in __init__, so it is
