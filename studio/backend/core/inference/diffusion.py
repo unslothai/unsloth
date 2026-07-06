@@ -1030,7 +1030,9 @@ class DiffusionBackend:
                     # break the user's bit-exact request (an auto DEFAULT overriding an EXPLICIT
                     # control). Suppress the auto default when speed was explicitly pinned off;
                     # otherwise auto (the dense-capable default) applies.
-                    speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+                    speed_off = (
+                        speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+                    )
                     # "off" normalizes to None (no dense quant), keeping the GGUF-as-is path.
                     transformer_quant = "off" if speed_off else TQ_AUTO
 

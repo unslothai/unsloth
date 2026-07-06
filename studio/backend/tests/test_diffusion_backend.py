@@ -2105,7 +2105,15 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
 
     seen: list = []
 
-    def fake_candidate(*, fam, target, requested, base_repo = None, prequant_path = None, logger = None):
+    def fake_candidate(
+        *,
+        fam,
+        target,
+        requested,
+        base_repo = None,
+        prequant_path = None,
+        logger = None,
+    ):
         seen.append(requested)
         return object()  # a viable dense-quant candidate (scheme resolves AND disk fits)
 
@@ -2121,9 +2129,7 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "none"}) is False
     # An explicit Speed="off" (bit-exact) load suppresses the dense path -> never widen.
     assert (
-        backend._dense_quant_prefetch_needed(
-            fam, {"transformer_quant": "fp8", "speed_mode": "off"}
-        )
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "speed_mode": "off"})
         is False
     )
     # No viable candidate (unsupported scheme / no disk room / a prequant checkpoint shortcut)
