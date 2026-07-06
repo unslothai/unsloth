@@ -812,3 +812,33 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
     except HTTPException as e:
         assert e.status_code == 400
         assert "Unload the model before deleting" in e.detail
+
+
+def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
+    # The partial probe must be scoped to the snapshot row being listed. Unscoped, the scan
+    # spans every HF cache root, so a stale .incomplete copy in one root would flag a complete
+    # copy living in another root as partial and hide the usable model from the picker. Verify
+    # _cached_repo_partial forwards the snapshot dir (matching the sibling inventory paths).
+    import hub.utils.inventory_scan as scan
+
+    calls = []
+
+    def _fake(repo_type, repo_id, repo_cache_dir=None):
+        calls.append((repo_type, repo_id, repo_cache_dir))
+        return False
+
+    monkeypatch.setattr(scan, "is_snapshot_partial", _fake)
+    snapshot_dir = Path("/root_a/models--Org--Repo/snapshots/abc")
+    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
+    assert calls == [("model", "Org/Repo", snapshot_dir)]
+
+    # When that specific snapshot is partial, the row is flagged.
+    monkeypatch.setattr(scan, "is_snapshot_partial", lambda *a, **k: True)
+    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is True
+
+    # A probe error is swallowed (never hides a usable repo over a scan glitch).
+    def _boom(*a, **k):
+        raise RuntimeError("scan glitch")
+
+    monkeypatch.setattr(scan, "is_snapshot_partial", _boom)
+    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False

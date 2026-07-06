@@ -3367,14 +3367,18 @@ def _repo_is_diffusers(repo_info) -> bool:
     return False
 
 
-def _cached_repo_partial(repo_id: str) -> bool:
+def _cached_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:
     """Whether the cached model snapshot is incomplete (cancelled/partial download).
     Reuses the hub inventory scan's snapshot-partial detector (cancel marker, legacy
-    .incomplete blob, manifest walk -- cheapest first). Best-effort: a detection error
-    reports not-partial so a scan glitch never hides a genuinely usable repo."""
+    .incomplete blob, manifest walk -- cheapest first). ``repo_cache_dir`` scopes all three
+    signals to the specific snapshot being listed: without it the scan spans every HF cache
+    root, so a stale .incomplete copy in one root would flag a complete copy in another as
+    partial and hide it from the picker (the sibling inventory paths all scope the same way).
+    Best-effort: a detection error reports not-partial so a scan glitch never hides a
+    genuinely usable repo."""
     try:
         from hub.utils.inventory_scan import is_snapshot_partial
-        return bool(is_snapshot_partial("model", repo_id))
+        return bool(is_snapshot_partial("model", repo_id, repo_cache_dir))
     except Exception:  # noqa: BLE001 -- never fail the listing over a partial probe
         return False
 
@@ -3449,7 +3453,7 @@ async def list_cached_models(
                             "size_bytes": total_size,
                             "task": _cached_repo_task(repo_info),
                         }
-                        if _cached_repo_partial(repo_id):
+                        if _cached_repo_partial(repo_id, Path(repo_info.repo_path)):
                             row["partial"] = True
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
