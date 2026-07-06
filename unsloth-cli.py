@@ -63,6 +63,21 @@ def _tokenizer_for_raw_text_loader(tokenizer, is_mlx):
     return _CallableTokenizerProxy(tokenizer)
 
 
+def _raw_text_loader_for_backend(
+    RawTextDataLoader,
+    tokenizer,
+    is_mlx,
+    chunk_size = 2048,
+    stride = 512,
+):
+    return RawTextDataLoader(
+        _tokenizer_for_raw_text_loader(tokenizer, is_mlx),
+        chunk_size,
+        stride,
+        return_tokenized = not is_mlx,
+    )
+
+
 def _train_with_legacy_save_control(trainer, is_mlx):
     if not is_mlx:
         return trainer.train()
@@ -231,15 +246,13 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            loader = RawTextDataLoader(
-                _tokenizer_for_raw_text_loader(tokenizer, is_mlx),
-                args.chunk_size,
-                args.stride,
+            loader = _raw_text_loader_for_backend(
+                RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
             )
             dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
             # Auto-detect local raw text files
-            loader = RawTextDataLoader(_tokenizer_for_raw_text_loader(tokenizer, is_mlx))
+            loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
             dataset = loader.load_from_file(args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
