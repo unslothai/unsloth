@@ -126,8 +126,20 @@ jobs:
                   REF="${{ github.ref_name }}"
               fi
           fi
-          echo "ref=${REF:-main}" >> "$GITHUB_OUTPUT"
-          echo "unsloth-zoo ref: ${REF:-main}"
+          REF="${REF:-main}"
+          # Freeze a branch/tag ref to ONE concrete sha before the matrix fans
+          # out, so both arch legs (and the base vs Studio builds) bake the
+          # identical unsloth-zoo even if main advances mid-build. A 40-char sha
+          # is already frozen; resolve anything else via ls-remote, as the
+          # notebooks step does, falling back to the bare ref on a lookup miss.
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              SHA="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "unsloth-zoo ref: ${SHA}"
 
       # Freeze unslothai/notebooks to ONE concrete commit so both arch legs (and
       # release reruns) bake the identical baked-notebook templates and
