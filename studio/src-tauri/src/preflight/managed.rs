@@ -188,6 +188,16 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME") {
+        return Some(
+            PathBuf::from(home)
+                .join(".unsloth")
+                .join("studio")
+                .join("desktop_capability_cache.json"),
+        );
+    }
+
     dirs::home_dir().map(|home| {
         home.join(".unsloth")
             .join("studio")
@@ -400,6 +410,17 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
+    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
+        if read_cached_capability(&fingerprint).is_some() {
+            info!(
+                "Managed preflight: using cached desktop capability for {:?} in {}ms",
+                bin,
+                started.elapsed().as_millis()
+            );
+            return ManagedProbe::Ready { bin };
+        }
+    }
+
     if !run_cli_probe(&bin, &["-h"]).await {
         info!(
             "Managed preflight: cli unusable for {:?} in {}ms",
@@ -410,17 +431,6 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
             bin,
             reason: "cli_unusable".to_string(),
         };
-    }
-
-    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
-        if read_cached_capability(&fingerprint).is_some() {
-            info!(
-                "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                bin,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Ready { bin };
-        }
     }
 
     let capability = probe_cli_capability(&bin).await;

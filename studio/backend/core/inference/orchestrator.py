@@ -92,13 +92,11 @@ class InferenceOrchestrator:
 
     @property
     def default_models(self) -> list[str]:
-        # Wait up to 5s for background HF fetch
-        self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Curated static defaults first, then HF download-ranked to backfill.
-        # Send extras so the frontend keeps 4 per category after removing
-        # downloaded ones.
+        # Never wait for the remote Hugging Face ranking during startup. Chat's
+        # first /api/models/list needs curated defaults immediately; the
+        # background fetch backfills extra choices on later calls.
         result: list[str] = []
         seen: set[str] = set()
         for m in self._static_models + top_gguf + top_hub:

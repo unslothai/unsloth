@@ -498,19 +498,68 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn remove_managed_capability_cache() {
-        let _ = std::fs::remove_file(
-            dirs::home_dir()
+    static MANAGED_CAPABILITY_CACHE_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    #[cfg(unix)]
+    struct ManagedCapabilityCacheHome {
+        path: PathBuf,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl ManagedCapabilityCacheHome {
+        fn new(test_name: &str) -> Self {
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .join(".unsloth")
-                .join("studio")
-                .join("desktop_capability_cache.json"),
-        );
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "unsloth-preflight-cache-{test_name}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            let previous = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME");
+            std::env::set_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME", &path);
+            Self { path, previous }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ManagedCapabilityCacheHome {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME", previous);
+            } else {
+                std::env::remove_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME");
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    fn managed_capability_cache_path_for_test() -> PathBuf {
+        std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .unwrap()
+            .join(".unsloth")
+            .join("studio")
+            .join("desktop_capability_cache.json")
+    }
+
+    #[cfg(unix)]
+    fn remove_managed_capability_cache() {
+        let _ = std::fs::remove_file(managed_capability_cache_path_for_test());
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn managed_cli_capability_probe_classifies_core_cases() {
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("core-cases");
         remove_managed_capability_cache();
 
         for (name, script, stale_reason) in [
@@ -565,6 +614,60 @@ exit 1
                 (probe, expected) => panic!("unexpected probe {probe:?}, expected {expected:?}"),
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_cli_capability_cache_hit_skips_help_probe() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("cache-hit");
+
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "cap-cache-hit",
+            r#"#!/bin/sh
+log="$0.calls"
+mode="$0.mode"
+printf '%s\n' "$*" >> "$log"
+if [ -f "$mode" ]; then exit 42; fi
+if [ "$1" = "-h" ]; then exit 0; fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+        let mode = bin.with_extension("mode");
+
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        let first_calls = fs::read_to_string(&calls).unwrap();
+        assert!(first_calls.contains("-h"));
+        assert!(first_calls.contains("studio desktop-capabilities --json"));
+
+        fs::write(&mode, "cached").unwrap();
+        fs::write(&calls, "").unwrap();
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "");
+
+        // A marker change invalidates the cache, so preflight falls back to the
+        // cheap CLI help probe before deciding the managed install is stale.
+        fs::write(fake.dir.join("pyvenv.cfg"), "changed").unwrap();
+        let stale = probe_managed_bin(bin).await;
+        assert!(matches!(stale, ManagedProbe::Stale { .. }));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        remove_managed_capability_cache();
     }
 
     const EXPECTED_ROOT_ID: &str =
