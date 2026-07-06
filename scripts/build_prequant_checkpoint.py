@@ -58,7 +58,7 @@ def main(argv = None) -> int:
         FP8_GRANULARITY,
         TQ_FP8,
         TQ_SCHEMES,
-        _SCALED_MM_SCHEMES,
+        _REQUIRE_BF16_SCHEMES,
         _make_quant_config,
         _resolve_fast_accum,
         exclude_tokens_for_scheme,
@@ -88,12 +88,13 @@ def main(argv = None) -> int:
     # bakes them as int8 and crashes (torch._int_mm needs M>16) at the first denoise step on
     # Flux / Qwen. fp8 / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns ().
     exclude_name_tokens = exclude_tokens_for_scheme(scheme)
-    # The scaled_mm schemes (fp8 / nvfp4 / mxfp8) assert a bf16 weight, so their filter must skip any
-    # non-bf16 Linear the transformer keeps: a mixed-precision DiT (Wan / Hunyuan) retains its
-    # _keep_in_fp32_modules in fp32 even under torch_dtype=bf16, so quantising one would raise inside
-    # quantize_ and abort the whole pass. Runtime quantize_transformer gates this on scheme membership;
-    # mirror it here so the offline checkpoint quantises the exact same layer set (offline == runtime).
-    require_bf16 = scheme in _SCALED_MM_SCHEMES
+    # fp8 and mxfp8 assert a bf16 weight, so their filter must skip any non-bf16 Linear the
+    # transformer keeps: a mixed-precision DiT (Wan / Hunyuan) retains its _keep_in_fp32_modules in
+    # fp32 even under torch_dtype=bf16, so quantising one would raise inside quantize_ and abort the
+    # whole pass. nvfp4 quantises fp32 fine, so it is not gated. Runtime quantize_transformer gates
+    # this on scheme membership; mirror it here so the offline checkpoint quantises the exact same
+    # layer set (offline == runtime).
+    require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode into the saved kernels; record the resolved choice so the
     # loader can refuse a checkpoint whose baked value contradicts an explicit runtime request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None

@@ -308,6 +308,22 @@ def test_load_require_bf16_int8_true_is_none(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
 
 
+def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
+    # nvfp4 quantises fp32 weights fine, so the runtime filter does NOT set the bf16 gate; a
+    # checkpoint built the same way (require_bf16=False) matches and loads.
+    ckpt = _good_ckpt(scheme = "nvfp4")
+    ckpt["metadata"]["require_bf16"] = False
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
+
+
+def test_load_require_bf16_nvfp4_true_is_none(monkeypatch, tmp_path):
+    # An nvfp4 checkpoint claiming the bf16 gate contradicts the runtime filter (nvfp4 is not gated),
+    # so it quantised a different layer set and must be rejected.
+    ckpt = _good_ckpt(scheme = "nvfp4")
+    ckpt["metadata"]["require_bf16"] = True
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is None
+
+
 def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
     # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint
     # that passed the gate is silently skipped.
