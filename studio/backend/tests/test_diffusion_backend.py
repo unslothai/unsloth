@@ -2134,11 +2134,15 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     # memory_mode overrides it) must NOT widen, even though the candidate itself is dense-viable.
     before = len(seen)
     assert (
-        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "memory_mode": "balanced"})
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "balanced"}
+        )
         is False
     )
     assert (
-        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "memory_mode": "low_vram"})
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "low_vram"}
+        )
         is False
     )
     assert (
@@ -2150,7 +2154,9 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     # An explicit memory_mode still consulting the candidate: fast/auto can flip resident, so they
     # widen when the candidate is dense-viable (memory_mode="fast" does not force offload).
     assert (
-        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "memory_mode": "fast"})
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "fast"}
+        )
         is True
     )
     # A cpu_offload flag is overridden by an explicit resident memory_mode, so it still widens.
