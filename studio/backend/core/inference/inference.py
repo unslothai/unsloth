@@ -254,6 +254,11 @@ class InferenceBackend:
                 # Per-model token: the native-template fallback must use the
                 # token this model was loaded with, not whichever loaded last.
                 "hf_token": hf_token,
+                # Per-model consent: the native-template reload must re-use the
+                # exact trust_remote_code this model (and a LoRA's base) was loaded
+                # with, so a custom-code tokenizer repo can be re-fetched without
+                # executing any code the user did not already consent to.
+                "trust_remote_code": trust_remote_code,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
                 "is_audio": config.is_audio,

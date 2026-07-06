@@ -173,6 +173,9 @@ class MLXInferenceBackend:
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
+            # Per-model consent for the native-template reload: re-use the exact
+            # trust_remote_code this model was loaded with (matches transformers).
+            "trust_remote_code": trust_remote_code,
             "model": self._model,
             "tokenizer": self._tokenizer,
             "processor": self._processor,

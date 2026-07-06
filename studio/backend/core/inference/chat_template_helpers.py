@@ -89,6 +89,15 @@ def render_native_template(
     ``hf_token`` is the token the model was loaded with -- passed to the repo load
     so a gated/private model's native template can still be fetched (otherwise the
     fallback fails silently and keeps the override prompt that dropped tools).
+
+    ``trust_remote_code`` is sourced from ``model_info`` (the value the model was
+    actually loaded with) rather than a call-site argument, so the native-template
+    reload uses exactly the consent already granted at load. A custom-code tokenizer
+    repo raises in ``AutoTokenizer.from_pretrained`` unless ``trust_remote_code`` is
+    passed, so without this the fallback fails silently and keeps the tool-dropping
+    prompt for a model the user already consented to run remote code for. For a LoRA
+    adapter the reload targets the base model, whose remote code was gated and loaded
+    under the same stored flag, so re-passing it executes no unconsented code.
     """
     # ``apply_fn`` lets a backend inject its own render; defaults to the module helper.
     if apply_fn is None:
@@ -97,11 +106,16 @@ def render_native_template(
     if native_tpl is None:
         # A LoRA adapter's native template lives on the base model, not the adapter id.
         template_source = model_info.get("base_model") or active_model_name
+        # Re-use the consent the model was loaded with: a custom-code tokenizer repo
+        # needs trust_remote_code to instantiate its class, and the stored flag already
+        # covers template_source (the loaded model, or a LoRA's gated base model).
+        trust_remote_code = bool(model_info.get("trust_remote_code", False))
         try:
             from transformers import AutoTokenizer
             nt = AutoTokenizer.from_pretrained(
                 template_source,
                 token = hf_token if hf_token and hf_token.strip() else None,
+                trust_remote_code = trust_remote_code,
             )
             native_tpl = nt.chat_template or False
         except Exception as exc:
