@@ -423,6 +423,18 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
 _SDPA_EXCLUDED_MODELS = ("gpt_oss",)
+# The loader (loader.py) forces supports_sdpa=False for these because their bundled
+# SDPA modules are wrong. Kept here, not in loader.py, so _is_sdpa_excluded can honor
+# them without a loader -> _utils import cycle (loader.py already imports from _utils
+# and re-exports this name for callers like sentence_transformer.py). Entries are matched
+# as substrings against a comma-joined model_types string ending in a comma, so "gemma3,"
+# matches a distinct "gemma3" entry but not "gemma3n", and "gemma3_text" matches the
+# EmbeddingGemma text model.
+DISABLE_SDPA_MODEL_NAMES = [
+    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
+    "gpt_oss",
+]
 _FLASH_EXCLUDED_MODELS = ("gpt_oss",)
 _EAGER_ONLY_PREFIXES = ("gemma3n",)
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
@@ -433,8 +445,23 @@ def _is_flex_excluded(model_type):
     return model_type in _FLEX_EXCLUDED_MODELS
 
 
+def _is_sdpa_disabled_by_name(model_type):
+    # Mirror the loader's DISABLE_SDPA_MODEL_NAMES check: loader.py builds
+    # model_types_all = ",".join(model_types) + "," and tests `name in model_types_all`.
+    # Rebuild the same trailing-comma form for a single model_type so the match is
+    # identical (e.g. "gemma3," matches "gemma3" but not "gemma3n", and "gemma3_text"
+    # still matches "gemma3_text").
+    model_types_all = model_type.lower() + ","
+    return any(name.lower() in model_types_all for name in DISABLE_SDPA_MODEL_NAMES)
+
+
 def _is_sdpa_excluded(model_type):
-    return model_type in _SDPA_EXCLUDED_MODELS
+    # SDPA is known-broken for these models, so an explicit sdpa request must not
+    # re-enable it. Two sources: _SDPA_EXCLUDED_MODELS (resolver-level, e.g. gpt_oss)
+    # and DISABLE_SDPA_MODEL_NAMES (loader-level, e.g. gemma3 / gemma3_text, which the
+    # loader also forces to supports_sdpa=False).
+    lowered = model_type.lower()
+    return lowered in _SDPA_EXCLUDED_MODELS or _is_sdpa_disabled_by_name(lowered)
 
 
 def _is_flash_excluded(model_type):
@@ -610,6 +637,12 @@ def _disable_flash_attention_if_needed(
     if disable_reason is None:
         return attn_implementation
 
+    # Only an implementation passed by the caller counts as an explicit request.
+    # Values read from the config are synthesized by the loaders (the language path
+    # seeds the config with attn_implementation="sdpa") or come from Transformers
+    # defaults, so they must not be treated as a deliberate user choice.
+    explicit_request = attn_implementation
+
     requested_attn_implementation = attn_implementation
     if requested_attn_implementation is None:
         requested_attn_implementation = _config_get(config, "_attn_implementation", None)
@@ -618,6 +651,20 @@ def _disable_flash_attention_if_needed(
 
     if requested_attn_implementation == "eager":
         return _set_attn_impl(config, "eager")
+
+    model_type = _config_get(config, "model_type", "")
+
+    # The disable reason is flash-specific: honor an explicit non-flash request from
+    # the caller instead of downgrading it. SDPA is honored unless the model's SDPA is
+    # known-broken - _SDPA_EXCLUDED_MODELS (e.g. gpt_oss) or DISABLE_SDPA_MODEL_NAMES
+    # (e.g. gemma3 / gemma3_text); flex_attention
+    # is honored only when it is actually usable, since supports_flex_attention already
+    # rejects the excluded/broken/unavailable configs. This keeps an explicit request
+    # from selecting a backend the repo marks as wrong.
+    if explicit_request == "sdpa" and not _is_sdpa_excluded(model_type.lower()):
+        return _set_attn_impl(config, "sdpa")
+    if explicit_request == "flex_attention" and supports_flex_attention:
+        return _set_attn_impl(config, "flex_attention")
 
     if supports_sdpa:
         fallback_attn_implementation = "sdpa"
@@ -631,7 +678,6 @@ def _disable_flash_attention_if_needed(
             if _is_flash_attention_requested(requested_attn_implementation)
             else "flash_attention_2"
         )
-        model_type = _config_get(config, "model_type", "")
         warning_key = (
             model_type,
             logged_attn_implementation,
@@ -845,7 +891,19 @@ def resolve_attention_implementation(
         final_attn_impl = requested_attn_implementation
         _set_attn_impl(config, final_attn_impl)
 
-    if not supports_sdpa and final_attn_impl == "sdpa":
+    # A caller who explicitly passes requested_attn_implementation="sdpa" keeps it even
+    # on a conservatively unsupported model, mirroring _disable_flash_attention_if_needed
+    # which honors an explicit sdpa request. The exception is a model whose SDPA is
+    # known-broken - _SDPA_EXCLUDED_MODELS (e.g. gpt_oss) or DISABLE_SDPA_MODEL_NAMES
+    # (e.g. gemma3 / gemma3_text, which the loader also forces to supports_sdpa=False):
+    # an explicit request must not re-enable it, so it still downgrades to eager, just
+    # like flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized/default sdpa
+    # (requested is None, so the value came from the model resolution above or the
+    # config) also downgrades.
+    honor_explicit_sdpa = requested_attn_implementation == "sdpa" and not _is_sdpa_excluded(
+        model_type
+    )
+    if not supports_sdpa and final_attn_impl == "sdpa" and not honor_explicit_sdpa:
         print(
             f"Unsloth: {(model_type_name or 'model').title()} does not support SDPA - switching to fast eager."
         )

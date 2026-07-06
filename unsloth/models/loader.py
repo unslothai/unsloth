@@ -21,6 +21,10 @@ from ._utils import (
     USE_MODELSCOPE,
     get_transformers_model_type,
     hf_login,
+    # Single source of truth is _utils.py; re-exported here so callers doing
+    # `from unsloth.models.loader import DISABLE_SDPA_MODEL_NAMES` keep working and so
+    # _is_sdpa_excluded (in _utils) can honor it without a loader -> _utils cycle.
+    DISABLE_SDPA_MODEL_NAMES,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -194,14 +198,6 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
     "granite,llava_next",  # Granite-vision 3
-]
-
-global DISABLE_SDPA_MODEL_NAMES
-# Disables some SDPA modules since it's wrong
-DISABLE_SDPA_MODEL_NAMES = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
-    "gpt_oss",
 ]
 
 
