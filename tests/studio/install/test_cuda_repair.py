@@ -359,12 +359,12 @@ class TestTorchBackendDerivationFromPin:
     def test_source_uses_helper_not_bare_startswith(self):
         # Guard against a regression back to elif _idx_leaf.startswith("cu").
         src = _STACK_PATH.read_text(encoding = "utf-8")
-        assert "elif _is_cuda_family_leaf(_idx_leaf):" in src, (
-            "_TORCH_BACKEND derivation must classify CUDA via _is_cuda_family_leaf"
-        )
-        assert 'elif _idx_leaf.startswith("cu"):' not in src, (
-            "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
-        )
+        assert (
+            "elif _is_cuda_family_leaf(_idx_leaf):" in src
+        ), "_TORCH_BACKEND derivation must classify CUDA via _is_cuda_family_leaf"
+        assert (
+            'elif _idx_leaf.startswith("cu"):' not in src
+        ), "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
 
 
 # CUDA index ladder.
