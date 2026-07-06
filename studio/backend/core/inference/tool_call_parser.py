@@ -331,7 +331,10 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
 
 
 def strip_tool_markup(
-    text: str, *, final: bool = False, enabled_tool_names: Optional[set] = None
+    text: str,
+    *,
+    final: bool = False,
+    enabled_tool_names: Optional[set] = None,
 ) -> str:
     """Strip tool-call markup; ``final=True`` also drops trailing unclosed runs and trims.
 
