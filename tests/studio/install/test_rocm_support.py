@@ -825,9 +825,9 @@ class TestEnsureRocmTorch:
             _args = [str(a) for a in _call.args]
             if "--index-url" in _args:
                 _url = _args[_args.index("--index-url") + 1]
-                assert "rocm7.2" not in _url or "torch" not in " ".join(
-                    _args
-                ), "torch must not be reinstalled when the pin already matches"
+                assert "rocm7.2" not in _url or "torch" not in " ".join(_args), (
+                    "torch must not be reinstalled when the pin already matches"
+                )
         # A torch reinstall would pass torch>=... as a positional; assert none did.
         assert not any(
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
@@ -1294,9 +1294,9 @@ class TestHasRocmGpuKfdVendorGuard:
 
         src = self._src()
         # Word boundary so "vendor_id 41098" doesn't match "vendor_id 4098".
-        assert (
-            _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src
-        ), "_has_rocm_gpu vendor_id check should use word boundary anchors"
+        assert _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src, (
+            "_has_rocm_gpu vendor_id check should use word boundary anchors"
+        )
 
     def test_sysfs_fallback_guarded_by_non_win32(self):
         """KFD sysfs fallback must be Linux-only (guarded by sys.platform != 'win32')."""
@@ -1306,9 +1306,9 @@ class TestHasRocmGpuKfdVendorGuard:
     def test_cpu_node_excluded(self):
         """gpu_id == '0' must be excluded (CPU topology nodes)."""
         src = self._src()
-        assert (
-            '!= "0"' in src or "== '0'" in src or "!= '0'" in src or '"0"' in src
-        ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
+        assert '!= "0"' in src or "== '0'" in src or "!= '0'" in src or '"0"' in src, (
+            "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
+        )
 
     def test_install_sh_has_vendor_check(self):
         """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
@@ -1341,12 +1341,12 @@ class TestHasRocmGpuKfdVendorGuard:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert (
-            "_has_usable_nvidia_gpu" in func_body
-        ), "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
-        assert (
-            "return 1" in func_body
-        ), "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
+        assert "_has_usable_nvidia_gpu" in func_body, (
+            "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
+        )
+        assert "return 1" in func_body, (
+            "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
+        )
 
     def test_has_usable_nvidia_gpu_proc_fallback_present(self):
         """`_has_usable_nvidia_gpu` must have a /proc/driver/nvidia fallback."""
@@ -1562,12 +1562,12 @@ class TestInstallShStructure:
         rocm_call = body.find("_has_amd_rocm_gpu")
         assert nvidia_call >= 0, "get_torch_index_url should call _has_usable_nvidia_gpu"
         assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia branch"
-        assert (
-            rocm_call > no_nvidia_branch
-        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
-        assert (
-            nvidia_call < no_nvidia_branch
-        ), "NVIDIA detection should run before the no-NVIDIA branch"
+        assert rocm_call > no_nvidia_branch, (
+            "ROCm detection should sit inside the 'no NVIDIA' branch"
+        )
+        assert nvidia_call < no_nvidia_branch, (
+            "NVIDIA detection should run before the no-NVIDIA branch"
+        )
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
@@ -1633,9 +1633,9 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            assert (
-                "((" not in line or "))" not in line or "$(()" in line
-            ), f"get_torch_index_url line {i} may use non-POSIX (( ))"
+            assert "((" not in line or "))" not in line or "$(()" in line, (
+                f"get_torch_index_url line {i} may use non-POSIX (( ))"
+            )
 
     def test_macos_returns_cpu_before_rocm_check(self):
         """macOS should return CPU immediately (before any ROCm check)."""
@@ -1654,9 +1654,9 @@ class TestInstallShStructure:
         torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
         backend_pos = source.find("UNSLOTH_TORCH_BACKEND")
         assert backend_pos > 0, "UNSLOTH_TORCH_BACKEND must be set in install.sh"
-        assert (
-            backend_pos > torch_url_pos
-        ), "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
+        assert backend_pos > torch_url_pos, (
+            "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
+        )
         assert '"cuda"' in source[backend_pos : backend_pos + 500]
         assert '"rocm"' in source[backend_pos : backend_pos + 500]
         assert '"cpu"' in source[backend_pos : backend_pos + 500]
@@ -1670,12 +1670,12 @@ class TestInstallShStructure:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert (
-            "vendor_id" in func_body
-        ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
-        assert (
-            "4098" in func_body
-        ), "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
+        assert "vendor_id" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
+        )
+        assert "4098" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
+        )
 
     def test_kfd_awk_resets_state_per_file(self):
         """KFD sysfs awk must reset gpu/amd state per file (FNR==1) to avoid Ryzen+NVIDIA false positives."""
@@ -1700,9 +1700,9 @@ class TestInstallShStructure:
             "get_torch_index_url must use a _nvidia_detected flag (separate from "
             "_smi) so that proc-only NVIDIA detection still selects CUDA wheels"
         )
-        assert (
-            '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body
-        ), "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
+        assert '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body, (
+            "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
+        )
 
 
 # TEST: Live regression on current host (NVIDIA B200 expected)
@@ -2691,9 +2691,9 @@ class TestRuntimeBnbRocmSourceGuards:
         """A failed redetect must not downgrade a persisted suffix to '72'."""
         for path in (self._MAIN_PATH, self._TRAINING_WORKER_PATH):
             source = path.read_text(encoding = "utf-8")
-            assert (
-                '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in source
-            ), path.name
+            assert '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in source, (
+                path.name
+            )
 
     def test_main_requires_found_rocm_dll(self):
         """HIP_PATH/ROCM_PATH alone (HIP SDK on a CUDA/CPU box) must not force
@@ -3142,9 +3142,9 @@ class TestStrixHaloGfxArchDetection:
         """Both files must use the gfx\\d+[a-z]? regex to parse arch from amd-smi output."""
         for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
             source = path.read_text(encoding = "utf-8")
-            assert (
-                "gfx\\d+" in source or r"gfx\d+" in source
-            ), f"gfx arch regex not found in {path.name}"
+            assert "gfx\\d+" in source or r"gfx\d+" in source, (
+                f"gfx arch regex not found in {path.name}"
+            )
 
 
 # TEST: HIP SDK tool path resolution via HIP_PATH / ROCM_PATH env vars

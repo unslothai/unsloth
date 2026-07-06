@@ -2996,6 +2996,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         --index-url "$TORCH_INDEX_URL"
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
+                    # Record the ACTUAL wheel source for the torch-index marker: this
+                    # path installs from repo.radeon.com via --find-links, not from
+                    # $TORCH_INDEX_URL (the generic pytorch.org ROCm fallback index).
+                    # Recording $TORCH_INDEX_URL here would make the marker claim the
+                    # generic index was used, so a later pin to that same ROCm family
+                    # would compare-equal and skip the reinstall even though the wheels
+                    # came from a different source. Mirrors install.ps1/setup.ps1, which
+                    # record $ROCmIndexUrl (the real AMD index) for their AMD path.
+                    _TORCH_MARKER_INDEX_URL="$_RADEON_BASE_URL"
                     # Pass explicit wheel URLs so the matched trio is
                     # installed together. --find-links lets uv discover
                     # the Radeon listing for any local lookup, and PyPI
@@ -3150,8 +3159,11 @@ fi
 # update` (install_python_stack.py / setup.ps1) can detect a later pin change by an
 # exact string compare rather than the version-tag heuristic. Only when torch was
 # actually installed from a resolved index (skip --no-torch / no-URL fallback).
+# Reflects the actual source: the Radeon --find-links path sets
+# _TORCH_MARKER_INDEX_URL to its repo.radeon.com base; every other path falls back
+# to $TORCH_INDEX_URL (the CUDA/CPU/ROCm/pinned index it installed from).
 if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
-    _write_torch_index_marker "$VENV_DIR" "$TORCH_INDEX_URL"
+    _write_torch_index_marker "$VENV_DIR" "${_TORCH_MARKER_INDEX_URL:-$TORCH_INDEX_URL}"
 fi
 
 # ── Run studio setup ──

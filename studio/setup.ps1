@@ -2744,26 +2744,20 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $_expectedKnown = $true
         if ($_pinnedIdx) {
             $_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx
-            # Torch-index marker: when the last install recorded an index, compare the
-            # pin against it EXACTLY. This is the only signal that catches a per-arch
-            # switch between two 2.11 gfx indexes (gfx1151 -> gfx120X-all -- both
-            # install a +rocm7.13.0 wheel, so the tag heuristic sees no difference) and
-            # a custom-URL change (/simple -> /current). $null = no usable marker ->
-            # fall back to the version-tag heuristic (old venv; backward compatible).
+            # Torch-index marker compare: an EXACT compare of the pin against the index
+            # the last install recorded. This is the only signal that catches a per-arch
+            # switch between two 2.11 gfx indexes (gfx1151 -> gfx120X-all -- both install
+            # a +rocm7.13.0 wheel, so the tag heuristic sees no difference) and a
+            # custom-URL change (/simple -> /current). It is an ADDITIONAL rebuild
+            # trigger, NOT a substitute for validating the installed flavor: a matching
+            # marker must not hide a stale wheel (e.g. torch later swapped to a +cpu
+            # build while the marker still records the cuXXX pin), so the flavor check
+            # below still runs for known cu*/cpu/rocm leaves. $null = no usable marker ->
+            # flavor heuristic only (old venv; backward compatible).
             $_markerMismatch = Test-MarkerPinMismatch -VenvDir $VenvDir -PinUrl $_pinnedIdx
-            if ($null -ne $_markerMismatch) {
-                # Drive the rebuild decision purely off the marker compare.
-                $_expectedKnown = $true
-                if ($_markerMismatch) {
-                    $expectedTorchTag  = "pinned:$_pinnedIdx"
-                    $installedTorchTag = "marker-mismatch"
-                } else {
-                    $expectedTorchTag  = "pinned:$_pinnedIdx"
-                    $installedTorchTag = "pinned:$_pinnedIdx"
-                }
-            }
+            if ($_markerMismatch -eq $true) { $shouldRebuild = $true }
             # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds.
-            elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
+            if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
                 # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
                 # would match any installed +rocm wheel and mask a pin change from
                 # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
@@ -2784,9 +2778,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 $expectedTorchTag = $_pinLeaf
             } else {
                 # Custom index whose final segment is not a torch flavor (e.g. a
-                # PEP 503 mirror ending in /simple) and no marker to compare against.
-                # We cannot infer the flavor, so trust the pinned URL and do not
-                # rebuild on a bogus tag comparison.
+                # PEP 503 mirror ending in /simple). We cannot infer the flavor from
+                # the wheel tag, so the marker compare above is the only signal; do
+                # not also rebuild on a bogus tag comparison here.
                 $_expectedKnown = $false
                 $expectedTorchTag = $installedTorchTag
             }
@@ -2812,7 +2806,19 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 "gfx90a", "gfx908"              # MI200 / MI100
             )
             if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
-                $expectedTorchTag = "rocm"
+                # A correct +rocm wheel is not stale. A CPU wheel on a supported AMD
+                # arch is NOT wiped here either: the AMD Windows ROCm override below
+                # (the `$CuTag -eq "cpu"` reinstall block, plus the CPU-torch force in
+                # the version fast-path) upgrades CPU torch to ROCm in place. Forcing a
+                # rebuild would delete the venv and then hit "Virtual environment not
+                # found", so an older CPU-only install would be lost instead of
+                # repaired. Expect "cpu" for that case and let the override upgrade it.
+                # A genuinely wrong CUDA wheel (cu*) still mismatches "rocm" -> rebuild.
+                if ($installedTorchTag -eq "cpu") {
+                    $expectedTorchTag = "cpu"
+                } else {
+                    $expectedTorchTag = "rocm"
+                }
             } else {
                 $expectedTorchTag = "cpu"
             }
