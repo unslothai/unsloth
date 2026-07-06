@@ -2059,12 +2059,28 @@ export function HubModelPicker({
     [gpu],
   );
   const routedArtifactFor = useCallback(
-    (group: CatalogGroup): ModelArtifact =>
-      pickDefaultArtifact(group, {
+    (group: CatalogGroup): ModelArtifact => {
+      // Honor the format filter when routing a bare group click. A group is only
+      // visible under a GGUF/Safetensors/MLX filter because at least one of its
+      // artifacts matches (catalogGroupMatchesFormat), so restrict the routing
+      // candidates to those same artifacts before the ladder picks. Otherwise a
+      // GGUF-filtered group could route to a large BF16/FP8 download the filter
+      // never surfaced (pickDefaultArtifact prefers a fitting non-GGUF).
+      const scoped =
+        formatFilter === "all"
+          ? group
+          : (() => {
+              const artifacts = group.artifacts.filter((a) =>
+                matchesFormatFilter(a.repoId, a.format === "gguf", formatFilter),
+              );
+              return artifacts.length > 0 ? { ...group, artifacts } : group;
+            })();
+      return pickDefaultArtifact(scoped, {
         ...deviceBudget,
         isDownloaded: isRepoDownloaded,
-      }),
-    [deviceBudget, isRepoDownloaded],
+      });
+    },
+    [deviceBudget, isRepoDownloaded, formatFilter],
   );
   const routeGroupClick = useCallback(
     async (group: CatalogGroup) => {
@@ -2493,6 +2509,66 @@ export function HubModelPicker({
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
 
+    // Roving keys for an On Device cached section, mirroring renderCachedRows'
+    // render order exactly so arrow/Home/End nav matches the visual order.
+    // Without a catalog the rows are flat; with one, catalog members collapse
+    // under a canonical group row (whose key must lead), and the per-repo child
+    // rows only render (and only join the roving list) while the group is
+    // expanded. Ungrouped GGUF rows then ungrouped model rows follow.
+    const groupedCachedKeys = (
+      ggufRows: { repo_id: string }[],
+      modelRows: { repo_id: string }[],
+      keyPrefix: string,
+    ): string[] => {
+      if (!catalog) {
+        return [
+          ...ggufRows.map((c) =>
+            makeModelOptionKey("downloaded-gguf", c.repo_id),
+          ),
+          ...modelRows.map((c) =>
+            makeModelOptionKey("downloaded-model", c.repo_id),
+          ),
+        ];
+      }
+      const grouped = new Map<
+        CatalogGroup,
+        { gguf: string[]; models: string[] }
+      >();
+      const ungroupedGguf: string[] = [];
+      const ungroupedModels: string[] = [];
+      for (const c of ggufRows) {
+        const key = makeModelOptionKey("downloaded-gguf", c.repo_id);
+        const group = groupForRepoId(c.repo_id, catalog);
+        if (group) {
+          const entry = grouped.get(group) ?? { gguf: [], models: [] };
+          entry.gguf.push(key);
+          grouped.set(group, entry);
+        } else {
+          ungroupedGguf.push(key);
+        }
+      }
+      for (const c of modelRows) {
+        const key = makeModelOptionKey("downloaded-model", c.repo_id);
+        const group = groupForRepoId(c.repo_id, catalog);
+        if (group) {
+          const entry = grouped.get(group) ?? { gguf: [], models: [] };
+          entry.models.push(key);
+          grouped.set(group, entry);
+        } else {
+          ungroupedModels.push(key);
+        }
+      }
+      const out: string[] = [];
+      for (const [group, rows] of grouped.entries()) {
+        out.push(makeModelOptionKey(keyPrefix, group.canonicalId));
+        if (expandedGroups.has(`${keyPrefix}:${group.canonicalId}`)) {
+          out.push(...rows.gguf, ...rows.models);
+        }
+      }
+      out.push(...ungroupedGguf, ...ungroupedModels);
+      return out;
+    };
+
     // Downloaded (Unsloth) rows (query-filtered) on the On Device tab only.
     if (
       section === "downloaded" &&
@@ -2501,19 +2577,21 @@ export function HubModelPicker({
       (unslothCachedGguf.length > 0 || unslothCachedModelRows.length > 0)
     ) {
       keys.push(
-        ...unslothCachedGguf.map((model) =>
-          makeModelOptionKey("downloaded-gguf", model.repo_id),
-        ),
-      );
-      keys.push(
-        ...unslothCachedModelRows.map((model) =>
-          makeModelOptionKey("downloaded-model", model.repo_id),
+        ...groupedCachedKeys(
+          unslothCachedGguf,
+          unslothCachedModelRows,
+          "cached-group",
         ),
       );
     }
 
-    // Unsloth-tab search keys (curated matches + HF unsloth results).
+    // Unsloth-tab search keys (curated catalog matches + curated/HF results).
     if (showHfSection && section === "recommended") {
+      keys.push(
+        ...matchedCatalogGroups.map((g) =>
+          makeModelOptionKey("search-catalog-group", g.canonicalId),
+        ),
+      );
       keys.push(
         ...filteredRecommendedIds.map((id) =>
           makeModelOptionKey("search-recommended", id),
@@ -2531,13 +2609,10 @@ export function HubModelPicker({
       (otherCachedGguf.length > 0 || otherCachedModelRows.length > 0)
     ) {
       keys.push(
-        ...otherCachedGguf.map((model) =>
-          makeModelOptionKey("downloaded-gguf", model.repo_id),
-        ),
-      );
-      keys.push(
-        ...otherCachedModelRows.map((model) =>
-          makeModelOptionKey("downloaded-model", model.repo_id),
+        ...groupedCachedKeys(
+          otherCachedGguf,
+          otherCachedModelRows,
+          "other-cached-group",
         ),
       );
     }
@@ -2573,14 +2648,25 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
-      // Curated safetensors rows render ABOVE the recommended rows (and call
-      // getOptionProps), so their keys must lead here or they fall back to the
-      // duplicate ...-option-missing id and drop out of arrow-key navigation.
-      keys.push(
-        ...curatedSafetensorsRows.map((m) =>
-          makeModelOptionKey("curated-safetensors", m.id),
-        ),
-      );
+      // Curated rows render ABOVE the recommended rows (and call getOptionProps),
+      // so their keys must lead here or they fall back to the duplicate
+      // ...-option-missing id and drop out of arrow-key navigation. With a
+      // catalog (Images / Video) those are the canonical catalog-group rows,
+      // gated by the same format filter as the render; without one they are the
+      // flat curated safetensors rows.
+      if (catalog) {
+        keys.push(
+          ...catalog
+            .filter((g) => catalogGroupMatchesFormat(g, formatFilter))
+            .map((g) => makeModelOptionKey("catalog-group", g.canonicalId)),
+        );
+      } else {
+        keys.push(
+          ...curatedSafetensorsRows.map((m) =>
+            makeModelOptionKey("curated-safetensors", m.id),
+          ),
+        );
+      }
       keys.push(
         ...recommendedRows.map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -2589,15 +2675,19 @@ export function HubModelPicker({
     return keys;
   }, [
     cachedReady,
+    catalog,
     chatOnly,
     curatedSafetensorsRows,
     sortedCustomFolderModels,
     customFoldersCollapsed,
     downloadedCollapsed,
+    expandedGroups,
     fineTunedRows,
     fineTunedCollapsed,
     filteredRecommendedIds,
+    formatFilter,
     hfIds,
+    matchedCatalogGroups,
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
