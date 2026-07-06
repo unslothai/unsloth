@@ -295,3 +295,32 @@ class TestBracketCallSpans:
         )
         assert [k for k, _v in events] == ["tool_call", "tool_call", "text"]
         assert events[2][1] == " after"
+
+
+class TestMistralArrayHealing:
+    """Draining the whole [TOOL_CALLS] array for the shapes the repo's own
+    Mistral/Ollama templates emit."""
+
+    def test_comma_less_multi_call_array_parses_all_calls(self):
+        # ollama_template_mappers.py renders multi-call turns as [{...}{...}] with no
+        # comma separator; a single json.loads of the body rejects it and dropped every
+        # call. The element-by-element decode must recover all of them.
+        text = '[TOOL_CALLS] [{"name":"a","arguments":{"x":1}}{"name":"b","arguments":{"y":2}}]'
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["a", "b"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"x": 1}
+        assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
+
+    def test_comma_separated_and_single_arrays_still_parse(self):
+        both = parse_tool_calls_from_text(
+            '[TOOL_CALLS] [{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+        )
+        assert [c["function"]["name"] for c in both] == ["a", "b"]
+        one = parse_tool_calls_from_text('[TOOL_CALLS] [{"name":"a","arguments":{}}]')
+        assert [c["function"]["name"] for c in one] == ["a"]
+
+    def test_mistral_array_null_arguments_normalized_to_empty_object(self):
+        # ``"arguments": null`` is a no-arg call; it must become {} (as the <tool_call>
+        # path does), not the string "null" that auto-heal turns into {"query":"null"}.
+        calls = parse_tool_calls_from_text('[TOOL_CALLS][{"name":"get_time","arguments":null}]')
+        assert calls[0]["function"]["arguments"] == "{}"

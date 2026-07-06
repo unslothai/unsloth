@@ -232,15 +232,22 @@ def _balanced_bracket_end(src: str, start: int) -> int:
     return -1
 
 
-def _array_item_ends(text: str, body_start: int, body_end: int) -> list:
-    """Absolute exclusive end offset of each top-level element of the JSON array
-    between ``body_start`` (at or before its ``[``) and ``body_end`` (exclusive).
-    Used to tile a multi-call [TOOL_CALLS] array across its calls' spans."""
+def _decode_array_items(text: str, body_start: int, body_end: int):
+    """Return ``(objs, ends)`` for each top-level element of the JSON array between
+    ``body_start`` (at or before its ``[``) and ``body_end`` (exclusive): the decoded
+    object and its absolute exclusive end offset.
+
+    Decoding element-by-element with ``raw_decode`` tolerates the comma-less object
+    separators the repo's own Mistral/Ollama multi-call templates emit
+    (``[{...}{...}]``; see ollama_template_mappers.py). A single ``json.loads`` of the
+    whole body rejects that form and would drop every call. The ends also tile the
+    region across the calls' spans so a with_spans consumer strips each exactly once."""
     decoder = json.JSONDecoder()
+    objs: list = []
     ends: list[int] = []
     i = text.find("[", body_start)
     if i < 0:
-        return ends
+        return objs, ends
     i += 1
     while i < body_end:
         while i < body_end and text[i] in " \t\r\n,":
@@ -248,12 +255,13 @@ def _array_item_ends(text: str, body_start: int, body_end: int) -> list:
         if i >= body_end or text[i] == "]":
             break
         try:
-            _obj, rel = decoder.raw_decode(text[i:body_end])
+            obj, rel = decoder.raw_decode(text[i:body_end])
         except (json.JSONDecodeError, ValueError):
             break
         i += rel
+        objs.append(obj)
         ends.append(i)
-    return ends
+    return objs, ends
 
 
 def _iter_bracket_spans(
@@ -764,20 +772,19 @@ def parse_tool_calls_from_text(
         ):
             if _in_think(start):
                 continue
-            try:
-                payload = json.loads(content[m.end() : end])
-            except (json.JSONDecodeError, ValueError):
-                continue
             # Extend the region over an immediately-following v11 closer so with_spans consumers strip it too.
             closer = re.match(r"\s*\[/TOOL_CALLS\]", content[end:])
             region_end = end + closer.end() if closer else end
             if kind == "array":
-                if not isinstance(payload, list):
+                # Decode elements individually (comma-tolerant): a single json.loads of
+                # the whole body rejects the comma-less multi-call arrays the repo's own
+                # Mistral/Ollama templates emit, dropping every call.
+                payload, item_ends = _decode_array_items(content, m.end(), end)
+                if not payload:
                     continue
                 # Tile the region across call-producing items so every byte belongs to exactly one span;
                 # a with_spans consumer filtering promotions keeps skipped bytes visible and strips
                 # promoted markup exactly once.
-                item_ends = _array_item_ends(content, m.end(), end)
                 tile_start = start
                 last_span_idx = -1
                 for item_idx, item in enumerate(payload):
@@ -790,6 +797,12 @@ def parse_tool_calls_from_text(
                             args = json.loads(args)
                         except (json.JSONDecodeError, ValueError):
                             pass
+                    if not isinstance(args, (dict, str)):
+                        # A no-arg call with ``"arguments": null`` (or any non-object
+                        # scalar) must become {} -- matching the <tool_call> path, which
+                        # leaves arguments None and coerces to {} -- not the string
+                        # "null", which auto-heal would turn into a bogus {"query":"null"}.
+                        args = {}
                     tool_calls.append(
                         {
                             "id": f"call_{id_offset + len(tool_calls)}",
@@ -808,6 +821,10 @@ def parse_tool_calls_from_text(
                     tile_start, _tile_end = call_spans[last_span_idx]
                     call_spans[last_span_idx] = (tile_start, region_end)
             else:
+                try:
+                    payload = json.loads(content[m.end() : end])
+                except (json.JSONDecodeError, ValueError):
+                    continue
                 if not isinstance(payload, dict):
                     continue
                 tool_calls.append(
