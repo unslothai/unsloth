@@ -131,7 +131,10 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
 def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
 
-    assert start._hermes_install_hint() == "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+    assert (
+        start._hermes_install_hint()
+        == "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+    )
 
 
 def test_hermes_install_hint_is_bash_on_posix(monkeypatch):

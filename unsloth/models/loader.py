@@ -207,6 +207,7 @@ DISABLE_COMPILE_MODEL_NAMES = [
 ]
 
 
+
 def _fix_rope_inv_freq(model):
     """Fix inv_freq corruption caused by transformers v5 meta-device loading.
 
