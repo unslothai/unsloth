@@ -41,7 +41,7 @@ def test_normal_multi_key_arguments_still_split():
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
-    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON).
+    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
     calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}
@@ -58,6 +58,15 @@ def test_bare_value_with_timestamps_after_comma_is_kept():
     )
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow", "priority": "high"}
+
+
+def test_wrapperless_bare_value_with_timestamps_after_comma_is_kept():
+    # The wrapper-less Gemma form (no <|tool_call> markers) goes through the
+    # _gemma_parse_stripped_body scanner and its _GEMMA_KEY_RE.
+    calls = parse_tool_calls_from_text("call:web_search{query:meet at 10:00, 11:00 tomorrow}")
+    assert len(calls) == 1, calls
+    assert calls[0]["function"]["name"] == "web_search"
+    assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow"}
 
 
 def test_marker_inside_json_argument_is_not_a_second_call():
@@ -97,8 +106,8 @@ def test_json_marker_inside_gemma_argument_is_not_a_second_call():
 
 
 def test_nested_gemma_marker_in_unquoted_arg_does_not_run_inner_call():
-    # The outer object fails to normalize, but the nested marker is covered by
-    # its span; safe outcome is no executed call at all.
+    # An UNQUOTED Gemma value containing a literal marker: the marker is nested in the outer
+    # candidate span, so it must not be promoted to a standalone `terminal` call (no tool call).
     content = "<|tool_call>call:python{code:<|tool_call>call:terminal{command:ls}<tool_call|>}<tool_call|>"
     calls = parse_tool_calls_from_text(content)
     assert "terminal" not in [c["function"]["name"] for c in calls], calls
@@ -149,6 +158,43 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_wrapperless_nested_object_argument_is_parsed():
+    # skip_special_tokens stream: wrapper and <|"|> markers stripped, so a nested object arrives bare.
+    calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
+    assert len(calls) == 1
+    assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
+
+
+def test_wrapperless_array_argument_is_parsed():
+    calls = parse_tool_calls_from_text("call:label{labels:[bug,ui],n:2}")
+    assert len(calls) == 1
+    assert _args(calls[0]) == {"labels": ["bug", "ui"], "n": 2}
+
+
+def test_wrapperless_deeply_nested_object_and_array_are_preserved():
+    # The single-pass parser must keep multi-level nesting (objects inside
+    # objects, arrays inside arrays) intact, not flatten or drop it.
+    calls = parse_tool_calls_from_text(
+        "call:f{loc:{city:NYC,geo:{lat:1,lng:2}},tags:[a,b,[c,d]],n:3}"
+    )
+    assert len(calls) == 1
+    assert _args(calls[0]) == {
+        "loc": {"city": "NYC", "geo": {"lat": 1, "lng": 2}},
+        "tags": ["a", "b", ["c", "d"]],
+        "n": 3,
+    }
+
+
+def test_gemma_parse_array_advances_on_stray_brace():
+    # Regression: a stray '}' / ']' / ',' where an array element is expected must
+    # not stall _gemma_parse_value at the same index (it looped forever before).
+    from core.inference.tool_call_parser import _gemma_parse_array
+
+    items, end, closed = _gemma_parse_array("[a,}]", 0)
+    assert end == 5 and closed is True  # consumed through the closing ']'
+    assert items[0] == "a"
 
 
 def test_gemma_close_marker_inside_quoted_arg_is_not_leaked_when_stripping():
@@ -312,16 +358,17 @@ def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered
 
 def test_gemma_parse_value_always_advances_on_stray_delimiter():
     # A stray delimiter (`,`, `}`, `]`) at the primitive position must still advance the
-    # parser, or a looping caller spins forever (DoS).
+    # index by at least one, or a caller looping on it spins forever at 100% CPU (DoS).
     for delim in (",", "}", "]"):
         text = delim + "rest"
-        value, nxt = _gemma_parse_value(text, 0)
+        value, nxt, _explicit = _gemma_parse_value(text, 0)
         assert nxt > 0, (delim, value, nxt)
 
 
 def test_malformed_gemma_array_does_not_hang():
-    # ``[},]`` (stray ``}`` in a list body) hung the buggy parser; the timeout fails
-    # the regression loudly instead of blocking CI forever.
+    # ``[},]`` puts a stray ``}`` at the primitive position inside a list body.
+    # On the buggy parser this hangs the server; guard with a wall-clock timeout
+    # so the regression fails loudly instead of blocking CI forever.
     import threading
 
     result: dict = {}
