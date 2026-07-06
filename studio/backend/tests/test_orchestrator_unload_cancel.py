@@ -1006,3 +1006,58 @@ def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
     assert getattr(resp, "status", None) == "unloaded"
     assert llama.unloaded is True
     assert gate_entered["v"] is True, "loaded GGUF unload must still take the gate"
+
+
+def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch):
+    # A still-loading GGUF X (is_active, not is_loaded) must NOT be torn down by the
+    # off-gate fast path when /unload names a DIFFERENT model Y. The single llama-server
+    # can only load one GGUF at a time, so this fast path is "stop loading THIS model";
+    # without a target check it fires for any in-flight GGUF and would abort an unrelated
+    # load (e.g. a second tab unloading Y kills the load of X). A mismatched target must
+    # fall through to the lifecycle gate (where, in production, it waits out X's /load and
+    # then no-ops) instead of taking the off-gate teardown.
+    import asyncio as _asyncio
+
+    import routes.inference as ri
+    from core.inference import llama_keepwarm
+
+    gate_entered = {"v": False}
+
+    class _Gate:
+        async def __aenter__(self):
+            gate_entered["v"] = True
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _LlamaBackend:
+        is_active = True
+        is_loaded = False
+        model_identifier = "gguf-X"
+
+        def __init__(self):
+            self.unloaded = False
+
+        def unload_model(self):
+            self.unloaded = True
+
+    llama = _LlamaBackend()
+
+    class _Unsloth:
+        def get_loading_model(self):
+            return None  # no Unsloth load in flight -> Unsloth fast path skipped
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
+    monkeypatch.setattr(ri, "is_registered_native_path_label", lambda a, b: False)
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
+
+    req = ri.UnloadRequest(model_path = "gguf-Y")  # different from the loading model X
+    _asyncio.run(ri.unload_model(req, current_subject = "s"))
+
+    assert gate_entered["v"] is True, (
+        "a mismatched-target unload must not use the off-gate GGUF fast path; "
+        "it would cancel the wrong in-flight load"
+    )

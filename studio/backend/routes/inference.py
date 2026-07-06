@@ -3824,8 +3824,22 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         # it sends no worker command that could land on a freshly swapped worker, so it
         # is safe off-gate, like cancel_load above. The gated GGUF branch below still
         # handles the already-loaded case.
+        # Match request.model_path against the loading model first (identifier or native
+        # label, like the gated branch): the single llama-server can only be loading one
+        # GGUF, so an unmatched /unload (e.g. a second tab unloading a different model)
+        # must not tear this in-flight load down. Without the match this off-gate branch
+        # fires for any loading GGUF and cancels the wrong one.
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_active and not llama_backend.is_loaded:
+        if (
+            llama_backend.is_active
+            and not llama_backend.is_loaded
+            and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+            )
+        ):
             await asyncio.to_thread(llama_backend.unload_model)
             note_model_unloaded()
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
