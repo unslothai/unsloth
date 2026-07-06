@@ -53,6 +53,7 @@ def _unloaded_status():
         "attention_backend": None,
         "transformer_cache": None,
         "transformer_quant": None,
+        "text_encoder_quant": None,
         "has_audio": False,
         "defaults": None,
         "resolved": None,
@@ -73,6 +74,7 @@ class _FakeBackend:
         family_override = None,
         model_kind = None,
         transformer_quant = None,
+        text_encoder_quant = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
@@ -284,6 +286,35 @@ def test_load_rejects_bad_transformer_quant_422(client):
             "model_path": "unsloth/LTX-2.3-GGUF",
             "gguf_filename": "q.gguf",
             "transformer_quant": "bogus",
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_load_threads_text_encoder_quant(client):
+    # The load-time text_encoder_quant field reaches the backend (the video path now
+    # quantises the dense companion encoder, not just the DiT).
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "text_encoder_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 200
+    kwargs = video_module.get_video_backend().last_load_kwargs
+    assert kwargs.get("text_encoder_quant") == "fp8"
+
+
+def test_load_rejects_bad_text_encoder_quant_422(client):
+    # text_encoder_quant is a Literal, so an unknown scheme is a 422 at request validation.
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "text_encoder_quant": "bogus",
         },
     )
     assert resp.status_code == 422

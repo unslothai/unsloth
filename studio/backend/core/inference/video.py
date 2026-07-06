@@ -78,6 +78,7 @@ from .diffusion_transformer_quant import (
     quantize_transformer,
     select_transformer_quant_scheme,
 )
+from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_NOT_LOADED_MSG,
@@ -233,6 +234,10 @@ class _VideoLoadState:
     # load the dense DiT(s) can be torchao-quantised in place onto the low-precision
     # tensor cores; None means they run at their loaded (bf16) precision.
     transformer_quant: Optional[str] = None
+    # Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or None.
+    # The companion text encoder (UMT5 / Gemma3 / Qwen2.5-VL) loads dense bf16 and is often the
+    # largest resident component; this shrinks it in place, mirroring the image backend.
+    text_encoder_quant: Optional[str] = None
     resolved: Optional[dict] = None
 
 
@@ -337,6 +342,7 @@ class VideoBackend:
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -396,6 +402,9 @@ class VideoBackend:
         # only on pipeline-kind loads (the dense DiT from the base repo); an ignored value
         # on a gguf/single_file load is left to the loader, matching the image backend.
         normalize_transformer_quant(transformer_quant)
+        # Reject a malformed text_encoder_quant the same way (applies to any load kind: the dense
+        # text encoder is resident for pipeline / gguf / single_file alike).
+        normalize_te_quant(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -415,6 +424,7 @@ class VideoBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -426,6 +436,7 @@ class VideoBackend:
             family_override = family_override,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -449,6 +460,7 @@ class VideoBackend:
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 transformer_quant = transformer_quant,
+                text_encoder_quant = text_encoder_quant,
                 model_kind = model_kind,
                 _load_token = token,
             ),
@@ -761,6 +773,7 @@ class VideoBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -775,6 +788,7 @@ class VideoBackend:
             family_override = family_override,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
@@ -1035,6 +1049,21 @@ class VideoBackend:
         if quant_replanned and transformer_quant_engaged is None:
             plan = bf16_plan
 
+        # ── dense text-encoder quant (opt-in): the DiT arrives quantised in a GGUF, but the
+        # companion encoder (Gemma3 / UMT5 / Qwen2.5-VL) loads dense bf16 from the base repo and
+        # is often the largest resident component. Quantise it in place, mirroring the image
+        # backend (diffusion.py): applied for every kind (the encoder is dense regardless of how
+        # the DiT was sourced) and before placement so the offload hooks move the smaller weights.
+        # Best-effort: quantize_text_encoders leaves any encoder it can't cast dense. int8 needs a
+        # per-family keep-bf16 schedule, so the family name is passed.
+        text_encoder_quant_engaged = quantize_text_encoders(
+            pipe,
+            target,
+            mode = text_encoder_quant,
+            family = fam.name,
+            logger = logger,
+        )
+
         # ── optimisation layers, in the image backend's order: step cache FIRST
         # (compile keys its fullgraph decision off an active cache: FBCache hooks
         # graph-break, so compiling fullgraph before installing the cache crashes
@@ -1199,6 +1228,13 @@ class VideoBackend:
                         else "not engaged (dense bf16 DiT loaded)"
                     ),
                 ),
+                "text_encoder_quant": (
+                    text_encoder_quant,
+                    text_encoder_quant_engaged or "off",
+                    "dense text encoder quantised in place"
+                    if text_encoder_quant_engaged is not None
+                    else "not engaged (dense bf16 text encoder loaded)",
+                ),
             }
         )
 
@@ -1231,6 +1267,7 @@ class VideoBackend:
                 cache_quant_active = cache_quant_active,
                 cache_threshold = transformer_cache_threshold,
                 transformer_quant = transformer_quant_engaged,
+                text_encoder_quant = text_encoder_quant_engaged,
                 resolved = resolved,
             )
             # Ownership of the globals transferred to _state / _teardown_state.
@@ -1581,6 +1618,7 @@ class VideoBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "transformer_quant": None,
+                "text_encoder_quant": None,
                 "has_audio": False,
                 "defaults": None,
                 "resolved": None,
@@ -1605,6 +1643,7 @@ class VideoBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
+            "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "defaults": {
                 "steps": default_steps,
