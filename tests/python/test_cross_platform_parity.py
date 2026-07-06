@@ -281,12 +281,12 @@ class TestGfx211AllowlistParity:
         # install-spec path must reuse it, so the stale check and install spec can
         # never disagree again.
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "function Test-RocmGfx211Leaf" in text, (
-            "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        )
-        assert re.search(r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()), (
-            "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
-        )
+        assert (
+            "function Test-RocmGfx211Leaf" in text
+        ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
+        assert re.search(
+            r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()
+        ), "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
         assert "$_pinGfx211 = Test-RocmGfx211Leaf" in text, (
             "setup.ps1 install-spec path should reuse Test-RocmGfx211Leaf, not "
             "re-hardcode the allowlist (they must not diverge)"
@@ -294,9 +294,9 @@ class TestGfx211AllowlistParity:
 
     def test_stack_py_allowlist(self):
         text = STACK_PY.read_text(encoding = "utf-8").lower()
-        assert '"gfx120x-all", "gfx1151", "gfx1150"' in text, (
-            "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
-        )
+        assert (
+            '"gfx120x-all", "gfx1151", "gfx1150"' in text
+        ), "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
 
 
 class TestCudaLeafDigitParity:
@@ -307,29 +307,29 @@ class TestCudaLeafDigitParity:
 
     def test_stack_py_requires_cu_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert re.search(r'r"\^cu\[0-9\]"', text), (
-            "install_python_stack.py _is_cuda_family_leaf must match ^cu[0-9]"
-        )
+        assert re.search(
+            r'r"\^cu\[0-9\]"', text
+        ), "install_python_stack.py _is_cuda_family_leaf must match ^cu[0-9]"
 
     def test_setup_ps1_requires_cu_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert re.search(r"'\^cu\[0-9\]'", text), (
-            "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9], not a bare cu* glob"
-        )
+        assert re.search(
+            r"'\^cu\[0-9\]'", text
+        ), "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9], not a bare cu* glob"
         # The stale-venv branch must go through the digit-guarded helper.
-        assert "Test-CudaFamilyLeaf $_pinLeaf" in text, (
-            "setup.ps1 stale check should classify CUDA via Test-CudaFamilyLeaf"
-        )
+        assert (
+            "Test-CudaFamilyLeaf $_pinLeaf" in text
+        ), "setup.ps1 stale check should classify CUDA via Test-CudaFamilyLeaf"
 
     def test_install_ps1_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert re.search(r"'\^cu\[0-9\]'", text), (
-            "install.ps1 Get-TauriGpuBranch must require a digit after cu"
-        )
+        assert re.search(
+            r"'\^cu\[0-9\]'", text
+        ), "install.ps1 Get-TauriGpuBranch must require a digit after cu"
 
     def test_install_sh_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # The _tauri_gpu_branch cuda case must be cu[0-9]*, not a bare cu*.
-        assert re.search(r"cu\[0-9\]\*\)\s*echo \"cuda\"", text), (
-            "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"
-        )
+        assert re.search(
+            r"cu\[0-9\]\*\)\s*echo \"cuda\"", text
+        ), "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"

@@ -609,9 +609,7 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_cpu_torch_probe_line_not_read_as_hip(
-        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
-    ):
+    def test_cpu_torch_probe_line_not_read_as_hip(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
         """Regression: a CPU torch probe emits an EMPTY HIP marker before "|"; the
         positional parse must keep that empty field so has_hip_torch stays False
         (an earlier parse dropped the empty line and shifted the version into the
