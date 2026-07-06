@@ -40,6 +40,29 @@ def _prepare_device_map(is_mlx):
     return prepare_device_map()
 
 
+class _CallableTokenizerProxy:
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+
+    def __getattr__(self, name):
+        return getattr(self._tokenizer, name)
+
+    def __call__(self, text, *args, **kwargs):
+        wrapped = getattr(self._tokenizer, "_tokenizer", None)
+        if callable(wrapped):
+            return wrapped(text, *args, **kwargs)
+
+        add_special_tokens = kwargs.get("add_special_tokens", False)
+        input_ids = self._tokenizer.encode(text, add_special_tokens = add_special_tokens)
+        return {"input_ids": input_ids}
+
+
+def _tokenizer_for_raw_text_loader(tokenizer, is_mlx):
+    if not is_mlx or callable(tokenizer):
+        return tokenizer
+    return _CallableTokenizerProxy(tokenizer)
+
+
 def _train_with_legacy_save_control(trainer, is_mlx):
     if not is_mlx:
         return trainer.train()
@@ -180,11 +203,15 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
+            loader = RawTextDataLoader(
+                _tokenizer_for_raw_text_loader(tokenizer, is_mlx),
+                args.chunk_size,
+                args.stride,
+            )
             dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
             # Auto-detect local raw text files
-            loader = RawTextDataLoader(tokenizer)
+            loader = RawTextDataLoader(_tokenizer_for_raw_text_loader(tokenizer, is_mlx))
             dataset = loader.load_from_file(args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
