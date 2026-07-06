@@ -68,7 +68,9 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     n = tl.cdiv(N, BLOCK_SIZE)
     offs_m = pid_m * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     offs_n = pid_n * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    offs = offs_m[:, None] * N + offs_n[None, :]
+    # tl.arange is int32, so offs_m * N overflows for tensors with more than
+    # 2**31 elements (e.g. flattened MoE expert stacks); index in int64.
+    offs = offs_m[:, None].to(tl.int64) * N + offs_n[None, :].to(tl.int64)
     mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
     x = tl.load(x_ptr + offs, mask = mask).to(tl.float32)
     s = tl.load(s_ptr + pid_m * n + pid_n)
