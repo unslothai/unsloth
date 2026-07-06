@@ -10,7 +10,7 @@ import { JupyterFrontEndPlugin } from '@jupyterlab/application';
 import { ISplashScreen } from '@jupyterlab/apputils';
 import { DisposableDelegate, IDisposable } from '@lumino/disposable';
 import { UNSLOTH_LOGO_DATA_URI } from './logo';
-import { SHORT_LABEL } from './branding';
+import { SPLASH_LABEL } from './branding';
 
 const STYLE_ID = 'unsloth-splash-style';
 const SPLASH_ID = 'unsloth-splash';
@@ -74,7 +74,7 @@ const splashPlugin: JupyterFrontEndPlugin<ISplashScreen> = {
 
         const label = document.createElement('div');
         label.className = 'unsloth-splash-label';
-        label.textContent = SHORT_LABEL;
+        label.textContent = SPLASH_LABEL;
         overlay.appendChild(label);
 
         document.body.appendChild(overlay);

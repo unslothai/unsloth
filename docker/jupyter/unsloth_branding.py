@@ -34,18 +34,23 @@ import sys
 # contains these same strings).
 # ---------------------------------------------------------------------------
 PRODUCT = "Unsloth Docker Studio"
-SHORT_LABEL = "Built by Unsloth"
+SHORT_LABEL = "Built by the Unsloth team"
+# Loading-splash caption; distinct from SHORT_LABEL (see branding.ts).
+SPLASH_LABEL = "Loading Unsloth Docker"
 COPYRIGHT = "Copyright 2026-Present the Unsloth team"
-AGPL_NOTICE = "Licensed under the GNU AGPLv3"
+AGPL_NOTICE = "Licensed under Apache 2.0 and the GNU AGPLv3"
 WEBSITE_URL = "https://unsloth.ai"
+DOCS_URL = "https://unsloth.ai/docs"
 SOURCE_URL = "https://github.com/unslothai/unsloth"
+LICENSE_URL = "https://github.com/unslothai/unsloth#license"
 AGPL_URL = "https://www.gnu.org/licenses/agpl-3.0.html"
+APACHE_URL = "https://www.apache.org/licenses/LICENSE-2.0"
 # ONE plain literal, byte-identical to PHRASE in unsloth_labext/src/branding.ts.
 # The guard greps the built labext bundle for this exact string, so it must match
 # the TS literal verbatim (webpack keeps single string literals as-is).
 PHRASE = (
-    "Unsloth Docker Studio and JupyterLab image. Built by Unsloth. "
-    "Licensed under the GNU AGPLv3. "
+    "Unsloth Docker Studio and JupyterLab image. Built by the Unsloth team. "
+    "Licensed under Apache 2.0 and the GNU AGPLv3. "
     "Source: https://github.com/unslothai/unsloth Website: https://unsloth.ai"
 )
 

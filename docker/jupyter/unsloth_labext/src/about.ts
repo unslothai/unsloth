@@ -16,7 +16,10 @@ import { UNSLOTH_LOGO_DATA_URI } from './logo';
 import {
   AGPL_NOTICE,
   AGPL_URL,
+  APACHE_URL,
   COPYRIGHT,
+  DOCS_URL,
+  LICENSE_URL,
   PHRASE,
   PRODUCT,
   SHORT_LABEL,
@@ -39,16 +42,25 @@ function aboutBody(): Widget {
   el.style.padding = '4px 10px 10px';
   el.style.maxWidth = '430px';
   el.setAttribute('data-unsloth-attribution', PHRASE);
+  // The link rows sit in a left-aligned inline-block centered in the dialog, so
+  // the "Source:/Website:/Licenses" labels line up instead of each row centering
+  // independently (the previous ragged look).
   el.innerHTML = `
     <img src="${UNSLOTH_LOGO_DATA_URI}" alt="Unsloth"
          style="height:64px;width:auto;margin:2px auto 10px;display:block;" />
     <div style="font-size:16px;font-weight:700;margin-bottom:2px;">${PRODUCT}</div>
     <div style="opacity:0.8;margin-bottom:10px;">${SHORT_LABEL}</div>
-    <div style="font-size:13px;line-height:1.55;">
-      ${AGPL_NOTICE}.<br/>
-      Source: <a href="${SOURCE_URL}" target="_blank" rel="noopener">${SOURCE_URL}</a><br/>
-      Website: <a href="${WEBSITE_URL}" target="_blank" rel="noopener">${WEBSITE_URL}</a><br/>
-      License: <a href="${AGPL_URL}" target="_blank" rel="noopener">GNU AGPLv3</a>
+    <div style="font-size:13px;line-height:1.55;margin-bottom:10px;">${AGPL_NOTICE}.</div>
+    <div style="display:inline-block;text-align:left;font-size:13px;line-height:1.7;">
+      <div>Source: <a href="${SOURCE_URL}" target="_blank" rel="noopener">${SOURCE_URL}</a></div>
+      <div>Website: <a href="${WEBSITE_URL}" target="_blank" rel="noopener">${WEBSITE_URL}</a></div>
+      <div>Unsloth Reference: <a href="${DOCS_URL}" target="_blank" rel="noopener">${DOCS_URL}</a></div>
+      <div style="margin-top:8px;font-weight:600;">Licenses</div>
+      <div style="margin-left:12px;">
+        <div>Unsloth Studio: <a href="${AGPL_URL}" target="_blank" rel="noopener">AGPLv3</a></div>
+        <div>Unsloth Core: <a href="${APACHE_URL}" target="_blank" rel="noopener">Apache 2.0</a></div>
+        <div>Unsloth license: <a href="${LICENSE_URL}" target="_blank" rel="noopener">${LICENSE_URL}</a></div>
+      </div>
     </div>
     <div style="font-size:12px;opacity:0.7;margin-top:12px;">${COPYRIGHT}</div>
   `;
