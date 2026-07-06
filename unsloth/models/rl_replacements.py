@@ -1416,7 +1416,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # Env gate hoisted to module level (mirrored via RL_PRE_ITEMS). Skip PG under vLLM
             # (fast_inference=True): the rollout dominates the step, so PG saves little and its
             # first-use self-verify is net overhead.
-            _pg_engage = UNSLOTH_GRPO_PREFIX_GROUPER_ON and not getattr(self, "use_vllm", False)
+            _pg_engage = (
+                UNSLOTH_GRPO_PREFIX_GROUPER_ON
+                and not getattr(self, "use_vllm", False)
+                and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
+            )
             if _pg_engage:
                 try:
                     # Skip softcap models (the flex kernel never applies attn_logit_softcapping)
@@ -1536,6 +1540,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pg_use = False
                     _pg_skip_pk = False
                     _pg_forward_fn = None
+                    # A FlexAttention/Triton compile failure or OOM here is GPU-wide, not
+                    # layout-specific, so retrying the same PG forward every step just re-pays
+                    # the failure. Persistently disable PG (mirrors the seq-packing handler
+                    # setting _unsloth_seq_packing_nograd_ok = False); the packed/padded path
+                    # below still produces the exact result.
+                    unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
                     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"

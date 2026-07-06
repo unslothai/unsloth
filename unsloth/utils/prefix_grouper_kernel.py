@@ -310,11 +310,16 @@ def get_block_mask(
 
     # Move labels to the consumer (Q) device: with a sharded model the seg tensors live on
     # input_ids.device and would index cross-device. Copies once per (signature, device).
-    mask_mod = _make_mask_mod(
-        seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
-    )
+    # These copies must also run with inference mode DISABLED (same reason as the mask build):
+    # when this entry is first built under the no-grad old/ref forward's inference_mode and
+    # device != seg.device, a .to(device) copy would be an inference tensor that mask_mod
+    # captures, which then cannot be saved for backward when the grad training forward reuses
+    # the cached mask.
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
+        mask_mod = _make_mask_mod(
+            seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
+        )
         bm = builder(
             mask_mod,
             B = 1,
