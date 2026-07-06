@@ -604,6 +604,11 @@ def detect_reasoning_flags(
         if ("reasoning_effort" in tpl and "enable_thinking" in tpl)
         else []
     )
+    if effort_levels == ["max"]:
+        # DeepSeek-V4-Flash only branches reasoning_effort on 'max', so the UI
+        # would offer just None / Max and hide plain thinking. Add 'high' (any
+        # non-'max' effort renders as plain thinking) for None / High / Max.
+        effort_levels = ["high", "max"]
     if effort_levels:
         # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
         # level among a discrete set (e.g. 'high' | 'max'). Distinct from
