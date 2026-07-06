@@ -878,6 +878,24 @@ class InferenceOrchestrator:
                 sub_config["disable_xet"] = disable_xet
                 self._spawn_subprocess(sub_config)
 
+                # A cancel can land AFTER the pre-spawn recheck above but while
+                # _spawn_subprocess is still creating the queues/process. cancel_load
+                # runs off the lifecycle gate, so its _shutdown_subprocess can observe
+                # _proc still None (or not yet alive) and no-op, leaving this freshly
+                # spawned worker orphaned; the load would then wait for "loaded" and
+                # publish a model /unload already reported as unloaded, with a live
+                # subprocess nothing later reaps. Recheck now that the child exists and
+                # tear it down (cancel_load's teardown missed it) before publishing.
+                if model_name not in self.loading_models:
+                    logger.info(
+                        "Load for '%s' was cancelled during spawn; tearing the worker down",
+                        model_name,
+                    )
+                    self._shutdown_subprocess(timeout = 5)
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
+
                 try:
                     resp = self._wait_response("loaded")
                 except DownloadStallError:

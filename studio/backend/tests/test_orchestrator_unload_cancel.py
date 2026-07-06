@@ -905,6 +905,52 @@ def test_load_model_proceeds_when_not_cancelled(monkeypatch):
     assert o.active_model_name == "m"
 
 
+def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
+    # Stop-loading can land AFTER the pre-spawn marker recheck but while
+    # _spawn_subprocess is still creating the queues/process, so cancel_load's
+    # _shutdown_subprocess finds _proc not yet alive and no-ops. load_model must
+    # recheck the marker once the child exists and tear the orphaned worker down,
+    # instead of waiting for "loaded" and publishing a model /unload already
+    # reported as unloaded (a live subprocess nothing later reaps).
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = {"m"}
+    o._proc = None
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda gpu_ids, **k: ([0], "sel"))
+
+    # The cancel lands during the spawn window: cancel_load already discarded the
+    # marker, but its teardown no-oped because _proc was not alive yet.
+    def spawn_then_cancel(cfg):
+        o.loading_models.discard("m")
+
+    monkeypatch.setattr(o, "_spawn_subprocess", spawn_then_cancel)
+
+    shutdown = []
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(
+        o,
+        "_wait_response",
+        lambda t, timeout = 300.0: pytest.fail(
+            "must not wait for 'loaded' after a cancel during spawn"
+        ),
+    )
+
+    ok = o.load_model(types.SimpleNamespace(identifier = "m", gguf_variant = None))
+
+    assert ok is False
+    assert shutdown, "must tear the orphaned worker down"
+    assert o.active_model_name is None
+    assert o.models == {}
+    assert "m" not in o.loading_models
+
+
 # ----------------------------------------------------------------------------
 # /unload cancels a still-loading GGUF off the lifecycle gate -- item #1.
 # ----------------------------------------------------------------------------
