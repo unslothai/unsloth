@@ -103,14 +103,12 @@ def apply_chat_template_for_generation(
     try:
         return _render(messages)
     except Exception:
-        # Strict tool templates reject the OpenAI JSON-string ``arguments`` form in
-        # different ways: some iterate ``arguments.items()`` and raise ``TypeError:
-        # Can only get item pairs from a mapping.``; others (e.g. the bundled
-        # gemma-4.jinja) call ``raise_exception(...)``, which surfaces as a Jinja
-        # error, not TypeError. Retry once with arguments coerced to dicts whenever
-        # there are string args to fix. The original messages are tried first, so any
-        # template that already renders is byte-identical (this fallback never runs
-        # for it), and if there is nothing to normalize the original error propagates.
+        # Strict tool templates reject the JSON-string ``arguments`` form in
+        # different ways: TypeError (iterating ``arguments.items()``) or a Jinja
+        # ``raise_exception`` (e.g. bundled gemma-4.jinja), so the catch is broad.
+        # Retry with arguments coerced to dicts. Original messages render first, so
+        # a working template stays byte-identical; if nothing needs coercing the
+        # original error propagates.
         normalized = _normalize_tool_call_arguments(messages)
         if normalized is messages:
             raise

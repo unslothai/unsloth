@@ -79,7 +79,7 @@ def test_non_json_string_left_as_is():
 
 
 def test_render_succeeds_on_strict_template_with_string_arguments():
-    # The regression: strict template + OpenAI string args used to raise.
+    # Regression: strict template + string args used to raise.
     result = apply_chat_template_for_generation(_StrictTemplateTokenizer(), _conv('{"query": "x"}'))
     assert result == "RENDERED"
 
@@ -105,9 +105,8 @@ class _RecordingTokenizer:
 
 
 def test_lenient_template_receives_original_string_untouched():
-    # A template that renders string args must see the exact original string
-    # (the dict-coercion fallback must not run for it). Guards against emitting a
-    # Python dict repr instead of the OpenAI JSON string.
+    # A lenient template must see the exact original string, not a coerced dict
+    # (the fallback must not run for it, else it emits a Python dict repr).
     tok = _RecordingTokenizer()
     apply_chat_template_for_generation(tok, _conv('{"query": "x"}'))
     assert tok.seen_arguments == '{"query": "x"}'
@@ -142,9 +141,8 @@ class _RaiseExceptionTemplateTokenizer:
 
 
 def test_render_succeeds_on_raise_exception_template_with_string_arguments():
-    # The regression: gemma-4.jinja rejects string args via raise_exception (a
-    # non-TypeError), so the retry must still coerce to a dict and re-render instead
-    # of letting the Jinja error propagate and fail the tool turn.
+    # Regression: gemma-4.jinja rejects string args via a non-TypeError, so the
+    # retry must still coerce and re-render instead of letting it propagate.
     result = apply_chat_template_for_generation(
         _RaiseExceptionTemplateTokenizer(), _conv('{"query": "x"}')
     )
@@ -152,9 +150,8 @@ def test_render_succeeds_on_raise_exception_template_with_string_arguments():
 
 
 def test_unrelated_template_error_still_propagates_with_dict_args():
-    # A template failure unrelated to string arguments (dict args -> nothing to
-    # normalize) must still propagate; the broadened catch only retries when there
-    # is actually a string arg to coerce.
+    # A failure unrelated to string args (dict args -> nothing to normalize) must
+    # still propagate; the retry only fires when there is a string arg to coerce.
     class _AlwaysRaises:
         def apply_chat_template(self, messages, **kw):
             raise ValueError("template is broken")
