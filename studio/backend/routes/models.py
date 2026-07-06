@@ -3521,7 +3521,6 @@ async def delete_cached_model(
     # pipeline -- the same invariant the three guards above enforce. Repo-level match.
     try:
         from core.inference.video import get_video_backend
-
         video_status = get_video_backend().status()
         if video_status.get("loaded") and video_status.get("repo_id"):
             loaded_id = str(video_status["repo_id"]).lower()
