@@ -3374,7 +3374,6 @@ def _cached_repo_partial(repo_id: str) -> bool:
     reports not-partial so a scan glitch never hides a genuinely usable repo."""
     try:
         from hub.utils.inventory_scan import is_snapshot_partial
-
         return bool(is_snapshot_partial("model", repo_id))
     except Exception:  # noqa: BLE001 -- never fail the listing over a partial probe
         return False
