@@ -2127,6 +2127,39 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     # UNSET defaults to the hardware ladder (Dtype default-auto) -> widens, threading auto.
     assert backend._dense_quant_prefetch_needed(fam, {}) is True
     assert seen[-1] == "auto"
+    # A definite-offload memory policy forces load_pipeline onto offload regardless of the dense
+    # candidate's smaller footprint, so the dense build never runs and the widened prefetch would
+    # download base transformer/ shards the offloaded GGUF path never uses (and a disk-full there
+    # has no GGUF fallback). balanced / low_vram (and the legacy cpu_offload flag when no
+    # memory_mode overrides it) must NOT widen, even though the candidate itself is dense-viable.
+    before = len(seen)
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "memory_mode": "balanced"})
+        is False
+    )
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "memory_mode": "low_vram"})
+        is False
+    )
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "cpu_offload": True})
+        is False
+    )
+    # The gate short-circuits BEFORE resolving the candidate (no wasted resolve).
+    assert len(seen) == before
+    # An explicit memory_mode still consulting the candidate: fast/auto can flip resident, so they
+    # widen when the candidate is dense-viable (memory_mode="fast" does not force offload).
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "memory_mode": "fast"})
+        is True
+    )
+    # A cpu_offload flag is overridden by an explicit resident memory_mode, so it still widens.
+    assert (
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "fast", "cpu_offload": True}
+        )
+        is True
+    )
     # An explicit off pins running the GGUF as-is -> never widen (mode resolves to None first).
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "none"}) is False
     # An explicit Speed="off" (bit-exact) load suppresses the dense path -> never widen.

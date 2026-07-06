@@ -44,12 +44,15 @@ from .diffusion_device import (
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
+    MEMORY_MODE_BALANCED,
+    MEMORY_MODE_LOW_VRAM,
     OFFLOAD_NONE,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    normalize_memory_mode,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
@@ -441,6 +444,19 @@ class DiffusionBackend:
         if speed is not None and str(speed).strip().lower() == SPEED_OFF:
             return False
         try:
+            # A definite-offload memory policy forces load_pipeline onto offload regardless of the
+            # dense candidate's smaller footprint, so its re-plan never flips to OFFLOAD_NONE and
+            # the dense build never runs. balanced -> OFFLOAD_GROUP and low_vram -> OFFLOAD_MODEL are
+            # set unconditionally in plan_diffusion_memory; the legacy cpu_offload flag forces
+            # OFFLOAD_MODEL when no memory_mode overrides it. In those cases the GGUF path runs
+            # offloaded and never touches the base transformer/ shards, so widening the prefetch only
+            # wastes a multi-GB download -- and a disk-full on that begin_load pull has NO GGUF
+            # fallback (unlike the in-load_pipeline dense failure). Mirror those offload gates here.
+            mm = normalize_memory_mode(kwargs.get("memory_mode"))
+            if mm in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
+                return False
+            if mm is None and kwargs.get("cpu_offload"):
+                return False
             target = self._resolve_device_target(fam)
             # Only widen the prefetch when the loader would actually take the dense path: resolve
             # the SAME dense-quant candidate load_pipeline re-plans against, which also checks the
