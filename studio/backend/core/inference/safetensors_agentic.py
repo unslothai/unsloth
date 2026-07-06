@@ -68,9 +68,8 @@ def _active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
-# Unrestricted mode has no tool list, so any bare identifier may open a NAME[ARGS]
-# rehearsal; the ``[`` and each ``ARGS`` letter stay individually optional so a chunk
-# split right after ``NAME[`` is held, matching the restricted-mode startswith check.
+# Unrestricted mode has no tool list, so any identifier may open a NAME[ARGS] rehearsal;
+# ``[`` and each ARGS letter stay optional so a chunk split after ``NAME[`` is still held.
 _UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[(?:A(?:R(?:G(?:S)?)?)?)?)?")
 
 

@@ -43,9 +43,8 @@ def nudge_enabled(request_flag: Optional[bool]) -> bool:
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
-# Buffer only on signals the healer's parser can promote -- narrower than the loops'
-# TOOL_XML_SIGNALS: loop-only signals like the bare ``[ARGS]`` rehearsal marker (name-gated
-# in the loops) would hold legitimate prose until finalization without ever promoting.
+# Only signals the healer's parser can promote -- narrower than the loops' TOOL_XML_SIGNALS:
+# a loop-only marker like bare ``[ARGS]`` would hold prose until finalize without promoting.
 _HEAL_SIGNALS = ("<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]")
 
 
@@ -349,13 +348,10 @@ class StreamToolCallHealer:
                         events.append(("text", emit))
                     self._buffer = self._buffer[len(self._buffer) - keep :]
                     return events
-            # HOLD: handle the FIRST complete block per pass so events keep
-            # document order (a later declared call must not overtake an
-            # earlier undeclared one flushing as text). A "block" may be one
-            # markup call OR a whole Mistral [TOOL_CALLS] array whose per-item
-            # spans are contiguous; the whole contiguous run is drained here so
-            # later calls in the same array are not stranded as text once the
-            # residue no longer begins with a signal.
+            # HOLD: drain the first contiguous run per pass so events keep document
+            # order (a later declared call must not overtake an earlier undeclared one
+            # flushing as text). A run is one markup call OR a whole Mistral [TOOL_CALLS]
+            # array of contiguous spans, so later calls in it are not stranded as text.
             parsed, spans = parse_tool_calls_from_text(
                 self._buffer,
                 id_offset = self._id_offset,
@@ -379,9 +375,8 @@ class StreamToolCallHealer:
             pos = 0
             run_end = spans[0][1]
             for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
-                # Stop at the first gap (prose between blocks) or an incomplete
-                # trailing block: leave it for the next pass so it can re-hold
-                # and stream incrementally instead of flushing as text early.
+                # Stop at the first gap or incomplete trailing block: leave it for the
+                # next pass to re-hold and stream incrementally, not flush as text early.
                 if order and start != run_end:
                     break
                 promoted = _promote(
@@ -397,8 +392,7 @@ class StreamToolCallHealer:
                     events.append(("tool_call", promoted[0]))
                     self._id_offset += 1
                 else:
-                    # Undeclared or unusable name: its markup is DATA, flush it
-                    # (and anything before it) verbatim.
+                    # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
                     events.append(("text", self._buffer[pos:end]))
                 pos = end
                 run_end = end

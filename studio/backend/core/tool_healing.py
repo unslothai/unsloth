@@ -776,15 +776,13 @@ def parse_tool_calls_from_text(
             closer = re.match(r"\s*\[/TOOL_CALLS\]", content[end:])
             region_end = end + closer.end() if closer else end
             if kind == "array":
-                # Decode elements individually (comma-tolerant): a single json.loads of
-                # the whole body rejects the comma-less multi-call arrays the repo's own
-                # Mistral/Ollama templates emit, dropping every call.
+                # Decode elements individually (comma-tolerant): one json.loads of the whole
+                # body rejects the comma-less multi-call arrays Mistral/Ollama templates emit.
                 payload, item_ends = _decode_array_items(content, m.end(), end)
                 if not payload:
                     continue
-                # Tile the region across call-producing items so every byte belongs to exactly one span;
-                # a with_spans consumer filtering promotions keeps skipped bytes visible and strips
-                # promoted markup exactly once.
+                # Tile the region so every byte belongs to exactly one span; a with_spans consumer
+                # keeps skipped bytes visible and strips promoted markup exactly once.
                 tile_start = start
                 last_span_idx = -1
                 for item_idx, item in enumerate(payload):
@@ -798,10 +796,9 @@ def parse_tool_calls_from_text(
                         except (json.JSONDecodeError, ValueError):
                             pass
                     if not isinstance(args, (dict, str)):
-                        # A no-arg call with ``"arguments": null`` (or any non-object
-                        # scalar) must become {} -- matching the <tool_call> path, which
-                        # leaves arguments None and coerces to {} -- not the string
-                        # "null", which auto-heal would turn into a bogus {"query":"null"}.
+                        # ``"arguments": null`` (or any non-object scalar) becomes {} like the
+                        # <tool_call> path, not the string "null" auto-heal would mangle to
+                        # a bogus {"query":"null"}.
                         args = {}
                     tool_calls.append(
                         {
@@ -809,9 +806,9 @@ def parse_tool_calls_from_text(
                             "type": "function",
                             "function": {
                                 "name": item.get("name", ""),
-                                # A bare scalar string stays raw (like the <tool_call> path); only
-                                # a dict is serialized. json.dumps on a string double-encodes it,
-                                # so the arg healer would wrap "weather" with its literal quotes.
+                                # A bare scalar string stays raw (like the <tool_call> path);
+                                # json.dumps would double-encode it so the arg healer wraps
+                                # "weather" with its literal quotes.
                                 "arguments": args if isinstance(args, str) else json.dumps(args),
                             },
                         }

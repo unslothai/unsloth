@@ -8845,8 +8845,7 @@ class LlamaCppBackend:
                                         cumulative_display += token
                                         cleaned = _strip_tool_markup_streaming(cumulative_display)
                                         # Hold a trailing bare active-tool-name (split rehearsal)
-                                        # until its [ARGS] arrives; released by later prose or
-                                        # the end-of-stream flush.
+                                        # until [ARGS] arrives; released by later prose or stream end.
                                         _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
                                         _emit = (
                                             cleaned[: len(cleaned) - _hold] if _hold else cleaned
@@ -8903,9 +8902,8 @@ class LlamaCppBackend:
                                             is_rehearsal_prefix = True
 
                                         if is_match:
-                                            # Tool signal -- flush any visible
-                                            # prefix before DRAINING so the
-                                            # route sends it before tool_start.
+                                            # Tool signal -- flush any visible prefix before
+                                            # DRAINING so the route sends it before tool_start.
                                             _flush_reasoning_and_buffer()
                                             cleaned = _strip_tool_markup_streaming(
                                                 cumulative_display,

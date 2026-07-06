@@ -564,10 +564,8 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
             continue  # resolved -> fine
-        # `from __future__ import ...` is a compiler directive, not a runtime
-        # binding: the name (`annotations`, ...) is never loaded, so it can never
-        # "resolve" to a use. Skip it so a legitimately-added future import
-        # (e.g. `annotations` for lazy PEP 604 `X | None` on py3.9) is not flagged.
+        # `from __future__ import ...` is a compiler directive, not a runtime binding: the
+        # name is never loaded, so skip it (a legitimately-added future import isn't flagged).
         if all(t.startswith("from:__future__:") for t in tids):
             continue
         newly_added = bool(tids - before_module_targets)

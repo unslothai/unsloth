@@ -1409,9 +1409,8 @@ def _sf_reasoning_prefill_mode(
     if features.get("reasoning_always_on"):
         # ``reasoning_always_on`` fires on paired ``<think>...</think>`` anywhere in the
         # template, including markup that only renders PAST assistant history (Kimi-K2-Thinking)
-        # while the generation prompt opens no ``<think>``. Prefill only when the generation
-        # prompt actually opens one, else the extractor captures a normal answer entirely as
-        # reasoning_content and returns blank visible content.
+        # while the generation prompt opens none. Prefill only when the generation prompt opens
+        # one, else the extractor captures a normal answer as reasoning_content and returns blank.
         return _generation_prompt_opens_think(tpl)
     if not features.get("supports_reasoning"):
         return False
