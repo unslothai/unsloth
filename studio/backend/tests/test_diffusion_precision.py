@@ -254,9 +254,13 @@ def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
     # path skips torchao quant for the same reason). Hardware supports every mode here, so a None
     # result proves the offload skip, not a capability gate; the casters fail if wrongly invoked.
     _stub_torch(monkeypatch, cc = (10, 0))
-    monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("torchao caster must not run"))
+    monkeypatch.setattr(
+        dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("torchao caster must not run")
+    )
     monkeypatch.setattr(dp, "_cast_nvfp4", lambda *a: pytest.fail("torchao caster must not run"))
-    monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao caster must not run"))
+    monkeypatch.setattr(
+        dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao caster must not run")
+    )
     pipe = types.SimpleNamespace(text_encoder = object())
     assert quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", offload_active = True) is None
     assert quantize_text_encoders(pipe, _target(), mode = "nvfp4", offload_active = True) is None
