@@ -35,6 +35,9 @@ _Z_PREQUANT = "unsloth/Z-Image-Turbo-unsloth-bnb-4bit"
 # An SDXL base whose name LOOKS prequant (bnb-4bit): SDXL ignores base_precision, so the
 # dense-mode gates must not fire for it even with a dense mode + fp16 compute.
 _SDXL_PREQUANT_NAME = "some/sdxl-model-bnb-4bit"
+# A dense Qwen-Image base: its DiT is corrupted by fp8 (activation outliers), so fp8 is
+# denied for training the same way the inference path denies it.
+_QWEN_DENSE = "Qwen/Qwen-Image"
 
 
 def _cfg(base_model = _FLUX_DENSE, **kw) -> DiffusionLoraConfig:
@@ -67,6 +70,84 @@ def test_base_precision_validation():
     # "auto" is ACCEPTED by normalized() even on a prequant base: the concrete mode is
     # resolved at runtime against the live GPU, not at config validation.
     assert _cfg(base_model = _Z_PREQUANT, base_precision = "auto").normalized().base_precision == "auto"
+
+
+def test_base_precision_denies_fp8_for_corrupted_family():
+    # fp8 corrupts the Qwen-Image DiT (activation outliers exceed fp8's range), so a dense
+    # Qwen base with base_precision="fp8" is refused up front -- mirroring the inference deny.
+    with pytest.raises(ValueError, match = "fp8"):
+        _cfg(base_model = _QWEN_DENSE, base_precision = "fp8", mixed_precision = "bf16").normalized()
+
+    # The deny is fp8-specific: int8 (per-token, unaffected) and the other dense modes stay
+    # allowed for the same Qwen base.
+    for mode in ("nf4", "bf16", "int8", "auto"):
+        norm = _cfg(base_model = _QWEN_DENSE, base_precision = mode, mixed_precision = "bf16").normalized()
+        assert norm.resolved_family == "qwen-image"
+        assert norm.base_precision == mode
+
+    # A family the deny does not cover (FLUX) still accepts fp8.
+    flux = _cfg(base_model = _FLUX_DENSE, base_precision = "fp8", mixed_precision = "bf16").normalized()
+    assert flux.resolved_family == "flux.1"
+    assert flux.base_precision == "fp8"
+
+
+def test_family_train_infos_drops_denied_fp8_for_qwen(monkeypatch):
+    # /info advertises the machine's DiT modes per family, but a family whose DiT the mode
+    # corrupts must not offer it: with fp8 in the machine list, Qwen-Image drops fp8 while
+    # FLUX keeps it, so the UI never surfaces a mode normalized() would reject.
+    monkeypatch.setattr(
+        common, "train_precision_modes", lambda: (["nf4", "bf16", "int8", "fp8", "auto"], "auto")
+    )
+    infos = {i["name"]: i for i in common.family_train_infos()}
+    assert "fp8" not in infos["qwen-image"]["precision_modes"]
+    assert "int8" in infos["qwen-image"]["precision_modes"]  # int8 is fine on Qwen
+    assert "fp8" in infos["flux.1"]["precision_modes"]
+
+
+def test_resolve_base_precision_explicit_int8_gates_on_torchao(monkeypatch):
+    # Explicit int8 has no runtime fallback, so a missing/stub torchao must fail fast here
+    # rather than load dense with compile disabled. Gate the explicit request the same way
+    # auto + /info already gate it.
+    spec = dit._SPECS["flux.1"]
+    cfg = _cfg(base_precision = "int8")
+
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)  # torchao absent / stub
+    with pytest.raises(ValueError, match = "torchao"):
+        dit._resolve_base_precision(cfg, spec, "cuda")
+
+    # With a functional torchao the explicit int8 passes straight through.
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+
+    # The gate is int8-specific: explicit bf16/fp8 pass through regardless of torchao (fp8 has
+    # its own graceful fallback; bf16 needs no torchao).
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
+    assert dit._resolve_base_precision(_cfg(base_precision = "bf16"), spec, "cuda") == "bf16"
+    assert dit._resolve_base_precision(_cfg(base_precision = "fp8"), spec, "cuda") == "fp8"
+
+
+def test_bf16_unsupported_reason(monkeypatch):
+    # The route uses this to fail fast on a non-bf16 GPU BEFORE evicting resident workloads.
+    import torch
+
+    from core.training.diffusion_train_common import bf16_unsupported_reason
+
+    # SDXL (own mixed_precision path) and unknown families are always exempt.
+    assert bf16_unsupported_reason("sdxl") is None
+    assert bf16_unsupported_reason("") is None
+
+    # A DiT family on a CUDA GPU without bf16 -> a clear reason.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    assert "bfloat16" in (bf16_unsupported_reason("flux.1") or "")
+
+    # A bf16-capable GPU -> no reason.
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    assert bf16_unsupported_reason("qwen-image") is None
+
+    # A CPU-only host (fp32 fallback for import/unit tests) -> no reason even for a DiT family.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert bf16_unsupported_reason("z-image") is None
 
 
 def test_base_precision_gates_skip_sdxl():
@@ -307,6 +388,7 @@ def test_train_precision_modes_gates_int8_fp8_on_torchao(monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (10, 0))
 
     # No functional torchao (absent or stub): bf16 + auto only, int8/fp8 dropped.
@@ -320,6 +402,22 @@ def test_train_precision_modes_gates_int8_fp8_on_torchao(monkeypatch):
     monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
     modes2, _ = train_precision_modes()
     assert "int8" in modes2 and "fp8" in modes2
+
+
+def test_train_precision_modes_gates_dense_on_bf16_support(monkeypatch):
+    # The dense modes (bf16/int8/fp8/auto) all train in bf16 compute, which the DiT trainer
+    # requires. On a CUDA GPU that cannot do bf16 (T4/V100/RTX 20xx), /info must offer ONLY
+    # nf4 -- otherwise the UI advertises a start that evicts resident models and then fails the
+    # trainer's bf16 guard.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5))  # Turing, no bf16
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
+    modes, recommended = train_precision_modes()
+    assert modes == ["nf4"]
+    assert recommended == "nf4"
 
 
 # ── family_train_infos precision fields ───────────────────────────────────────

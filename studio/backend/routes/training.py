@@ -1234,9 +1234,20 @@ async def start_diffusion_training(
     from core.training.diffusion_lora_trainer import _config_from_dict
 
     try:
-        _config_from_dict(config).normalized()
+        normalized_cfg = _config_from_dict(config).normalized()
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
+
+    # Preflight bf16 support for the DiT families BEFORE freeing GPU residents: the DiT
+    # trainer requires a bf16-capable GPU (Ampere or newer) and otherwise raises deep in
+    # model load -- which, from here, would happen only AFTER _free_gpu_for_diffusion_training()
+    # already evicted the user's chat/Images model. Fail fast (400) so a pre-Ampere GPU
+    # (T4 / V100 / RTX 20xx) never tears down resident models for a run that cannot start.
+    from core.training.diffusion_train_common import bf16_unsupported_reason
+
+    _bf16_reason = bf16_unsupported_reason(normalized_cfg.resolved_family)
+    if _bf16_reason:
+        raise HTTPException(status_code = 400, detail = _bf16_reason)
 
     # Run the trainers' trust gate here too (both assert the same predicate before
     # from_pretrained), so an untrusted/typoed base 400s BEFORE freeing GPU residents

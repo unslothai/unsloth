@@ -343,6 +343,18 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
                 f"Use base_precision='nf4' or 'auto'."
             )
+        # int8 has no runtime fallback (_int8_quantize_base imports torchao unconditionally),
+        # so an explicit int8 against a missing torchao or the Windows-ROCm stub would leave
+        # the transformer dense with compile disabled as if it were int8 -- the memory saving
+        # silently gone and a likely OOM. The auto pick and /info already gate on a FUNCTIONAL
+        # torchao; apply the same gate to the explicit request so it fails fast with a clear
+        # message. fp8 keeps its own graceful fallback (_apply_fp8_training), so this is int8-only.
+        if mode == "int8" and not has_functional_torchao():
+            raise ValueError(
+                "base_precision='int8' needs a functional torchao install; this host's "
+                "torchao is missing or the non-functional Windows-ROCm stub. Use "
+                "base_precision='nf4', 'bf16', or 'auto'."
+            )
         return mode
     # auto may only resolve to the dense modes when the run uses bf16 compute, mirroring
     # the normalized() rule for explicit dense modes; otherwise stay on the nf4 floor.

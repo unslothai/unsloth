@@ -605,6 +605,38 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     assert client._fake.started_with is None
 
 
+def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
+    # A DiT family on a GPU that cannot do bf16 must 400 BEFORE resident GPU workloads are
+    # freed: otherwise the pre-Ampere GPU tears down the user's chat/Images model and the run
+    # then dies deep in model load at the trainer's bf16 guard. The route imports
+    # bf16_unsupported_reason locally, so patch it on its home module.
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setattr(
+        "core.training.diffusion_train_common.bf16_unsupported_reason",
+        lambda fam: (
+            "This trainer requires a bfloat16-capable GPU (Ampere or newer)."
+            if fam != "sdxl"
+            else None
+        ),
+    )
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+    )
+    assert r.status_code == 400
+    assert "bfloat16" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.started_with is None
+
+    # SDXL (its own mixed_precision path) is exempt: the same probe returns None, so an SDXL
+    # start proceeds normally past the preflight.
+    r2 = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r2.status_code == 200, r2.text
+
+
 # ── metric history + perf/family fields (PR A platform) ──────────────────────
 def test_apply_event_records_metric_history_and_perf():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)

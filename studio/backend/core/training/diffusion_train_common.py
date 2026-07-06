@@ -174,15 +174,18 @@ def has_functional_torchao() -> bool:
 
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4
-    always works; bf16/auto need CUDA; int8/fp8 additionally need a FUNCTIONAL torchao
-    (their explicit paths import torchao with no fallback, and the Windows-ROCm stub only
-    looks installed). fp8 also needs an fp8-capable GPU (sm89+). Used by the /info endpoint
+    always works; bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/fp8 additionally
+    need a FUNCTIONAL torchao (their explicit paths import torchao with no fallback, and the
+    Windows-ROCm stub only looks installed). fp8 also needs an fp8-capable GPU (sm89+). The
+    dense modes all train in bf16 compute, which the DiT trainer requires, so a non-bf16 CUDA
+    GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise /info would advertise a start that
+    evicts resident models and then fails the trainer's bf16 guard. Used by the /info endpoint
     so the UI can gate the precision selector. Never raises."""
     modes = ["nf4"]
     recommended = "nf4"
     try:
         import torch
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
             modes.append("bf16")
             torchao_ok = has_functional_torchao()
             if torchao_ok:
@@ -244,12 +247,40 @@ _FAMILY_VRAM_NOTES = {
     "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
 }
 
+# The flow-matching DiT families (run by diffusion_dit_trainer). They expose the
+# base_precision / compile levers and require bf16 compute on CUDA; SDXL is absent because
+# it uses its own mixed_precision path. Kept as a set so the UI gate, the bf16 preflight,
+# and any future dispatch stay in sync.
+_DIT_TRAIN_FAMILIES = frozenset({"flux.1", "qwen-image", "z-image"})
+
+
+def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
+    """Return a user-facing error string if ``resolved_family`` needs bf16 compute that the
+    live GPU cannot provide, else None. The DiT trainer requires a bf16-capable GPU (Ampere
+    or newer) and otherwise raises deep in model load; the start route uses this to fail fast
+    BEFORE evicting resident GPU workloads. CPU-only hosts (which fall back to fp32 for
+    import/unit tests) and SDXL (its own mixed_precision path) are exempt. Never raises."""
+    if (resolved_family or "").strip().lower() not in _DIT_TRAIN_FAMILIES:
+        return None
+    try:
+        import torch
+
+        if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+            return (
+                "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
+                "device does not support bf16. Train the DiT families on a newer GPU."
+            )
+    except Exception:  # noqa: BLE001 -- torch probe failure must not block a start
+        return None
+    return None
+
 
 def family_train_infos() -> list[dict[str, Any]]:
     """Describe every trainable family for the Train UI: name, label, the default + allowed
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
     the family registry so it stays in sync with what the trainers actually support."""
     from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_transformer_quant import _family_denied
 
     dit_modes, dit_recommended = train_precision_modes()
     infos: list[dict[str, Any]] = []
@@ -260,7 +291,11 @@ def family_train_infos() -> list[dict[str, Any]]:
         repos = list(fam.train_base_repos) or [fam.base_repo]
         # base_precision / compile apply to the DiT trainer only; SDXL keeps its
         # mixed_precision lever, so the UI hides the selector for it.
-        is_dit = name in ("flux.1", "qwen-image", "z-image")
+        is_dit = name in _DIT_TRAIN_FAMILIES
+        # Drop any advertised scheme this family's DiT cannot use (fp8 corrupts Qwen-Image:
+        # activation outliers exceed fp8's range; the inference path denies the same set), so
+        # the UI never offers a mode that normalized() would then reject.
+        fam_modes = [m for m in dit_modes if not _family_denied(name, m)] if is_dit else []
         infos.append(
             {
                 "name": name,
@@ -269,7 +304,7 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "base_repos": repos,
                 "defaults": train_defaults(name),
                 "vram_note": _FAMILY_VRAM_NOTES.get(name, ""),
-                "precision_modes": dit_modes if is_dit else [],
+                "precision_modes": fam_modes,
                 "recommended_precision": dit_recommended if is_dit else "nf4",
                 "supports_compile": is_dit,
             }
@@ -380,6 +415,19 @@ class DiffusionLoraConfig:
                 raise ValueError(
                     f"base_precision={base_precision!r} trains in bf16 compute; set "
                     f"mixed_precision to bf16."
+                )
+            # Some DiT families are corrupted by fp8's activation range: outliers exceed even
+            # per-row fp8's dynamic range, so the frozen linears' float8 training compute
+            # learns against a garbage forward pass. The inference path already denies these
+            # schemes; mirror that deny here so the run fails fast instead of silently
+            # producing a broken adapter. int8 (per-token) is unaffected and stays allowed.
+            from core.inference.diffusion_transformer_quant import _family_denied
+
+            if _family_denied(resolved_family, base_precision):
+                raise ValueError(
+                    f"base_precision={base_precision!r} is not supported for "
+                    f"{resolved_family}: its activations exceed fp8's range and corrupt the "
+                    f"trained result. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
         # A zero/negative gamma would zero out (or invert) the min-SNR weight and
         # silently train on a degenerate loss; None is the documented disable.
