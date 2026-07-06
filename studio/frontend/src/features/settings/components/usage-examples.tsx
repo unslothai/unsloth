@@ -32,6 +32,7 @@ import {
   loadOpenAIAutoSwitchSettings,
   updateOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
+import { buildAgentCommand } from "./agent-command";
 
 type ExampleType =
   | "curl"
@@ -441,6 +442,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   );
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedAgent, setCopiedAgent] = useState(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
@@ -476,6 +478,11 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const snippets = useMemo(
     () => buildSnippets(base, key, model, os, autoSwitchOn),
     [base, key, model, os, autoSwitchOn],
+  );
+  // Agent command must target the server the panel shows, not the :8888 default.
+  const agentCommand = useMemo(
+    () => buildAgentCommand(base, key, os),
+    [base, key, os],
   );
 
   const osAware = OS_AWARE[lang];
@@ -517,6 +524,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     if (cloudflareUrl && (await copyToClipboard(cloudflareUrl))) {
       setCopiedUrl(true);
       setTimeout(() => setCopiedUrl(false), 1800);
+    }
+  };
+
+  const handleCopyAgent = async () => {
+    if (await copyToClipboard(agentCommand)) {
+      setCopiedAgent(true);
+      setTimeout(() => setCopiedAgent(false), 1800);
     }
   };
 
@@ -688,6 +702,33 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             code={snippets[lang]}
             language={shikiLang}
           />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">
+          <span className="text-[11px] font-semibold text-foreground">
+            {t("settings.apiKeys.codingAgents")}
+          </span>
+          <span className="text-[11px] leading-snug text-muted-foreground">
+            {t("settings.apiKeys.codingAgentsHint")}
+          </span>
+          <div className="relative mt-0.5 min-w-0">
+            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[11px] text-foreground">
+              {agentCommand}
+            </code>
+            <button
+              type="button"
+              onClick={handleCopyAgent}
+              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={t("settings.apiKeys.copySnippet")}
+            >
+              <HugeiconsIcon
+                icon={copiedAgent ? Tick02Icon : Copy01Icon}
+                className={cn("size-3.5", copiedAgent && "text-emerald-600")}
+              />
+            </button>
+          </div>
+          <span className="text-[11px] leading-snug text-muted-foreground">
+            {t("settings.apiKeys.codingAgentsSwap")}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
           <span>{t("settings.apiKeys.setupDocs")}</span>
