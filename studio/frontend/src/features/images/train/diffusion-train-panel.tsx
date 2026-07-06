@@ -153,7 +153,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
 }
 
 // A full-page training workspace: left = configure (family, dataset, labeling, settings),
-// right = live run (progress, loss/LR charts, completion + deploy). Kept mounted with the
+// right = live run (progress, loss/grad-norm charts, completion + deploy). Kept mounted with the
 // page so a long run survives Create/Train tab switches; polling is gated on `active`.
 export function DiffusionTrainPanel({
   active,
@@ -235,7 +235,7 @@ export function DiffusionTrainPanel({
   const [batchSize, setBatchSize] = useState(1);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
-  // LR schedule (PR E wired get_scheduler into the loop, so the LR chart reflects this).
+  // LR schedule (PR E wired get_scheduler into the loop, so the LR follows the chosen curve).
   // Warmup only applies to the non-constant schedules; plain "constant" ignores it.
   const [lrScheduler, setLrScheduler] = useState<
     "constant" | "constant_with_warmup" | "cosine" | "linear"
@@ -842,7 +842,7 @@ export function DiffusionTrainPanel({
             <option value="linear">Linear decay</option>
           </select>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            How the learning rate evolves over the run (shown live in the LR chart).
+            How the learning rate evolves over the run.
           </p>
         </div>
         {lrScheduler !== "constant" &&
