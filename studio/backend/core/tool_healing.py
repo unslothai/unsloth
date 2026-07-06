@@ -363,9 +363,8 @@ def parse_tool_calls_from_text(
     """
     tool_calls: list[dict] = []
     call_spans: list[tuple] = []
-    # Collect JSON/Gemma markers; nesting is decided by _marker_coverage (a
-    # marker inside another call's coverage is data, not executed). Markers
-    # inside an open <parameter=> value are that parameter's data.
+    # Collect JSON/Gemma markers; _marker_coverage decides nesting. A marker inside
+    # another call's coverage, or an open <parameter=> value, is data not executed.
     markers = []  # (start, brace_end, kind, match); brace_end < 0 = unclosed
     for start_re, gemma, kind in (
         (_TC_JSON_START_RE, False, "json"),
