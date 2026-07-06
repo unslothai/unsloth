@@ -116,8 +116,11 @@ def _build_env(
     )
     zoo_module = types.SimpleNamespace(determine_base_model_source = determine_base_model_source)
     # Stub the live-env cache resolver the pre-warm uses (matches what the merge reads).
-    _live = (hub_cache if hub_cache is not None else str(cache_dir)) \
-        if live_hub_cache == "__same__" else live_hub_cache
+    _live = (
+        (hub_cache if hub_cache is not None else str(cache_dir))
+        if live_hub_cache == "__same__"
+        else live_hub_cache
+    )
     hf_cache_module = types.SimpleNamespace(_active_caches = lambda: (None, _live, None))
     monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", hf_module)
     monkeypatch.setitem(__import__("sys").modules, "unsloth_zoo.saving_utils", zoo_module)
@@ -327,8 +330,10 @@ def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
     # Frozen constants (stale dir) vs the merge's runtime-redirected dir: the pre-warm
     # must follow the redirect, else the cache-copy fast path misses and #6890 is unfixed.
     fn, stubs = _build_env(
-        monkeypatch, tmp_path,
-        hub_cache = "/read-only/original/hub", live_hub_cache = "/writable/redirect/hub",
+        monkeypatch,
+        tmp_path,
+        hub_cache = "/read-only/original/hub",
+        live_hub_cache = "/writable/redirect/hub",
     )
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls[0][1]["cache_dir"] == "/writable/redirect/hub"
@@ -336,7 +341,11 @@ def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
 
 def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
     # The already-cached fast path must probe the live-env cache dir too.
-    fn, stubs = _build_env(monkeypatch, tmp_path, cached = True, live_hub_cache = "/mnt/persistent/hf/hub")
+    fn, stubs = _build_env(
+        monkeypatch, tmp_path, cached = True, live_hub_cache = "/mnt/persistent/hf/hub"
+    )
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.hf_hub_download.calls, "cached probe did not run"
-    assert all(kw.get("cache_dir") == "/mnt/persistent/hf/hub" for _, kw in stubs.hf_hub_download.calls)
+    assert all(
+        kw.get("cache_dir") == "/mnt/persistent/hf/hub" for _, kw in stubs.hf_hub_download.calls
+    )

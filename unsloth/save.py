@@ -3791,7 +3791,9 @@ def _prewarm_base_model_hub_cache(
         from huggingface_hub import constants as _hf_constants
 
         # abspath so a relative HF_HUB_CACHE walks up to an existing root, not "".
-        cache_probe = os.path.abspath(os.path.expanduser(str(hub_cache_dir or _hf_constants.HF_HUB_CACHE)))
+        cache_probe = os.path.abspath(
+            os.path.expanduser(str(hub_cache_dir or _hf_constants.HF_HUB_CACHE))
+        )
         while cache_probe and not os.path.exists(cache_probe):
             parent = os.path.dirname(cache_probe)
             if parent == cache_probe:
