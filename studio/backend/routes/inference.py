@@ -7125,6 +7125,11 @@ async def openai_chat_completions(
                     if nudge_should_retry(_data, _sf_heal, payload.tools):
                         # A failed retry must not 500 the request; keep the
                         # first response (GGUF nudge parity).
+                        # The retry's generate() overwrites stats_holder, so preserve
+                        # the first attempt's stats: if the retry is discarded we still
+                        # deliver the first response and must report ITS usage, not the
+                        # unseen retry's.
+                        _first_stats = stats_holder.get("stats")
                         try:
                             retry_text = ""
                             for token in generate(
@@ -7134,10 +7139,14 @@ async def openai_chat_completions(
                             retry_msg = {"role": "assistant", "content": retry_text}
                             if heal_openai_message(retry_msg, _sf_heal, payload.tools):
                                 full_text, _msg, _finish = retry_text, retry_msg, "tool_calls"
+                            else:
+                                # Retry produced no healable call -> first response wins.
+                                stats_holder["stats"] = _first_stats
                         except Exception as retry_exc:
                             logger.debug(
                                 "Nudge retry failed; keeping first response: %s", retry_exc
                             )
+                            stats_holder["stats"] = _first_stats
                 # parallel_tool_calls=false: cap to one call (GGUF parity).
                 if payload.parallel_tool_calls is False:
                     _tcs = _msg.get("tool_calls")

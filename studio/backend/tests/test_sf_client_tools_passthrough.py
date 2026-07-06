@@ -555,6 +555,49 @@ def test_failed_nudge_retry_keeps_original_response(monkeypatch):
     assert body["choices"][0]["message"]["content"] == '<tool_call>{"name":"lookup"'
 
 
+def test_discarded_nudge_retry_reports_first_attempt_usage(monkeypatch):
+    # Double-failure nudge: the first response is delivered, but the retry's
+    # generate() overwrites stats_holder. The monitor must record the FIRST
+    # attempt's usage, not the discarded retry's.
+    first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
+    retry_stats = {"usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}}
+
+    class _PerCallStatsBackend(_ScriptedBackend):
+        def __init__(self):
+            # Unhealable truncated markup on both attempts -> retry is discarded.
+            super().__init__(lambda m, t: ['<tool_call>{"name":"lookup"'])
+            self._stats_seq = [first_stats, retry_stats]
+
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
+            self.calls.append({"messages": messages, "tools": tools, **kwargs})
+            stats = self._stats_seq[min(len(self.calls) - 1, len(self._stats_seq) - 1)]
+            if stats_holder is not None:
+                stats_holder["stats"] = stats
+            for snap in self._responder(messages, tools):
+                yield snap
+
+    backend = _PerCallStatsBackend()
+    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    asyncio.run(_run())
+    assert len(backend.calls) == 2  # first attempt + one discarded retry
+    [entry] = monitor.snapshot()
+    # The delivered response is the first attempt, so its usage must be reported.
+    assert entry["prompt_tokens"] == 7
+    assert entry["completion_tokens"] == 3
+
+
 def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
