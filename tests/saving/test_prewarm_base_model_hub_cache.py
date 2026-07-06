@@ -279,9 +279,9 @@ def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
     fn(model, save_method = "merged_16bit")
     assert stubs.determine_base_model_source.calls == []
     assert stubs.snapshot_download.calls == []
-    assert not any("Could not pre-cache" in p for p in stubs.prints), (
-        "missing config took the error path instead of a clean skip"
-    )
+    assert not any(
+        "Could not pre-cache" in p for p in stubs.prints
+    ), "missing config took the error path instead of a clean skip"
 
 
 def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
