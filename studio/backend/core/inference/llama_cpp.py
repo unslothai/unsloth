@@ -761,7 +761,6 @@ def _cached_hf_snapshot_file(
         return None
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
-
         for snap in _iter_hf_cache_snapshots(repo_id):
             candidate = snap.joinpath(*parts)
             if not candidate.is_file():

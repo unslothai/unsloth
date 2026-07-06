@@ -381,7 +381,14 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
     calls = []
     state = {"loaded": False}
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         calls.append((method, url, payload))
         if url.endswith("/v1/models"):
             return {

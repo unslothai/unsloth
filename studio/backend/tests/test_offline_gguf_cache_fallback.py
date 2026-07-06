@@ -240,9 +240,7 @@ class TestGgufVariantFileResolution:
         assert out == "/fake/ggml-org/models/tinyllamas/stories260K.gguf"
 
     def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
-        self,
-        monkeypatch,
-        hf_cache,
+        self, monkeypatch, hf_cache
     ):
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -286,9 +284,7 @@ class TestGgufVariantFileResolution:
         assert out == str(old / "model-UD-Q4_K_XL.gguf")
 
     def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
-        self,
-        monkeypatch,
-        hf_cache,
+        self, monkeypatch, hf_cache
     ):
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
@@ -314,7 +310,11 @@ class TestGgufVariantFileResolution:
             seen_repos.append(repo_id)
             return [gguf_file]
 
-        def fake_get_paths_info(repo_id, paths, token = None):
+        def fake_get_paths_info(
+            repo_id,
+            paths,
+            token = None,
+        ):
             seen_repos.append(repo_id)
             return [_types.SimpleNamespace(path = path, size = 4) for path in paths if path]
 
