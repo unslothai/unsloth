@@ -6912,8 +6912,7 @@ async def openai_chat_completions(
     if _sf_client_tools:
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
-        # message (templates reject "developer") and clear the separate prompt
-        # so the worker does not prepend a duplicate.
+        # message (templates reject "developer") and clear prompt to avoid a dup.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
             _structured_tool_history_for_local_template(
                 _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
@@ -7038,10 +7037,9 @@ async def openai_chat_completions(
                             yield line
 
                 # A cancelled stream must not promote buffered-but-incomplete
-                # markup: finalize()'s allow_incomplete heal would emit a
-                # tool_calls delta + finish_reason=tool_calls, executing a tool
-                # the user just cancelled. The disconnect path returns earlier;
-                # the "Stop" path only sets cancel_event, so guard on it here too.
+                # markup: finalize()'s allow_incomplete heal would execute a tool
+                # the user just cancelled. Disconnect returns earlier; "Stop" only
+                # sets cancel_event, so guard on it here too.
                 _cancelled = cancel_event.is_set()
                 if healer is not None and not _cancelled:
                     for line in _sf_heal_events_to_sse(
@@ -7134,7 +7132,7 @@ async def openai_chat_completions(
                         # A failed retry must not 500 the request; keep the first
                         # response (GGUF nudge parity). The retry's generate()
                         # overwrites stats_holder, so save the first attempt's stats
-                        # and restore them if the retry is discarded (report ITS usage).
+                        # and restore them if the retry is discarded.
                         _first_stats = stats_holder.get("stats")
                         try:
                             retry_text = ""

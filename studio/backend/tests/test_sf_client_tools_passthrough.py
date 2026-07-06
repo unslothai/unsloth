@@ -423,9 +423,9 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
 
 
 def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
-    # A stream cancelled via the registry ("Stop") mid-emission must NOT promote the
-    # buffered-but-unclosed tool markup at finalize -- otherwise the client executes a
-    # tool the user just cancelled. Guarded on cancel_event at the finalize/_finish step.
+    # A stream cancelled via the registry ("Stop") must NOT promote the
+    # buffered-but-unclosed tool markup at finalize, else it executes a tool
+    # the user just cancelled. Guarded on cancel_event at the finalize step.
     import routes.inference as inf
 
     cancel_id = "cancel-me-6870"
