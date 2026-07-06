@@ -823,7 +823,11 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
 
     calls = []
 
-    def _fake(repo_type, repo_id, repo_cache_dir=None):
+    def _fake(
+        repo_type,
+        repo_id,
+        repo_cache_dir = None,
+    ):
         calls.append((repo_type, repo_id, repo_cache_dir))
         return False
 
