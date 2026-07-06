@@ -18,7 +18,11 @@
   /* Hide the stock top header (jupyter_server's index.css uses a higher-
      specificity selector, so force it); the centered card carries the brand. */
   #header, .header-bar { display: none !important; }
-  #site { display: flex; justify-content: center; align-items: flex-start; }
+  /* Column, not the flex default row: #site holds two children (the login card
+     and the AGPLv3 attribution). As a row they sat side by side, pushing the card
+     left of centre and the attribution up to the top-right. Stack them so the card
+     is horizontally centred and the attribution sits below it as a footer. */
+  #site { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; }
   .unsloth-login-card {
     margin-top: 11vh;
     background: hsl(70, 8%, 18%);
