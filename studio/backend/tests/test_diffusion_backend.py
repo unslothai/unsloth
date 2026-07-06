@@ -2005,11 +2005,16 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     monkeypatch.setattr(
         DiffusionBackend,
         "_dense_transformer_resident_bytes",
-        staticmethod(lambda base: 40 * 1024 ** 3),
+        staticmethod(lambda base: 40 * 1024**3),
     )
     orig_plan = DiffusionBackend._plan_memory
 
-    def plan_wrap(self, *a, transformer_mib_override = None, **k):
+    def plan_wrap(
+        self,
+        *a,
+        transformer_mib_override = None,
+        **k,
+    ):
         # GGUF budget fits (real plan -> none); the dense-transformer preflight does not.
         if transformer_mib_override is not None:
             return types.SimpleNamespace(offload_policy = "model")
@@ -2029,9 +2034,9 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
         family_override = "z-image",
         transformer_quant = "fp8",
     )
-    assert status["transformer_quant"] is None       # dense quant skipped
-    assert status["offload_policy"] == "none"         # GGUF loaded resident, not offloaded
-    assert _FakeTransformer.last["path"]              # GGUF path used
+    assert status["transformer_quant"] is None  # dense quant skipped
+    assert status["offload_policy"] == "none"  # GGUF loaded resident, not offloaded
+    assert _FakeTransformer.last["path"]  # GGUF path used
 
 
 def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypatch):
@@ -2051,12 +2056,17 @@ def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypa
     monkeypatch.setattr(
         DiffusionBackend,
         "_dense_transformer_resident_bytes",
-        staticmethod(lambda base: 999 * 1024 ** 3),
+        staticmethod(lambda base: 999 * 1024**3),
     )
     dense_refit_ran = []
     orig_plan = DiffusionBackend._plan_memory
 
-    def spy_plan(self, *a, transformer_mib_override = None, **k):
+    def spy_plan(
+        self,
+        *a,
+        transformer_mib_override = None,
+        **k,
+    ):
         if transformer_mib_override is not None:
             dense_refit_ran.append(True)
         return orig_plan(self, *a, **k)
@@ -2076,8 +2086,8 @@ def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypa
         family_override = "z-image",
         transformer_quant = "fp8",
     )
-    assert dense_refit_ran == []   # prequant -> dense re-check skipped
-    assert attempted == [True]     # fast path still attempted (with the prequant)
+    assert dense_refit_ran == []  # prequant -> dense re-check skipped
+    assert attempted == [True]  # fast path still attempted (with the prequant)
 
 
 def test_transformer_quant_unsupported_scheme_skips_dense_download(

@@ -920,6 +920,7 @@ class DiffusionBackend:
         safetensors shard headers. Returns 0 when no ``transformer/*.safetensors`` shards
         are present (an uncached base, or a .bin-only transformer); the caller then gates
         the fast path on the plain plan."""
+
         def _params(d: Path) -> int:
             tdir = d / "transformer"
             if not tdir.is_dir():

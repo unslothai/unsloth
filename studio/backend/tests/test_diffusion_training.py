@@ -583,7 +583,7 @@ def test_diffusion_dataset_upload_over_cap_preserves_existing_file(
     (folder / "existing.png").write_bytes(b"ORIGINAL")  # from an earlier upload
     files = [
         ("files", ("existing.png", b"NEW", "image/png")),  # re-upload, small
-        ("files", ("big.png", b"y" * 200, "image/png")),   # trips the cap
+        ("files", ("big.png", b"y" * 200, "image/png")),  # trips the cap
     ]
     r = client.post("/api/train/diffusion/dataset", data = {"name": "keep"}, files = files)
     assert r.status_code == 413, r.text
