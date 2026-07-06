@@ -4015,10 +4015,9 @@ async def generate_stream(
             _DONE = object()
             while True:
                 if cancel_event.is_set():
-                    # Watcher set cancel_event between chunks. Reset here:
-                    # closing the generator does not signal a subprocess backend,
-                    # so it would keep decoding. The finally's reset is guarded on
-                    # cancel_event being unset, so it will not double-run.
+                    # Watcher set cancel_event between chunks. Reset here: closing
+                    # the generator does not signal a subprocess backend, so it would
+                    # keep decoding. The finally's reset is guarded, so no double-run.
                     backend.reset_generation_state()
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
@@ -9829,9 +9828,8 @@ async def _anthropic_tool_stream(
         drop_until_tool_end = False
 
         gen = run_gen()
-        # Watcher to cancel on disconnect: the in-loop poll only fires between
-        # events, so a disconnect during a long prefill/step would otherwise hold
-        # the decode slot until the next event or a failed send.
+        # Watcher to cancel on disconnect: the in-loop poll fires only between
+        # events, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
@@ -9923,9 +9921,8 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
-        # Watcher to cancel on disconnect: the in-loop poll only fires between
-        # chunks, so a disconnect during a long prefill/step would otherwise hold
-        # the decode slot until the next chunk or a failed send.
+        # Watcher to cancel on disconnect: the in-loop poll fires only between
+        # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )

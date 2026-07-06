@@ -11,9 +11,8 @@ import json
 import re
 
 # Strip patterns. The name-class hyphen matches dashed MCP names. Closed pairs
-# strip first, so a closed call is removed as a unit before any to-EOF sweep can
-# reach markup nested inside it; only the final list adds the .*$ EOF sweeps, so
-# the non-final list keeps incomplete blocks.
+# strip first so a closed call goes as a unit before any to-EOF sweep reaches
+# nested markup; only the final list adds the .*$ EOF sweeps.
 _TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
 _TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
