@@ -280,13 +280,47 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
 def test_worker_generate_branches_check_drain_before_clearing_cancel():
     # Both worker command loops (MLX fast-path + GPU) must consult the drain skip
     # before clearing cancel_event and running, so a queued generate can't clear an
-    # unload-initiated cancel and run the outgoing model to completion.
+    # unload-initiated cancel and run the outgoing model to completion. Each loop
+    # checks the drain twice -- once before the clear and once after -- so a
+    # drain+cancel pair that lands in the window between them is still caught.
     import inspect
 
     from core.inference import worker
 
     src = inspect.getsource(worker.run_inference_process)
-    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 2
+    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 4
+
+
+def test_worker_generate_rechecks_drain_after_clearing_cancel():
+    # The exact interleaving item #3 describes: the drain check reads unset, then the
+    # parent sets drain+cancel for an unload, then the worker clears cancel_event
+    # (erasing that cancel). A second drain check *after* the clear catches it and
+    # skips the generate instead of running the outgoing model to completion.
+    import queue as _queue
+
+    from core.inference.worker import _drain_skip_generate
+
+    drain = threading.Event()
+    cancel = threading.Event()
+    rq: _queue.Queue = _queue.Queue()
+    cmd = {"type": "generate", "request_id": "r1"}
+
+    # 1. Pre-clear drain check: not draining yet -> run (no skip, no emit).
+    assert _drain_skip_generate(cmd, rq, drain) is False
+    assert rq.empty()
+
+    # 2. Parent starts an unload: sets drain, then cancel (orchestrator order).
+    drain.set()
+    cancel.set()
+
+    # 3. Worker clears cancel at the start of the generate -- erasing the cancel.
+    cancel.clear()
+    assert not cancel.is_set()
+
+    # 4. Post-clear drain re-check catches the erased cancel and skips.
+    assert _drain_skip_generate(cmd, rq, drain) is True
+    resp = rq.get_nowait()
+    assert resp["type"] == "gen_done" and resp["cancelled"] is True
 
 
 def test_unload_sets_drain_event_during_switch_and_clears_after(monkeypatch):
@@ -694,3 +728,281 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
+
+
+# ----------------------------------------------------------------------------
+# Dispatched path: bail when a cleared-pending unload swapped the model or
+# tore the dispatcher down during the pre-registration window -- item #2.
+# ----------------------------------------------------------------------------
+
+
+class _AliveDispatcher:
+    """Stand-in dispatcher thread that reports itself alive."""
+
+    def is_alive(self):
+        return True
+
+
+def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeypatch):
+    # The request passes the pre-work checks, then a full unload+reload completes
+    # (clearing _unload_pending) before this request registers its mailbox. The
+    # under-lock recheck must notice active_model_name changed and bail, instead of
+    # sending a generate that lands on the swapped-in model.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    o._dispatcher_thread = _AliveDispatcher()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
+
+    # Swap the active model after the pre-work check but before registration,
+    # with _unload_pending already back to False (the unload finally ran).
+    def swap(*a, **k):
+        o.active_model_name = "other"
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", swap)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not generate on the swapped-in model")
+    )
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert o._mailboxes == {}, "must not leave an orphaned mailbox"
+
+
+def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(monkeypatch):
+    # Same window, but the unload was a same-model reload so active_model_name is
+    # unchanged; the give-away is that the dispatcher was stopped. Registering a
+    # mailbox with no dispatcher to route the reply would hang the compare stream.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    o._dispatcher_thread = _AliveDispatcher()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
+
+    def stop_dispatcher(*a, **k):
+        o._dispatcher_thread = None  # unload's _stop_dispatcher cleared it
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", stop_dispatcher)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not generate with the dispatcher stopped")
+    )
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert o._mailboxes == {}, "must not leave an orphaned mailbox"
+
+
+def test_dispatched_happy_path_registers_and_sends(monkeypatch):
+    # Guard against a false bail: with the model unchanged and the dispatcher alive,
+    # the recheck must let the generate through (register a mailbox and send).
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    o._dispatcher_thread = _AliveDispatcher()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
+    monkeypatch.setattr(
+        o, "_build_generate_cmd", lambda *a, **k: {"type": "generate", "request_id": "r1"}
+    )
+    sent = []
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: sent.append(cmd))
+
+    # Feed one gen_done so the consumer returns promptly.
+    def fake_consume(read_mailbox, drainer, **k):
+        mbox = o._mailboxes.get("r1")
+        if mbox is not None:
+            mbox.put({"type": "gen_done", "request_id": "r1"})
+        yield ""
+
+    monkeypatch.setattr(o, "_consume_token_stream", fake_consume)
+
+    list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert sent, "happy path must send the generate command"
+    assert o._mailboxes == {}, "mailbox popped in finally"
+
+
+# ----------------------------------------------------------------------------
+# load_model observes a cancel that discarded its loading marker -- item #4.
+# ----------------------------------------------------------------------------
+
+
+def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
+    # Stop-loading during GPU placement discards the loading marker (cancel_load) with
+    # no child yet to kill. load_model must observe the removal and not spawn a worker
+    # that loads the model after /unload already reported it unloaded.
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: None)
+    monkeypatch.setattr(
+        o, "_spawn_subprocess", lambda cfg: pytest.fail("must not spawn a worker after a cancel")
+    )
+
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+
+    # cancel_load discards the marker while we resolve GPU placement.
+    def cancel_during_gpu(gpu_ids, **k):
+        o.loading_models.discard("m")
+        return ([0], "sel")
+
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", cancel_during_gpu)
+
+    class _Cfg:
+        identifier = "m"
+
+    ok = o.load_model(_Cfg())
+
+    assert ok is False
+    assert o.active_model_name is None
+    assert o.models == {}
+
+
+def test_load_model_proceeds_when_not_cancelled(monkeypatch):
+    # Guard against a false abort: an uncancelled load keeps its marker and spawns.
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: None)
+
+    spawned = []
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: spawned.append(cfg))
+    monkeypatch.setattr(
+        o,
+        "_wait_response",
+        lambda t, timeout = 300.0: {"success": True, "model_info": {"identifier": "m"}},
+    )
+
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda gpu_ids, **k: ([0], "sel"))
+
+    class _Cfg:
+        identifier = "m"
+
+    ok = o.load_model(_Cfg())
+
+    assert ok is True
+    assert spawned, "uncancelled load must spawn a worker"
+    assert o.active_model_name == "m"
+
+
+# ----------------------------------------------------------------------------
+# /unload cancels a still-loading GGUF off the lifecycle gate -- item #1.
+# ----------------------------------------------------------------------------
+
+
+def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
+    # A still-loading GGUF (is_active, not is_loaded) must be cancelled off the gate:
+    # /load holds the lifecycle gate for the whole load, so a gated unload would wait
+    # it out. Assert the gate is never entered and unload_model() runs.
+    import asyncio as _asyncio
+
+    import routes.inference as ri
+    from core.inference import llama_keepwarm
+
+    gate_entered = {"v": False}
+
+    class _Gate:
+        async def __aenter__(self):
+            gate_entered["v"] = True
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _LlamaBackend:
+        is_active = True
+        is_loaded = False
+        model_identifier = "gguf-model"
+
+        def __init__(self):
+            self.unloaded = False
+
+        def unload_model(self):
+            self.unloaded = True
+
+    llama = _LlamaBackend()
+
+    class _Unsloth:
+        def get_loading_model(self):
+            return None  # no Unsloth load in flight -> Unsloth fast path skipped
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
+
+    req = ri.UnloadRequest(model_path = "gguf-model")
+    resp = _asyncio.run(ri.unload_model(req, current_subject = "s"))
+
+    assert getattr(resp, "status", None) == "unloaded"
+    assert llama.unloaded is True, "must cancel the loading GGUF via unload_model()"
+    assert gate_entered["v"] is False, "must handle the loading GGUF off the lifecycle gate"
+
+
+def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
+    # Guard: an already-loaded GGUF (is_loaded True) is NOT caught by the off-gate
+    # fast path; it goes through the gate as before.
+    import asyncio as _asyncio
+
+    import routes.inference as ri
+    from core.inference import llama_keepwarm
+
+    gate_entered = {"v": False}
+
+    class _Gate:
+        async def __aenter__(self):
+            gate_entered["v"] = True
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _LlamaBackend:
+        is_active = True
+        is_loaded = True
+        model_identifier = "gguf-model"
+
+        def __init__(self):
+            self.unloaded = False
+
+        def unload_model(self):
+            self.unloaded = True
+
+    llama = _LlamaBackend()
+
+    class _Unsloth:
+        def get_loading_model(self):
+            return None
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
+    monkeypatch.setattr(ri, "is_registered_native_path_label", lambda a, b: False)
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
+
+    req = ri.UnloadRequest(model_path = "gguf-model")
+    resp = _asyncio.run(ri.unload_model(req, current_subject = "s"))
+
+    assert getattr(resp, "status", None) == "unloaded"
+    assert llama.unloaded is True
+    assert gate_entered["v"] is True, "loaded GGUF unload must still take the gate"

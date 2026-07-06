@@ -617,6 +617,10 @@ class InferenceOrchestrator:
         if not self.active_model_name:
             yield "Error: No active model"
             return
+        # Latch the model this request targets so the under-lock recheck below can
+        # detect a switch that completed while this path was between _start_dispatcher
+        # and the mailbox registration (mirrors the locked path's expected_model check).
+        expected_model = self.active_model_name
 
         # A model switch is in flight (unload waiting on _gen_lock). This path
         # bypasses _gen_lock, so without this early-out a compare-mode request
@@ -662,7 +666,21 @@ class InferenceOrchestrator:
         # compare stream would hang forever.
         mailbox: queue.Queue = queue.Queue()
         with self._mailbox_lock:
-            unloading = self._unload_pending
+            # _unload_pending alone is not enough: an unload that ran fully during the
+            # window since _start_dispatcher clears _unload_pending in its finally and
+            # stops the dispatcher, so it can read False here while the dispatcher is
+            # gone and the model was swapped/cleared. Also bail when the active model
+            # changed or the dispatcher is no longer alive: registering a mailbox with
+            # no dispatcher to route the worker's gen_done/gen_error would hang the
+            # compare stream (or the generate would land on a later subprocess).
+            dispatcher_alive = (
+                self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
+            )
+            unloading = (
+                self._unload_pending
+                or self.active_model_name != expected_model
+                or not dispatcher_alive
+            )
             if not unloading:
                 self._mailboxes[request_id] = mailbox
         if unloading:
@@ -817,6 +835,20 @@ class InferenceOrchestrator:
             )
 
             for attempt in range(2):
+                # Stop-loading (/unload -> cancel_load) aborts a load by discarding this
+                # model's loading marker. cancel_load only kills a live child; if the
+                # cancel lands before any child exists (resolving GPU placement, or
+                # between retry attempts) there is nothing to kill, and without this
+                # check the loop would spawn a fresh worker and load the model after
+                # /unload already reported it unloaded. Observe the removal and stop.
+                if model_name not in self.loading_models:
+                    logger.info(
+                        "Load for '%s' was cancelled before spawn; not starting a worker",
+                        model_name,
+                    )
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
                 logger.info(
                     "Spawning fresh inference subprocess for '%s' "
                     "(transformers %s.x, attempt %d/2%s)",

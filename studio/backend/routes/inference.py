@@ -3817,6 +3817,20 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
+        # Same "stop loading" fast path for a still-loading GGUF (llama-server spawned,
+        # health check not yet passed). /load holds the lifecycle gate for the whole
+        # (multi-minute) load, so a gated unload would wait it out. unload_model() sets
+        # the cancel_event that load_model polls off its own lock and kills the child;
+        # it sends no worker command that could land on a freshly swapped worker, so it
+        # is safe off-gate, like cancel_load above. The gated GGUF branch below still
+        # handles the already-loaded case.
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_active and not llama_backend.is_loaded:
+            await asyncio.to_thread(llama_backend.unload_model)
+            note_model_unloaded()
+            logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
+            return UnloadResponse(status = "unloaded", model = request.model_path)
+
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now
         # runs off the event loop (asyncio.to_thread), so without this a concurrent
         # /load could swap in a fresh subprocess mid-unload and the unload command would

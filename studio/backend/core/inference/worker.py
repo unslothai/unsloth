@@ -755,6 +755,13 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     cancel_event.clear()
+                    # Re-check the drain after clearing: the parent sets drain_event
+                    # then cancel_event for an unload, so if that pair landed between
+                    # the check above and this clear, the clear just erased the unload's
+                    # cancel. Skip here so the outgoing model is not run to completion,
+                    # which would stall the switch until the dispatcher idle-timeout.
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
                 elif cmd_type == "load":
                     if backend.active_model_name:
@@ -960,6 +967,13 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 cancel_event.clear()
+                # Re-check the drain after clearing: the parent sets drain_event then
+                # cancel_event for an unload, so if that pair landed between the check
+                # above and this clear, the clear just erased the unload's cancel. Skip
+                # here so the outgoing model is not run to completion, which would stall
+                # the switch until the dispatcher idle-timeout tears the subprocess down.
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "load":
