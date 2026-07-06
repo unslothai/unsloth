@@ -85,6 +85,7 @@ __all__ = [
     "hf_login",
     "is_moe_model",
     "get_moe_target_parameters",
+    "_select_moe_detection_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -3609,6 +3610,35 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         return moe_params
 
     return None
+
+
+def _select_moe_detection_targets(
+    original_target_modules,
+    scoped_target_modules,
+    finetune_mlp_modules = True,
+    finetune_language_layers = True,
+):
+    """Pick what get_moe_target_parameters keys expert detection on.
+
+    Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an
+    attention-only request is not pushed into the experts by get_peft_regex's
+    ``mlp|feed_forward|ffn|dense`` component block (which the string fallback
+    cannot tell apart from a fused-expert auto regex).
+
+    But only when the MLP and language families are BOTH still in scope. If the
+    caller scoped MLP or language OFF (``finetune_mlp_modules=False`` or
+    ``finetune_language_layers=False``) the scoped regex already drops the MoE
+    experts, and reusing the original list -- which may still name gate/up/down
+    leaves -- would wrongly re-introduce them. In that case honor the scoped
+    result so the frozen-MLP / vision-only request is respected.
+    """
+    if (
+        original_target_modules is not None
+        and finetune_mlp_modules
+        and finetune_language_layers
+    ):
+        return original_target_modules
+    return scoped_target_modules
 
 
 def make_fast_generate_wrapper(original_generate):

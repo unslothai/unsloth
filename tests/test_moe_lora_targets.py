@@ -117,3 +117,112 @@ def test_explicit_attention_only_list_does_not_discover_moe_parameters():
         "mlp.experts.gate_up_proj",
         "mlp.experts.down_proj",
     ]
+
+
+def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
+    # Regression: an explicit list that names MLP leaves together with
+    # finetune_mlp_modules=False must NOT train experts. get_peft_regex scopes
+    # the MLP leaves out (its emitted regex carries no mlp tag block), so
+    # detection has to key on that SCOPED regex -- keying on the original list
+    # would let its gate/up/down leaves silently re-enable the frozen experts.
+    from unsloth.models._utils import (
+        _select_moe_detection_targets,
+        get_moe_target_parameters,
+    )
+
+    original_list = [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ]
+    # Representative of what get_peft_regex emits for that list under
+    # finetune_mlp_modules=False: attention-only path, no mlp component block.
+    scoped_regex = (
+        r"(?:.*?(?:language|text).*?"
+        r"(?:self_attn|attention|attn|mixer).*?"
+        r"(?:q_proj|k_proj|v_proj|o_proj))"
+    )
+    selected = _select_moe_detection_targets(
+        original_list,
+        scoped_regex,
+        finetune_mlp_modules = False,
+        finetune_language_layers = True,
+    )
+    assert selected is scoped_regex
+    assert get_moe_target_parameters(_FakeMoeModel(), selected) is None
+
+
+def test_frozen_language_full_list_does_not_discover_moe_parameters():
+    # Vision-only request (finetune_language_layers=False) with a full leaf list
+    # must not reach the language-model experts either.
+    from unsloth.models._utils import (
+        _select_moe_detection_targets,
+        get_moe_target_parameters,
+    )
+
+    original_list = ["q_proj", "gate_proj", "up_proj", "down_proj"]
+    scoped_regex = (
+        r"(?:.*?(?:vision|visual|image).*?"
+        r"(?:self_attn|attention|attn|mixer).*?"
+        r"(?:q_proj|k_proj|v_proj|o_proj))"
+    )
+    selected = _select_moe_detection_targets(
+        original_list,
+        scoped_regex,
+        finetune_mlp_modules = True,
+        finetune_language_layers = False,
+    )
+    assert selected is scoped_regex
+    assert get_moe_target_parameters(_FakeMoeModel(), selected) is None
+
+
+def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
+    # With MLP and language both in scope, an explicit list that names MLP
+    # leaves SHOULD enable the experts (unchanged behavior): the original list
+    # is preferred and carries the gate/up/down intent.
+    from unsloth.models._utils import (
+        _select_moe_detection_targets,
+        get_moe_target_parameters,
+    )
+
+    original_list = [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ]
+    scoped_regex = r".*self_attn.*proj"  # unused: original list is preferred
+    selected = _select_moe_detection_targets(
+        original_list,
+        scoped_regex,
+        finetune_mlp_modules = True,
+        finetune_language_layers = True,
+    )
+    assert selected is original_list
+    assert get_moe_target_parameters(_FakeMoeModel(), selected) == [
+        "mlp.experts.gate_up_proj",
+        "mlp.experts.down_proj",
+    ]
+
+
+def test_attention_only_list_prefers_original_when_in_scope():
+    # The case the PR originally fixed: an attention-only list routed through
+    # get_peft_regex under a family scope (e.g. vision-off) still keeps experts
+    # off, because with MLP+language in scope detection uses the original
+    # attention-only list rather than the regex's spurious mlp component block.
+    from unsloth.models._utils import (
+        _select_moe_detection_targets,
+        get_moe_target_parameters,
+    )
+
+    attn_only_list = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    scoped_regex = (  # carries the spurious mlp block get_peft_regex always adds
+        r"(?:.*?(?:language|text).*?"
+        r"(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense).*?"
+        r"(?:q_proj|k_proj|v_proj|o_proj))"
+    )
+    selected = _select_moe_detection_targets(
+        attn_only_list,
+        scoped_regex,
+        finetune_mlp_modules = True,
+        finetune_language_layers = True,
+    )
+    assert selected is attn_only_list
+    assert get_moe_target_parameters(_FakeMoeModel(), selected) is None

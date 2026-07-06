@@ -37,6 +37,7 @@ from ._utils import (
     _get_text_only_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _select_moe_detection_targets,
     set_task_config_attr,
 )
 from ._utils import *
@@ -1717,10 +1718,19 @@ class FastBaseModel:
         )
 
         # Auto-detect MoE models and populate target_parameters for expert layers.
-        # For an explicit leaf list use the ORIGINAL list, not the scoped regex, so
-        # attention-only requests do not train experts via get_peft_regex's mlp block.
+        # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an
+        # attention-only request does not train experts via get_peft_regex's mlp block,
+        # but only when MLP and language families are both still in scope. If the caller
+        # scoped MLP or language OFF (finetune_mlp_modules / finetune_language_layers
+        # False), the scoped regex already dropped the experts, so honor it instead of
+        # re-introducing the original list's gate/up/down leaves.
         if target_parameters is None:
-            _moe_targets = _moe_detect_target if _moe_detect_target is not None else target_modules
+            _moe_targets = _select_moe_detection_targets(
+                _moe_detect_target,
+                target_modules,
+                finetune_mlp_modules = finetune_mlp_modules,
+                finetune_language_layers = finetune_language_layers,
+            )
             target_parameters = get_moe_target_parameters(model, _moe_targets)
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
