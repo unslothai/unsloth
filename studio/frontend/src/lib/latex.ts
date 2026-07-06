@@ -1,8 +1,13 @@
 // Adapted from LibreChat's latex.ts
 // https://github.com/danny-avila/LibreChat/blob/main/client/src/utils/latex.ts
 //
-// Escapes currency dollar signs so they are not misinterpreted as LaTeX math
-// delimiters when singleDollarTextMath is enabled.
+// Two jobs, in order:
+//   1. Convert LaTeX bracket delimiters (`\[...\]`, `\(...\)`) into the dollar
+//      forms remark-math understands (`$$...$$`, `$...$`). remark-math only
+//      tokenizes dollar delimiters, so models that emit `\[...\]` / `\(...\)`
+//      would otherwise render as literal text.
+//   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
+//      math delimiters when singleDollarTextMath is enabled.
 
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
@@ -51,9 +56,10 @@ function findCodeBlockRegions(content: string): Array<[number, number]> {
 }
 
 /**
- * Binary search to check if a position falls inside any code region.
+ * Binary search to check if a position falls inside any region. Regions must be
+ * sorted by start and non-overlapping.
  */
-function isInCodeBlock(
+function isInRegion(
   position: number,
   regions: Array<[number, number]>,
 ): boolean {
@@ -174,9 +180,105 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
 }
 
 /**
- * Preprocess a markdown string to escape currency dollar signs so they are not
- * parsed as LaTeX math delimiters.
+ * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
+ * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
+ * each opener leaves an escaped literal `\\[` (a real backslash then bracket)
+ * alone. The body is length-capped so an unclosed opener can't scan to
+ * end-of-input: without the cap, many unclosed `\(`/`\[` make matching O(n^2),
+ * and this runs per animation frame while streaming. Real spans are far shorter
+ * than the cap; a longer one just stays literal.
+ */
+const LATEX_DELIM_RE =
+  /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
+
+/**
+ * Rewrite `\[...\]` -> block `$$...$$` and `\(...\)` -> inline `$...$` so
+ * remark-math can tokenize them. Bodies are trimmed: remark-math won't open an
+ * inline span on `$ ` (a `$` followed by whitespace), and display fences must
+ * sit on their own line to render as a centered block (not inline math), so
+ * `\[...\]` becomes `\n$$\n...\n$$\n`.
  *
+ * Spans inside code blocks/spans are left intact (a code sample showing `\(x\)`
+ * must not be rewritten).
+ *
+ * A space is inserted between a converted span and a following `$` so their
+ * delimiters can't fuse (`\(a\)\(b\)` -> `$a$$b$` would mis-tokenize into one
+ * broken span). A preceding currency (`$5\(x\)`) is instead broken later by the
+ * currency escape pass.
+ *
+ * Returns the rewritten text and the `[start, end)` ranges (in the rewritten
+ * string) of every span it produced, so the currency pass can skip them.
+ */
+function convertLatexDelimiters(content: string): {
+  text: string;
+  mathRegions: Array<[number, number]>;
+} {
+  if (!content.includes("\\[") && !content.includes("\\(")) {
+    return { text: content, mathRegions: [] };
+  }
+
+  const codeRegions = findCodeBlockRegions(content);
+  // Pushed in ascending, non-overlapping order (offset only grows), so this
+  // stays valid for isInRegion's binary search without a sort.
+  const mathRegions: Array<[number, number]> = [];
+  // Accumulate into an array, not a string: reading the last char off a growing
+  // `+=` accumulator flattens its rope every append (O(n^2) over many spans, on
+  // the per-frame streaming path), so track the tail char and length instead.
+  const parts: string[] = [];
+  let offset = 0;
+  let lastChar = "";
+  let last = 0;
+  // Append a chunk, separating a trailing `$` from a leading `$` so two spans
+  // can't fuse. Returns where the chunk landed (after any inserted space).
+  const append = (chunk: string): number => {
+    if (!chunk) return offset;
+    if (lastChar === "$" && chunk.startsWith("$")) {
+      parts.push(" ");
+      offset += 1;
+    }
+    const start = offset;
+    parts.push(chunk);
+    offset += chunk.length;
+    lastChar = chunk[chunk.length - 1];
+    return start;
+  };
+  let match: RegExpExecArray | null;
+  LATEX_DELIM_RE.lastIndex = 0;
+  while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
+    const matchEnd = match.index + match[0].length;
+    // Skip if either delimiter is inside code: an opener outside a fence must
+    // not consume a closer inside one and rewrite across the boundary.
+    if (
+      isInRegion(match.index, codeRegions) ||
+      isInRegion(matchEnd - 1, codeRegions)
+    ) {
+      continue;
+    }
+    const isDisplay = match[1] !== undefined;
+    const body = (isDisplay ? match[1] : match[2]).trim();
+    // Leave an empty span (`\(\)`) literal; a bare `$$` would open a stray
+    // display block that swallows following text.
+    if (!body) {
+      continue;
+    }
+    append(content.slice(last, match.index));
+    const wrapped = isDisplay ? `\n$$\n${body}\n$$\n` : `$${body}$`;
+    const start = append(wrapped);
+    mathRegions.push([start, offset]);
+    last = matchEnd;
+  }
+  append(content.slice(last));
+  return { text: parts.join(""), mathRegions };
+}
+
+/**
+ * Preprocess a markdown string so LaTeX renders: convert bracket delimiters to
+ * dollar forms, then escape currency dollar signs so they are not parsed as
+ * math delimiters.
+ *
+ * - `\[E = mc^2\]` becomes a `$$` display block on its own lines (display math)
+ * - `\(\alpha\)` becomes `$\alpha$` (inline math)
+ * - `\(x\)` in a code span is untouched
  * - `$5` alone becomes `\$5` (currency, not math)
  * - `$\alpha$` is untouched (real LaTeX)
  * - `$30^\circ$` is untouched (LaTeX whose body starts with a digit)
@@ -185,15 +287,22 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
  * - Currency inside code blocks/spans is untouched
  */
 export function preprocessLaTeX(content: string): string {
-  if (!content.includes("$")) return content;
+  const { text, mathRegions } = convertLatexDelimiters(content);
 
-  const codeRegions = findCodeBlockRegions(content);
+  if (!text.includes("$")) return text;
 
-  return content.replace(CURRENCY_REGEX, (match, offset) => {
-    if (isInCodeBlock(offset, codeRegions)) {
+  const codeRegions = findCodeBlockRegions(text);
+
+  return text.replace(CURRENCY_REGEX, (match, offset) => {
+    if (isInRegion(offset, codeRegions)) {
       return match;
     }
-    if (hasInlineMathCloser(content, offset)) {
+    // Skip the spans we just created from `\(...\)` so a numeric body like
+    // `$5$` isn't re-escaped back to literal `\$5$`.
+    if (isInRegion(offset, mathRegions)) {
+      return match;
+    }
+    if (hasInlineMathCloser(text, offset)) {
       return match;
     }
     return "\\" + match;
