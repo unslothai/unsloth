@@ -4,6 +4,7 @@
 import type { ReactElement } from "react";
 import type { NodeConfig, SamplerConfig } from "../types";
 import { getBlockDefinitionForConfig } from "./definitions";
+import { EvaluationDocumentScoreDialog } from "../dialogs/evaluation-document-score-dialog";
 import { ExpressionDialog } from "../dialogs/expression/expression-dialog";
 import { LlmDialog } from "../dialogs/llm/llm-dialog";
 import { ModelConfigDialog } from "../dialogs/models/model-config-dialog";
@@ -129,6 +130,10 @@ export function renderBlockDialog(
     case "markdown_note":
       return config.kind === "markdown_note" ? (
         <MarkdownNoteDialog config={config} onUpdate={update} />
+      ) : null;
+    case "evaluation_document_score":
+      return config.kind === "evaluation" ? (
+        <EvaluationDocumentScoreDialog config={config} onUpdate={update} />
       ) : null;
   }
 }

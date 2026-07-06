@@ -2,28 +2,25 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  EvaluationDocumentScoreConfig,
   LlmConfig,
   LlmMcpProviderConfig,
   LlmToolConfig,
   MarkdownNoteConfig,
   NodeConfig,
   RecipeProcessorConfig,
-  SeedConfig,
   SamplerConfig,
+  SeedConfig,
   SeedSourceType,
   ToolProfileConfig,
   ValidatorConfig,
 } from "../../types";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
-import {
-  parseColumn,
-  parseModelConfig,
-  parseModelProvider,
-} from "./parsers";
+import { parseColumn, parseModelConfig, parseModelProvider } from "./parsers";
 import { parseSeedConfig } from "./parsers/seed-config-parser";
-import { buildNodes, parseUi } from "./ui";
 import type { ImportResult } from "./types";
+import { buildNodes, parseUi } from "./ui";
 
 type RecipeInput = {
   columns?: unknown;
@@ -78,6 +75,9 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
       return;
     }
     const type = readString(item.processor_type);
+
+    // Schema transform — accept either an explicit processor_type or a legacy
+    // payload where only `template` is present (matches the prior behavior).
     const templateRaw = item.template;
     const isSchemaTransform =
       type === "schema_transform" || isRecord(templateRaw);
@@ -90,7 +90,7 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
         ? templateRaw
         : isRecord(templateRaw)
           ? JSON.stringify(templateRaw, null, 2)
-          : "{\n  \"text\": \"{{ column_name }}\"\n}";
+          : '{\n  "text": "{{ column_name }}"\n}';
     processors.push({
       id: `p${index + 1}`,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -100,6 +100,48 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
     });
   });
   return processors;
+}
+
+function parseEvaluations(input: unknown): EvaluationDocumentScoreConfig[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const evaluations: EvaluationDocumentScoreConfig[] = [];
+  input.forEach((item, index) => {
+    if (!isRecord(item)) {
+      return;
+    }
+    const type = readString(item.processor_type);
+    if (type !== "json_document_score") {
+      return;
+    }
+    const schemaValue = item.schema;
+    const schemaText =
+      schemaValue == null
+        ? ""
+        : typeof schemaValue === "string"
+          ? schemaValue
+          : JSON.stringify(schemaValue, null, 2);
+    evaluations.push({
+      id: `eval${index + 1}`,
+      kind: "evaluation",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      processor_type: "json_document_score",
+      name: readString(item.name) ?? `doc_score_${index + 1}`,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      prediction_column: readString(item.prediction_column) ?? "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column: readString(item.reference_column) ?? "",
+      schema: schemaText,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      default_comparator: readString(item.default_comparator) ?? "string",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      score_column: readString(item.score_column) ?? "doc_score",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      breakdown_column: readString(item.breakdown_column) ?? "",
+    });
+  });
+  return evaluations;
 }
 
 function parseSeedDropColumns(input: unknown): string[] {
@@ -135,9 +177,7 @@ function parseSeedDropColumns(input: unknown): string[] {
   return Array.from(values);
 }
 
-function parseMcpProviders(
-  input: unknown,
-): Map<string, LlmMcpProviderConfig> {
+function parseMcpProviders(input: unknown): Map<string, LlmMcpProviderConfig> {
   const providers = new Map<string, LlmMcpProviderConfig>();
   if (!Array.isArray(input)) {
     return providers;
@@ -156,13 +196,12 @@ function parseMcpProviders(
     const args = Array.isArray(item.args)
       ? item.args.map((value) => String(value))
       : [];
-    const envPairs =
-      isRecord(item.env)
-        ? Object.entries(item.env).map(([key, value]) => ({
-            key: String(key),
-            value: String(value),
-          }))
-        : [];
+    const envPairs = isRecord(item.env)
+      ? Object.entries(item.env).map(([key, value]) => ({
+          key: String(key),
+          value: String(value),
+        }))
+      : [];
     providers.set(name, {
       id: `mcp-${index + 1}`,
       name,
@@ -209,7 +248,8 @@ function parseToolConfigs(input: unknown): Map<string, LlmToolConfig> {
       allow_tools: allowTools,
       // biome-ignore lint/style/useNamingConvention: api schema
       max_tool_call_turns:
-        item.max_tool_call_turns === null || item.max_tool_call_turns === undefined
+        item.max_tool_call_turns === null ||
+        item.max_tool_call_turns === undefined
           ? "5"
           : String(item.max_tool_call_turns),
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -257,7 +297,9 @@ function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
   return noteNodes;
 }
 
-function parseUiToolProfileNodes(input: unknown): Map<string, Record<string, string[]>> {
+function parseUiToolProfileNodes(
+  input: unknown,
+): Map<string, Record<string, string[]>> {
   const toolProfiles = new Map<string, Record<string, string[]>>();
   if (!Array.isArray(input)) {
     return toolProfiles;
@@ -312,9 +354,15 @@ function parseAdvancedOpenByNode(input: unknown): Record<string, boolean> {
   return out;
 }
 
-type AdvancedOpenConfig = LlmConfig | SamplerConfig | SeedConfig | ValidatorConfig;
+type AdvancedOpenConfig =
+  | LlmConfig
+  | SamplerConfig
+  | SeedConfig
+  | ValidatorConfig;
 
-function isAdvancedOpenConfig(config: NodeConfig): config is AdvancedOpenConfig {
+function isAdvancedOpenConfig(
+  config: NodeConfig,
+): config is AdvancedOpenConfig {
   return (
     config.kind === "llm" ||
     config.kind === "sampler" ||
@@ -350,7 +398,8 @@ function buildToolProfileConfig(
       .map((providerName) => mcpProvidersByName.get(providerName))
       .flatMap((provider) => (provider ? [cloneMcpProvider(provider)] : [])),
     // biome-ignore lint/style/useNamingConvention: ui schema
-    fetched_tools_by_provider: fetchedToolsByProfileName.get(canonical.tool_alias) ?? {},
+    fetched_tools_by_provider:
+      fetchedToolsByProfileName.get(canonical.tool_alias) ?? {},
     // biome-ignore lint/style/useNamingConvention: api schema
     allow_tools: [...(canonical.allow_tools ?? [])],
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -369,9 +418,9 @@ export function importRecipePayload(input: string): ImportResult {
     };
   }
 
-  const recipe = (isRecord(parsed.data.recipe)
-    ? parsed.data.recipe
-    : parsed.data) as RecipeInput;
+  const recipe = (
+    isRecord(parsed.data.recipe) ? parsed.data.recipe : parsed.data
+  ) as RecipeInput;
   const ui = isRecord(parsed.data.ui) ? (parsed.data.ui as UiInput) : null;
 
   if (!Array.isArray(recipe.columns)) {
@@ -381,6 +430,7 @@ export function importRecipePayload(input: string): ImportResult {
   const errors: string[] = [];
   const configs: NodeConfig[] = [];
   const processors = parseProcessors(recipe.processors);
+  const evaluations = parseEvaluations(recipe.processors);
   const mcpProvidersByName = parseMcpProviders(recipe.mcp_providers);
   const toolConfigsByAlias = parseToolConfigs(recipe.tool_configs);
   const nameToId = new Map<string, string>();
@@ -411,20 +461,34 @@ export function importRecipePayload(input: string): ImportResult {
     : undefined;
   const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
   // Preserve file IDs/names from saved recipes (cleared at share time by sanitizeSeedForShare)
-  const uiUnstructuredFileIds: string[] = Array.isArray(ui?.unstructured_file_ids)
-    ? (ui.unstructured_file_ids as string[]).filter((v): v is string => typeof v === "string")
+  const uiUnstructuredFileIds: string[] = Array.isArray(
+    ui?.unstructured_file_ids,
+  )
+    ? (ui.unstructured_file_ids as string[]).filter(
+        (v): v is string => typeof v === "string",
+      )
     : [];
-  const uiUnstructuredFileNames: string[] = Array.isArray(ui?.unstructured_file_names)
-    ? (ui.unstructured_file_names as string[]).filter((v): v is string => typeof v === "string")
+  const uiUnstructuredFileNames: string[] = Array.isArray(
+    ui?.unstructured_file_names,
+  )
+    ? (ui.unstructured_file_names as string[]).filter(
+        (v): v is string => typeof v === "string",
+      )
     : [];
-  const uiUnstructuredFileSizes: number[] = Array.isArray(ui?.unstructured_file_sizes)
-    ? (ui.unstructured_file_sizes as number[]).filter((v): v is number => typeof v === "number")
+  const uiUnstructuredFileSizes: number[] = Array.isArray(
+    ui?.unstructured_file_sizes,
+  )
+    ? (ui.unstructured_file_sizes as number[]).filter(
+        (v): v is number => typeof v === "number",
+      )
     : [];
   const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
   );
-  const uiAdvancedOpenByNode = parseAdvancedOpenByNode(ui?.advanced_open_by_node);
+  const uiAdvancedOpenByNode = parseAdvancedOpenByNode(
+    ui?.advanced_open_by_node,
+  );
   const uiMarkdownNotes = parseUiMarkdownNoteNodes(ui?.nodes);
   const uiToolProfilesByName = parseUiToolProfileNodes(ui?.nodes);
 
@@ -560,6 +624,18 @@ export function importRecipePayload(input: string): ImportResult {
     configs.push(config);
   });
 
+  for (const evaluation of evaluations) {
+    const id = `n${nextId}`;
+    nextId += 1;
+    const config: EvaluationDocumentScoreConfig = { ...evaluation, id };
+    if (nameToId.has(config.name)) {
+      errors.push(`Duplicate column name: ${config.name}.`);
+      continue;
+    }
+    nameToId.set(config.name, config.id);
+    configs.push(config);
+  }
+
   if (errors.length > 0) {
     return { errors, snapshot: null };
   }
@@ -567,12 +643,7 @@ export function importRecipePayload(input: string): ImportResult {
   const { layouts, auxNodes, edges: uiEdges, layoutDirection } = parseUi(ui);
   const resolvedLayoutDirection = layoutDirection ?? "LR";
   const nodes = buildNodes(configs, layouts);
-  const edges = buildEdges(
-    configs,
-    nameToId,
-    uiEdges,
-    resolvedLayoutDirection,
-  );
+  const edges = buildEdges(configs, nameToId, uiEdges, resolvedLayoutDirection);
   const auxNodePositions = Object.fromEntries(
     auxNodes.flatMap((item) => {
       const llmId = nameToId.get(item.llm);
@@ -583,10 +654,7 @@ export function importRecipePayload(input: string): ImportResult {
     }),
   );
 
-  const maxY = nodes.reduce(
-    (acc, node) => Math.max(acc, node.position.y),
-    0,
-  );
+  const maxY = nodes.reduce((acc, node) => Math.max(acc, node.position.y), 0);
 
   return {
     errors: [],

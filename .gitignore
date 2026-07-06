@@ -149,6 +149,7 @@ env.bak/
 venv.bak/
 .venv_overlay/
 .venv_t5/
+.venv312/
 environment.yaml
 
 # Spyder project settings
@@ -235,5 +236,9 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
 /~/
+
+# Local implementation plans / drafts
+docs/superpowers/

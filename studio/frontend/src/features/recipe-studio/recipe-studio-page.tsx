@@ -140,6 +140,7 @@ export function RecipeStudioPage({
     addToolProfileNode,
     addExpressionNode,
     addValidatorNode,
+    addEvaluationNode,
     addMarkdownNoteNode,
     selectConfig,
     openConfig,
@@ -180,6 +181,7 @@ export function RecipeStudioPage({
       addToolProfileNode: state.addToolProfileNode,
       addExpressionNode: state.addExpressionNode,
       addValidatorNode: state.addValidatorNode,
+      addEvaluationNode: state.addEvaluationNode,
       addMarkdownNoteNode: state.addMarkdownNoteNode,
       selectConfig: state.selectConfig,
       openConfig: state.openConfig,
@@ -265,6 +267,7 @@ export function RecipeStudioPage({
     handleAddToolProfileFromSheet,
     handleAddExpressionFromSheet,
     handleAddValidatorFromSheet,
+    handleAddEvaluationFromSheet,
     handleAddMarkdownNoteFromSheet,
   } = useRecipeEditorGraph({
     nodes,
@@ -285,6 +288,7 @@ export function RecipeStudioPage({
     addToolProfileNode,
     addExpressionNode,
     addValidatorNode,
+    addEvaluationNode,
     addMarkdownNoteNode,
   });
 
@@ -721,6 +725,7 @@ export function RecipeStudioPage({
             onAddToolProfile={handleAddToolProfileFromSheet}
             onAddExpression={handleAddExpressionFromSheet}
             onAddValidator={handleAddValidatorFromSheet}
+            onAddEvaluation={handleAddEvaluationFromSheet}
             onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
             onOpenProcessors={openProcessorsFromSheet}
             copied={copied}
