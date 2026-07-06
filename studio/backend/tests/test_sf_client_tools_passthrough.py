@@ -436,9 +436,16 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
         def __init__(self):
             super().__init__(_fixed(held))
 
-        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kwargs,
+        ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
-            yield held                                  # healer holds the unclosed call
+            yield held  # healer holds the unclosed call
             inf._cancel_by_cancel_id_or_stash(cancel_id)  # user hits Stop before EOF
 
     backend = _CancelMidStream()
