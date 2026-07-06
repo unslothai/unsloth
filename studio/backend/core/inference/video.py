@@ -1179,7 +1179,10 @@ class VideoBackend:
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
                 out_fps = int(fps or fam.default_fps)
                 default_steps, default_guidance = default_video_generation_params(
-                    state.gguf_filename, state.repo_id, state.base_repo
+                    state.gguf_filename,
+                    state.repo_id,
+                    state.base_repo,
+                    fallback = (fam.default_steps, fam.default_guidance),
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
@@ -1384,7 +1387,10 @@ class VideoBackend:
             }
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
-            state.gguf_filename, state.repo_id, state.base_repo
+            state.gguf_filename,
+            state.repo_id,
+            state.base_repo,
+            fallback = (fam.default_steps, fam.default_guidance),
         )
         return {
             "loaded": True,

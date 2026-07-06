@@ -178,6 +178,18 @@ def test_wan_generation_defaults():
     ) == (50, 5.0)
 
 
+def test_generation_defaults_fallback_honors_family():
+    # When no identifier names a known variant (a Wan model loaded from an opaque local path under
+    # an explicit family_override), the fallback -- the resolved family's own default -- is used,
+    # not the hardcoded LTX 40/4.0. Without a family fallback a Wan model would wrongly run 40/4.0.
+    assert default_video_generation_params("/models/my-clip", "/models/my-clip") == (40, 4.0)
+    assert default_video_generation_params(
+        "/models/my-clip", "/models/my-clip", fallback = (50, 5.0)
+    ) == (50, 5.0)
+    # A recognised token still wins over the fallback.
+    assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (50, 5.0)
+
+
 def test_wan_size_tables_present():
     ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")

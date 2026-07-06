@@ -279,13 +279,17 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 )
 
 
-def default_video_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
+def default_video_generation_params(
+    *identifiers: Optional[str], fallback: tuple[int, float] = (40, 4.0)
+) -> tuple[int, float]:
     """Default ``(steps, guidance)`` for a loaded video model; the first identifier
     naming a known variant wins, so a GGUF filename ('...distilled...Q4_K_M.gguf')
-    beats the family base repo."""
+    beats the family base repo. ``fallback`` is used when no identifier names a variant --
+    callers pass the resolved family's own default so a Wan model loaded from an opaque local
+    path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
             if key in needle:
                 return steps, guidance
-    return 40, 4.0
+    return fallback
