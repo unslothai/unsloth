@@ -277,21 +277,36 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the
     start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
-    child, after eviction). Two gates: the bf16-GPU requirement (bf16_unsupported_reason), and an
-    explicit int8 needing a FUNCTIONAL torchao (its _int8_quantize_base has no fallback, so
-    _resolve_base_precision would otherwise raise only after eviction). Never raises."""
+    child, after eviction). Three gates, all mirroring _resolve_base_precision so a doomed run is
+    rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); the dense
+    precisions (bf16/int8/fp8) requiring a CUDA GPU; and an explicit int8 needing a FUNCTIONAL
+    torchao (its _int8_quantize_base has no fallback). Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
-    if (
-        (resolved_family or "").strip().lower() in _DIT_TRAIN_FAMILIES
-        and (base_precision or "").strip().lower() == "int8"
-        and not has_functional_torchao()
-    ):
-        return (
-            "base_precision='int8' needs a functional torchao install; this host's torchao is "
-            "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
-        )
+    fam = (resolved_family or "").strip().lower()
+    mode = (base_precision or "").strip().lower()
+    if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8"):
+        # The DiT trainer's dense precisions all require CUDA (_resolve_base_precision rejects
+        # bf16/int8/fp8 on device != "cuda"). bf16_unsupported_reason exempts a CPU-only host (the
+        # fp32 fallback for import/unit tests), so without this a dense request on a GPU-less host
+        # would pass the preflight, evict resident workloads, then raise only in the child.
+        try:
+            import torch
+
+            has_cuda = torch.cuda.is_available()
+        except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as no CUDA
+            has_cuda = False
+        if not has_cuda:
+            return (
+                f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
+                "Use base_precision='nf4' or 'auto'."
+            )
+        if mode == "int8" and not has_functional_torchao():
+            return (
+                "base_precision='int8' needs a functional torchao install; this host's torchao is "
+                "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
+            )
     return None
 
 

@@ -100,6 +100,10 @@ def test_family_train_infos_drops_denied_fp8_for_qwen(monkeypatch):
     monkeypatch.setattr(
         common, "train_precision_modes", lambda: (["nf4", "bf16", "int8", "fp8", "auto"], "auto")
     )
+    # family_train_infos reads the live GPU via bf16_unsupported_reason; pin it to "bf16 OK" so
+    # this positive-path assertion is deterministic across GPU types (a non-bf16 CUDA box would
+    # otherwise empty every DiT family's modes). The empty-on-non-bf16 path is covered separately.
+    monkeypatch.setattr(common, "bf16_unsupported_reason", lambda name: None)
     infos = {i["name"]: i for i in common.family_train_infos()}
     assert "fp8" not in infos["qwen-image"]["precision_modes"]
     assert "int8" in infos["qwen-image"]["precision_modes"]  # int8 is fine on Qwen
@@ -186,6 +190,18 @@ def test_training_precision_preflight_error(monkeypatch):
     assert training_precision_preflight_error("flux.1", "auto") is None
     assert training_precision_preflight_error("sdxl", "int8") is None
     assert training_precision_preflight_error("", "int8") is None
+
+    # On a CUDA-ABSENT host, bf16_unsupported_reason exempts CPU-only, but the DiT trainer's dense
+    # precisions still require CUDA (mirroring _resolve_base_precision), so bf16/int8/fp8 for a DiT
+    # family are rejected UP FRONT rather than after eviction. nf4/auto (and SDXL) still pass.
+    monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    for dense in ("bf16", "int8", "fp8"):
+        reason = training_precision_preflight_error("flux.1", dense)
+        assert reason is not None and "CUDA" in reason
+    assert training_precision_preflight_error("flux.1", "nf4") is None
+    assert training_precision_preflight_error("flux.1", "auto") is None
+    assert training_precision_preflight_error("sdxl", "bf16") is None
 
 
 def test_family_train_infos_empties_dit_modes_on_non_bf16(monkeypatch):
@@ -483,6 +499,9 @@ def test_family_train_infos_carries_precision_fields(monkeypatch):
     # Pin the machine probe so the DiT families carry a deterministic mode list, while SDXL
     # (no precision selector) stays empty regardless of the probe.
     monkeypatch.setattr(common, "train_precision_modes", lambda: (["nf4", "bf16"], "auto"))
+    # Also pin bf16_unsupported_reason (family_train_infos reads the live GPU through it): "bf16 OK"
+    # so this positive-path assertion is deterministic across GPU types, not just on CPU-only CI.
+    monkeypatch.setattr(common, "bf16_unsupported_reason", lambda name: None)
     infos = {i["name"]: i for i in common.family_train_infos()}
 
     flux = infos["flux.1"]
