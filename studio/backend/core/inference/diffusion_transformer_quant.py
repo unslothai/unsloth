@@ -37,6 +37,11 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
+# Schemes whose kernels (torch._scaled_mm / the fp4 / mx GEMMs) assert a bf16 input weight, so their
+# quantise filter must skip non-bf16 Linears (see make_filter_fn's require_bf16). int8 (torch._int_mm)
+# is not in this set: it quantises fp32/fp16 weights fine.
+_SCALED_MM_SCHEMES = (TQ_FP8, TQ_NVFP4, TQ_MXFP8)
+
 # The fp8 weight/activation granularity the runtime config uses (see _make_quant_config):
 # per-ROW is REQUIRED for correctness on outlier-heavy DiTs. Stamped into a pre-quantized
 # fp8 checkpoint's metadata at build time and required by the loader, so a stale checkpoint
@@ -391,11 +396,23 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
 
-def make_filter_fn(min_features: int, exclude_name_tokens: tuple[str, ...] = ()):
+def make_filter_fn(
+    min_features: int,
+    exclude_name_tokens: tuple[str, ...] = (),
+    *,
+    require_bf16: bool = False,
+):
     """A torchao ``quantize_`` filter keeping only the FLOP-heavy linears: nn.Linear with both
     in/out features >= ``min_features`` AND whose fully-qualified name contains none of
     ``exclude_name_tokens`` (used by int8 to skip the M=1 modulation / conditioning-embedder
-    projections that crash ``torch._int_mm``). Hides the (module, fqn) callback arity."""
+    projections that crash ``torch._int_mm``). Hides the (module, fqn) callback arity.
+
+    ``require_bf16`` additionally skips any Linear whose weight is not bfloat16. The scaled_mm
+    schemes (fp8 / mxfp8 / nvfp4) assert a bf16 input weight, so a single non-bf16 Linear -- e.g.
+    the fp32 layers Wan / Hunyuan video DiTs keep for numerical stability -- otherwise raises inside
+    ``quantize_`` and aborts the ENTIRE pass, leaving the module silently dense. Gating those layers
+    out lets the scheme engage on the bf16 linears and skip the fp32 ones. int8 (torch._int_mm)
+    tolerates non-bf16 weights, so it leaves this off and keeps quantising them."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -413,6 +430,11 @@ def make_filter_fn(min_features: int, exclude_name_tokens: tuple[str, ...] = ())
         if exclude_name_tokens:
             name = fqn.lower() if fqn else ""
             if any(tok in name for tok in exclude_name_tokens):
+                return False
+        if require_bf16:
+            import torch
+            weight = getattr(module, "weight", None)
+            if weight is None or weight.dtype != torch.bfloat16:
                 return False
         return True
 
@@ -446,12 +468,18 @@ def quantize_transformer(
         from torchao.quantization import quantize_
 
         # int8 (torch._int_mm, M>16) additionally skips the M=1 modulation / conditioning-embedder
-        # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything.
+        # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything -- but
+        # they assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan keep some fp32
+        # linears) they must skip the non-bf16 ones or the whole pass raises and no-ops.
         exclude = exclude_tokens_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(min_features, exclude_name_tokens = exclude),
+            filter_fn = make_filter_fn(
+                min_features,
+                exclude_name_tokens = exclude,
+                require_bf16 = scheme in _SCALED_MM_SCHEMES,
+            ),
         )
         # Runtime-only marker (torchao tensors are not safetensors-serializable; this
         # backend is inference-only, so this is purely diagnostic).
