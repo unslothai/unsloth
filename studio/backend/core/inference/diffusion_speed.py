@@ -272,6 +272,20 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
 
 
+def _denoiser_dits(pipe: Any) -> list:
+    """Every DiT the denoise loop runs each step: the primary ``transformer`` plus a second
+    expert some families carry (Ideogram's ``unconditional_transformer`` for its dual-branch
+    CFG, an MoE ``transformer_2``). Speed / attention optims must reach ALL of them -- mirroring
+    the offload path (diffusion_memory streams the same set) -- else the second DiT runs
+    eager / native for every generation while status over-reports the optimisation as engaged."""
+    dits: list = []
+    for attr in ("transformer", "transformer_2", "unconditional_transformer"):
+        m = getattr(pipe, attr, None)
+        if m is not None and m not in dits:
+            dits.append(m)
+    return dits
+
+
 def _compile_repeated_blocks(
     pipe: Any,
     logger: Any,
@@ -280,9 +294,8 @@ def _compile_repeated_blocks(
     cache_active: bool = False,
     offload_active: bool = False,
 ) -> bool:
-    transformer = getattr(pipe, "transformer", None)
-    fn = getattr(transformer, "compile_repeated_blocks", None)
-    if not callable(fn):
+    dits = [t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))]
+    if not dits:
         return False
     # default: mode="default" + dynamic=True -- fast cold start, robust to resolution
     # changes (no recompile). max: mode="max-autotune-no-cudagraphs" + dynamic=False --
@@ -319,11 +332,19 @@ def _compile_repeated_blocks(
             for _limit_attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch ver
                 if hasattr(dynamo_cfg, _limit_attr):
                     setattr(dynamo_cfg, _limit_attr, max(getattr(dynamo_cfg, _limit_attr) or 0, 64))
-        fn(**kwargs)
-        return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
+    # Compile every denoiser DiT (a dual-DiT family such as Ideogram runs both each step); a
+    # per-DiT failure degrades that one to eager without dropping the others.
+    engaged = False
+    for transformer in dits:
+        try:
+            transformer.compile_repeated_blocks(**kwargs)
+            engaged = True
+        except Exception as exc:  # noqa: BLE001 — optimisation only
+            _warn(logger, "compile_repeated_blocks", exc)
+    return engaged
 
 
 def _enable_cudnn_benchmark(logger: Any) -> bool:
@@ -399,16 +420,26 @@ def _enable_fp16_accumulation(
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
-    for owner in (pipe, getattr(pipe, "transformer", None)):
-        fn = getattr(owner, "fuse_qkv_projections", None)
-        if callable(fn):
+    # Prefer the pipe-level fuse (it covers every component the pipe knows about); else fuse each
+    # denoiser DiT directly so a dual-DiT family (Ideogram) fuses BOTH experts, not just the first.
+    fn = getattr(pipe, "fuse_qkv_projections", None)
+    if callable(fn):
+        try:
+            fn()
+            return True
+        except Exception as exc:  # noqa: BLE001 — optimisation only
+            _warn(logger, "fuse_qkv_projections", exc)
+            return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        tfn = getattr(transformer, "fuse_qkv_projections", None)
+        if callable(tfn):
             try:
-                fn()
-                return True
+                tfn()
+                engaged = True
             except Exception as exc:  # noqa: BLE001 — optimisation only
                 _warn(logger, "fuse_qkv_projections", exc)
-                return False
-    return False
+    return engaged
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

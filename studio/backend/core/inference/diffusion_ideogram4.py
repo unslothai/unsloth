@@ -308,8 +308,16 @@ def load_ideogram4_text_encoder(
 
     # Construct normally (so __init__ computes the non-persistent rotary inv_freq
     # buffers the checkpoint omits) then copy the dequantized weights in with
-    # assign=False. Host RAM is ample, so the transient dense init is fine.
-    model = Qwen3VLModel(config).to(dtype)
+    # assign=False. Build at the target dtype (mirrors the DiT loader below): this ~8B-param
+    # Qwen3-VL scaffold is ~2x at the process fp32 default (~33 GB vs ~16 GB) and loads FIRST
+    # on host RAM, so the fp32 transient can OOM a 64 GB host. rotary inv_freq is computed in
+    # explicit fp32 in __init__, so a bf16 default leaves it correct.
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        model = Qwen3VLModel(config).to(dtype)
+    finally:
+        torch.set_default_dtype(default_dtype)
     missing, unexpected = model.load_state_dict(state_dict, strict = False)
     real_missing = [k for k in missing if not k.endswith("inv_freq")]
     if real_missing or unexpected:

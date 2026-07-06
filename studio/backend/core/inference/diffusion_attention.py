@@ -244,13 +244,27 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
                 )
 
 
+def _attention_dits(pipe: Any) -> list:
+    """Every DiT the denoise loop runs each step: the primary ``transformer`` plus a second
+    expert some families carry (Ideogram's ``unconditional_transformer`` for its dual-branch
+    CFG, an MoE ``transformer_2``). The attention backend must be set on ALL of them, else the
+    second DiT keeps the native default while status reports the requested kernel as engaged."""
+    dits: list = []
+    for attr in ("transformer", "transformer_2", "unconditional_transformer"):
+        m = getattr(pipe, attr, None)
+        if m is not None and m not in dits:
+            dits.append(m)
+    return dits
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
     *,
     logger: Any = None,
 ) -> Optional[str]:
-    """Set ``backend`` on ``pipe.transformer`` via the diffusers dispatcher.
+    """Set ``backend`` on EVERY denoiser DiT (``pipe.transformer`` plus a second expert such as
+    Ideogram's ``unconditional_transformer``) via the diffusers dispatcher.
 
     Returns the backend actually engaged, or None when left at the native default (either
     because ``backend`` was None or because the requested kernel was unavailable -> graceful
@@ -261,28 +275,32 @@ def apply_attention_backend(
     defaults to None). So a load that wants native must restore it explicitly: otherwise it
     silently inherits a backend an earlier load pinned (e.g. cuDNN under a speed profile),
     breaking the bit-identical/``off`` guarantee. Best-effort throughout."""
-    transformer = getattr(pipe, "transformer", None)
-    fn = getattr(transformer, "set_attention_backend", None)
-    if not callable(fn):
+    setters = [s for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))
+               if callable(s)]
+    if not setters:
         return None
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
-        try:
-            fn(backend)
-            # set_attention_backend also pins the backend in diffusers' process-wide
-            # registry. This transformer's own processors keep it locally (their
-            # _attention_backend is now explicit), so reset the global default back to
-            # native -- otherwise a later component whose processors are unconfigured
-            # (backend None) silently inherits this kernel.
+        engaged = False
+        for fn in setters:
+            try:
+                fn(backend)
+                engaged = True
+            except Exception as exc:  # noqa: BLE001 — unavailable kernel -> restore native below
+                _warn(logger, backend, exc)
+        if engaged:
+            # set_attention_backend also pins the backend in diffusers' process-wide registry.
+            # Each DiT's own processors now keep it locally (their _attention_backend is now
+            # explicit), so reset the global default back to native ONCE -- otherwise a later
+            # component whose processors are unconfigured (backend None) inherits this kernel.
             _reset_global_backend_to_native(logger)
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
-        except Exception as exc:  # noqa: BLE001 — unavailable kernel -> restore native below
-            _warn(logger, backend, exc)
-    # No backend requested, or the requested one failed: pin the native default so a stale
-    # process-wide backend from a previous load can't leak into this one.
-    _restore_native_backend(fn, logger)
+    # No backend requested, or every set failed: pin the native default so a stale process-wide
+    # backend from a previous load can't leak into this one. Fresh DiTs follow the process-wide
+    # backend, so one reset via any DiT's setter covers them all.
+    _restore_native_backend(setters[0], logger)
     return None
 
 
