@@ -10,6 +10,7 @@ exercised by the live GPU smokes, not here."""
 from __future__ import annotations
 
 import sys
+import types
 
 import pytest
 
@@ -23,6 +24,7 @@ from core.training.diffusion_dit_trainer import (
     _assert_gated_access,
     _mx_module_filter,
     _repo_is_prequantized,
+    _resolve_base_precision,
     _select_lora_targets,
     _should_compile,
     run_dit_lora_training,
@@ -141,14 +143,41 @@ def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkey
 
 
 # ── mxfp8 base precision (DiT dense speed mode) ───────────────────────────────
-def _linear(in_features, out_features):
+def _linear(in_features, out_features, bias = False):
     import torch.nn as nn
-    return nn.Linear(in_features, out_features)
+    return nn.Linear(in_features, out_features, bias = bias)
 
 
 def test_mx_module_filter_accepts_dense_block_linear():
-    # A 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
+    # A bias-free 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
     assert _mx_module_filter(_linear(3072, 3072), "blocks.0.ff.up") is True
+
+
+def test_mx_module_filter_skips_biased_linear():
+    # The torchao 0.17 MX training path drops the bias term (its linear override computes
+    # input @ weight_t only), so an mxfp8'd biased FROZEN linear would silently lose its bias and
+    # corrupt the base output the LoRA regresses against. Biased linears must stay bf16.
+    assert _mx_module_filter(_linear(3072, 3072, bias = True), "blocks.0.ff.up") is False
+
+
+def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
+    # An explicit mxfp8 request on a non-Blackwell CUDA GPU must fail fast: its MX GEMM has no
+    # kernel below sm100 and would otherwise crash at the first training step, after a full dense
+    # transformer load. /info only advertises mxfp8 on sm100+, so this mirrors that gate.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
+    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
+    with pytest.raises(ValueError, match = "Blackwell"):
+        _resolve_base_precision(cfg, None, "cuda")
+
+
+def test_resolve_base_precision_explicit_mxfp8_ok_on_blackwell(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (10, 0))
+    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
+    assert _resolve_base_precision(cfg, None, "cuda") == "mxfp8"
 
 
 def test_mx_module_filter_skips_lora_and_proj_out():

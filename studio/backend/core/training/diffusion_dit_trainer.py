@@ -331,6 +331,12 @@ def _mx_module_filter(mod, fqn: str) -> bool:
         return False
     if fqn.endswith("proj_out") or ".proj_out." in fqn:
         return False
+    # Skip biased linears: the torchao 0.17 MX training path swaps the weight for a wrapper tensor
+    # whose linear override computes input @ weight_t and drops the bias entirely, so an mxfp8'd
+    # FROZEN base linear would silently lose its bias and change the output the LoRA regresses
+    # against (verified on Blackwell: the bias term is fully dropped). Keep biased linears in bf16.
+    if getattr(mod, "bias", None) is not None:
+        return False
     return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
 
 
@@ -417,6 +423,22 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
                 f"Use base_precision='nf4' or 'auto'."
             )
+        # mxfp8 needs Blackwell (sm100+): its MX GEMM has no kernel below sm100 and raises at the
+        # first training step, AFTER a full dense-transformer load. /info only advertises mxfp8 on
+        # sm100+ (train_precision_modes), so re-check it here to fail fast for a stale or direct
+        # client on an older CUDA GPU instead of crashing mid-run.
+        if mode == "mxfp8" and device == "cuda":
+            try:
+                import torch
+
+                blackwell = torch.cuda.get_device_capability() >= (10, 0)
+            except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
+                blackwell = False
+            if not blackwell:
+                raise ValueError(
+                    "base_precision='mxfp8' needs a Blackwell (sm100+) GPU; this GPU is older. "
+                    "Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
+                )
         return mode
     # auto may only resolve to the dense modes when the run uses bf16 compute, mirroring
     # the normalized() rule for explicit dense modes; otherwise stay on the nf4 floor.
