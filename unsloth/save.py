@@ -3692,7 +3692,11 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
-def _prewarm_base_model_hub_cache(model, save_method = "merged_16bit", token = None):
+def _prewarm_base_model_hub_cache(
+    model,
+    save_method = "merged_16bit",
+    token = None,
+):
     """Download the 16-bit base weights into the persistent HF hub cache before the merge.
 
     merge_and_overwrite_lora fetches missing shards with hf_hub_download(local_dir = ...),
@@ -3732,8 +3736,9 @@ def _prewarm_base_model_hub_cache(model, save_method = "merged_16bit", token = N
             return
 
         from unsloth_zoo.saving_utils import determine_base_model_source
-        model_name, is_local_path, _, base_is_quantized, quant_type = (
-            determine_base_model_source(model_name, token)
+
+        model_name, is_local_path, _, base_is_quantized, quant_type = determine_base_model_source(
+            model_name, token
         )
         if not model_name or is_local_path:
             return
@@ -3769,6 +3774,7 @@ def _prewarm_base_model_hub_cache(model, save_method = "merged_16bit", token = N
 
         # The cache copy is extra disk on top of the merge working copy; need room for both.
         from huggingface_hub import constants as _hf_constants
+
         cache_probe = os.path.expanduser(str(_hf_constants.HF_HUB_CACHE))
         while cache_probe and not os.path.exists(cache_probe):
             parent = os.path.dirname(cache_probe)

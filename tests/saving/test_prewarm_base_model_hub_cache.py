@@ -43,7 +43,11 @@ class _FakePeftModel:
 class _Recorder:
     """Callable that records calls and returns/raises per configuration."""
 
-    def __init__(self, result = None, exc = None):
+    def __init__(
+        self,
+        result = None,
+        exc = None,
+    ):
         self.calls = []
         self.result = result
         self.exc = exc
@@ -66,10 +70,14 @@ def _build_env(
     colab = False,
 ):
     """Exec the extracted helper with stubbed collaborators; returns (fn, stubs)."""
-    shards = shards if shards is not None else [
-        ("model-00001-of-00002.safetensors", 30 * 1024**3),
-        ("model-00002-of-00002.safetensors", 29 * 1024**3),
-    ]
+    shards = (
+        shards
+        if shards is not None
+        else [
+            ("model-00001-of-00002.safetensors", 30 * 1024**3),
+            ("model-00002-of-00002.safetensors", 29 * 1024**3),
+        ]
+    )
     if base_source is None:
         base_source = ("unsloth/gemma-4-31b-it", False, None, False, None)
 
@@ -77,7 +85,11 @@ def _build_env(
         def __init__(self, token = None):
             pass
 
-        def ls(self, repo, detail = True):
+        def ls(
+            self,
+            repo,
+            detail = True,
+        ):
             return [{"name": f"{repo}/{n}", "size": s} for n, s in shards]
 
     class _LocalMiss(Exception):
@@ -98,15 +110,9 @@ def _build_env(
         snapshot_download = snapshot_download,
         constants = types.SimpleNamespace(HF_HUB_CACHE = str(cache_dir)),
     )
-    zoo_module = types.SimpleNamespace(
-        determine_base_model_source = determine_base_model_source
-    )
-    monkeypatch.setitem(
-        __import__("sys").modules, "huggingface_hub", hf_module
-    )
-    monkeypatch.setitem(
-        __import__("sys").modules, "unsloth_zoo.saving_utils", zoo_module
-    )
+    zoo_module = types.SimpleNamespace(determine_base_model_source = determine_base_model_source)
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", hf_module)
+    monkeypatch.setitem(__import__("sys").modules, "unsloth_zoo.saving_utils", zoo_module)
 
     fake_shutil = types.SimpleNamespace(
         disk_usage = lambda path: types.SimpleNamespace(free = free_bytes)
@@ -121,7 +127,10 @@ def _build_env(
         "IS_COLAB_ENVIRONMENT": colab,
         "print": lambda *a, **k: None,
     }
-    exec(compile(_extract_function("_prewarm_base_model_hub_cache"), str(_SAVE_PY), "exec"), namespace)
+    exec(
+        compile(_extract_function("_prewarm_base_model_hub_cache"), str(_SAVE_PY), "exec"),
+        namespace,
+    )
     stubs = types.SimpleNamespace(
         snapshot_download = snapshot_download,
         hf_hub_download = hf_hub_download,
@@ -150,9 +159,7 @@ def test_skips_download_when_already_cached(monkeypatch, tmp_path):
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls == []
     # The cached check must not hit the network.
-    assert all(
-        kwargs.get("local_files_only") for _, kwargs in stubs.hf_hub_download.calls
-    )
+    assert all(kwargs.get("local_files_only") for _, kwargs in stubs.hf_hub_download.calls)
 
 
 def test_skips_when_disk_too_small_for_cache_copy(monkeypatch, tmp_path):
