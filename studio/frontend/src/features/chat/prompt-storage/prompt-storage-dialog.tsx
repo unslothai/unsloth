@@ -721,7 +721,7 @@ function sharegptToRecords(
       threadId,
       parentId: prevId,
       role,
-      content: [{ type: "text", text: value }] as MessageRecord["content"],
+      content: textToContentParts(value) as MessageRecord["content"],
       createdAt: baseTs + idx,
     });
     prevId = id;
