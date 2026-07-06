@@ -109,9 +109,7 @@ def test_detect_reasoning_flags_deepseek_v4_exposes_none_high_max():
     though the template only branches on 'max'."""
     from core.inference.llama_cpp import detect_reasoning_flags
 
-    flags = detect_reasoning_flags(
-        DEEPSEEK_V4_TEMPLATE, "unsloth/DeepSeek-V4-Flash-GGUF"
-    )
+    flags = detect_reasoning_flags(DEEPSEEK_V4_TEMPLATE, "unsloth/DeepSeek-V4-Flash-GGUF")
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "enable_thinking_effort"
     assert flags["reasoning_effort_levels"] == ["high", "max"]

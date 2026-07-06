@@ -613,13 +613,10 @@ def detect_reasoning_flags(
         # exposes the encoder's full none/high/max ladder instead of none/max.
         normalized_id = (model_identifier or "").lower()
         if (
-            ("deepseek-v4" in normalized_id or "deepseek4" in normalized_id)
-            and "high" not in effort_levels
-        ):
+            "deepseek-v4" in normalized_id or "deepseek4" in normalized_id
+        ) and "high" not in effort_levels:
             _wanted = set(effort_levels) | {"high"}
-            effort_levels = [
-                level for level in _REASONING_EFFORT_SCALE if level in _wanted
-            ]
+            effort_levels = [level for level in _REASONING_EFFORT_SCALE if level in _wanted]
         # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
         # level among a discrete set (e.g. 'high' | 'max'). Distinct from
         # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
