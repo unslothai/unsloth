@@ -964,6 +964,11 @@ class VideoBackend:
                 view,
                 mode = normalize_transformer_cache(transformer_cache),
                 threshold = transformer_cache_threshold,
+                # A quantized transformer's block residuals are larger, so it needs the
+                # higher FBCache trigger threshold to cache at all. Mirror the image path
+                # (diffusion.py): both an engaged transformer_quant AND a GGUF checkpoint
+                # (quantized weights) count as quant-active here.
+                quant_active = transformer_quant_engaged is not None or kind == "gguf",
                 logger = logger,
             )
             if view is pipe:

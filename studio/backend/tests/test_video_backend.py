@@ -778,6 +778,47 @@ def test_wan_ti2v_single_dit_only_touches_one(fake_runtime):
     assert pipe.transformer.cache_config is not None
 
 
+def test_video_quant_load_raises_fbcache_threshold(fake_runtime, monkeypatch):
+    # Regression: a quantized video transformer's block residuals are larger, so it needs
+    # the higher FBCache trigger threshold to cache at all. The load must thread quant_active
+    # into apply_step_cache like the image path does. With transformer_quant engaged and no
+    # explicit threshold the engaged config must carry QUANT_FBCACHE_THRESHOLD (0.12); a plain
+    # bf16 load uses the dense default (0.08), proving the discrimination.
+    import core.inference.video as video_mod
+    from core.inference.diffusion_cache import (
+        DEFAULT_FBCACHE_THRESHOLD,
+        QUANT_FBCACHE_THRESHOLD,
+    )
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, *, mode, family, logger = None: "int8",
+    )
+
+    quant = VideoBackend()
+    quant.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        transformer_cache = "fbcache",
+    )
+    quant_cfg = quant._state.pipe.transformer.cache_config
+    assert quant_cfg is not None
+    assert quant_cfg[1] == QUANT_FBCACHE_THRESHOLD
+
+    dense = VideoBackend()
+    dense.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_cache = "fbcache",
+    )
+    dense_cfg = dense._state.pipe.transformer.cache_config
+    assert dense_cfg is not None
+    assert dense_cfg[1] == DEFAULT_FBCACHE_THRESHOLD
+
+
 def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
     # transformer_quant on a pipeline load quantises the dense DiT(s). On CPU the real
     # dense path is unsupported, so stub the two quant seams to record which pipe view
