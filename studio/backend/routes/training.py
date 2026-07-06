@@ -1389,15 +1389,20 @@ async def upload_diffusion_dataset(
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
         names.append(filename)
-    # Roll back all files written this request on a mid-batch failure (size limit,
-    # disk error, disconnect) so the dataset is never left partially populated.
-    written: list[Path] = []
+    # Stage each file to a temp name and only move it into place once the whole batch is
+    # written, so a mid-batch failure (size limit, disk error, disconnect) leaves the
+    # dataset untouched -- including any pre-existing file that shares a name, which a
+    # direct write would have truncated (repeat uploads into the same name accumulate).
+    staged: list[tuple[Path, Path]] = []  # (temp, final)
     committed = False
     try:
         for f, filename in zip(files, names):
             dest = folder / filename
-            written.append(dest)
-            with open(dest, "wb") as out:
+            # A filename-independent temp name so a long (but valid, <= NAME_MAX) filename
+            # can't overflow NAME_MAX once the staging suffix is added.
+            tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
+            staged.append((tmp, dest))
+            with open(tmp, "wb") as out:
                 while chunk := await f.read(1024 * 1024):
                     total_bytes += len(chunk)
                     if total_bytes > limit_bytes:
@@ -1411,12 +1416,14 @@ async def upload_diffusion_dataset(
                         )
                     out.write(chunk)
             uploaded += 1
+        for tmp, dest in staged:
+            tmp.replace(dest)  # atomic on the same filesystem
         committed = True
     finally:
         if not committed:
-            for p in written:
+            for tmp, _ in staged:
                 try:
-                    p.unlink(missing_ok = True)
+                    tmp.unlink(missing_ok = True)
                 except OSError:
                     pass
 
