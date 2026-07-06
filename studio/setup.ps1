@@ -1208,6 +1208,12 @@ if ((Test-Path $LlamaServerBin) -and -not $NeedRebuild) {
             $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
             $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
             $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+            # Unsloth-aligned CUDA tuning flags (restored -- keep GPU build behavior unchanged)
+            $CmakeArgs += '-DGGML_CUDA_FA_ALL_QUANTS=ON'
+            $CmakeArgs += '-DGGML_CUDA_F16=OFF'
+            $CmakeArgs += '-DGGML_CUDA_GRAPHS=OFF'
+            $CmakeArgs += '-DGGML_CUDA_FORCE_CUBLAS=OFF'
+            $CmakeArgs += '-DGGML_CUDA_PEER_MAX_BATCH_SIZE=8192'
             if ($CudaArch) {
                 # Validate nvcc actually supports this architecture
                 if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
