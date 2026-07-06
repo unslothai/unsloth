@@ -2447,21 +2447,42 @@ class FastLlamaModel:
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # Tokenizer always loads in-process; base prefetch covered model_name, so only warm here for a
-        # different tokenizer repo or when fast_inference skipped it.
+        # Tokenizer always loads in-process. Resolve the cache_dir the tokenizer load will actually
+        # use, mirroring load_correct_tokenizer: without an explicit cache_dir, Colab/Kaggle route to
+        # a special tokenizer cache (huggingface_tokenizers_cache / Kaggle tmp), NOT the HF-default
+        # cache the base snapshot warmed. So the base warm does not cover the tokenizer there.
+        from ..tokenizer_utils import (
+            IS_COLAB_ENVIRONMENT,
+            IS_KAGGLE_ENVIRONMENT,
+            KAGGLE_TMP,
+        )
+
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )
+        _tokenizer_cache_dir = kwargs.get("cache_dir")
+        if _tokenizer_cache_dir is None:
+            if IS_COLAB_ENVIRONMENT:
+                _tokenizer_cache_dir = "huggingface_tokenizers_cache"
+            elif IS_KAGGLE_ENVIRONMENT:
+                _tokenizer_cache_dir = os.path.join(KAGGLE_TMP, "huggingface_tokenizers_cache")
+        # Warm the tokenizer repo into the cache the load will use whenever the base warm did not
+        # cover it: a distinct tokenizer repo, fast_inference (base warm skipped), or a tokenizer
+        # cache_dir that differs from the base-warm cache_dir (Colab/Kaggle special cache).
         _warm_tokenizer_repo = (
             isinstance(_tokenizer_repo, str)
             and bool(_tokenizer_repo)
-            and (_tokenizer_repo != model_name or fast_inference)
+            and (
+                _tokenizer_repo != model_name
+                or fast_inference
+                or _tokenizer_cache_dir != kwargs.get("cache_dir")
+            )
         )
         if _warm_tokenizer_repo:
             maybe_prefetch_hf_snapshot(
                 _tokenizer_repo,
                 token = token,
-                cache_dir = kwargs.get("cache_dir"),
+                cache_dir = _tokenizer_cache_dir,
                 local_files_only = kwargs.get("local_files_only", False),
                 tokenizer_only = True,
             )
