@@ -2131,6 +2131,12 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
+    resolved: Optional[dict] = Field(
+        None,
+        description = "Per-control auto-policy provenance (value/source/reason for each resolved "
+        "setting), or null. Declared explicitly so the field is not dropped by the default "
+        "extra='ignore', which would silently discard the backend's resolved record.",
+    )
 
 
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──

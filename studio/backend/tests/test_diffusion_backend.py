@@ -2115,7 +2115,9 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
         logger = None,
     ):
         seen.append(requested)
-        return object()  # a viable dense-quant candidate (scheme resolves AND disk fits)
+        # A real (non-prequant) dense-quant candidate: scheme resolves AND disk fits, so the
+        # loader takes the dense build that needs the base repo's bf16 transformer/ shards.
+        return types.SimpleNamespace(prequant = False)
 
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", fake_candidate)
 
@@ -2132,11 +2134,33 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
         backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "speed_mode": "off"})
         is False
     )
-    # No viable candidate (unsupported scheme / no disk room / a prequant checkpoint shortcut)
-    # -> never widen. The disk guard here is exactly what averts filling the cache volume and
-    # hard-failing the load instead of falling back to the GGUF.
+    # A PREQUANT candidate loads the small pre-quantized checkpoint (+ config / companions),
+    # NOT the base repo's dense transformer/ shards, so the widened prefetch must NOT fire --
+    # otherwise it defeats the prequant download savings and can hard-fail begin_load (no GGUF
+    # fallback there) on a disk-full.
+    monkeypatch.setattr(
+        dmod, "resolve_dense_quant_candidate", lambda **kw: types.SimpleNamespace(prequant = True)
+    )
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+    # No viable candidate at all (unsupported scheme / no disk room) -> never widen. The disk
+    # guard here is exactly what averts filling the cache volume and hard-failing the load
+    # instead of falling back to the GGUF.
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+
+
+def test_diffusion_status_response_carries_resolved():
+    # The backend records per-control auto-policy provenance (build_resolved_record) on
+    # state.resolved; the response model must DECLARE the field or Pydantic's default
+    # extra='ignore' silently drops it, leaving that plumbing dead (never reaching a client).
+    from models.inference import DiffusionStatusResponse
+
+    rec = {"transformer_quant": {"value": "fp8", "source": "auto", "reason": "blackwell"}}
+    resp = DiffusionStatusResponse(loaded = True, resolved = rec)
+    assert resp.resolved == rec
+    assert resp.model_dump()["resolved"] == rec
+    # Absent by default (nothing resolved / native engine).
+    assert DiffusionStatusResponse(loaded = False).resolved is None
 
 
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):

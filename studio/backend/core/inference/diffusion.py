@@ -456,7 +456,13 @@ class DiffusionBackend:
                 prequant_path = kwargs.get("transformer_prequant_path"),
                 logger = None,
             )
-            return candidate is not None
+            # A prequant candidate loads from the small pre-quantized checkpoint (+ config /
+            # companions), NOT the base repo's full dense transformer/ shards, so widening the
+            # prefetch to pull those shards both defeats the prequant download savings and can
+            # hard-fail the load: the widened pull runs in begin_load, where a disk-full has no
+            # GGUF fallback (unlike the in-load_pipeline dense failure). Only widen for a real
+            # dense build.
+            return candidate is not None and not candidate.prequant
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
