@@ -12,8 +12,15 @@
 #     PyTorch forum, May 2026): sm_86 SASS runs on sm_89 hardware (Ada);
 #     sm_100 SASS runs on sm_103 (B300/GB300); sm_120 SASS runs on sm_121
 #     (DGX Spark / GB10). So every non-Jetson NVIDIA GPU on
-#     https://developer.nvidia.com/cuda/gpus is covered.
-#   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
+#     https://developer.nvidia.com/cuda/gpus runs the PRECOMPILED SASS (torch,
+#     llama.cpp, source-built ops per the arch list below).
+#   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at
+#     first run. JIT targets the ACTUAL device cap, and the bundled cu12.8
+#     ptxas/NVRTC cannot emit compute_103 (sm_103) or compute_121 (sm_121).
+#     arm64 sm_121 (DGX Spark) is handled by the cu13 NVRTC/ptxas override
+#     below; amd64 sm_103 (B300/GB300) has no cu13 override yet, so JIT-heavy
+#     paths there can fail until that lands (tracked separately). Precompiled
+#     SASS still runs on sm_103 via the sm_100 forward-compat above.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
 #     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX",
 #     covering every current NVIDIA compute capability per
@@ -142,7 +149,7 @@ RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 #
 # Why no `flash-attn` here:
 #   - FA3 is hard-refused on Blackwell (Dao-AILab/flash-attention#1810).
-#   - FA2 has no prebuilt wheel for cu128+torch2.10+cp312 -> would require
+#   - FA2 has no prebuilt wheel for cu128+torch2.11+cp312 -> would require
 #     a ~30min source build, fragile on the 16GB ubuntu-latest CI runner.
 #   - Unsloth gracefully falls back to xformers/SDPA on Blackwell anyway.
 #   - Users on Ampere/Ada/Hopper who want FA2 can `pip install flash-attn`
@@ -161,7 +168,7 @@ RUN set -eux \
         --python ${VENV}/bin/python \
         --index-strategy unsafe-best-match \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
-        "torch==2.10.0" "torchvision==0.25.0" "torchaudio==2.10.0" \
+        "torch==2.11.0" "torchvision==0.26.0" "torchaudio==2.11.0" \
         "triton>=3.6.0" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
@@ -173,11 +180,11 @@ RUN set -eux \
 # appending to the unified one because:
 #   * vLLM releases pin an exact torch (0.19.1 -> torch==2.10.0; 0.20+
 #     moved to torch==2.11.0). Adding it to the unified resolve forces uv
-#     to consider whether to swap our pinned torch 2.10.0 for vLLM's
+#     to consider whether to swap our pinned torch 2.11.0 for vLLM's
 #     choice. Splitting the install lets the unified pass settle on torch
-#     2.10.0 first, then vLLM bolts on top: with torch held at 2.10.0 the
-#     resolver lands on the newest compatible vLLM (0.19.1) by itself, and
-#     moves forward automatically when we bump torch.
+#     2.11.0 first, then vLLM bolts on top: with torch held at 2.11.0 the
+#     resolver lands on the newest compatible vLLM (0.20+, which pins torch
+#     2.11.0) by itself, and tracks our torch pin when it moves.
 #   * PyPI ships both x86_64 AND aarch64 abi3 wheels for every release
 #     since 0.17, so the SAME pass now runs on the arm64 leg (DGX Spark /
 #     GB10 class). amd64 failures abort the build; arm64 is fail-soft
@@ -200,7 +207,7 @@ RUN set -eux \
         # errexit inside any condition context (verified on dash), so a
         # (set -e; ...) subshell here would mask install failures.
         # Step 1: let uv resolve vLLM's transitive deps. We pin
-        # torch==2.10.0 so uv MUST hold our torch fixed; with torch held,
+        # torch==2.11.0 so uv MUST hold our torch fixed; with torch held,
         # the resolver lands on the newest vLLM whose pin matches and the
         # build fails loudly if none does. `unsafe-best-match` lets uv
         # pull from whichever of the three indexes has a better wheel.
@@ -221,7 +228,7 @@ RUN set -eux \
             --index-strategy unsafe-best-match \
             --extra-index-url https://wheels.vllm.ai/nightly \
             --extra-index-url https://download.pytorch.org/whl/cu128 \
-            "torch==2.10.0" \
+            "torch==2.11.0" \
             vllm \
        && ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
@@ -319,8 +326,8 @@ RUN if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
 
 # Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
 # features, which decode through torchcodec. Three traps, all defended:
-#   * version pairing: torchcodec 0.10 pairs with torch 2.10 (newer builds
-#     reference torch 2.11+ symbols and fail to dlopen);
+#   * version pairing: torchcodec 0.11 pairs with torch 2.11 (a mismatched
+#     build references other torch symbols and fails to dlopen);
 #   * CUDA line: the PyPI default wheel pairs with the cu13 torch line and
 #     dlopens libnvrtc.so.13 -- it must come from the cu128 channel;
 #   * its libraries dlopen torch + NVIDIA runtime libs that live inside the
@@ -333,7 +340,7 @@ RUN set -eux \
  && { ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         --index-url https://download.pytorch.org/whl/cu128 \
-        "torchcodec==0.10.0" \
+        "torchcodec==0.11.0" \
    && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp-cu12; } \
  || echo ">> torchcodec bake skipped (no matching wheel for ${TARGETARCH:-amd64})"
 
@@ -439,7 +446,7 @@ import torch
 arches = torch._C._cuda_getArchFlags().split()
 print("torch", torch.__version__, "cuda", torch.version.cuda)
 print("arches:", arches)
-assert torch.__version__.startswith("2.10.0"), f"torch silently moved: {torch.__version__}"
+assert torch.__version__.startswith("2.11.0"), f"torch silently moved: {torch.__version__}"
 assert "+cu128" in torch.__version__, f"cu build silently changed: {torch.__version__}"
 assert "sm_100" in arches, f"sm_100 (B200/GB200) missing: {arches}"
 # cu128 wheels ship sm_120 native SASS on BOTH amd64 (RTX 5090 / RTX PRO 6000
@@ -447,7 +454,7 @@ assert "sm_100" in arches, f"sm_100 (B200/GB200) missing: {arches}"
 # (sm_121) runs via minor-forward-compat within major 12; sm_121 itself is
 # never in any cu128 wheel.
 assert "sm_120" in arches, f"sm_120 missing: {arches}"
-print(f"OK: torch 2.10.0+cu128 with sm_100 + sm_120 native SASS intact ({target})")
+print(f"OK: torch 2.11.0+cu128 with sm_100 + sm_120 native SASS intact ({target})")
 
 from importlib.metadata import version, PackageNotFoundError
 # xformers has no cu128 aarch64 wheel as of 0.0.34, so we only require it
@@ -509,6 +516,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # that covers every supported arch. 10.3 (B300) is intentionally omitted: it
     # runs sm_100 SASS, and the bundled CUDA 12.8 nvcc cannot compile compute_103
     # (added in CUDA 12.9), so listing it would fail any such in-container build.
+    # The same cu12.8 limit affects runtime Triton/NVRTC JIT on amd64 sm_103 (see
+    # the header note); precompiled SASS still runs there via sm_100 forward-compat.
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 
 # zstd: the official Ollama notebooks run `curl ollama.com/install.sh | sh`

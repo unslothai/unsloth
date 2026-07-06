@@ -238,7 +238,7 @@ MSG
     if grep -q "FAIL: missing wheels\|sm_100 (B200/GB200) missing\|sm_120 (RTX 5090) missing on amd64\|no Blackwell consumer SASS" "$BUILD_LOG"; then
         fail "build-time sanity check failed -- see $BUILD_LOG"
     fi
-    grep -E "OK: torch 2.10.0|OK: all required wheels|import cleanly on no-GPU host" "$BUILD_LOG" || \
+    grep -E "OK: torch 2.11.0|OK: all required wheels|import cleanly on no-GPU host" "$BUILD_LOG" || \
         warn "could not find 'OK:' lines in build log -- did the verification step run?"
     ok "built $TAG"
 fi
