@@ -1451,12 +1451,14 @@ class DiffusionBackend:
                             "compiled; eager torchao quant is ~30x slower than GGUF here",
                             transformer_quant_engaged,
                         )
-                    # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
-                    # also before placement so the offload hooks move the smaller weights.
+                    # Quantise the dense companion text encoder(s) (opt-in fp8 / fp8_dynamic /
+                    # int8 / nvfp4), also before placement so the offload hooks move the smaller
+                    # weights. int8 needs a per-family keep-bf16 schedule, so pass the family.
                     te_quant = quantize_text_encoders(
                         pipe,
                         target,
                         mode = text_encoder_quant,
+                        family = fam.name,
                         logger = logger,
                     )
 

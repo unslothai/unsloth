@@ -95,6 +95,7 @@ async def load_video_model(
             family_override = request.family_override,
             model_kind = request.model_kind,
             transformer_quant = request.transformer_quant,
+            text_encoder_quant = request.text_encoder_quant,
         )
         # Refuse while training is running: a multi-GB video pipeline would compete
         # with the training subprocess for VRAM. Mirrors the image-load guard.
@@ -123,6 +124,7 @@ async def load_video_model(
             transformer_cache = request.transformer_cache,
             transformer_cache_threshold = request.transformer_cache_threshold,
             transformer_quant = request.transformer_quant,
+            text_encoder_quant = request.text_encoder_quant,
             model_kind = request.model_kind,
         )
         return VideoStatusResponse(**status_dict)
