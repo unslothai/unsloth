@@ -49,7 +49,7 @@ def test_normal_multi_key_arguments_still_split():
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
-    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
+    # An empty bare value (``{query:}``) must serialise as ``""``; ``{"query":}`` is invalid JSON and drops the call.
     calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}
@@ -176,9 +176,8 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
 
 
 def test_gemma_parse_value_always_advances_on_stray_delimiter():
-    # A stray delimiter (`,`, `}`, `]`) at the primitive position consumes no
-    # characters. The parser must still advance the index by at least one, or a
-    # caller that loops on the returned index spins forever at 100% CPU (DoS).
+    # A stray delimiter (`,`, `}`, `]`) at the primitive position consumes nothing;
+    # the parser must still advance or a looping caller spins forever (DoS).
     for delim in (",", "}", "]"):
         text = delim + "rest"
         value, nxt = _gemma_parse_value(text, 0)
@@ -186,9 +185,8 @@ def test_gemma_parse_value_always_advances_on_stray_delimiter():
 
 
 def test_malformed_gemma_array_does_not_hang():
-    # ``[},]`` puts a stray ``}`` at the primitive position inside a list body.
-    # On the buggy parser this hangs the server; guard with a wall-clock timeout
-    # so the regression fails loudly instead of blocking CI forever.
+    # ``[},]`` (stray ``}`` in a list body) hung the buggy parser; a wall-clock
+    # timeout makes the regression fail loudly instead of blocking CI forever.
     import threading
 
     result: dict = {}

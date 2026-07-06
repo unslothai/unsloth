@@ -27,16 +27,15 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Name class allows dots/hyphens so dotted/namespaced Gemma tool names (mcp.server-list) parse.
-# Whitespace-tolerant around ``call`` / ``:`` -- sampling drift emits
-# ``<|tool_call>call: name{`` and ``call : name{``, and rejecting those here
-# loses the call entirely (no fallback re-parses the wrapped form).
+# Name class allows dots/hyphens so dotted Gemma names (mcp.server-list) parse.
+# Whitespace-tolerant around ``call`` / ``:`` -- drift emits ``call: name{`` and
+# ``call : name{``; rejecting those loses the call (no fallback re-parses it).
 _TC_GEMMA_START_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Horizontal whitespace only so the wrapping newline + value indentation survive; _trim_param_value trims one newline.
+# Horizontal whitespace only so the newline + value indentation survive (_trim_param_value trims one newline).
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>[^\S\n]*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
@@ -48,9 +47,8 @@ _FUNC_CLOSE_TAG = "</function>"
 # must be identifier-shaped (start with a letter or underscore); a comma
 # followed by digits-then-colon is value text such as a timestamp or ratio
 # (`meet at 10:00, 11:00 tomorrow`), not a new key.
-# Dots to match the key-quoting scanner: a dotted key after a bare value
-# (query:foo,user.name:bob) must end the value at the comma, not be
-# swallowed into it.
+# Dots match the key-quoting scanner: a dotted key after a bare value
+# (query:foo,user.name:bob) must end the value at the comma, not be swallowed.
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
 
@@ -231,9 +229,8 @@ def _quote_gemma_object_keys(src: str) -> str:
         while i < len(src) and src[i].isspace():
             i += 1
         key_name_start = i
-        # Dots to match the parser's key/name charset ([\w.\-]) -- Gemma
-        # emits dotted argument keys (user.name:...) for namespaced schemas,
-        # and leaving them unquoted fails the whole json.loads (call lost).
+        # Dots match the parser's key/name charset ([\w.\-]): Gemma emits dotted
+        # argument keys (user.name:...) for namespaced schemas; unquoted fails json.loads (call lost).
         while i < len(src) and (src[i].isalnum() or src[i] in "_-."):
             i += 1
         key_name = src[key_name_start:i]
@@ -303,10 +300,9 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
         last_param_start = match.start()
     if last_param_start < 0:
         return False
-    # The parameter's OWN close tag decides: while it closes after ``pos`` the
-    # position is argument data, even across several literal function closes.
-    # Only an unclosed parameter falls back to the first function close
-    # (mirrors tool_call_parser._inside_open_parameter).
+    # The parameter's OWN close tag decides: if it closes after ``pos`` the position
+    # is argument data (even across literal function closes). Only an unclosed
+    # parameter falls back to the first function close (mirrors _inside_open_parameter).
     own_close = content.find(_PARAM_CLOSE_TAG, last_param_start)
     if own_close >= 0:
         return own_close > pos
@@ -505,7 +501,7 @@ def parse_tool_calls_from_text(
                 body_end = len(content)
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
-            # Span for with_spans callers: the whole wrapperless call, through its
+            # Span for with_spans callers: the wrapperless call through its
             # </function> close when present, else the scanned body end.
             span_end = body_end
             if not allow_incomplete:
@@ -515,8 +511,8 @@ def parse_tool_calls_from_text(
                 body = body[:close_idx]
                 span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
             else:
-                # Terminate at the real close so trailing prose doesn't leak
-                # into the value; no close -> keep whole body.
+                # Terminate at the real close so trailing prose doesn't leak into
+                # the value; no close -> keep whole body.
                 close_idx = _func_close_index(content, body_start, body)
                 if close_idx >= 0:
                     body = body[:close_idx]

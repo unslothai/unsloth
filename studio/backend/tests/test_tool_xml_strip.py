@@ -335,9 +335,8 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
 
 # Llama-3 <|python_tag|> arm bounds on REAL sentinels only
 def test_python_tag_strip_consumes_literal_sentinel_in_arg():
-    # A <|python_tag|> tool call whose JSON argument carries a literal <|...|>
-    # token (here <|cite|>) must be stripped whole. The old `<(?!\|)` arm stopped
-    # at any `<|`, leaking the call tail (e.g. `<|cite|> here"}}`) into display.
+    # A <|python_tag|> call whose JSON arg carries a literal <|...|> token (<|cite|>) must strip
+    # whole; the old `<(?!\|)` arm stopped at any `<|`, leaking the call tail into display.
     text = '<|python_tag|>{"name": "send", "parameters": {"text": "use <|cite|> here"}}'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert cleaned == "", f"python_tag call leaked at literal sentinel: {cleaned!r}"
@@ -387,8 +386,7 @@ def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
 
 
 def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
-    # The call ends at its first non-data close: prose after it survives the
-    # strip even when it mentions a literal </function>.
+    # The call ends at its first non-data close; prose after (even a literal </function>) survives.
     from core.inference.tool_call_parser import strip_tool_markup
     text = (
         "<function=web_search><parameter=query>cats</parameter></function>"
@@ -398,8 +396,7 @@ def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
 
 
 def test_final_strip_keeps_prose_mentioning_bare_markers():
-    # A false-alarm marker in a normal answer must not lose everything after
-    # it; only text that looks like that family's call start drops.
+    # A false-alarm marker in prose must not drop trailing text; only call-start-shaped text drops.
     from core.inference.tool_call_parser import strip_tool_markup
     for text in (
         "See [TOOL_CALLS] docs for details. More prose after.",

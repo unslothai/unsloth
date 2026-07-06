@@ -1322,8 +1322,8 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         log_source = "safetensors",
     )
     # Markers the safetensors/MLX parser recognises; drop the pill if the template advertises tools
-    # but uses none. The bare-JSON ``{"name":`` form is matched whitespace-tolerantly (below) since
-    # the parser accepts that whitespace, so a pretty-printed/escaped template isn't misread as tool-less.
+    # but uses none. The bare-JSON ``{"name":`` form is matched whitespace-tolerantly (below) so a
+    # pretty-printed/escaped template isn't misread as tool-less.
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -1376,10 +1376,8 @@ def _sf_reasoning_prefill_mode(
     if enable_thinking is False:
         return False
     # A reasoning_effort="none" request disables thinking for enable_thinking_effort
-    # (GLM-5.2) models the same way enable_thinking=False does (see
-    # ``_request_reasoning_kwargs``). Without this, the model emits no ``</think>`` and
-    # a plain answer is swallowed whole into reasoning_content, leaving the visible
-    # response empty.
+    # (GLM-5.2) models like enable_thinking=False does. Without this the model emits no
+    # ``</think>`` and a plain answer is swallowed into reasoning_content, leaving it empty.
     if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
         return False
     return True
@@ -10668,9 +10666,8 @@ async def _anthropic_passthrough_non_streaming(
         text = message.get("content") or ""
         if text:
             # Keep unpromoted bytes when healing is active; legacy stripping is
-            # only for opted-out or no-client-tool requests. Use the full
-            # _strip_tool_xml pass so Mistral [TOOL_CALLS] and guarded
-            # function-XML leaks are cleaned too, not just _TOOL_XML_RE forms.
+            # only for opted-out or no-client-tool requests. The full _strip_tool_xml
+            # pass also cleans Mistral [TOOL_CALLS] and guarded function-XML, not just _TOOL_XML_RE.
             if not healing_active:
                 text = _strip_tool_xml(text)
             text = text.strip()

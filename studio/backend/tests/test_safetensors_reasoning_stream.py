@@ -155,11 +155,9 @@ _THINK_TPL = "...{% if enable_thinking %}<think>{% endif %}...</think>..."
 
 
 def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
-    # GLM-5.2-style enable_thinking_effort: a request with reasoning_effort="none" (and
-    # enable_thinking omitted) disables thinking exactly like enable_thinking=False, so
-    # prefilled mode must be OFF. Otherwise the model emits no </think> and a plain
-    # answer is swallowed whole into reasoning_content, leaving the visible response
-    # empty (the exact bug: prefilled=True below eats the whole answer).
+    # GLM-5.2 enable_thinking_effort with reasoning_effort="none" (enable_thinking omitted)
+    # disables thinking like enable_thinking=False, so prefilled must be OFF; otherwise the
+    # model emits no </think> and the whole answer is swallowed into reasoning (the bug).
     feats = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "none") is False
     # Thinking on (effort level or default) still prefills.

@@ -1207,8 +1207,8 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
 
 
 def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch):
-    # Textual Mistral ``[TOOL_CALLS]`` inline with visible preface: the DRAINING flush must use the
-    # shared parser patterns (which know ``[TOOL_CALLS]``); the legacy set leaked the marker to clients.
+    # Inline Mistral ``[TOOL_CALLS]`` after a visible preface: the DRAINING flush must use the
+    # shared parser patterns; the legacy set leaked the marker to clients.
     streams = [
         [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
         [_sse({"content": "done"}), _done()],
@@ -1836,7 +1836,6 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
         )
     )
 
-    # The tool ran with the parsed arguments.
     assert calls == [("web_search", {"query": "weather in Sydney"})]
     assert any(
         event.get("type") == "tool_end" and event.get("tool_name") == "web_search"

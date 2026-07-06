@@ -8829,10 +8829,9 @@ class LlamaCppBackend:
                                                     elif _looks_like_enabled_bare_json(
                                                         _bare, _enabled_tool_names
                                                     ):
-                                                        # Oversized still-open ENABLED-tool call:
-                                                        # stop holding (memory bound) but DRAIN
-                                                        # rather than leak the raw prefix; a giant
-                                                        # ordinary JSON answer still streams.
+                                                        # Oversized still-open ENABLED-tool call: stop
+                                                        # holding (memory bound) but DRAIN, not leak;
+                                                        # a giant ordinary JSON answer still streams.
                                                         _drain_silently = True
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
@@ -9095,9 +9094,9 @@ class LlamaCppBackend:
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.
                             content_accum = _strip_tool_markup(content_accum, final = True)
-                        # A truncated bare-JSON call has no XML markup to strip and didn't parse. With
-                        # Auto-Heal on, drop a leading ENABLED-tool fragment (ordinary JSON answers untouched);
-                        # off keeps it visible per the strict contract.
+                        # A truncated bare-JSON call has no XML to strip and didn't parse. With Auto-Heal
+                        # on, drop a leading ENABLED-tool fragment (plain JSON untouched); off keeps it
+                        # visible per the strict contract.
                         if content_accum and active_tools and auto_heal_tool_calls:
                             content_accum = strip_leading_bare_json_call(
                                 content_accum, _enabled_tool_names

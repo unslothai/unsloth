@@ -94,14 +94,11 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    # Mirror the final strip: Mistral blocks then a parser-accurate function-XML scan
-    # before the regex arms, so a literal ``<function=...>`` in a value doesn't eat trailing prose.
-    # No final trim so the streaming loop's length comparisons still hold.
+    # Mirror the final strip: Mistral then a parser-accurate function-XML scan before the
+    # regex arms (a literal ``<function=...>`` in a value mustn't eat prose); no final trim.
     # Drop a leading Magistral ``[THINK]...[/THINK]`` block (bracket form, not the
-    # ``<think>`` the reasoning channel renders): without this the raw chain-of-thought
-    # leaks into the streamed safetensors content instead of the reasoning drawer. An
-    # unclosed ``[THINK]`` holds from the marker on until ``[/THINK]`` arrives, so the
-    # cleaned text stays monotonic and nothing flickers.
+    # ``<think>`` reasoning channel) so the raw chain-of-thought doesn't leak into the
+    # streamed content. An unclosed ``[THINK]`` holds until ``[/THINK]`` so text stays monotonic.
     text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
     text = _strip_function_xml_calls(text, final = True)
@@ -252,9 +249,8 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
-    # Real tool-call turns completed. Only turns that actually executed a tool count
-    # against ``max_tool_iterations``; a duplicate/disabled no-op correction turn (and a
-    # plan-without-action re-prompt) must not consume budget, matching the GGUF loop.
+    # Turns that executed a tool. Only these count against ``max_tool_iterations``; a
+    # no-op correction or plan-without-action re-prompt must not consume budget (GGUF parity).
     _executed_tool_iters = 0
 
     def _tool_succeeded(tool_name: str) -> bool:
@@ -546,8 +542,8 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_tool_names,
             )
             if not safety_tc:
-                # Re-prompt only when the model planned without acting (intent
-                # signal); "4" / "Hello!" never trigger. Mirrors GGUF.
+                # Re-prompt only when the model planned without acting (intent signal);
+                # "4" / "Hello!" never trigger. Mirrors GGUF.
                 _stripped = content_accum.strip()
                 if (
                     tools
@@ -576,9 +572,9 @@ def run_safetensors_tool_loop(
                     yield {"type": "status", "text": ""}
                     continue
 
-                # Final answer. If a literal tool marker in prose was buffered but
-                # never parsed as a call, restore the raw text so the prose surfaces
-                # in full; route-level cleanup still applies the Auto-Heal policy.
+                # Final answer. If a literal tool marker in prose was buffered but never
+                # parsed as a call, restore the raw text so the prose surfaces; route
+                # cleanup still applies the Auto-Heal policy.
                 if content_accum and any(sig in content_accum for sig in tool_xml_signals):
                     yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}

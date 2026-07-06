@@ -139,7 +139,7 @@ class TestParser:
         assert "print('hi')" in result[0]["function"]["arguments"]
 
     def test_xml_param_preserves_leading_indentation(self):
-        # Only the wrapping newline is trimmed, so code-argument indentation survives (str.strip() destroyed it).
+        # Only the wrapping newline is trimmed, so code indentation survives (str.strip() destroyed it).
         text = (
             "<function=python><parameter=code>\n"
             "    indented = 1\n"
@@ -204,9 +204,8 @@ class TestParser:
         assert strip_tool_markup(text) == "before  after"
 
     def test_strip_named_mistral_call_consumes_trailing_eos(self):
-        # The named ``[TOOL_CALLS]name{json}`` shape must eat the optional
-        # trailing ``</s>`` like the array shape, so the EOS marker is not left
-        # behind as visible content.
+        # The named [TOOL_CALLS]name{json} shape must eat the optional trailing </s>,
+        # so the EOS marker is not left behind as visible content.
         text = '[TOOL_CALLS]web_search{"query":"cats"}</s>'
         assert strip_tool_markup(text) == ""
         text = '[TOOL_CALLS]web_search{"query":"cats"}</s> and then'
@@ -238,8 +237,8 @@ class TestParser:
         )
 
     def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
-        # A literal ``<function=...>`` in a value is data: the strip must close at the REAL
-        # ``</function>`` and keep trailing prose (the open-ended regex ate to EOF).
+        # A literal <function=...> in a value is data: the strip closes at the REAL
+        # </function> and keeps trailing prose (the open-ended regex ate to EOF).
         raw = (
             "pref <function=python><parameter=code>"
             'print("<function=x>")</parameter></function> tail'
@@ -249,15 +248,14 @@ class TestParser:
         assert strip_tool_markup_streaming(raw) == strip_tool_markup(raw, final = True)
 
     def test_streaming_strip_drops_leading_magistral_reasoning(self):
-        # Magistral emits reasoning as a leading ``[THINK]...[/THINK]`` bracket block
-        # (not the ``<think>`` the reasoning channel renders). The streaming display
-        # strip must drop it so the raw chain-of-thought does not leak into the
+        # Magistral emits reasoning as a leading [THINK]...[/THINK] block (not <think>).
+        # The streaming strip must drop it so chain-of-thought doesn't leak into
         # safetensors content; GGUF routes it to reasoning_content natively.
         closed = "[THINK]Let me think. 2+2 is 4.[/THINK]The answer is 4."
         assert strip_tool_markup_streaming(closed) == "The answer is 4."
         assert strip_tool_markup_streaming(closed) == strip_tool_markup(closed, final = True)
-        # Unclosed mid-stream reasoning is held from the marker on (nothing leaks, and
-        # the cleaned text only grows as the answer streams in after ``[/THINK]``).
+        # Unclosed mid-stream reasoning is held from the marker on; cleaned text only
+        # grows as the answer streams in after [/THINK].
         assert strip_tool_markup_streaming("[THINK]still thinking") == ""
         assert strip_tool_markup_streaming("[THINK]r[/THINK]The") == "The"
         assert strip_tool_markup_streaming("[THINK]r[/THINK]The answer") == "The answer"
@@ -317,8 +315,7 @@ class TestParserMultiFormat:
     # Llama-3.2 bare JSON ``custom_tools``
 
     def test_llama3_2_bare_json_parameters(self):
-        # Llama-3.2-Instruct emits bare JSON directly as content; no
-        # <|python_tag|> prefix per its training template.
+        # Llama-3.2-Instruct emits bare JSON directly as content, no <|python_tag|> prefix.
         import json
 
         text = '{"name":"web_search","parameters":{"query":"Tokyo weather"}}'
@@ -364,8 +361,7 @@ class TestParserMultiFormat:
         assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_embedded_in_prose_does_not_fire(self):
-        # Defensive: JSON embedded in prose must NOT fire (parser is
-        # strict about content STARTING with `{`).
+        # Defensive: JSON embedded in prose must NOT fire (content must START with `{`).
         text = 'The tool result was: {"name":"foo"}'
         assert parse_tool_calls_from_text(text) == []
 
@@ -382,14 +378,12 @@ class TestParserMultiFormat:
         assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_string_parameters_does_not_fire(self):
-        # Llama-3 spec: parameters must be a dict. Prose like
-        # ``{"name":"foo","parameters":"a sentence"}`` must NOT trigger.
+        # Llama-3 spec: parameters must be a dict; a string value must NOT trigger.
         text = '{"name":"foo","parameters":"this is a sentence"}'
         assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_string_arguments_not_json_does_not_fire(self):
-        # OpenAI ``arguments`` may be a JSON-string of a dict, but a
-        # plain non-JSON string must not pass the guard.
+        # OpenAI arguments may be a JSON-string of a dict, but a plain non-JSON string must not pass.
         text = '{"name":"foo","arguments":"not json"}'
         assert parse_tool_calls_from_text(text) == []
 
@@ -428,8 +422,8 @@ class TestParserMultiFormat:
     def test_mistral_array_parameters_key_alias(self):
         import json
 
-        # Array object keyed on ``parameters`` (not ``arguments``) must keep its
-        # payload, matching the JSON/XML paths and SGLang's base detector.
+        # Array object keyed on parameters (not arguments) must keep its payload,
+        # matching the JSON/XML paths and SGLang's base detector.
         text = '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -488,9 +482,8 @@ class TestParserMultiFormat:
         assert strip_tool_markup(text, final = True) == ""
 
     def test_mistral_call_id_form(self):
-        # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``.
-        # The ``[CALL_ID]`` segment must be skipped, not treated as a stop
-        # (llama.cpp test-chat.cpp:4785 parses this to one call).
+        # Mistral Small 3.2: [TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}. The [CALL_ID]
+        # segment must be skipped, not treated as a stop (llama.cpp test-chat.cpp:4785).
         import json
 
         text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
@@ -515,9 +508,8 @@ class TestParserMultiFormat:
         assert strip_tool_markup(text, final = True) == ""
 
     def test_mistral_think_reasoning_ignored(self):
-        # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]``
-        # inside the reasoning is chain-of-thought, not a real call; only the
-        # call after ``[/THINK]`` counts (llama.cpp test-chat.cpp:2285).
+        # A [TOOL_CALLS] inside [THINK]...[/THINK] is chain-of-thought, not a real call;
+        # only the call after [/THINK] counts (llama.cpp test-chat.cpp:2285).
         import json
 
         text = (
@@ -530,14 +522,12 @@ class TestParserMultiFormat:
         assert json.loads(result[0]["function"]["arguments"]) == {"y": 2}
 
     def test_mistral_think_reasoning_no_real_call(self):
-        # Reasoning that merely mentions a tool call but does not emit one
-        # after ``[/THINK]`` yields no calls.
+        # Reasoning that mentions a call but emits none after [/THINK] yields no calls.
         text = '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.'
         assert parse_tool_calls_from_text(text) == []
 
     def test_mistral_think_literal_in_argument_preserved(self):
-        # A literal ``[THINK]`` inside a real tool argument (after the call)
-        # must not be stripped or corrupt the parse.
+        # A literal [THINK] inside a real tool argument must not be stripped or corrupt the parse.
         import json
 
         text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
@@ -757,8 +747,8 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
 
 
 def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
-    # A late call caught by the safety net: an unclosed ``<tool_call>`` heals only with Auto-Heal on;
-    # off, the safety net must not pass ``allow_incomplete=True`` and execute a truncated call.
+    # A late unclosed <tool_call> caught by the safety net heals only with Auto-Heal on;
+    # off, it must not pass allow_incomplete=True and execute a truncated call.
     prose = "Sure, let me look that up for you right now. "
     incomplete = '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
 
@@ -783,9 +773,9 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
 
 
 def test_bare_json_tool_call_is_not_streamed_as_content():
-    # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no
-    # XML signal. The loop must BUFFER it until the object closes and execute it via
-    # the safety net, never leaking the raw JSON to streaming clients as content.
+    # Llama-3.2 bare form {"name":..,"parameters":..} carries no XML signal. The loop
+    # must BUFFER it until the object closes and execute via the safety net, never
+    # leaking the raw JSON to streaming clients.
     bare = '{"name":"web_search","parameters":{"query":"cats"}}'
     loop, exec_fn = _make_loop(
         turns = [[bare], ["Here are the results."]],
@@ -800,9 +790,9 @@ def test_bare_json_tool_call_is_not_streamed_as_content():
 
 
 def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
-    # Markerless JSON whose "name" is not an enabled tool (e.g. a person record
-    # ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call
-    # to a disabled tool and dropped. _make_loop enables web_search/python/terminal.
+    # Markerless JSON whose "name" is not an enabled tool (e.g. {"name":"Alice",...})
+    # must be shown, not misread as a disabled-tool call and dropped. _make_loop
+    # enables web_search/python/terminal.
     answer = '{"name":"Alice","parameters":{"age":30}}'
     loop, exec_fn = _make_loop(turns = [[answer]], max_tool_iterations = 1)
     events = _collect_events(loop)
@@ -812,8 +802,7 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
 
 
 def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
-    # Same as above but the bare object arrives split mid-key, so the buffer is
-    # held open across chunks before it balances.
+    # Same as above but the bare object arrives split mid-key, held across chunks until it balances.
     loop, exec_fn = _make_loop(
         turns = [
             ['{"name":"web_', 'search","parameters":{"query":"cats"}}'],
@@ -829,8 +818,8 @@ def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
 
 
 def test_leading_json_answer_is_not_dropped():
-    # A leading ``{...}`` that is NOT a tool call must still surface as content:
-    # the bare-JSON hold can only ever delay it to end-of-object, never drop it.
+    # A leading {...} that is NOT a tool call must still surface: the bare-JSON hold
+    # only delays it to end-of-object, never drops it.
     obj = '{"answer": 42, "note": "done"}'
     loop, exec_fn = _make_loop(
         turns = [[obj]],
@@ -869,8 +858,8 @@ def _reprompt_loop(*, auto_heal_tool_calls):
 
 
 def test_reprompt_names_only_active_tools_not_hardcoded():
-    # The plan-without-action nudge must name the tools actually enabled, never the
-    # old hardcoded ``web_search``/``python`` (which a restricted set would reject).
+    # The plan-without-action nudge must name the tools actually enabled, not the old
+    # hardcoded web_search/python (which a restricted set would reject).
     captured, _events = _reprompt_loop(auto_heal_tool_calls = True)
     assert len(captured) >= 2, "intent prose should have triggered a re-prompt turn"
     reprompt = captured[1][-1]
@@ -881,8 +870,7 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
 
 
 def test_reprompt_suppressed_when_auto_heal_disabled():
-    # With Auto-Heal off the safetensors nudge must stay silent for backend parity
-    # with the GGUF loop, so only the single initial generation runs.
+    # With Auto-Heal off the nudge stays silent for GGUF parity, so only the initial generation runs.
     captured, events = _reprompt_loop(auto_heal_tool_calls = False)
     assert len(captured) == 1, captured
     contents = [e["text"] for e in events if e["type"] == "content"]
@@ -949,8 +937,7 @@ class TestLoopBasic:
         assert "Result: 1" in contents[-1]["text"]
 
     def test_llama3_python_tag_form(self):
-        # The agentic loop must recognise Llama-3's <|python_tag|>
-        # marker, drain the rest of the turn, and execute the call.
+        # The loop must recognise Llama-3's <|python_tag|> marker, drain the turn, and execute the call.
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -968,11 +955,9 @@ class TestLoopBasic:
         assert "sunny" in contents[-1]["text"].lower()
 
     def test_llama3_bare_json_form_fires_tool(self):
-        # Llama-3.1 / 3.2 emit a bare-JSON tool call
-        # ``{"name":..,"parameters":..}`` with NO XML signal. The loop's
-        # safety-net parse must still fire the tool instead of treating the
-        # turn as "planned without calling tools" and re-prompting the model
-        # into giving up. Regression for the has_tool_signal gate that
+        # Llama-3.1/3.2 emit a bare-JSON call {"name":..,"parameters":..} with NO XML
+        # signal. The safety-net parse must still fire the tool, not treat the turn as
+        # "planned without calling tools". Regression for the has_tool_signal gate that
         # dropped these; GGUF's llama-server parses them natively.
         loop, exec_fn = _make_loop(
             turns = [
@@ -1392,12 +1377,10 @@ class TestLoopBehaviour:
         assert captured_tool_names[2] == ["web_search", "python"]
 
     def test_duplicate_noop_does_not_consume_budget_at_small_cap(self):
-        # A duplicate/disabled no-op turn is a correction turn and must NOT spend the
-        # caller's tool budget, so with max_tool_iterations=2 the model can still make a
-        # DISTINCT valid call after repeating one. Only turns that actually execute a
-        # tool count -- matching the GGUF loop. (The budget used to be charged per
-        # non-re-prompt iteration, so the duplicate burned the second slot and the third
-        # turn was sent with no tools, dropping the ``python`` call.)
+        # A duplicate/disabled no-op turn is a correction turn and must NOT spend the tool
+        # budget, so with max_tool_iterations=2 a DISTINCT valid call can still follow one.
+        # Only turns that actually execute a tool count (GGUF parity). The budget used to
+        # be charged per non-re-prompt iteration, so the duplicate burned the second slot.
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
@@ -1693,8 +1676,7 @@ class TestLoopRePrompt:
         assert contents and contents[-1]["text"].strip() == "4"
 
     def test_max_reprompts_capped_at_three(self):
-        # Model keeps stalling with intent -- after 3 re-prompts the
-        # loop must give up rather than burn forever.
+        # Model keeps stalling with intent -- after 3 re-prompts the loop must give up.
         turns = [["Let me search for that."]] * 6  # well over the cap
         loop, exec_fn = _make_loop(
             turns = turns,
@@ -1707,9 +1689,8 @@ class TestLoopRePrompt:
         assert statuses and statuses[-1]["text"] == ""
 
     def test_short_intent_below_buffer_threshold_triggers_reprompt(self):
-        # Short emission that never exits BUFFERING (< 32 chars + no
-        # marker prefix). The unified buffer-end path must still
-        # trigger the intent re-prompt, not silently terminate.
+        # Short emission that never exits BUFFERING (<32 chars, no marker prefix). The
+        # buffer-end path must still trigger the intent re-prompt, not silently terminate.
         loop, exec_fn = _make_loop(
             turns = [
                 ["Let me check."],
@@ -1722,9 +1703,8 @@ class TestLoopRePrompt:
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
     def test_reprompt_does_not_consume_tool_budget(self):
-        # max_tool_iterations=1: one re-prompt, then one real tool call,
-        # then the budget-exhausted final answer must still fire. If the
-        # re-prompt ate the slot the tool call would never run.
+        # max_tool_iterations=1: one re-prompt, one real tool call, then the budget-exhausted
+        # final answer must still fire. If the re-prompt ate the slot the call never runs.
         loop, exec_fn = _make_loop(
             turns = [
                 # 1. Intent stall (re-prompt 1/3).
@@ -1755,8 +1735,7 @@ class TestLoopCanonicalHealKey:
             exec_results = ["1\n"],
         )
         events = _collect_events(loop)
-        # The bare string must heal to {"code": "print(1)"}, not
-        # {"query": ...}, so the python sandbox actually executes it.
+        # The bare string must heal to {"code": ...}, not {"query": ...}, so the python sandbox runs it.
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
 
     def test_terminal_bare_string_heals_to_command(self):
@@ -1786,10 +1765,9 @@ class TestGGUFSafetensorsHealingParity:
     """Pin GGUF vs safetensors/MLX loop parity so a regression on either side breaks CI."""
 
     def test_gguf_imports_shared_signal_markers(self):
-        # The GGUF BUFFERING state machine must wake on every emission
-        # marker the shared parser knows -- otherwise Llama-3 / Mistral
-        # / Gemma 4 emissions slip past as plain prose when the
-        # llama-server structured channel fails.
+        # The GGUF BUFFERING state machine must wake on every emission marker the shared
+        # parser knows, else Llama-3/Mistral/Gemma 4 emissions slip past as plain prose
+        # when the llama-server structured channel fails.
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1801,10 +1779,8 @@ class TestGGUFSafetensorsHealingParity:
         )
 
     def test_gguf_uses_shared_strip_helper(self):
-        # The GGUF stream-cleanup function must delegate to the shared
-        # strip_tool_markup so closed-pair markup is removed for every
-        # emission family (Llama-3 <|python_tag|>, Mistral [TOOL_CALLS],
-        # Gemma 4 <|tool_call>...<tool_call|>).
+        # The GGUF stream-cleanup must delegate to the shared strip_tool_markup so
+        # closed-pair markup is removed for every emission family (Llama-3, Mistral, Gemma 4).
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1815,11 +1791,9 @@ class TestGGUFSafetensorsHealingParity:
         ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
 
     def test_gguf_uses_canonical_heal_keys(self):
-        # GGUF and safetensors heal a bare-string ``arguments`` to the same
-        # per-tool canonical key -- ``code`` for python, ``command`` for
-        # terminal, ``query`` for everything else. The mapping is centralised in
-        # the shared ToolLoopController (both backends route bare-string args
-        # through ``coerce_tool_arguments``), so the two paths cannot drift.
+        # GGUF and safetensors heal a bare-string arguments to the same per-tool canonical
+        # key (code/command/query). The mapping is centralised in the shared
+        # ToolLoopController via coerce_tool_arguments, so the two paths cannot drift.
         from core.inference.tool_loop_controller import (
             _CANONICAL_HEAL_ARG,
             coerce_tool_arguments,
@@ -1838,9 +1812,8 @@ class TestGGUFSafetensorsHealingParity:
         }
 
     def test_intent_regex_matches_same_phrases_as_gguf(self):
-        # The intent re-prompt regex must match the SAME forward-looking
-        # phrases on both backends so behaviour is the same on Mac (MLX
-        # / safetensors) and on Linux (GGUF).
+        # The intent re-prompt regex must match the SAME phrases on both backends (Mac
+        # MLX/safetensors and Linux GGUF).
         from core.inference.llama_cpp import _INTENT_SIGNAL as gguf_re
         from core.inference.safetensors_agentic import (
             _INTENT_SIGNAL as sf_re,
@@ -1865,8 +1838,7 @@ class TestGGUFSafetensorsHealingParity:
             "I can help with that.",
             "I should mention",
             "Let's go.",
-            # Negated intent is a refusal, not a plan: neither backend may
-            # force a tool-call re-prompt on it.
+            # Negated intent is a refusal, not a plan: neither backend may re-prompt on it.
             "I will not search the web for that.",
             "I'll never call that tool.",
         ):
@@ -2338,8 +2310,7 @@ class TestRoutesPythonTagStrip:
     """``_TOOL_XML_RE`` must consume multi-line code, embedded JSON, and bare ``<`` (earlier ``[^\n<]*`` / ``[^\n]*`` revisions leaked tails); the streaming route-level strip is the regression-prone path."""
 
     def _strip(self, text: str) -> str:
-        # Import inside the test so a routes-module import error does
-        # not blow up the entire test file at collection time.
+        # Import inside the test so a routes-module import error doesn't fail collection.
         from routes.inference import _strip_tool_xml
         return _strip_tool_xml(text)
 
@@ -2349,8 +2320,7 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_with_less_than_in_code(self):
-        # 5615 regression: literal ``<`` inside code must NOT terminate
-        # the strip early.
+        # 5615 regression: a literal < inside code must NOT terminate the strip early.
         text = '<|python_tag|>python.call(code="if x < 10: pass")'
         assert self._strip(text) == ""
 
@@ -2369,8 +2339,7 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_stops_at_eom_sentinel(self):
-        # Strip stops at the next Llama-3 ``<|`` sentinel so any
-        # trailing assistant content survives.
+        # Strip stops at the next Llama-3 <| sentinel so trailing assistant content survives.
         text = '<|python_tag|>python.call(code="multi\nline")' "<|eom_id|>final answer text"
         assert self._strip(text) == "<|eom_id|>final answer text"
 
@@ -2384,25 +2353,22 @@ class TestRoutesPythonTagStrip:
         assert self._strip(text) == ""
 
     def test_python_tag_with_eom_then_trailing_python_tag(self):
-        # Two python_tag emissions back-to-back across a sentinel: both
-        # should strip independently.
+        # Two python_tag emissions back-to-back across a sentinel: both strip independently.
         text = (
             '<|python_tag|>brave_search.call(query="a")'
             "<|eom_id|>"
             '<|python_tag|>python.call(code="x=1")'
         )
-        # ``<|eom_id|>`` between the two strips remains; both
-        # python_tag blocks are fully consumed.
+        # <|eom_id|> between the two strips remains; both python_tag blocks are consumed.
         assert self._strip(text) == "<|eom_id|>"
 
 
 # Robustness fixes uncovered while validating against vLLM / sglang.
 class TestParserRobustness:
     def test_tool_call_json_accepts_parameters_key(self):
-        # Hermes wrapper around a Llama-3.2 bare-JSON object that uses
-        # ``parameters`` instead of ``arguments``. The bare-JSON and
-        # python_tag paths already accept both keys; this path now does
-        # too. Was extracting name only and silently dropping the args.
+        # Hermes wrapper around a bare-JSON object using parameters instead of arguments.
+        # The bare-JSON and python_tag paths accept both keys; this path now does too
+        # (was extracting name only and dropping the args).
         import json
 
         text = "<tool_call>\n" '{"name": "search", "parameters": {"q": "ramen"}}\n' "</tool_call>"
@@ -2412,8 +2378,7 @@ class TestParserRobustness:
         assert json.loads(result[0]["function"]["arguments"]) == {"q": "ramen"}
 
     def test_function_xml_attribute_form(self):
-        # MiniCPM-5 / MiniMax-M2 attribute syntax:
-        # ``<function name="..."><param name="...">v</param></function>``.
+        # MiniCPM-5 / MiniMax-M2 attribute syntax: <function name="..."><param name="...">v</param></function>.
         import json
 
         text = '<function name="get_weather">' '<param name="city">Tokyo</param>' "</function>"
@@ -2437,8 +2402,7 @@ class TestParserRobustness:
         assert args == {"city": "Tokyo", "unit": "celsius"}
 
     def test_function_xml_legacy_equals_form_still_works(self):
-        # Regression guard: the old ``<function=name><parameter=k>v``
-        # syntax must keep parsing after the regex broadening.
+        # Regression guard: the old <function=name><parameter=k>v syntax must keep parsing after the regex broadening.
         import json
 
         text = "<function=get_weather><parameter=city>Tokyo</parameter></function>"
@@ -2448,24 +2412,20 @@ class TestParserRobustness:
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
     def test_function_attribute_form_has_tool_signal(self):
-        # The standalone ``<function name="...">`` attribute form must flip
-        # the streaming buffer; otherwise the end-of-turn safety-net parse in
-        # the agentic loop is gated off and the real call is dropped.
+        # The standalone <function name="..."> attribute form must flip the streaming
+        # buffer, else the end-of-turn safety-net parse is gated off and the call is dropped.
         assert has_tool_signal('<function name="get_weather">') is True
 
     def test_function_attribute_form_strip_markup(self):
-        # The attribute form must also be stripped from displayed text, like
-        # the legacy ``<function=...>`` form.
+        # The attribute form must also be stripped from displayed text, like <function=...>.
         text = 'result <function name="g"><param name="c">X</param></function>'
         assert strip_tool_markup(text, final = True) == "result"
 
     def test_llama3_chat_template_round_trip(self):
-        # Meta's official Llama-3.x chat template prefixes every
-        # assistant turn with
-        # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The
-        # sentinel-strip in ``_parse_llama3_bare_json`` must reach past
-        # the role label to the JSON body, else every round-tripped
-        # tool call in history silently drops.
+        # Meta's Llama-3.x chat template prefixes every assistant turn with
+        # <|start_header_id|>assistant<|end_header_id|>\n\n. The sentinel-strip in
+        # _parse_llama3_bare_json must reach past the role label to the JSON body,
+        # else every round-tripped tool call in history silently drops.
         import json
 
         text = (
@@ -2490,8 +2450,7 @@ class TestParserRobustness:
             assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
 
     def test_llama3_round_trip_with_eot_prefix(self):
-        # Prior assistant turn closes with ``<|eot_id|>``, then the
-        # new header opens. Both sentinels + the role must be consumed.
+        # Prior turn closes with <|eot_id|>, then the new header opens; both sentinels + role must be consumed.
         import json
 
         text = (
@@ -2503,10 +2462,8 @@ class TestParserRobustness:
         assert result[0]["function"]["name"] == "f"
 
     def test_function_xml_followed_by_prose(self):
-        # Models routinely follow a tool call with explanatory prose.
-        # Body must terminate at ``</function>`` even without a
-        # ``</tool_call>`` wrapper, else trailing prose leaks into the
-        # last parameter value.
+        # Models routinely follow a call with prose. Body must terminate at </function>
+        # even without a </tool_call> wrapper, else prose leaks into the last param value.
         import json
 
         text = (
@@ -2533,8 +2490,8 @@ class TestParserRobustness:
 
 
 def test_truncated_bare_json_at_eof_is_not_leaked():
-    # Stream ends mid bare-JSON object: the held fragment must be dropped at the
-    # EOF resolver, not flushed as plain assistant content (GGUF parity).
+    # Stream ends mid bare-JSON object: the held fragment must be dropped at the EOF
+    # resolver, not flushed as plain assistant content (GGUF parity).
     loop, _exec = _make_loop(
         turns = [['{"name":"web_search","parameters":{"query":"weather in S']],
         max_tool_iterations = 1,
@@ -2545,9 +2502,8 @@ def test_truncated_bare_json_at_eof_is_not_leaked():
 
 
 def test_oversized_bare_json_call_is_not_leaked_and_executes():
-    # A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER must DRAIN
-    # (suppress) rather than stream the raw JSON prefix, and still execute once
-    # the full object is parsed by the safety net.
+    # A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER must DRAIN rather
+    # than stream the raw JSON prefix, and still execute once the full object parses.
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
@@ -2562,8 +2518,8 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
 
 
 def test_oversized_plain_json_answer_still_streams():
-    # A giant plain JSON answer (no "name" key) is NOT a tool call and must still
-    # stream -- the oversized DRAIN route is gated on a "name" key.
+    # A giant plain JSON answer (no "name" key) is NOT a call and must still stream
+    # (the oversized DRAIN route is gated on a "name" key).
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
@@ -2577,8 +2533,8 @@ def test_oversized_plain_json_answer_still_streams():
 
 def test_oversized_disabled_name_json_answer_still_streams():
     # A giant still-open JSON answer whose "name" is NOT an enabled tool must stream:
-    # the oversized DRAIN branch was gated only on the presence of a "name" key, so a
-    # large ordinary record ({"name":"Alice",...}) was drained instead of shown.
+    # the oversized DRAIN branch was gated only on a "name" key, so a large ordinary
+    # record ({"name":"Alice",...}) was drained instead of shown.
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
@@ -2593,7 +2549,7 @@ def test_oversized_disabled_name_json_answer_still_streams():
 
 def test_truncated_disabled_name_json_is_shown_at_eof():
     # A truncated ordinary JSON answer whose name is not an enabled tool, held to EOF,
-    # must be shown -- the EOF bare-JSON DRAIN branch was gated only on a "name" key.
+    # must be shown (the EOF DRAIN branch was gated only on a "name" key).
     truncated = '{"name":"Alice","parameters":{"age":'
     loop, exec_fn = _make_loop(turns = [[truncated]], max_tool_iterations = 1)
     events = _collect_events(loop)
@@ -2603,9 +2559,9 @@ def test_truncated_disabled_name_json_is_shown_at_eof():
 
 
 def test_truncated_plain_json_with_nested_enabled_name_is_visible():
-    # A truncated ordinary JSON answer with a NESTED ``"name"`` matching an enabled
-    # tool ({"result":{"name":"web_search",...) must be shown, not suppressed: the
-    # gate now extracts the TOP-LEVEL name only, so the nested field is just data.
+    # A truncated JSON answer with a NESTED "name" matching an enabled tool
+    # ({"result":{"name":"web_search",...) must be shown: the gate extracts the
+    # TOP-LEVEL name only, so the nested field is just data.
     loop, exec_fn = _make_loop(
         turns = [['{"result":{"name":"web_search","age":']],
         max_tool_iterations = 1,
@@ -2617,8 +2573,8 @@ def test_truncated_plain_json_with_nested_enabled_name_is_visible():
 
 
 def test_bare_json_call_not_replayed_in_next_turn_content():
-    # After a complete bare-JSON call executes, the assistant content fed to the
-    # next turn must not contain the raw call (next-turn contamination).
+    # After a bare-JSON call executes, the assistant content fed to the next turn
+    # must not contain the raw call (next-turn contamination).
     captured: list[list[dict]] = []
     exec_fn = FakeExecuteTool(["RESULT"])
 
@@ -2648,10 +2604,9 @@ if __name__ == "__main__":
 
 
 def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
-    # F3: with Auto-Heal OFF, a truncated ENABLED-name bare-JSON fragment that did
-    # not parse must stay visible (disabled-Auto-Heal contract: malformed markup is
-    # preserved), matching the XML strip in the same drain branch. With Auto-Heal ON
-    # the same fragment is suppressed.
+    # With Auto-Heal OFF, a truncated ENABLED-name bare-JSON fragment that did not parse
+    # must stay visible (disabled-Auto-Heal preserves malformed markup), matching the XML
+    # strip in the same drain branch. With Auto-Heal ON it is suppressed.
     trunc = '{"name":"web_search","parameters":{"query":"weather'
     off, exec_off = _make_loop(turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = False)
     events_off = _collect_events(off)
@@ -2667,9 +2622,8 @@ def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
 
 
 def test_looks_like_enabled_bare_json_accepts_function_alias():
-    # The safetensors buffering gate must recognise the "function" bare-JSON alias
-    # the parser accepts, so a truncated/complete {"function":<enabled tool>} call is
-    # buffered/healed instead of streaming as visible content.
+    # The buffering gate must recognise the "function" bare-JSON alias the parser accepts,
+    # so a {"function":<enabled tool>} call is buffered/healed, not streamed as content.
     from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
 
     enabled = {"web_search"}
@@ -2682,8 +2636,8 @@ def test_looks_like_enabled_bare_json_accepts_function_alias():
 
 class TestFalseAlarmMarkerProse:
     def test_leading_marker_prose_streams_intact(self):
-        # An answer that starts with a literal marker is a false alarm: the
-        # drain finds no calls and the full prose must reach the client.
+        # An answer starting with a literal marker is a false alarm: the drain finds no
+        # calls and the full prose must reach the client.
         text = "[TOOL_CALLS] is the Mistral tool marker. More prose after."
         loop, exec_fn = _make_loop(turns = [[text]])
         events = _collect_events(loop)
@@ -2692,8 +2646,8 @@ class TestFalseAlarmMarkerProse:
         assert texts and texts[-1] == text
 
     def test_chained_bare_json_calls_not_replayed_in_history(self):
-        # Both chained calls execute; the kept content (next-turn assistant
-        # history) must not contain the second call's raw JSON.
+        # Both chained calls execute; the kept next-turn history must not contain the
+        # second call's raw JSON.
         chained = (
             '{"name":"web_search","parameters":{"q":"first"}};'
             '{"name":"python","parameters":{"code":"x"}}'
