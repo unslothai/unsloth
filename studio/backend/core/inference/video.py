@@ -732,6 +732,19 @@ class VideoBackend:
             expected_bytes = int(expected) if expected else None,
         )
 
+    def loading_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids an in-flight background load is downloading (empty when idle).
+
+        The delete-cached guard needs this: during a load ``status()["loaded"]`` is
+        still False, but deleting the target repo (or its companion base) would yank
+        blobs and snapshot files from under the download/assembly. Mirrors the image
+        backend's guard (DiffusionBackend.loading_repo_ids)."""
+        with self._lock:
+            loading = self._loading
+            if loading is None or loading.error is not None:
+                return ()
+            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+
     # ── the load itself ──────────────────────────────────────────────────────
 
     def load_pipeline(

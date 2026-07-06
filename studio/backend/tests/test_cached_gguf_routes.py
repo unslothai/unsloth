@@ -853,6 +853,53 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
         assert "Unload the model before deleting" in e.detail
 
 
+def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
+    # The guard also refuses deleting a repo the Video backend has loaded: cached non-GGUF video
+    # repos now surface in the Video On-Device picker with the normal delete action, so without
+    # this a live Wan / LTX / Hunyuan pipeline's HF snapshot could be removed from under it.
+    from fastapi import HTTPException
+
+    import core.inference.diffusion as diffusion_mod
+    import core.inference.video as video_mod
+    import routes.inference as routes_inference
+
+    # Chat + Images backends report nothing loaded; only the Video backend holds the repo.
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    monkeypatch.setattr(
+        diffusion_mod,
+        "get_diffusion_backend",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None}, loading_repo_ids = lambda: ()
+        ),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "get_video_backend",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": True, "repo_id": "Lightricks/LTX-2"},
+            loading_repo_ids = lambda: (),
+        ),
+    )
+
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "Lightricks/LTX-2", variant = None, current_subject = "u"
+            )
+        )
+        assert False, "expected HTTPException refusing the delete"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail
+
+
 def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
     # The partial probe must be scoped to the snapshot row being listed. Unscoped, the scan
     # spans every HF cache root, so a stale .incomplete copy in one root would flag a complete

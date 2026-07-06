@@ -3568,6 +3568,34 @@ async def delete_cached_model(
     except Exception:
         pass
 
+    # And refuse if the Video backend has this repo loaded or is downloading it: cached non-GGUF
+    # video repos now surface in the Video On-Device picker with the normal delete action, but the
+    # guards above only cover chat + the Images engine, so without this a loaded/loading Wan / LTX /
+    # Hunyuan pipeline could have its HF snapshot removed from under it. Mirror the Images guard.
+    try:
+        from core.inference.video import get_video_backend
+
+        video_backend = get_video_backend()
+        video_status = video_backend.status()
+        if video_status.get("loaded") and video_status.get("repo_id"):
+            loaded_id = str(video_status["repo_id"]).lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+        for lid in getattr(video_backend, "loading_repo_ids", tuple)():
+            lid = str(lid).lower()
+            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "A Video model load is using this repo; wait for it to finish",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     try:
         cache_scans = _all_hf_cache_scans()
 

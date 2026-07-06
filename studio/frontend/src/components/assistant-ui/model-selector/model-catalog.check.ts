@@ -355,7 +355,7 @@ assert.equal(
     .format,
   "bf16",
 );
-// HunyuanVideo on 80 GB: highest-quality sized artifact that fits (720p, 52 GB).
+// HunyuanVideo on 80 GB: the highest-quality artifact that FITS (720p, 52 GB <= budget 56) wins.
 const hunyuan = groupForRepoId(
   "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
   VIDEO_CATALOG,
@@ -364,10 +364,15 @@ assert.ok(hunyuan);
 assert.equal(
   pickDefaultArtifact(hunyuan, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .label,
+  "BF16 - 720p",
+);
+// Same-format artifacts keep declaration order, so 720p is listed first and the fit loop returns
+// it when it fits; a smaller card (budget 42) skips 720p (52 > 42) and falls back to 480p (40).
+assert.equal(
+  pickDefaultArtifact(hunyuan, { gpuGb: 60, systemRamGb: 128, isDownloaded: notDownloaded })
+    .label,
   "BF16 - 480p",
 );
-// (Artifact order within equal-quality formats is the declaration order, so the
-// 480p entry -- listed first as the lighter default -- wins on big GPUs too.)
 
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
 // Qwen-Image-2512 BF16 (54 GB) does not fit a 24/48 GB budget (bnb-4bit/fp8 win
@@ -420,9 +425,9 @@ assert.equal(
     .format,
   "gguf",
 );
-// LTX-2.3 video now carries the official BF16 / FP8 single-file checkpoints, but
-// they keep the ~50 GB Gemma3 encoder resident, so a consumer or 80 GB GPU routes
-// to GGUF; only a B200-class budget picks the official BF16.
+// LTX-2.3 video carries the official BF16 single-file checkpoint (no FP8: its scaled-fp8 file is
+// refused by the loader), which keeps the ~50 GB Gemma3 encoder resident, so a consumer or 80 GB
+// GPU routes to GGUF; only a B200-class budget picks the official BF16.
 const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
 assert.ok(ltxGroup);
 assert.equal(
@@ -445,11 +450,6 @@ assert.equal(loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.kind, "single_fil
 assert.equal(
   loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.filename,
   "ltx-2.3-22b-distilled.safetensors",
-);
-assert.equal(loadSpecFor("Lightricks/LTX-2.3-fp8", VIDEO_CATALOG)?.kind, "single_file");
-assert.equal(
-  loadSpecFor("Lightricks/LTX-2.3-fp8", VIDEO_CATALOG)?.filename,
-  "ltx-2.3-22b-distilled-fp8.safetensors",
 );
 // The official image BF16 pipelines load via from_pretrained (pipeline kind).
 assert.equal(loadSpecFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.kind, "pipeline");

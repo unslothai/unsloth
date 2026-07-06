@@ -294,11 +294,9 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         "ltx-2.3-22b-distilled.safetensors",
         90,
       ),
-      fp8Single(
-        "Lightricks/LTX-2.3-fp8",
-        "ltx-2.3-22b-distilled-fp8.safetensors",
-        76,
-      ),
+      // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries
+      // .weight_scale/.input_scale tensors) and points users to GGUF/BF16, so advertising it would
+      // route a bare click or manual pick to a ~76 GB download that always fails on load.
       gguf("unsloth/LTX-2.3-GGUF"),
     ],
   },
@@ -329,13 +327,17 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video",
     scope: "video",
     artifacts: [
-      bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", 40, {
-        label: "BF16 - 480p",
-        keywords: ["bf16", "480p"],
-      }),
+      // Highest-quality first: pickDefaultArtifact only sorts by FORMAT, so among these two bf16
+      // artifacts it keeps catalog order and the fit loop returns the FIRST that fits the budget.
+      // The 720p (52 GB) must precede the 480p (40 GB) so a bare click on a GPU where 720p fits
+      // (e.g. 80 GB, 0.7*budget=56) picks 720p, falling back to 480p only on smaller cards.
       bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v", 52, {
         label: "BF16 - 720p",
         keywords: ["bf16", "720p"],
+      }),
+      bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", 40, {
+        label: "BF16 - 480p",
+        keywords: ["bf16", "480p"],
       }),
     ],
   },
