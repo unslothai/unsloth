@@ -457,6 +457,9 @@ function Test-CudaFamilyLeaf {
 #     is stale; an already-installed per-arch wheel is NOT (no rebuild loop).
 #   * gfx pin NOT in the allowlist (gfx110X-all/gfx90a/gfx908) -> default <2.11
 #     specs, so a 2.10+rocm wheel is correct; only a 2.11+ build is stale.
+# A ROCm pin (gfx* or rocmX.Y) is satisfied ONLY by an installed wheel carrying a
+# +rocm local tag: an untagged CPU/CUDA wheel (e.g. 2.10.0 / 2.11.0) never
+# satisfies a ROCm pin, so it is reported stale and the pin is (re)applied.
 function Get-RocmPinStaleTags {
     param([string]$PinLeaf, [string]$TorchVersion)
     $_pinRocm = [regex]::Match($PinLeaf, '^rocm(\d+)\.(\d+)')
@@ -465,6 +468,9 @@ function Get-RocmPinStaleTags {
     $_instRocm = [regex]::Match($TorchVersion, '\+rocm(\d+)\.(\d+)')
     $_instVer = if ($_instRocm.Success) { "$($_instRocm.Groups[1].Value).$($_instRocm.Groups[2].Value)" } else { $null }
     $_instPerArch = [regex]::IsMatch($TorchVersion, '\+rocm\d+\.\d+\.\d+')
+    # A ROCm build MUST carry a +rocm local tag. Without it the wheel is a CPU/CUDA
+    # build that cannot satisfy any ROCm pin, regardless of its release line.
+    $_instHasRocm = [regex]::IsMatch($TorchVersion, '\+rocm')
     $_instRel = [regex]::Match($TorchVersion, '^(\d+)\.(\d+)')
     $_instIs211 = $false
     if ($_instRel.Success) {
@@ -474,29 +480,36 @@ function Get-RocmPinStaleTags {
     if ($PinLeaf -like 'gfx*') {
         if (Test-RocmGfx211Leaf $PinLeaf) {
             # Expect the AMD per-arch (three-part) 2.11 wheel. Satisfied only when
-            # BOTH a 2.11 release AND a three-part rocm tag are installed.
+            # BOTH a 2.11 release AND a three-part rocm tag are installed (the
+            # three-part tag already implies +rocm).
             $installed = if ($_instIs211 -and $_instPerArch) { "rocm-perarch(torch>=2.11)" } else { "rocm-generic-or-old" }
             return @{ Expected = "rocm-perarch(torch>=2.11)"; Installed = $installed }
         }
-        # Non-2.11 gfx leaf: default <2.11 spec. Stale only when the build is 2.11+.
+        # Non-2.11 gfx leaf: default <2.11 spec. An untagged (no +rocm) wheel never
+        # satisfies the pin -> stale. Otherwise stale only when the build is 2.11+.
+        $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
         return @{
             Expected  = "rocm(torch<2.11)"
-            Installed = if ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+            Installed = $installed
         }
     }
 
     # rocmX.Y pin.
     if ($_pinVer -and $_instVer) {
-        # Both rocm versions readable: exact comparison.
+        # Both rocm versions readable: exact comparison. A readable $_instVer already
+        # implies a +rocm tag, so no separate tag check is needed here.
         return @{ Expected = "rocm$_pinVer"; Installed = "rocm$_instVer" }
     }
     $_pinNeeds211 = $false
     if ($_pinRocm.Success) {
         $_pinNeeds211 = ([int]$_pinRocm.Groups[1].Value -gt 7) -or ([int]$_pinRocm.Groups[1].Value -eq 7 -and [int]$_pinRocm.Groups[2].Value -ge 2)
     }
+    # Fallback (installed rocm version unreadable): compare on the 2.11 line, but an
+    # untagged (no +rocm) wheel never satisfies a rocmX.Y pin -> report it stale.
+    $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
     return @{
         Expected  = if ($_pinNeeds211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
-        Installed = if ($_instIs211)   { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+        Installed = $installed
     }
 }
 

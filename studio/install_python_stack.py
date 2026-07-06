@@ -1119,6 +1119,12 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     _inst_rocm = re.search(r"\+rocm(\d+)\.(\d+)", installed_ver)
     _inst_ver = (int(_inst_rocm.group(1)), int(_inst_rocm.group(2))) if _inst_rocm else None
     _inst_is_perarch = re.search(r"\+rocm\d+\.\d+\.\d+", installed_ver) is not None
+    # A ROCm build MUST carry a +rocm local tag. An untagged CPU/CUDA wheel (no
+    # +rocm, e.g. "2.10.0" / "2.11.0") never satisfies a ROCm pin -- always a
+    # mismatch -- mirroring setup.ps1's Get-RocmPinStaleTags. (In practice
+    # _ensure_rocm_torch only calls this when has_hip_torch is True, but keep the
+    # pure function correct for any input so it stays in lockstep with the PS side.)
+    _inst_has_rocm = re.search(r"\+rocm", installed_ver) is not None
     # Whether the installed torch RELEASE (before "+") is 2.11+.
     _inst_rel = re.match(r"^(\d+)\.(\d+)", installed_ver)
     _inst_is_211 = (
@@ -1135,8 +1141,9 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
             # a generic rocm wheel or any pre-2.11 build IS a mismatch even at 2.11.
             return not (_inst_is_211 and _inst_is_perarch)
         # Non-2.11 gfx leaf: install path uses default <2.11 specs, so a correct
-        # <2.11 wheel must stay. Mismatch only when the installed torch is 2.11+.
-        return _inst_is_211
+        # <2.11 wheel must stay. An untagged (no +rocm) wheel never satisfies the
+        # pin -> mismatch; otherwise mismatch only when the installed torch is 2.11+.
+        return (not _inst_has_rocm) or _inst_is_211
 
     # rocmX.Y pin.
     _pin_is_211 = _pin_ver >= (7, 2) if _pin_ver is not None else False
@@ -1146,7 +1153,10 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # (7, 13) -> mismatch, which correctly reinstalls the generic wheel the
         # user pinned instead of leaving the per-arch one in place.
         return _pin_ver != _inst_ver
-    # rocm pin with an unreadable installed version: compare on the torch 2.11 line.
+    # rocm pin with an unreadable installed version: compare on the torch 2.11 line,
+    # but an untagged (no +rocm) wheel never satisfies a rocmX.Y pin -> mismatch.
+    if not _inst_has_rocm:
+        return True
     return _pin_is_211 != _inst_is_211
 
 
@@ -1707,7 +1717,7 @@ def _ensure_rocm_torch() -> None:
                 None,
             )
         if tag is None:
-            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- " f"skipping torch reinstall")
+            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall")
         else:
             if _override_idx is None:
                 index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
@@ -1833,7 +1843,12 @@ if not _TORCH_BACKEND:
         _TORCH_BACKEND = "rocm"
     elif _idx_leaf == "cpu":
         _TORCH_BACKEND = "cpu"
-    elif _idx_leaf.startswith("cu"):
+    elif _is_cuda_family_leaf(_idx_leaf):
+        # Require a digit after "cu" (^cu[0-9]) so a full-override URL ending in
+        # /current or /custom is NOT branded CUDA. A wrong "cuda" backend makes
+        # _ensure_rocm_torch() return early on AMD hosts and leaves a CPU/wrong
+        # torch unrepaired; falling through here keeps _TORCH_BACKEND="" so the
+        # helpers probe the GPU instead.
         _TORCH_BACKEND = "cuda"
 
 

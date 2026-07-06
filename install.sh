@@ -2184,9 +2184,13 @@ _torch_flavor_tag() {
 
 # Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
 # rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
+# Lowercase the leaf first so gfx120X-all (capital X) / any cased mirror leaf
+# still classifies, keeping the cuXXX tag comparison against _torch_flavor_tag
+# (which emits lowercase cuXXX) case-consistent.
 _expected_torch_flavor_tag() {
     _u="${1%/}"
     _leaf="${_u##*/}"
+    _leaf=$(printf '%s' "$_leaf" | tr '[:upper:]' '[:lower:]')
     case "$_leaf" in
         cu[0-9]*)   echo "$_leaf" ;;
         cpu)        echo "cpu" ;;
@@ -2200,9 +2204,11 @@ _expected_torch_flavor_tag() {
 # resolves (torch + every transitive dep) via --index-url -- the same URLs the
 # fresh-install paths above already use -- so a stale wheel is auto-repairable.
 # Unknown/odd-mirror leaves -> no, so we warn rather than risk a wrong reinstall.
+# Lowercase the leaf first so a cased leaf (e.g. gfx120X-all) is recognised.
 _torch_index_repairable() {
     _u="${1%/}"
     _leaf="${_u##*/}"
+    _leaf=$(printf '%s' "$_leaf" | tr '[:upper:]' '[:lower:]')
     case "$_leaf" in
         cu[0-9]*|rocm[0-9]*|gfx*) echo "yes" ;;
         *)                        echo "no" ;;
@@ -2480,12 +2486,26 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # whose base path happens to contain "rocm" or "gfx" must not mislabel a
 # cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix
 # overrides in gfxNNNN/, so the trailing slash is stripped first).
+# Lowercase the leaf once here so every gfx*/rocm*/cu* allowlist below matches
+# regardless of case. The canonical AMD RDNA4 leaf is gfx120X-all (capital X,
+# from the arch maps in install_python_stack.py / install.ps1); without this a
+# pin to gfx120X-all would miss the lowercase gfx120x-all allowlist entries.
+# The allowlists stay lowercase; inputs are normalised to lowercase.
+# CUDA is branded only on a real cu[0-9]* leaf (^cu[0-9]) -- NOT a bare cu*/catch-
+# all -- so a full-override mirror leaf like /current or /custom does NOT commit a
+# CUDA backend. An unknown leaf leaves the backend var unset so the stack probes
+# the GPU instead of returning early in _ensure_rocm_torch on AMD hosts.
+# Matches _is_cuda_family_leaf (Python) / Test-CudaFamilyLeaf (PowerShell).
 _torch_index_leaf="${TORCH_INDEX_URL%/}"
 _torch_index_leaf="${_torch_index_leaf##*/}"
+_torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]')
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
-    *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
+    cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
+    # Unknown leaf (odd mirror, e.g. /current, /custom): do NOT commit a backend.
+    # Unset so a stale inherited value can't leak and the stack probes the GPU.
+    *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
 
 # rocm7.2 and the AMD per-gfx indexes with the torch._C._grouped_mm bug on <2.11
@@ -2505,6 +2525,8 @@ esac
 # "rocm7.2" segment (e.g. https://mirror.local/gfx-cache) with a cu*/cpu family
 # must not be treated as an AMD per-arch index and pushed to the 2.11 line. This
 # mirrors the leaf-only backend classification just above.
+# _torch_index_leaf is already lowercased above, so the canonical gfx120X-all
+# (capital X, from the arch maps) pins here via the lowercase gfx120x-all entry.
 case "$_torch_index_leaf" in
     rocm7.2|gfx120x-all|gfx1151|gfx1150)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"

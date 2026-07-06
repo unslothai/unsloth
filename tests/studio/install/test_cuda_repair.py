@@ -294,6 +294,71 @@ class TestCudaRepairSkips:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
 
 
+class TestTorchBackendDerivationFromPin:
+    """The module-level _TORCH_BACKEND derivation (standalone `studio update`
+    with no install.sh-set UNSLOTH_TORCH_BACKEND) must classify the pinned index
+    leaf via _is_cuda_family_leaf (^cu[0-9]), NOT a bare startswith("cu"). A
+    full-override URL ending in /current or /custom must fall through to backend
+    "" (probe the GPU) so _ensure_rocm_torch() still repairs a wrong/CPU torch on
+    AMD hosts, instead of being wrongly branded "cuda" and returning early."""
+
+    @staticmethod
+    def _derive(env):
+        # Re-run the exact derivation the module does at import time, using the
+        # module's own _is_cuda_family_leaf so this stays in lockstep with it.
+        idx_override = (
+            env.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+            or env.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+        )
+        backend = env.get("UNSLOTH_TORCH_BACKEND", "").lower()
+        if not backend:
+            leaf = idx_override.rstrip("/").rsplit("/", 1)[-1].lower()
+            if leaf.startswith(("rocm", "gfx")):
+                backend = "rocm"
+            elif leaf == "cpu":
+                backend = "cpu"
+            elif stack_mod._is_cuda_family_leaf(leaf):
+                backend = "cuda"
+        return backend
+
+    def test_cu128_pin_is_cuda(self):
+        assert (
+            self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128"})
+            == "cuda"
+        )
+
+    def test_cu128_family_is_cuda(self):
+        assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}) == "cuda"
+
+    def test_current_leaf_not_cuda(self):
+        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD
+        # host still repairs a CPU/wrong torch instead of short-circuiting.
+        assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/current"}) == ""
+
+    def test_custom_leaf_not_cuda(self):
+        assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/custom"}) == ""
+
+    def test_rocm_and_gfx_pins_are_rocm(self):
+        assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}) == "rocm"
+        assert (
+            self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all"})
+            == "rocm"
+        )
+
+    def test_cpu_pin_is_cpu(self):
+        assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "cpu"}) == "cpu"
+
+    def test_source_uses_helper_not_bare_startswith(self):
+        # Guard against a regression back to elif _idx_leaf.startswith("cu").
+        src = _STACK_PATH.read_text(encoding = "utf-8")
+        assert "elif _is_cuda_family_leaf(_idx_leaf):" in src, (
+            "_TORCH_BACKEND derivation must classify CUDA via _is_cuda_family_leaf"
+        )
+        assert 'elif _idx_leaf.startswith("cu"):' not in src, (
+            "_TORCH_BACKEND derivation must not use a bare startswith('cu')"
+        )
+
+
 # CUDA index ladder.
 
 

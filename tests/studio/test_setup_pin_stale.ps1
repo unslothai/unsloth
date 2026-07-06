@@ -59,9 +59,11 @@ Write-Host "Get-RocmPinStaleTags (mirror of _rocm_pin_family_mismatch)"
 Check "rocm7.2 pin + 2.11.0+rocm7.2 -> not stale"  (-not (IsStale "rocm7.2" "2.11.0+rocm7.2"))
 Check "rocm7.2 pin + 2.10.0+rocm6.4 -> stale"      (IsStale "rocm7.2" "2.10.0+rocm6.4")
 Check "rocm6.4 pin + 2.10.0+rocm6.4 -> not stale"  (-not (IsStale "rocm6.4" "2.10.0+rocm6.4"))
-# rocm pin vs unreadable installed rocm version -> compare on the 2.11 line.
-Check "rocm7.2 pin + 2.10.0 -> stale"              (IsStale "rocm7.2" "2.10.0")
-Check "rocm7.2 pin + 2.11.0 -> not stale"          (-not (IsStale "rocm7.2" "2.11.0"))
+# rocm pin vs an untagged (no +rocm) wheel: a CPU/CUDA build never satisfies a
+# ROCm pin, regardless of its release line -> always stale (needs reinstall).
+Check "rocm7.2 pin + 2.10.0 (untagged) -> stale"   (IsStale "rocm7.2" "2.10.0")
+Check "rocm7.2 pin + 2.11.0 (untagged) -> stale"   (IsStale "rocm7.2" "2.11.0")
+Check "rocm6.4 pin + 2.10.0 (untagged) -> stale"   (IsStale "rocm6.4" "2.10.0")
 # 2.11-allowlist gfx pin: per-arch (three-part) wheel is satisfied, generic is stale.
 Check "gfx1151 pin + 2.11.0+rocm7.13.0 -> not stale"   (-not (IsStale "gfx1151" "2.11.0+rocm7.13.0"))
 Check "gfx1150 pin + 2.11.0+rocm7.13.0 -> not stale"   (-not (IsStale "gfx1150" "2.11.0+rocm7.13.0"))
@@ -73,6 +75,15 @@ Check "gfx110x-all pin + 2.10.0+rocm6.4 -> not stale"  (-not (IsStale "gfx110x-a
 Check "gfx90a pin + 2.10.0+rocm6.3 -> not stale"       (-not (IsStale "gfx90a" "2.10.0+rocm6.3"))
 Check "gfx908 pin + 2.10.0+rocm7.0 -> not stale"       (-not (IsStale "gfx908" "2.10.0+rocm7.0"))
 Check "gfx110x-all pin + 2.11.0+rocm7.2 -> stale"      (IsStale "gfx110x-all" "2.11.0+rocm7.2")
+# Non-2.11 gfx pin over an untagged (no +rocm) wheel: never satisfies the pin ->
+# stale, so the explicit ROCm index is applied even when torch is already <2.11.
+Check "gfx110x-all pin + 2.10.0 (untagged) -> stale"   (IsStale "gfx110x-all" "2.10.0")
+Check "gfx90a pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx90a" "2.10.0")
+# Capital gfx120X-all leaf is lowercased by Get-TorchIndexLeaf before this helper;
+# the caller passes the normalised leaf, so the 2.11-allowlist branch fires and a
+# generic/untagged wheel is stale (the per-arch wheel is not).
+Check "gfx120x-all pin + 2.11.0+rocm7.2 (generic) -> stale" (IsStale "gfx120x-all" "2.11.0+rocm7.2")
+Check "gfx120x-all pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx120x-all" "2.10.0")
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }
