@@ -182,10 +182,40 @@ def test_wan_size_tables_present():
     ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert ti2v.bf16_components_gb is not None and a14b.bf16_components_gb is not None
-    # The A14B DiT total (two experts) dwarfs the single TI2V-5B DiT.
+    # bf16-RESIDENT transformer sizes. The Wan transformers ship FP32 on disk (safetensors
+    # headers are F32; TI2V index 20.0 GB = 5B x 4, A14B 57.15 GB per expert = 14.3B x 4), so the
+    # table must hold the HALVED bf16-resident sizes -- ti2v ~10.0, a14b two experts ~57.2 -- NOT
+    # the fp32 on-disk sums (20.0 / 114.3). A regression to those over-budgets the plan ~2x and
+    # forces needless offload on an 80 GB GPU.
+    assert ti2v.bf16_components_gb[0] == 10.0
+    assert a14b.bf16_components_gb[0] == 57.2
+    # The A14B DiT total (two experts) still dwarfs the single TI2V-5B DiT.
     assert a14b.bf16_components_gb[0] > ti2v.bf16_components_gb[0] * 3
     # A portrait preset is offered for the 5B (a vertical option per the task).
     assert any(h > w for (w, h) in ti2v.resolution_presets)
+
+
+def test_wan_ti2v_5b_snaps_to_32_not_16():
+    # TI2V-5B's VAE is 16x spatial (vae/config.json scale_factor_spatial=16) and the transformer
+    # patch is 2, so WanPipeline floors H/W to 16*2 = 32 (pipeline_wan.py:505). The backend must
+    # snap to /32 too, or a /16-but-not-/32 request (e.g. 720) is recorded but rendered at 704,
+    # desyncing gallery metadata from the actual clip.
+    fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert fam.resolution_multiple == 32
+    assert snap_video_size(fam, 1280, 720) == (1280, 704)  # 720 is /16 but not /32 -> floors to 704
+    assert snap_video_size(fam, 1280, 704) == (1280, 704)  # on-grid preset unchanged
+    # A14B keeps /16 (its VAE is the Wan2.1 8x VAE, so 8*2 = 16).
+    a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert a14b.resolution_multiple == 16
+
+
+def test_wan_families_force_vae_fp32():
+    # Wan's VAE decodes in float32 (diffusers loads AutoencoderKLWan at torch.float32 while the
+    # pipe runs bf16); the loader pins the VAE back to fp32 for these families to avoid banding /
+    # black frames. LTX-2 keeps the default (its VAE is bf16-native).
+    assert detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").vae_force_fp32 is True
+    assert detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers").vae_force_fp32 is True
+    assert detect_video_family("unsloth/LTX-2.3-GGUF").vae_force_fp32 is False
 
 
 def test_family_size_table_present():

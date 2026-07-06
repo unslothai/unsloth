@@ -74,6 +74,12 @@ class VideoFamily:
     # float32. Video DiTs are bf16-native, so this defaults True (fp16 is never
     # the right resolution for them; bf16 or float32 only).
     fp16_incompatible: bool = True
+    # Wan's VAE decodes in float32: diffusers loads AutoencoderKLWan at torch.float32 while the
+    # pipe runs bf16 (WanPipeline docstring). Loading the VAE bf16 like the other components
+    # degrades every clip (banding / black frames), so when True the loader pins the VAE back to
+    # fp32 after building the pipe. The bf16_components_gb VAE term is already its fp32 size, so
+    # the memory plan stays consistent.
+    vae_force_fp32: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
 
@@ -137,16 +143,20 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Wan VAE temporal factor is 4 (autoencoder_kl_wan.py scale_factor_temporal),
         # so valid counts are 4k+1, unlike LTX-2's 8k+1.
         frame_step = 4,
-        # The pipeline patchifies at vae_scale_factor_spatial (8) * patch_size (2) = 16,
-        # and its check_inputs rejects non-/16 sizes (pipeline_wan.py:291); 16 keeps every
-        # preset valid and the snap silent.
-        resolution_multiple = 16,
-        # 720p-class presets: 1280x704 landscape (the card's target), its vertical variant,
-        # and a square. The first preset is the default the loader plans memory against.
+        # TI2V-5B's VAE is 16x spatial (vae/config.json scale_factor_spatial=16), and the
+        # transformer patch is 2, so WanPipeline floors H/W to 16*2 = 32 (pipeline_wan.py:505,
+        # silently, with a warning). Snap to 32 so the recorded size matches the generated clip;
+        # a /16-but-not-/32 request (e.g. 720) would otherwise be recorded but rendered at 704.
+        resolution_multiple = 32,
+        # 720p-class presets (all /32): 1280x704 landscape (the card's target), its vertical
+        # variant, and a square. The first preset is the default the loader plans memory against.
         resolution_presets = ((1280, 704), (704, 1280), (960, 960), (832, 480)),
-        # Measured from the diffusers repo (safetensors on disk, all stored bf16, so these
-        # are the bf16-resident sizes): transformer 20.0, UMT5 text encoder 11.4, VAE 2.8.
-        bf16_components_gb = (20.0, 11.4, 2.8),
+        # bf16-RESIDENT sizes. The transformer + VAE ship FP32 on disk (safetensors headers are
+        # F32; transformer index = 20.0 GB = 5B params x 4), so bf16-resident transformer is half
+        # (~10.0); the UMT5 text encoder ships bf16 (11.4). The VAE runs fp32 (vae_force_fp32), so
+        # its term is the fp32 size (2.8).
+        bf16_components_gb = (10.0, 11.4, 2.8),
+        vae_force_fp32 = True,
         gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE.
@@ -184,10 +194,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 480p and 720p presets (landscape, vertical, square), the two resolutions the
         # A14B card documents. 832x480 is the native 480p; 1280x704 the 720p target.
         resolution_presets = ((1280, 704), (832, 480), (480, 832), (704, 1280)),
-        # Measured from the diffusers repo (bf16 on disk): each DiT 57.2, so both experts
-        # total ~114.3; UMT5 text encoder 11.4; VAE 0.5. The two-expert DiT total is the
-        # memory headline (~114 GB bf16-resident before offload).
-        bf16_components_gb = (114.3, 11.4, 0.5),
+        # bf16-RESIDENT sizes. Each expert ships FP32 on disk (safetensors headers are F32;
+        # transformer index = 57.15 GB = 14.3B params x 4), so bf16-resident is ~28.6 each ->
+        # ~57.2 for BOTH experts (the memory headline before offload), NOT the 114.3 fp32
+        # on-disk sum. UMT5 text encoder ships bf16 (11.4); the VAE runs fp32 (vae_force_fp32),
+        # so its term is the fp32 size (0.5).
+        bf16_components_gb = (57.2, 11.4, 0.5),
+        vae_force_fp32 = True,
         # No gguf_repo: community GGUFs ship the two experts as separate files, and a
         # single-file load covers only one (validate_load_request refuses it).
     ),

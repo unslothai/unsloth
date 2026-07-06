@@ -680,8 +680,9 @@ def test_wan_frame_snapping_4k_plus_1(fake_runtime):
     backend.generate(prompt = "a sloth", width = 1000, height = 700, num_frames = 120)
     call = backend._state.pipe.last_kwargs
     assert call["num_frames"] == 117  # 4*29 + 1
-    # /16 spatial snap for Wan (spatial 8 * patch 2).
-    assert (call["width"], call["height"]) == (992, 688)
+    # /32 spatial snap for TI2V-5B: its VAE is 16x spatial * patch 2 = 32 (WanPipeline floors
+    # H/W to 32), so 1000x700 -> 992x672 (not the /16 992x688).
+    assert (call["width"], call["height"]) == (992, 672)
 
 
 def test_wan_ti2v_defaults_applied(fake_runtime):

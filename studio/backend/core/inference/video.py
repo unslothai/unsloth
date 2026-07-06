@@ -878,6 +878,16 @@ class VideoBackend:
                     _base_local_dir or base, transformer = transformer, **pipe_kwargs
                 )
 
+        # Wan's VAE decodes in float32: diffusers loads AutoencoderKLWan at torch.float32 while
+        # the pipe runs bf16 (WanPipeline docstring). from_pretrained above cast every component
+        # (VAE included) to the pipe dtype, so pin the VAE back to fp32 or every clip decodes with
+        # banding / black frames. bf16_components_gb already budgets the VAE at its fp32 size, so
+        # the memory plan stays consistent.
+        if getattr(fam, "vae_force_fp32", False) and getattr(pipe, "vae", None) is not None:
+            import torch
+
+            pipe.vae.to(torch.float32)
+
         if _load_token is not None and _load_token != self._load_token:
             del pipe
             clear_gpu_cache()
