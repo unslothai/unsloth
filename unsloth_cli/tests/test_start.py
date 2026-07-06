@@ -361,6 +361,65 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "codex",
+            "--no-launch",
+            "--model",
+            "unsloth/gemma-4-26b-a4b-it-gguf",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    home = tmp_path / "agents" / "codex"
+    profile = _parse_toml((home / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == MODEL["id"]
+
+
+def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/gemma-4-E2B-it-GGUF" if state["loaded"] else "other/model",
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/gemma-4-E2B-it-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(
+        BASE,
+        "sk-test",
+        "unsloth/gemma-4-e2b-it-gguf",
+        start.LoadOptions(gguf_variant = "UD-Q4_K_XL"),
+    )
+
+    assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
+    assert any(c[1].endswith("/api/inference/load") for c in calls)
+
+
+def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
+    existing_local = tmp_path / "Org" / "Foo"
+    existing_local.mkdir(parents = True)
+
+    assert start._model_id_matches("Org/Foo", "org/foo")
+    assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
+    assert not start._model_id_matches("./Models/Foo", "./models/foo")
+    assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
+
+
 def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     # Launch mode writes config to a throwaway temp CODEX_HOME and removes it after
     # the agent exits; the user's real ~/.codex is never the target.

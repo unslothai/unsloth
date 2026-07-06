@@ -574,6 +574,34 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
+def _is_hub_model_id(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if "/" not in text:
+        return False
+    if "\\" in text:
+        return False
+    if text.startswith(("/", "./", "../", "~")):
+        return False
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return False
+    try:
+        if Path(os.path.expanduser(text)).exists():
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _model_id_matches(actual: object, requested: object) -> bool:
+    if actual == requested:
+        return True
+    if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
+        return False
+    return str(actual).casefold() == str(requested).casefold()
+
+
 def _resolve_model(
     base: str,
     key: str,
@@ -593,7 +621,7 @@ def _resolve_model(
     match = (
         None
         if requested and load_has_overrides
-        else next((m for m in models if m["id"] == requested), None)
+        else next((m for m in models if _model_id_matches(m.get("id"), requested)), None)
     )
     if requested and match is None:
         typer.echo(
@@ -628,7 +656,10 @@ def _resolve_model(
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
-        match = next((m for m in models if m["id"] in wanted), None)
+        match = next(
+            (m for m in models if any(_model_id_matches(m.get("id"), w) for w in wanted)),
+            None,
+        )
     if match is not None:
         return match
     if requested:

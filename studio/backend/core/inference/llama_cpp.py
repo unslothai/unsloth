@@ -747,6 +747,37 @@ def _gguf_snapshot_files(snapshot: Path) -> list[str]:
     ]
 
 
+def _cached_hf_snapshot_file(
+    repo_id: str,
+    filename: str,
+    *,
+    expected_size: Optional[int] = None,
+) -> Optional[str]:
+    """Return a cached snapshot file even when HF's current-ref probe misses it."""
+    if not filename:
+        return None
+    parts = [part for part in filename.replace("\\", "/").split("/") if part]
+    if not parts or any(part in (".", "..") for part in parts):
+        return None
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+
+        for snap in _iter_hf_cache_snapshots(repo_id):
+            candidate = snap.joinpath(*parts)
+            if not candidate.is_file():
+                continue
+            if expected_size:
+                try:
+                    if candidate.stat().st_size < expected_size:
+                        continue
+                except OSError:
+                    continue
+            return str(candidate)
+    except Exception as e:
+        logger.debug("Snapshot cache lookup failed for %s/%s: %s", repo_id, filename, e)
+    return None
+
+
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     m = _SHARD_FULL_RE.match(first_shard)
     if not m:
@@ -3877,6 +3908,21 @@ class LlamaCppBackend:
                 "Install it with: pip install huggingface_hub"
             )
 
+        from utils.paths import resolve_cached_repo_id_case
+
+        try:
+            resolved_hf_repo = resolve_cached_repo_id_case(hf_repo)
+        except Exception as e:
+            logger.debug("Could not resolve cached repo_id casing for %s: %s", hf_repo, e)
+        else:
+            if resolved_hf_repo != hf_repo:
+                logger.info(
+                    "Using cached repo_id casing '%s' for requested '%s'",
+                    resolved_hf_repo,
+                    hf_repo,
+                )
+                hf_repo = resolved_hf_repo
+
         # Resolve the filename from the variant
         gguf_filename = None
         gguf_extra_shards: list[str] = []
@@ -3922,10 +3968,12 @@ class LlamaCppBackend:
 
         # Check disk space; fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
+        expected_sizes: dict[str, int] = {}
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
+            expected_sizes = {p.path: p.size for p in path_infos if p.size}
             total_bytes = sum((p.size or 0) for p in path_infos)
 
             # Subtract bytes already in the HF cache so we only preflight
@@ -3942,6 +3990,12 @@ class LlamaCppBackend:
                         cached_path = try_to_load_from_cache(hf_repo, p.path)
                     except Exception:
                         cached_path = None
+                    if not (isinstance(cached_path, str) and os.path.exists(cached_path)):
+                        cached_path = _cached_hf_snapshot_file(
+                            hf_repo,
+                            p.path,
+                            expected_size = p.size,
+                        )
                     if isinstance(cached_path, str) and os.path.exists(cached_path):
                         try:
                             on_disk = os.path.getsize(cached_path)
@@ -4023,25 +4077,41 @@ class LlamaCppBackend:
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
-            local_path = hf_hub_download_with_xet_fallback(
-                hf_repo,
-                gguf_filename,
-                hf_token,
-                cancel_event = cancel_event,
-                on_status = lambda m: logger.info(m),
-                force_download = force,
-            )
+            local_path = None
+            if not force:
+                local_path = _cached_hf_snapshot_file(
+                    hf_repo,
+                    gguf_filename,
+                    expected_size = expected_sizes.get(gguf_filename),
+                )
+            if local_path is None:
+                local_path = hf_hub_download_with_xet_fallback(
+                    hf_repo,
+                    gguf_filename,
+                    hf_token,
+                    cancel_event = cancel_event,
+                    on_status = lambda m: logger.info(m),
+                    force_download = force,
+                )
             for shard in gguf_extra_shards:
                 if cancel_event.is_set():
                     raise RuntimeError("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
-                hf_hub_download_with_xet_fallback(
-                    hf_repo,
-                    shard,
-                    hf_token,
-                    cancel_event = cancel_event,
-                    force_download = force,
-                )
+                shard_path = None
+                if not force:
+                    shard_path = _cached_hf_snapshot_file(
+                        hf_repo,
+                        shard,
+                        expected_size = expected_sizes.get(shard),
+                    )
+                if shard_path is None:
+                    hf_hub_download_with_xet_fallback(
+                        hf_repo,
+                        shard,
+                        hf_token,
+                        cancel_event = cancel_event,
+                        force_download = force,
+                    )
         except Exception as e:
             if isinstance(e, RuntimeError) and "Cancelled" in str(e):
                 raise

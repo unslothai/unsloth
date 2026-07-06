@@ -239,6 +239,106 @@ class TestGgufVariantFileResolution:
         assert downloaded == ["tinyllamas/stories260K.gguf"]
         assert out == "/fake/ggml-org/models/tinyllamas/stories260K.gguf"
 
+    def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
+        self,
+        monkeypatch,
+        hf_cache,
+    ):
+        backend = LlamaCppBackend()
+        repo = "unsloth/vision-GGUF"
+        old = _build_cache(
+            hf_cache,
+            repo,
+            {"model-UD-Q4_K_XL.gguf": 4},
+            snapshot_sha = "a" * 40,
+        )
+        _build_cache(
+            hf_cache,
+            repo,
+            {"mtp-model.gguf": 1},
+            snapshot_sha = "b" * 40,
+        )
+
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 4) for path in paths if path]
+
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("should reuse the cached GGUF instead of downloading")
+
+        with (
+            patch(
+                "huggingface_hub.list_repo_files",
+                lambda *_a, **_k: ["model-UD-Q4_K_XL.gguf", "mtp-model.gguf"],
+            ),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fail_download),
+        ):
+            out = backend._download_gguf(
+                hf_repo = repo,
+                hf_variant = "UD-Q4_K_XL",
+            )
+
+        assert out == str(old / "model-UD-Q4_K_XL.gguf")
+
+    def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
+        self,
+        monkeypatch,
+        hf_cache,
+    ):
+        backend = LlamaCppBackend()
+        canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
+        requested_repo = "unsloth/gemma-4-e2b-it-gguf"
+        gguf_file = "gemma-4-E2B-it-UD-Q4_K_XL.gguf"
+        snap = _build_cache(
+            hf_cache,
+            canonical_repo,
+            {gguf_file: 4},
+            snapshot_sha = "a" * 40,
+        )
+        lower_snap = _build_cache(
+            hf_cache,
+            requested_repo,
+            {"mtp-gemma-4-E2B-it.gguf": 1},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(lower_snap, (2000, 2000))
+        os.utime(snap, (1000, 1000))
+        seen_repos: list[str] = []
+
+        def fake_list_repo_files(repo_id, token = None):
+            seen_repos.append(repo_id)
+            return [gguf_file]
+
+        def fake_get_paths_info(repo_id, paths, token = None):
+            seen_repos.append(repo_id)
+            return [_types.SimpleNamespace(path = path, size = 4) for path in paths if path]
+
+        def fake_cache(repo_id, filename, *args, **kwargs):
+            seen_repos.append(repo_id)
+            return str(snap / filename) if repo_id == canonical_repo else None
+
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("should reuse the cached GGUF instead of downloading")
+
+        with (
+            patch("huggingface_hub.list_repo_files", fake_list_repo_files),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", fake_cache),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fail_download),
+        ):
+            out = backend._download_gguf(
+                hf_repo = requested_repo,
+                hf_variant = "UD-Q4_K_XL",
+            )
+
+        assert out == str(snap / gguf_file)
+        assert seen_repos
+
     def test_download_includes_uppercase_split_gguf_shards(self, monkeypatch, tmp_path):
         backend = LlamaCppBackend()
         downloaded: list[str] = []
@@ -314,6 +414,21 @@ class TestIterHfCacheSnapshots:
         os.utime(new, (2000, 2000))
         out = list(_iter_hf_cache_snapshots("unsloth/multi"))
         assert [p.name for p in out] == ["b" * 40, "a" * 40]
+
+    def test_skips_snapshot_when_mtime_is_unavailable(self, hf_cache, monkeypatch):
+        stale = _build_cache(hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha = "a" * 40)
+        good = _build_cache(hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha = "b" * 40)
+        original_stat = Path.stat
+
+        def flaky_stat(self, *args, **kwargs):
+            if self == stale:
+                raise FileNotFoundError(str(self))
+            return original_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", flaky_stat)
+
+        out = list(_iter_hf_cache_snapshots("unsloth/multi"))
+        assert out == [good]
 
     def test_repo_id_match_is_case_insensitive(self, hf_cache):
         _build_cache(hf_cache, "unsloth/Foo-GGUF", {"Foo-Q4_K_M.gguf": 1})
