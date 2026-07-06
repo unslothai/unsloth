@@ -859,6 +859,74 @@ class TestPythonTagLiteralInsideMistralArgs:
         assert args["query"] == "what is <|python_tag|>evil.call(x=1)"
 
 
+class TestPythonTagOuterOverXmlLiteral:
+    """A leading Llama-3 ``<|python_tag|>`` call owns the turn: tool XML/Mistral
+    markup quoted in a ``.call(...)`` string argument (or in trailing prose) is
+    data, so the outer call executes -- parity with the bare-JSON / Mistral /
+    attribute-form leading-ownership rules. XML before the tag keeps normal order."""
+
+    def test_call_arg_quoting_complete_function_xml(self):
+        # A closed <function=...> in a .call() code arg must not beat the leading python_tag call.
+        text = (
+            '<|python_tag|>python.call(code="<function=render_html>'
+            '<parameter=x>1</parameter></function>")'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["python"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "<function=render_html><parameter=x>1</parameter></function>"
+
+    def test_call_arg_quoting_bare_function_tag_in_query(self):
+        # A query mentioning <function=...> must search, not execute a phantom tool.
+        text = '<|python_tag|>web_search.call(query="how do I use <function=foo> in llama")'
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["query"] == "how do I use <function=foo> in llama"
+
+    def test_call_arg_quoting_tool_call_json(self):
+        text = (
+            "<|python_tag|>save_file.call(content="
+            '"<tool_call>{\\"name\\": \\"delete\\", \\"arguments\\": {}}</tool_call>")'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["save_file"]
+
+    def test_json_form_code_arg_quoting_function_xml(self):
+        # JSON emission: a <function=...> in the code arg is data; the outer "python" call runs.
+        text = (
+            '<|python_tag|>{"name":"python","parameters":'
+            '{"code":"<function=terminal>ls</function>"}}'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["python"]
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "<function=terminal>ls</function>"
+
+    def test_call_arg_quoting_mistral_trigger(self):
+        text = '<|python_tag|>web_search.call(query="see [TOOL_CALLS]evil[ARGS]{}")'
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_leading_call_wins_over_trailing_xml(self):
+        # A leading python_tag call owns the turn even when a real XML literal follows.
+        text = (
+            '<|python_tag|>web_search.call(query="cats") '
+            "<function=evil><parameter=x>1</parameter></function>"
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    def test_xml_before_python_tag_keeps_xml_order(self):
+        # A foreign signal BEFORE the tag keeps normal document order (XML wins).
+        text = (
+            "<function=web_search><parameter=q>x</parameter></function> "
+            '<|python_tag|>python.call(code="y")'
+        )
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
 class TestBareJsonOuterOverXmlLiteral:
     """Quoted tool XML inside a leading bare-JSON call is data; XML before the JSON keeps normal order."""
 
@@ -1466,21 +1534,23 @@ class TestAttributeFormLeadingContainment:
 
     def test_quoted_tool_call_inside_param_stays_data(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             '<function name="web_search"><param name="query">find '
             '<tool_call>{"name":"delete","arguments":{}}</tool_call></param></function>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "delete"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         assert "delete" in json.loads(calls[0]["function"]["arguments"])["query"]
 
     def test_real_xml_call_before_attribute_form_keeps_order(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             '<tool_call>{"name":"delete","arguments":{}}</tool_call> Example: '
             '<function name="web_search"><param name="q">x</param></function>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "delete"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete"})
         assert calls[0]["function"]["name"] == "delete"
 
 
@@ -1491,11 +1561,12 @@ class TestParameterKeepsMultipleLiteralCloses:
 
     def test_two_literal_closes_in_one_parameter(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             '<function name="web_search"><param name="query">'
             "a </function> b </function> c </param></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert json.loads(calls[0]["function"]["arguments"]) == {
             "query": "a </function> b </function> c"
         }
@@ -1506,13 +1577,13 @@ class TestParameterKeepsMultipleLiteralCloses:
             '<function name="web_search"><param name="query">'
             "a </function> b </function> c </param></function> after"
         )
-        assert strip_tool_markup(text, final=True) == "after"
+        assert strip_tool_markup(text, final = True) == "after"
 
     def test_unclosed_parameter_still_heals_at_function_close(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
         calls = parse_tool_calls_from_text(
             "<function=web_search><parameter=query>val</function>",
-            enabled_tool_names={"web_search"},
+            enabled_tool_names = {"web_search"},
         )
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "val"}
 
@@ -1523,38 +1594,42 @@ class TestMistralPreambleOwnership:
 
     def test_v11_named_form_after_preface(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             'pref [TOOL_CALLS]web_search[ARGS]{"query":"cats"} Note '
             "<function=evil><parameter=x>1</parameter></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_array_form_after_preface(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             'pref [TOOL_CALLS][{"name":"web_search","arguments":{"query":"cats"}}] Note '
             "<function=evil><parameter=x>1</parameter></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_xml_call_before_trigger_keeps_order(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             "<function=evil><parameter=x>1</parameter></function> then "
             '[TOOL_CALLS][{"name":"web_search","arguments":{}}]'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert calls[0]["function"]["name"] == "evil"
 
     def test_prose_mention_without_call_shape_keeps_order(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
+
         text = (
             "See [TOOL_CALLS] docs for details. "
             "<function=evil><parameter=x>1</parameter></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"evil"})
         assert [c["function"]["name"] for c in calls] == ["evil"]
 
 
@@ -1564,6 +1639,7 @@ class TestBareJsonStripRequiresTopLevelName:
 
     def test_nested_name_answer_survives_name_agnostic_strip(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
+
         ans = '{"parameters":{},"result":{"name":"web_search"}}'
         assert strip_leading_bare_json_call(ans) == ans
         assert strip_leading_bare_json_call(ans, {"web_search"}) == ans
@@ -1571,3 +1647,44 @@ class TestBareJsonStripRequiresTopLevelName:
     def test_real_call_still_strips_name_agnostic(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
         assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"q":"x"}}') == ""
+
+
+class TestGemmaAwareClosedBlockPrePass:
+    """The closed JSON/function strip pre-pass must not delete across a complete
+    Gemma span (a quoted <function=...> plus a later real </function>)."""
+
+    def test_literal_function_in_gemma_arg_with_later_real_call(self):
+        from core.tool_healing import strip_tool_call_markup
+        text = (
+            'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
+            "<tool_call|> <function=terminal><parameter=cmd>ls</parameter>"
+            "</function> after"
+        )
+        assert strip_tool_call_markup(text, final = True) == "before   after"
+
+    def test_literal_function_in_gemma_arg_with_prose_closer(self):
+        from core.tool_healing import strip_tool_call_markup
+
+        text = (
+            'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
+            "<tool_call|> then use </function> to close. after"
+        )
+        out = strip_tool_call_markup(text, final = True)
+        assert out.startswith("before")
+        assert out.endswith("after")
+        assert "call:python" not in out
+
+    def test_gemma_opener_inside_json_arg_still_strips_block(self):
+        from core.tool_healing import strip_tool_call_markup
+        text = (
+            '<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after'
+        )
+        assert strip_tool_call_markup(text, final = True) == "after"
+
+    def test_gemma_opener_inside_function_param_still_strips_block(self):
+        from core.tool_healing import strip_tool_call_markup
+        text = (
+            '<function=python><parameter=code>x = "<|tool_call>call:t{"</parameter>'
+            "</function> after"
+        )
+        assert strip_tool_call_markup(text, final = True) == "after"

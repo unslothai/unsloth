@@ -8,11 +8,53 @@ native-chat-template fallback used by the transformers and MLX backends.
 """
 
 import copy
+import json
 import logging
 from typing import Optional
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_tool_call_arguments(messages: list) -> list:
+    """Coerce each assistant ``tool_calls[].function.arguments`` from a JSON
+    string to a dict.
+
+    The OpenAI wire format carries ``arguments`` as a JSON string, but some chat
+    templates (e.g. the stricter Qwen tool templates shipped with mlx-community
+    checkpoints) iterate ``arguments.items()`` and raise
+    ``TypeError: Can only get item pairs from a mapping.`` on the string form
+    when a prior tool call is re-rendered on the next turn. A dict works on both
+    strict and lenient templates, so parse the string; leave non-JSON or non-dict
+    values untouched. Returns the original list unchanged when nothing needed
+    coercing (no copy)."""
+    mutated = False
+    out: list = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not tool_calls:
+            out.append(msg)
+            continue
+        new_calls = []
+        msg_changed = False
+        for call in tool_calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    call = {**call, "function": {**fn, "arguments": parsed}}
+                    msg_changed = True
+            new_calls.append(call)
+        if msg_changed:
+            out.append({**msg, "tool_calls": new_calls})
+            mutated = True
+        else:
+            out.append(msg)
+    return out if mutated else messages
 
 
 def apply_chat_template_for_generation(
@@ -44,24 +86,36 @@ def apply_chat_template_for_generation(
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
 
-    last_exc: Optional[Exception] = None
-    for kwargs in attempts:
-        try:
-            return tokenizer.apply_chat_template(
-                messages,
-                tokenize = False,
-                add_generation_prompt = True,
-                **kwargs,
-            )
-        except TypeError as e:
-            last_exc = e
-            continue
-        except Exception as e:
-            last_exc = e
-            break
-    if last_exc is not None:
-        raise last_exc
-    raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
+    def _render(msgs: list) -> str:
+        last_exc: Optional[Exception] = None
+        for kwargs in attempts:
+            try:
+                return tokenizer.apply_chat_template(
+                    msgs,
+                    tokenize = False,
+                    add_generation_prompt = True,
+                    **kwargs,
+                )
+            except TypeError as e:
+                last_exc = e
+                continue
+            except Exception as e:
+                last_exc = e
+                break
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
+
+    try:
+        return _render(messages)
+    except Exception:
+        # Strict tool templates reject the JSON-string ``arguments`` form via
+        # TypeError or a broad Jinja raise_exception, so retry with dicts coerced.
+        # Original messages render first, so working templates stay byte-identical.
+        normalized = _normalize_tool_call_arguments(messages)
+        if normalized is messages:
+            raise
+        return _render(normalized)
 
 
 def render_native_template(

@@ -10,47 +10,64 @@ orchestrator, structlog, httpx, or the rest of the studio backend.
 import json
 import re
 
-# Pre-compiled patterns for tool XML stripping. The hyphen in the name
-# char-class lets dashed MCP tool/parameter names (mcp__srv__list-issues,
-# issue-number) parse alongside the built-ins.
+# Strip patterns. The name-class hyphen matches dashed MCP names. Closed pairs
+# strip first so a closed call goes as a unit before any to-EOF sweep reaches
+# nested markup; only the final list adds the .*$ EOF sweeps.
+_TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
+_TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
+_TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
+_TC_GEMMA_END_PAT = re.compile(r"<tool_call\|>")
 _TOOL_CLOSED_PATS = [
-    re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
-    re.compile(r"<tool_call\|>"),
-    re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
+    _TC_JSON_CLOSED_PAT,
+    _TC_GEMMA_CLOSED_PAT,
+    _TC_FUNC_CLOSED_PAT,
+    _TC_GEMMA_END_PAT,
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
-    re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
+    re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
+# Stripped before the quote-aware Gemma helper so a Gemma opener quoted in
+# their argument data cannot make the helper truncate the block and its tail.
+_TOOL_CLOSED_BLOCK_PATS = [_TC_JSON_CLOSED_PAT, _TC_FUNC_CLOSED_PAT]
+# A lazy closed-pair pattern whose close token is absent rescans to EOF from
+# every opener (quadratic, re-run per streamed token); skip that doomed pass.
+_PAT_REQUIRED_TOKEN = {
+    _TC_JSON_CLOSED_PAT: "</tool_call>",
+    _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
+    _TC_FUNC_CLOSED_PAT: "</function>",
+}
+
+
+def strip_tool_patterns(text: str, patterns) -> str:
+    """Apply ``patterns`` in order, skipping closed-pair passes with no close token."""
+    for pat in patterns:
+        token = _PAT_REQUIRED_TOKEN.get(pat)
+        if token is not None and token not in text:
+            continue
+        text = pat.sub("", text)
+    return text
+
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Name class allows dots/hyphens so dotted/namespaced Gemma tool names (mcp.server-list) parse.
-# Whitespace-tolerant around ``call`` / ``:`` -- sampling drift emits
-# ``<|tool_call>call: name{`` and ``call : name{``, and rejecting those here
-# loses the call entirely (no fallback re-parses the wrapped form).
+# Name class allows dots/hyphens for dotted Gemma names; whitespace-tolerant around
+# ``call`` / ``:`` since drift emits ``call: name{`` and ``call : name{``.
 _TC_GEMMA_START_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-# Horizontal whitespace only so the wrapping newline + value indentation survive; _trim_param_value trims one newline.
+# Horizontal whitespace only so the newline + value indentation survive (_trim_param_value trims one newline).
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>[^\S\n]*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
-# A bare (unquoted) Gemma value ends at `}` or at a comma that begins the next
-# `key:` pair. A comma NOT followed by a key token is part of the value (e.g.
-# `location:New York, NY`), so it must not terminate the value. The key token
-# must be identifier-shaped (start with a letter or underscore); a comma
-# followed by digits-then-colon is value text such as a timestamp or ratio
-# (`meet at 10:00, 11:00 tomorrow`), not a new key.
-# Dots to match the key-quoting scanner: a dotted key after a bare value
-# (query:foo,user.name:bob) must end the value at the comma, not be
-# swallowed into it.
+# A bare (unquoted) Gemma value ends at `}` or at a comma beginning the next
+# identifier-shaped `key:` pair; a comma before a non-key (`New York, NY`,
+# `10:00, 11:00`) stays in the value. Dots let a dotted key end the value.
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
 
@@ -147,14 +164,8 @@ def _split_top_level_commas(src: str) -> list:
 
 
 def _quote_gemma_array_elements(body: str) -> str:
-    """Normalise the elements of a Gemma array value so json.loads succeeds.
-
-    Gemma may emit ``labels:[bug,ui]`` without per-element quotes, or arrays of
-    objects (``items:[{path:a}]``) whose keys/values also lack quotes; left
-    as-is json.loads fails and the whole call is dropped. Bare string elements
-    are quoted, object and nested-array elements are normalised recursively, and
-    quoted strings (already normalised from ``<|"|>``), numbers, and JSON
-    literals are preserved."""
+    """Normalise a Gemma array value (``labels:[bug,ui]``) so json.loads succeeds:
+    quote bare strings, recurse into objects/arrays, keep quoted/JSON literals."""
     out: list[str] = []
     for element in _split_top_level_commas(body):
         stripped = element.strip()
@@ -162,11 +173,9 @@ def _quote_gemma_array_elements(body: str) -> str:
             out.append(element)
             continue
         if stripped[0] == "{":
-            # Object element: quote its keys/bare values like a top-level object.
             out.append(_quote_gemma_object_keys(stripped))
             continue
         if stripped[0] == "[":
-            # Nested array: normalise its elements too.
             inner_end = _balanced_bracket_end(stripped, 0)
             if inner_end == len(stripped) - 1:
                 out.append("[" + _quote_gemma_array_elements(stripped[1:inner_end]) + "]")
@@ -231,9 +240,8 @@ def _quote_gemma_object_keys(src: str) -> str:
         while i < len(src) and src[i].isspace():
             i += 1
         key_name_start = i
-        # Dots to match the parser's key/name charset ([\w.\-]) -- Gemma
-        # emits dotted argument keys (user.name:...) for namespaced schemas,
-        # and leaving them unquoted fails the whole json.loads (call lost).
+        # Dots match the parser's key/name charset: Gemma emits dotted argument keys
+        # (user.name:...) for namespaced schemas.
         while i < len(src) and (src[i].isalnum() or src[i] in "_-."):
             i += 1
         key_name = src[key_name_start:i]
@@ -246,15 +254,12 @@ def _quote_gemma_object_keys(src: str) -> str:
             parts.append(src[i:colon_pos])
             parts.append(":")
             i = colon_pos + 1
-            # Gemma may emit bare string values ({unit:celsius}); quote them so
-            # json.loads succeeds. JSON scalars/objects/arrays/quoted stay as-is.
+            # Quote bare string values ({unit:celsius}); JSON stays as-is.
             ws = i
             while i < len(src) and src[i].isspace():
                 i += 1
             parts.append(src[ws:i])
             if i < len(src) and src[i] == "[":
-                # Array value: quote bare string elements (e.g. labels:[bug,ui])
-                # so json.loads succeeds instead of dropping the call.
                 arr_end = _balanced_bracket_end(src, i)
                 if arr_end < 0:
                     parts.append(src[i:])
@@ -264,9 +269,7 @@ def _quote_gemma_object_keys(src: str) -> str:
                     i = arr_end + 1
             elif i < len(src) and src[i] not in '"{':
                 v_start = i
-                # Consume the bare value up to `}` or a comma that starts the
-                # next key:value pair; a comma inside the value (e.g.
-                # `New York, NY`) does not terminate it.
+                # Bare value: up to `}` or a comma that starts the next key:pair.
                 while i < len(src):
                     if src[i] == "}":
                         break
@@ -303,10 +306,8 @@ def _inside_open_parameter(content: str, pos: int) -> bool:
         last_param_start = match.start()
     if last_param_start < 0:
         return False
-    # The parameter's OWN close tag decides: while it closes after ``pos`` the
-    # position is argument data, even across several literal function closes.
-    # Only an unclosed parameter falls back to the first function close
-    # (mirrors tool_call_parser._inside_open_parameter).
+    # The parameter's OWN close tag decides: if it closes after ``pos`` the position is
+    # argument data (even across literal function closes); an unclosed one falls back to func close.
     own_close = content.find(_PARAM_CLOSE_TAG, last_param_start)
     if own_close >= 0:
         return own_close > pos
@@ -336,6 +337,68 @@ def _trim_param_value(val: str) -> str:
     return val
 
 
+def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
+    """Coverage ``[start, end]`` per marker, used to skip markers that are another
+    call's data. Closes pair to markers via a per-format stack so an inner close
+    is not mistaken for the outer's. Unbalanced braces cover to EOF; balanced with
+    a paired close cover through it (markers before the close are data); balanced
+    without one cover only the braces, so a later sibling is still recovered."""
+    n = len(content)
+    brace_regions = [(s, be) for (s, be, _k, _m) in markers if be >= 0]
+    events = []  # (position, order) with order 0 = braces-done, 1 = close marker
+    for idx, (_start, brace_end, _kind, _m) in enumerate(markers):
+        if brace_end >= 0:
+            events.append((brace_end, 0, _kind, idx))
+    for kind, close_re in (("json", _TC_END_TAG_RE), ("gemma", _TC_GEMMA_END_TAG_RE)):
+        for cm in close_re.finditer(content):
+            # A close inside another call's balanced braces is quoted data; it
+            # must not pop an earlier close-less marker and swallow a sibling.
+            if any(s < cm.start() < be for s, be in brace_regions):
+                continue
+            events.append((cm.start(), 1, kind, cm.end()))
+    events.sort(key = lambda e: (e[0], e[1]))
+    waiting = {"json": [], "gemma": []}
+    close_end_for: dict[int, int] = {}
+    for _pos, order, kind, payload in events:
+        if order == 0:
+            waiting[kind].append(payload)  # marker index, now awaiting its close
+        elif waiting[kind]:
+            close_end_for[waiting[kind].pop()] = payload  # innermost open marker closes here
+    coverage = []
+    for idx, (start, brace_end, _kind, _m) in enumerate(markers):
+        if brace_end < 0:
+            coverage.append((start, n))
+        elif idx in close_end_for:
+            coverage.append((start, close_end_for[idx]))
+        else:
+            coverage.append((start, brace_end))
+    return coverage
+
+
+def _build_markers(content: str):
+    """JSON/Gemma tool markers as ``(start, brace_end, kind, match)`` in document
+    order; ``brace_end < 0`` marks an unbalanced (to-EOF) open."""
+    markers = []
+    for start_re, gemma, kind in (
+        (_TC_JSON_START_RE, False, "json"),
+        (_TC_GEMMA_START_RE, True, "gemma"),
+    ):
+        for m in start_re.finditer(content):
+            if _inside_open_parameter(content, m.start()):
+                continue
+            brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
+            markers.append((m.start(), brace_end, kind, m))
+    markers.sort(key = lambda c: c[0])
+    return markers
+
+
+def marker_coverage(content: str) -> list[tuple[int, int]]:
+    """Coverage spans of JSON/Gemma tool markers so other parsers can treat markup
+    inside a marker's coverage (even a marker that failed to parse) as that call's
+    data rather than a sibling call."""
+    return _marker_coverage(content, _build_markers(content))
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -357,37 +420,26 @@ def parse_tool_calls_from_text(
     """
     tool_calls: list[dict] = []
     call_spans: list[tuple] = []
-    # Collect every supported call format with spans, then emit in document
-    # order. A marker inside another call's argument string is data, not a
-    # separate executable call.
-    parsed_items = []  # (start, span_end, name, arguments)
-    candidates = []  # (start, brace_end, kind, match)
-    for m in _TC_JSON_START_RE.finditer(content):
-        if _inside_open_parameter(content, m.start()):
+    # Collect JSON/Gemma markers; _marker_coverage decides nesting. A marker inside
+    # another call's coverage, or an open <parameter=> value, is data not executed.
+    markers = _build_markers(content)
+    coverage = _marker_coverage(content, markers)
+    parsed_items = []  # (start, span_end, name, arguments) in document order
+    for idx, (start, brace_end, kind, m) in enumerate(markers):
+        # A marker starting inside another's coverage is that call's data. The
+        # end is exclusive so a marker at a close's end is an adjacent sibling.
+        if any(s <= start < e for j, (s, e) in enumerate(coverage) if j != idx):
             continue
-        end = _balanced_brace_end(content, m.end() - 1)
-        if end >= 0:
-            candidates.append((m.start(), end, "json", m))
-    for m in _TC_GEMMA_START_RE.finditer(content):
-        if _inside_open_parameter(content, m.start()):
-            continue
-        end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = True)
-        if end >= 0:
-            candidates.append((m.start(), end, "gemma", m))
-    candidates.sort(key = lambda c: c[0])
-
-    candidate_spans = [(s, e) for s, e, _kind, _m in candidates]
-    for idx, (start, end, kind, m) in enumerate(candidates):
-        if any(s <= start and end <= e for j, (s, e) in enumerate(candidate_spans) if j != idx):
-            continue
+        if brace_end < 0:
+            continue  # unclosed: not parseable; the fallback still excludes its XML
         if not allow_incomplete:
-            tail = content[end + 1 :].lstrip()
+            tail = content[brace_end + 1 :].lstrip()
             close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
             if close_re.match(tail) is None:
                 continue
         try:
             if kind == "json":
-                obj = json.loads(content[m.end() - 1 : end + 1])
+                obj = json.loads(content[m.end() - 1 : brace_end + 1])
                 name = obj.get("name", "")
                 # Accept ``parameters`` alias for ``arguments`` (Llama-3.2 drift inside a Hermes <tool_call>).
                 arguments = obj.get("arguments")
@@ -397,10 +449,11 @@ def parse_tool_calls_from_text(
                     arguments = json.dumps(arguments)
             else:
                 name = m.group(1)
-                arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : end]))
+                arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : brace_end]))
         except (json.JSONDecodeError, ValueError):
             continue
-        span_end = end + 1
+        # Span reaches through the close tag when present, else just the braces.
+        span_end = brace_end + 1
         close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
         ws = len(content[span_end:]) - len(content[span_end:].lstrip())
         close_m = close_re.match(content, span_end + ws)
@@ -408,11 +461,15 @@ def parse_tool_calls_from_text(
             span_end = close_m.end()
         parsed_items.append((start, span_end, name, arguments))
 
+    # Function-XML calls promote in document order alongside marker calls (the
+    # #6801 contract). A <function=> inside any marker's coverage is excluded --
+    # even if that marker failed to parse -- so nested XML cannot escape; one
+    # after a balanced close-less marker is a sibling, not swallowed to EOF.
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
         if not _inside_open_parameter(content, fm.start())
-        and not any(s <= fm.start() <= e for s, e in candidate_spans)
+        and not any(s <= fm.start() < e for s, e in coverage)
     ]
     for idx, fm in enumerate(func_starts):
         func_name = fm.group(1)
@@ -488,90 +545,104 @@ def parse_tool_calls_from_text(
         )
         call_spans.append((start, span_end))
 
-    if not tool_calls:
-        func_starts = [
-            fm
-            for fm in _TC_FUNC_START_RE.finditer(content)
-            if not _inside_open_parameter(content, fm.start())
-        ]
-        for idx, fm in enumerate(func_starts):
-            func_name = fm.group(1)
-            body_start = fm.end()
-            next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-            end_tag = _TC_END_TAG_RE.search(content[body_start:])
-            if end_tag:
-                body_end = body_start + end_tag.start()
-            else:
-                body_end = len(content)
-            body_end = min(body_end, next_func)
-            body = content[body_start:body_end]
-            # Span for with_spans callers: the whole wrapperless call, through its
-            # </function> close when present, else the scanned body end.
-            span_end = body_end
-            if not allow_incomplete:
-                close_idx = _func_close_index(content, body_start, body)
-                if close_idx < 0:
-                    continue
-                body = body[:close_idx]
-                span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
-            else:
-                # Terminate at the real close so trailing prose doesn't leak
-                # into the value; no close -> keep whole body.
-                close_idx = _func_close_index(content, body_start, body)
-                if close_idx >= 0:
-                    body = body[:close_idx]
-                    span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
-
-            arguments: dict = {}
-            param_starts = list(_TC_PARAM_START_RE.finditer(body))
-            if len(param_starts) == 1:
-                pm = param_starts[0]
-                val = body[pm.end() :]
-                if not allow_incomplete:
-                    stripped_val = val.rstrip()
-                    if not stripped_val.endswith(_PARAM_CLOSE_TAG):
-                        continue
-                    val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
-                else:
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)
-                arguments[pm.group(1)] = _trim_param_value(val)
-            else:
-                valid_params = True
-                for pidx, pm in enumerate(param_starts):
-                    param_name = pm.group(1)
-                    val_start = pm.end()
-                    next_param = (
-                        param_starts[pidx + 1].start()
-                        if pidx + 1 < len(param_starts)
-                        else len(body)
-                    )
-                    val = body[val_start:next_param]
-                    if not allow_incomplete:
-                        stripped_val = val.rstrip()
-                        if not stripped_val.endswith(_PARAM_CLOSE_TAG):
-                            valid_params = False
-                            break
-                        val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
-                    else:
-                        val = _TC_PARAM_CLOSE_RE.sub("", val)
-                    arguments[param_name] = _trim_param_value(val)
-                if not valid_params:
-                    continue
-
-            tc = {
-                "id": f"call_{id_offset + len(tool_calls)}",
-                "type": "function",
-                "function": {
-                    "name": func_name,
-                    "arguments": json.dumps(arguments),
-                },
-            }
-            tool_calls.append(tc)
-            call_spans.append((fm.start(), span_end))
-
     if with_spans:
         return tool_calls, call_spans
     return tool_calls
+
+
+def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
+    """Remove complete Gemma-native spans, brace/quote-balanced so a literal
+    ``<tool_call|>`` in a quoted argument cannot truncate the span. An incomplete
+    span is dropped to EOF when ``final``, else kept (still streaming)."""
+    out: list[str] = []
+    cursor = 0
+    for match in _TC_GEMMA_START_RE.finditer(text):
+        start = match.start()
+        if start < cursor:
+            continue
+        brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
+        if brace_end < 0:
+            # Unbalanced: nothing completes from here on. Drop the rest if final,
+            # else keep it; stop either way (rescanning would be quadratic).
+            if final:
+                out.append(text[cursor:start])
+                cursor = len(text)
+            break
+        # Junk between } and <tool_call|> is malformed-call markup: strip through
+        # the close, keep text after it. No close anywhere means stop (linear).
+        close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
+        if close is None:
+            if final:
+                out.append(text[cursor:start])
+                cursor = len(text)
+            break
+        out.append(text[cursor:start])
+        cursor = close.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _gemma_span_ranges(text: str) -> list:
+    """``(start, end)`` of each complete Gemma-native span; same walk as
+    ``_strip_gemma_native_spans`` without stripping."""
+    ranges: list[tuple] = []
+    cursor = 0
+    for match in _TC_GEMMA_START_RE.finditer(text):
+        start = match.start()
+        if start < cursor:
+            continue
+        brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
+        if brace_end < 0:
+            break
+        close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
+        if close is None:
+            break
+        ranges.append((start, close.end()))
+        cursor = close.end()
+    return ranges
+
+
+def _strip_closed_blocks_outside_gemma(text: str) -> str:
+    """Closed JSON/function pre-pass that skips matches starting inside a complete
+    Gemma span: deleting across the span boundary would mangle the Gemma close and
+    truncate the tail. A skipped match resumes at the covering span's end, so a
+    real function-XML call after the span is still stripped."""
+    ranges = _gemma_span_ranges(text)
+    if not ranges:
+        return strip_tool_patterns(text, _TOOL_CLOSED_BLOCK_PATS)
+    for pat in _TOOL_CLOSED_BLOCK_PATS:
+        token = _PAT_REQUIRED_TOKEN.get(pat)
+        if token is not None and token not in text:
+            continue
+        out: list[str] = []
+        pos = 0
+        while True:
+            m = pat.search(text, pos)
+            if m is None:
+                out.append(text[pos:])
+                break
+            covering = next((r for r in ranges if r[0] <= m.start() < r[1]), None)
+            if covering is not None:
+                out.append(text[pos : covering[1]])
+                pos = covering[1]
+                continue
+            out.append(text[pos : m.start()])
+            pos = m.end()
+        new_text = "".join(out)
+        if new_text != text:
+            text = new_text
+            ranges = _gemma_span_ranges(text)
+    return text
+
+
+def strip_tool_markup_final(text: str) -> str:
+    """Final display strip, shared with the streaming wrappers so all paths order
+    the passes identically: Gemma-aware closed JSON/function blocks first, then
+    well-formed Gemma spans (quote-aware), then the regex sweeps mop up malformed
+    spans and drop any unclosed remainder to EOF. Whitespace is kept."""
+    text = _strip_closed_blocks_outside_gemma(text)
+    text = _strip_gemma_native_spans(text, final = True)
+    return strip_tool_patterns(text, _TOOL_ALL_PATS)
 
 
 def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
@@ -581,7 +652,9 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
     """
-    patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    for pat in patterns:
-        text = pat.sub("", text)
-    return text.strip() if final else text
+    if final:
+        return strip_tool_markup_final(text).strip()
+    # Non-final: same ordering as the final path, but incomplete blocks are kept.
+    text = _strip_closed_blocks_outside_gemma(text)
+    text = _strip_gemma_native_spans(text, final = False)
+    return strip_tool_patterns(text, _TOOL_CLOSED_PATS)

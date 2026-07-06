@@ -964,6 +964,26 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
+    # A leading Llama-3 ``<|python_tag|>`` call owns the turn like the others: markup quoted
+    # in a ``.call(...)`` argument is not promoted. tool_healing does not know the tag, so
+    # gate it here. A foreign signal before the tag keeps normal order.
+    py_tag = content.find(_LLAMA3_PYTHON_TAG)
+    if py_tag >= 0:
+        first_other = None
+        for sig in ("<tool_call>", "<|tool_call>", "<function=", _MISTRAL_TRIGGER):
+            p = content.find(sig)
+            if p >= 0 and (first_other is None or p < first_other):
+                first_other = p
+        attr = _ATTR_FUNC_OPEN_RE.search(content)
+        if attr is not None and (first_other is None or attr.start() < first_other):
+            first_other = attr.start()
+        if first_other is None or py_tag < first_other:
+            calls = _parse_llama3_python_tag(
+                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+            )
+            if calls:
+                return calls
+
     # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
     # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
     # ``<|"|>`` quoted-string handling the GGUF path relies on).
@@ -976,14 +996,25 @@ def parse_tool_calls_from_text(
         return calls
 
     # Formats tool_healing does not cover; these run only after it finds
-    # nothing, so a strict-rejected call is never re-healed here.
+    # nothing, so a strict-rejected call is never re-healed here. Blank any
+    # JSON/Gemma marker coverage first: markup inside a marker's span (even one
+    # that failed to parse) is that call's data, not a sibling, so a nested
+    # ``<function=...>`` / ``<|python_tag|>`` / ``[TOOL_CALLS]`` must not be promoted.
+    fallback_content = content
+    coverage = _tool_healing.marker_coverage(content)
+    if coverage:
+        chars = list(content)
+        for cov_start, cov_end in coverage:
+            for i in range(cov_start, min(cov_end, len(chars))):
+                chars[i] = " "
+        fallback_content = "".join(chars)
     for parser in (
         _parse_glm_tool_calls,  # GLM 4.x <tool_call>name
         _parse_function_xml,  # <function name="..."> attribute form
         _parse_llama3_python_tag,  # Llama-3 <|python_tag|>
         _parse_mistral_tool_calls,  # Mistral [TOOL_CALLS]
     ):
-        calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+        calls = parser(fallback_content, id_offset = id_offset, allow_incomplete = allow_incomplete)
         if calls:
             return calls
 
