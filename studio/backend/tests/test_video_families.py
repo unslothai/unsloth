@@ -164,7 +164,10 @@ def test_wan_snap_video_size_16():
     # Wan patchifies at spatial factor 8 * patch 2 = 16; sizes floor to /16.
     fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert fam.resolution_multiple == 16
-    assert snap_video_size(fam, 1280, 704) == (1280, 704)  # on-grid preset
+    # A14B's native 720p is the true 16:9 1280x720 (720 = 45*16 renders exactly on the /16 grid),
+    # NOT the 1280x704 that TI2V-5B's /32 VAE floors to. The default preset is that native 720p.
+    assert fam.resolution_presets[0] == (1280, 720)
+    assert snap_video_size(fam, 1280, 720) == (1280, 720)  # native 720p, on-grid
     assert snap_video_size(fam, 1000, 700) == (992, 688)
 
 

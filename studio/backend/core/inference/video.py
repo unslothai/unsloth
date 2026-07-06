@@ -838,6 +838,14 @@ class VideoBackend:
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        if getattr(fam, "vae_force_fp32", False):
+            # Wan's VAE must decode in float32, but a scalar torch_dtype casts EVERY component
+            # (VAE included) to the pipe dtype during load -- AutoencoderKLWan has no
+            # _keep_in_fp32_modules, so from_pretrained truncates its fp32 weights to bf16 and a
+            # later .to(float32) only widens the already-lossy values (banding / black frames).
+            # diffusers >= 0.39 takes a per-component dtype dict, so load the VAE at fp32 directly;
+            # "default" MUST be set or unlisted components fall back to fp32 (over-widening the DiT).
+            pipe_kwargs["torch_dtype"] = {"vae": torch.float32, "default": dtype}
         if hf_token:
             pipe_kwargs["token"] = hf_token
         if kind == "pipeline":
@@ -878,14 +886,14 @@ class VideoBackend:
                     _base_local_dir or base, transformer = transformer, **pipe_kwargs
                 )
 
-        # Wan's VAE decodes in float32: diffusers loads AutoencoderKLWan at torch.float32 while
-        # the pipe runs bf16 (WanPipeline docstring). from_pretrained above cast every component
-        # (VAE included) to the pipe dtype, so pin the VAE back to fp32 or every clip decodes with
-        # banding / black frames. bf16_components_gb already budgets the VAE at its fp32 size, so
-        # the memory plan stays consistent.
-        if getattr(fam, "vae_force_fp32", False) and getattr(pipe, "vae", None) is not None:
-            import torch
-            pipe.vae.to(torch.float32)
+        # The per-component torch_dtype above already loads the Wan VAE at float32 (bf16_components_gb
+        # budgets it at that fp32 size, so the memory plan stays consistent). Belt-and-suspenders for
+        # any path that bypassed the dict (e.g. a passed-in vae=): re-pin an fp32-force VAE that came
+        # back at a lower precision. This is a no-op on the primary path (the load already fp32'd it).
+        if getattr(fam, "vae_force_fp32", False):
+            vae = getattr(pipe, "vae", None)
+            if vae is not None and getattr(vae, "dtype", None) is not torch.float32:
+                vae.to(torch.float32)
 
         if _load_token is not None and _load_token != self._load_token:
             del pipe

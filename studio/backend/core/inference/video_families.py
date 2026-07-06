@@ -191,9 +191,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_fps = 16,
         frame_step = 4,
         resolution_multiple = 16,
-        # 480p and 720p presets (landscape, vertical, square), the two resolutions the
-        # A14B card documents. 832x480 is the native 480p; 1280x704 the 720p target.
-        resolution_presets = ((1280, 704), (832, 480), (480, 832), (704, 1280)),
+        # 480p and 720p presets (landscape + vertical), the two resolutions the A14B card
+        # documents. 832x480 is the native 480p; 1280x720 the native 720p (true 16:9). A14B's
+        # VAE is 8x so resolution_multiple is 16 and 720 (= 45*16) renders exactly -- the 704
+        # value belongs to TI2V-5B, whose 16x VAE floors 720 to 704 (multiple 32).
+        resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
         # bf16-RESIDENT sizes. Each expert ships FP32 on disk (safetensors headers are F32;
         # transformer index = 57.15 GB = 14.3B params x 4), so bf16-resident is ~28.6 each ->
         # ~57.2 for BOTH experts (the memory headline before offload), NOT the 114.3 fp32
