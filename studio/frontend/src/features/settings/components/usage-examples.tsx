@@ -27,6 +27,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
+import { loadCodingAgents } from "../api/coding-agents";
 import {
   type OpenAIAutoSwitchSettings,
   loadOpenAIAutoSwitchSettings,
@@ -113,6 +114,26 @@ const DOC_LINKS = [
   { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
   { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
+
+// Falls back to this list until the backend's installed-CLI check resolves;
+// kept in sync with the `unsloth start <agent>` subcommands and with
+// CODING_AGENTS in studio/backend/utils/coding_agents.py.
+const DEFAULT_AGENTS = [
+  "claude",
+  "codex",
+  "openclaw",
+  "opencode",
+  "hermes",
+  "pi",
+];
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  openclaw: "OpenClaw",
+  opencode: "OpenCode",
+  hermes: "Hermes",
+  pi: "Pi",
+};
 
 const j = (s: string): string => JSON.stringify(s);
 const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
@@ -443,6 +464,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
+  const [agent, setAgent] = useState<string>("claude");
+  const [availableAgents, setAvailableAgents] =
+    useState<string[]>(DEFAULT_AGENTS);
+  const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
@@ -452,6 +477,30 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadCodingAgents()
+      .then((info) => {
+        if (cancelled) return;
+        setAvailableAgents(info.agents);
+        setDetectedAgents(info.detected);
+        // Only steer the default once: prefer an agent that's actually
+        // installed over the hardcoded "claude" starting point, but never
+        // override a choice the user has already made in this session.
+        setAgent((current) =>
+          info.detected.length > 0 && !info.detected.includes(current)
+            ? info.detected[0]
+            : current,
+        );
+      })
+      .catch(() => {
+        // Best-effort: keep the default agent list and let the user pick manually.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -481,8 +530,8 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   );
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
-    () => buildAgentCommand(base, key, os),
-    [base, key, os],
+    () => buildAgentCommand(base, key, os, agent),
+    [base, key, os, agent],
   );
 
   const osAware = OS_AWARE[lang];
@@ -710,6 +759,39 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <span className="text-[11px] leading-snug text-muted-foreground">
             {t("settings.apiKeys.codingAgentsHint")}
           </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {availableAgents.map((id) => {
+              const installed = detectedAgents.includes(id);
+              const active = agent === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setAgent(id)}
+                  aria-pressed={active}
+                  title={
+                    installed
+                      ? t("settings.apiKeys.codingAgentDetected")
+                      : undefined
+                  }
+                  className={cn(
+                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    active
+                      ? "hub-tab-toggle-pill text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {AGENT_LABELS[id] ?? id}
+                  {installed ? (
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full bg-emerald-500"
+                    />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
           <div className="relative mt-0.5 min-w-0">
             <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[11px] text-foreground">
               {agentCommand}
@@ -727,7 +809,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             </button>
           </div>
           <span className="text-[11px] leading-snug text-muted-foreground">
-            {t("settings.apiKeys.codingAgentsSwap")}
+            {detectedAgents.length > 0
+              ? t("settings.apiKeys.codingAgentsDetectedHint", {
+                  agents: detectedAgents
+                    .map((id) => AGENT_LABELS[id] ?? id)
+                    .join(", "),
+                })
+              : t("settings.apiKeys.codingAgentsSwap")}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">

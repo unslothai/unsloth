@@ -32,6 +32,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -172,6 +173,21 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+class CodingAgentsResponse(BaseModel):
+    # All agents `unsloth start` supports, in the CLI's declared order.
+    agents: list[str] = list(CODING_AGENTS)
+    # Subset of `agents` whose CLI binary was found on PATH; the frontend uses
+    # this to default the API-keys panel to a command the user can run as-is.
+    detected: list[str]
+
+
+@router.get("/coding-agents", response_model = CodingAgentsResponse)
+def get_coding_agents(
+    current_subject: str = Depends(get_current_subject),
+) -> CodingAgentsResponse:
+    return CodingAgentsResponse(detected = detect_installed_coding_agents())
 
 
 @router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
