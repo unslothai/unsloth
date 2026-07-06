@@ -530,13 +530,23 @@ def parse_tool_calls_from_text(
 
     # Formats tool_healing does not cover: ``<function name="...">`` (MiniCPM-5 / MiniMax-M2),
     # Llama-3 and Mistral. Run only after tool_healing found nothing, so a strict-rejected
-    # call is never re-healed here.
+    # call is never re-healed here. Blank any JSON/Gemma marker coverage first: markup inside
+    # a marker's span (even one that failed to parse) is that call's data, not a sibling, so
+    # a nested ``<function=...>`` / ``<|python_tag|>`` / ``[TOOL_CALLS]`` must not be promoted.
+    fallback_content = content
+    coverage = _tool_healing.marker_coverage(content)
+    if coverage:
+        chars = list(content)
+        for cov_start, cov_end in coverage:
+            for i in range(cov_start, min(cov_end, len(chars))):
+                chars[i] = " "
+        fallback_content = "".join(chars)
     for parser in (
         _parse_function_xml,  # <function name="..."> attribute form
         _parse_llama3_python_tag,  # Llama-3 <|python_tag|>
         _parse_mistral_tool_calls,  # Mistral [TOOL_CALLS]
     ):
-        calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+        calls = parser(fallback_content, id_offset = id_offset, allow_incomplete = allow_incomplete)
         if calls:
             return calls
 
