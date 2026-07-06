@@ -86,6 +86,7 @@ __all__ = [
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "get_moe_target_parameters",
+    "_select_moe_detection_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -3913,8 +3914,25 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
         return {target_modules}
 
     is_regex = re.search(r"[*+?()[\]{}|\\^$]", target_modules) is not None
-    targets_mlp = "mlp" in target_modules or "ffn" in target_modules
-    if is_regex and "proj" in target_modules and targets_mlp:
+    # Key detection on the mlp/ffn/experts path segment (absent from an
+    # attention-only regex), never on q/k/v/o leaves alone.
+    targets_mlp_path = any(
+        tag in target_modules for tag in ("mlp", "ffn", "feed_forward", "experts")
+    )
+    if not is_regex or not targets_mlp_path:
+        return set()
+    # Explicit expert leaves scope the target set to exactly those leaves.
+    named = {name for name in _MOE_BROAD_MLP_TARGETS if name in target_modules}
+    if named:
+        return named
+    # A generic projection under an mlp path (e.g. ".*mlp.*proj"): any proj
+    # occurrence that is not an attention leaf name.
+    if re.search(r"(?<![qkvo]_)(?<!out_)(?<!in_)proj", target_modules):
+        return set(_MOE_BROAD_MLP_TARGETS)
+    # The auto regex on fused-expert models lists only attention Linears as
+    # leaves; its mlp tag block is the remaining MLP-intent signal. A regex
+    # like "(mlp|self_attn).(q_proj|o_proj)" has neither and stays attention-only.
+    if "mlp|feed_forward|ffn|dense" in target_modules:
         return set(_MOE_BROAD_MLP_TARGETS)
 
     return set()
@@ -3998,6 +4016,31 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         return moe_params
 
     return None
+
+
+def _select_moe_detection_targets(
+    original_target_modules,
+    scoped_target_modules,
+    finetune_mlp_modules = True,
+    finetune_language_layers = True,
+):
+    """Pick what get_moe_target_parameters keys expert detection on.
+
+    Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an
+    attention-only request is not pushed into the experts by get_peft_regex's
+    ``mlp|feed_forward|ffn|dense`` component block (which the string fallback
+    cannot tell apart from a fused-expert auto regex).
+
+    But only when the MLP and language families are BOTH still in scope. If the
+    caller scoped MLP or language OFF (``finetune_mlp_modules=False`` or
+    ``finetune_language_layers=False``) the scoped regex already drops the MoE
+    experts, and reusing the original list -- which may still name gate/up/down
+    leaves -- would wrongly re-introduce them. In that case honor the scoped
+    result so the frozen-MLP / vision-only request is respected.
+    """
+    if original_target_modules is not None and finetune_mlp_modules and finetune_language_layers:
+        return original_target_modules
+    return scoped_target_modules
 
 
 def make_fast_generate_wrapper(original_generate):
