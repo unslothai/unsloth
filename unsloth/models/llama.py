@@ -2420,6 +2420,73 @@ class FastLlamaModel:
 
         preferred_attn_impl = resolve_attention_implementation(model_function, model_config)
 
+        # Prefetch the repo (killable child) so the weight load is a cache hit. Runs after the
+        # AutoConfig/model-class check so an unsupported repo fails on its small config fetch. No
+        # revision: the load resolves model_name (maybe a remapped prequant repo) on its default branch.
+        _prefetched = maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            # Skip the warm only for a real vLLM load; a num_labels classification load still goes
+            # in-process below, so it must be warmed even under fast_inference.
+            fast_inference = fast_inference and num_labels is None,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            from_tf = kwargs.get("from_tf", False),
+            from_flax = kwargs.get("from_flax", False),
+            # Bare load reads only ROOT weights; skip subdir weights. Ignored when a subfolder is set.
+            weights_at_root = True,
+            variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get(
+                "gguf_file"
+            ),  # forward so the warm fetches the GGUF (else ignored)
+        )
+        # Child did the forced download; clear the flag so the load reuses the warm cache.
+        if _prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
+
+        # Tokenizer always loads in-process. Resolve the cache_dir the tokenizer load will actually
+        # use, mirroring load_correct_tokenizer: without an explicit cache_dir, Colab/Kaggle route to
+        # a special tokenizer cache (huggingface_tokenizers_cache / Kaggle tmp), NOT the HF-default
+        # cache the base snapshot warmed. So the base warm does not cover the tokenizer there.
+        from ..tokenizer_utils import (
+            IS_COLAB_ENVIRONMENT,
+            IS_KAGGLE_ENVIRONMENT,
+            KAGGLE_TMP,
+        )
+
+        _tokenizer_repo = (
+            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
+        )
+        _tokenizer_cache_dir = kwargs.get("cache_dir")
+        if _tokenizer_cache_dir is None:
+            if IS_COLAB_ENVIRONMENT:
+                _tokenizer_cache_dir = "huggingface_tokenizers_cache"
+            elif IS_KAGGLE_ENVIRONMENT:
+                _tokenizer_cache_dir = os.path.join(KAGGLE_TMP, "huggingface_tokenizers_cache")
+        # Warm the tokenizer repo into the cache the load will use whenever the base warm did not
+        # cover it: a distinct tokenizer repo, fast_inference (base warm skipped), or a tokenizer
+        # cache_dir that differs from the base-warm cache_dir (Colab/Kaggle special cache).
+        _warm_tokenizer_repo = (
+            isinstance(_tokenizer_repo, str)
+            and bool(_tokenizer_repo)
+            and (
+                _tokenizer_repo != model_name
+                or fast_inference
+                or _tokenizer_cache_dir != kwargs.get("cache_dir")
+            )
+        )
+        if _warm_tokenizer_repo:
+            maybe_prefetch_hf_snapshot(
+                _tokenizer_repo,
+                token = token,
+                cache_dir = _tokenizer_cache_dir,
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         has_rope_scaling = False
         try:
             with open(inspect.getfile(model_function), "r", encoding = "utf-8") as file:
@@ -2672,6 +2739,10 @@ class FastLlamaModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
+        # Route the tokenizer load to the custom cache_dir the prefetch warmed.
+        _tokenizer_cache_kwargs = {}
+        if kwargs.get("cache_dir") is not None:
+            _tokenizer_cache_kwargs["cache_dir"] = kwargs["cache_dir"]
         tokenizer = load_correct_tokenizer(
             tokenizer_name = tokenizer_name,
             model_max_length = max_position_embeddings,
@@ -2679,6 +2750,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
+            **_tokenizer_cache_kwargs,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -2805,6 +2877,7 @@ class FastLlamaModel:
                 model_max_length = max_position_embeddings,
                 padding_side = "right",
                 token = token,
+                cache_dir = kwargs.get("cache_dir"),
             )
         patch_saving_functions(tokenizer)
 
