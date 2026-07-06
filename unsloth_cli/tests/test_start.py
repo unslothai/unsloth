@@ -92,6 +92,7 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
 
 def test_install_agent_prompts_then_installs(monkeypatch):
     # TTY + yes: run the documented install command, then re-resolve the now-present binary.
+    monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
     ran = []
@@ -106,6 +107,40 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     executable = start._install_agent("codex", "npm install -g @openai/codex")
     assert executable == "/usr/local/bin/codex"
     assert ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+
+
+def test_install_agent_uses_powershell_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, *a, **k: ran.append(command) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: r"C:\Users\samle\bin\hermes.exe")
+
+    install_hint = "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+    executable = start._install_agent("hermes", install_hint)
+
+    assert executable == r"C:\Users\samle\bin\hermes.exe"
+    assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
+
+
+def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+
+    assert start._hermes_install_hint() == "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+
+
+def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+
+    assert start._hermes_install_hint() == (
+        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/scripts/install.sh | bash"
+    )
 
 
 def test_install_agent_declined_returns_none(monkeypatch):

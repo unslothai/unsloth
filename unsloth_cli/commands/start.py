@@ -44,6 +44,11 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
+_HERMES_WINDOWS_INSTALL_HINT = "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+_HERMES_POSIX_INSTALL_HINT = (
+    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+    "/main/scripts/install.sh | bash"
+)
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression
 # overrides in config.yaml. write_hermes_config claims this value for smaller
@@ -130,6 +135,10 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
+
+
+def _hermes_install_hint() -> str:
+    return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
 
 
 class LoadOptions(NamedTuple):
@@ -1416,10 +1425,7 @@ def hermes(
         launch = launch,
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
-    install_hint = (
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash"
-    )
+    install_hint = _hermes_install_hint()
     with _session_config("hermes", launch) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
