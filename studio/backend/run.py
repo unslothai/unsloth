@@ -12,6 +12,79 @@ import time
 from pathlib import Path
 from typing import Optional
 
+
+def _fix_torch_cuda_ld_path():
+    """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH.
+
+    PyTorch wheels ship their own CUDA runtime (libcudart, libcublas, ...) in
+    ``site-packages/nvidia/*/lib``. On Linux the dynamic linker reads
+    LD_LIBRARY_PATH before the RUNPATH baked into torch's .so files, so a
+    pre-existing LD_LIBRARY_PATH pointing at a different system CUDA (e.g.
+    /usr/local/cuda-13/lib64 from conda or a Docker base image) shadows torch's
+    libs and triggers "undefined symbol" errors when torch is imported. Detect
+    torch's lib dirs (without importing torch) and prepend them. Returns True if
+    LD_LIBRARY_PATH was changed.
+    """
+    if sys.platform != "linux":
+        return False
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    if not ld_path:
+        return False
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("torch")
+        if not spec or not spec.origin:
+            return False
+        torch_dir = os.path.dirname(spec.origin)
+        site_pkgs = os.path.dirname(torch_dir)
+        nvidia_dir = os.path.join(site_pkgs, "nvidia")
+
+        lib_dirs = []
+        torch_lib = os.path.join(torch_dir, "lib")
+        if os.path.isdir(torch_lib):
+            lib_dirs.append(torch_lib)
+        if os.path.isdir(nvidia_dir):
+            for sub in sorted(os.listdir(nvidia_dir)):
+                lib = os.path.join(nvidia_dir, sub, "lib")
+                if os.path.isdir(lib):
+                    lib_dirs.append(lib)
+        if not lib_dirs:
+            return False
+
+        existing = ld_path.split(":")
+        if existing[: len(lib_dirs)] == lib_dirs:
+            return False  # already at the front, nothing to do
+
+        torch_set = set(lib_dirs)
+        cleaned = [p for p in existing if p not in torch_set]
+        os.environ["LD_LIBRARY_PATH"] = ":".join(lib_dirs + cleaned)
+        return True
+    except Exception:
+        return False
+
+
+_LD_FIXED_SENTINEL = "_UNSLOTH_STUDIO_LD_FIXED"
+
+
+def _maybe_reexec_for_cuda_ld_path():
+    """Re-exec once so the dynamic linker sees the corrected LD_LIBRARY_PATH.
+
+    LD_LIBRARY_PATH is read at process start, so editing os.environ in-process
+    cannot fix the running interpreter; a single re-exec is required. Call only
+    from a true entry point (the ``if __name__ == "__main__"`` block), never at
+    import time, because os.execv replaces the whole process (an embedder such
+    as Colab that does ``from run import run_server`` must not be re-exec'd).
+    """
+    if _LD_FIXED_SENTINEL in os.environ:
+        return
+    if not _fix_torch_cuda_ld_path():
+        return
+    os.environ[_LD_FIXED_SENTINEL] = "1"
+    argv = getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv]
+    os.execv(sys.executable, argv)
+
+
 # Suppress C-level dependency warnings globally (e.g. SwigPyPacked).
 os.environ["PYTHONWARNINGS"] = "ignore"
 
@@ -1457,6 +1530,12 @@ def _build_arg_parser():
 
 # For direct execution (also invoked by CLI via os.execvp / subprocess).
 if __name__ == "__main__":
+    # Correct a conflicting system CUDA on LD_LIBRARY_PATH before torch is
+    # imported (below, via run_server). Re-execs once on Linux so the dynamic
+    # linker uses torch's bundled CUDA libs; no-op on other platforms, when
+    # LD_LIBRARY_PATH is unset or already correct, or after the single re-exec.
+    _maybe_reexec_for_cuda_ld_path()
+
     import signal
     import traceback
 
