@@ -891,8 +891,8 @@ class DiffusionBackend:
 
     @staticmethod
     def _safetensors_param_count(path: Path) -> int:
-        """Total tensor elements in a safetensors file, read from its JSON header (an
-        8-byte little-endian length prefix then the header) without touching tensor data."""
+        """Total tensor elements in a safetensors file, read from its JSON header without
+        touching the tensor data. 0 on any read/parse failure."""
         try:
             with open(path, "rb") as fh:
                 header_len = int.from_bytes(fh.read(8), "little")
@@ -1062,7 +1062,7 @@ class DiffusionBackend:
                 if dense_quant_requested and dense_fits:
                     scheme = select_transformer_quant_scheme(
                         target,
-                        normalize_transformer_quant(transformer_quant),
+                        transformer_quant,  # normalized above
                         family = getattr(fam, "name", None),
                     )
                     prequant = (
@@ -1135,7 +1135,7 @@ class DiffusionBackend:
                     logger.warning(
                         "diffusion.transformer_quant: %s requested but the dense fast path needs "
                         "a resident load that doesn't fit here; loading GGUF without dense quant",
-                        normalize_transformer_quant(transformer_quant),
+                        transformer_quant,  # normalized above
                     )
 
                 if pipe is None:
