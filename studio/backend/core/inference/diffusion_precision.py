@@ -126,6 +126,7 @@ def quantize_text_encoders(
         return None
     if mode == TE_QUANT_INT8:
         first, last = skip  # type: ignore[misc]
+
         def caster(enc: Any, tgt: Any) -> None:
             _cast_int8_selective(enc, tgt, first, last)
     elif mode == TE_QUANT_FP8_DYNAMIC:
@@ -199,7 +200,7 @@ def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: 
             return False
         return not any(fqn == k or fqn.startswith(k + ".") for k in keep)
 
-    quantize_(encoder, _make_quant_config(TQ_INT8), filter_fn=filter_fn)
+    quantize_(encoder, _make_quant_config(TQ_INT8), filter_fn = filter_fn)
 
 
 def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
@@ -216,7 +217,7 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
     )
 
     filter_fn = make_filter_fn(DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder))
-    quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn=filter_fn)
+    quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn = filter_fn)
 
 
 def _cast_fp8(encoder: Any, target: Any) -> None:
