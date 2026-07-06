@@ -3205,9 +3205,10 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # Build the array directly: an if-expression collapses @("x") to a scalar string,
     # which @splat would then enumerate char-by-char into broken single-letter args.
     $cpuForce = @()
+    if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     # --force-reinstall also on a pin change: a stale +cu / +rocm wheel still
     # satisfies the CPU torch>= range, so uv would keep it and only swap companions.
-    if ($ROCmCpuFallback -or $script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
+    if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
