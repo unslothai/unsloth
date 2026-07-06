@@ -1818,6 +1818,15 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
+            # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
+            try:
+                from unsloth_zoo.temporary_patches.moe_grouped_modulelist import (
+                    auto_enable_grouped_moe,
+                )
+                auto_enable_grouped_moe(model)
+            except Exception:
+                pass  # optional speedup; never block model loading
 
         # Apply QAT if specified
         if qat_scheme is not None:
