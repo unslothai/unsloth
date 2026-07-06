@@ -21,9 +21,13 @@ from typing import Callable, Generator, Optional
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
+    _GEMMA_BARE_TC_PREFIX_RE,
+    _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
     _strip_function_xml_calls,
+    _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
     _strip_mistral_closed_calls,
     _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
@@ -59,8 +63,8 @@ _MAX_BUFFER_CHARS = 32
 # Memory bound for holding a leading bare-JSON object whose top-level "{" never balances.
 _MAX_BARE_JSON_BUFFER = 16384
 
-# Forward-looking intent ("I'll", "First,", "Step 1:") = planning; nudge a call. Negative
-# lookahead drops negated forms ("I will not"). Mirrors GGUF.
+# Forward-looking intent ("I'll", "First,", "Step 1:") = planning, not answering; nudge a call.
+# Negative lookahead drops negated forms ("I will not") so a refusal doesn't trigger it. Mirrors GGUF.
 _INTENT_SIGNAL = re.compile(
     r"(?i)("
     r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
@@ -70,10 +74,14 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 _REPROMPT_MAX_CHARS = 2000
-# Templated so the nudge names the caller's enabled tools. Mirrors GGUF tool_hint.
+# Templated so the nudge names the caller's enabled tools, not a hardcoded set. Mirrors GGUF tool_hint.
 _REPROMPT_INSTRUCTION_TEMPLATE = (
     "STOP. Do NOT write code or explain. You MUST call a tool NOW. Call {tool_hint} immediately."
 )
+
+# No grammar constraint here (unlike llama-server's lazy grammar): collapse
+# exact-duplicate calls and cap the count so a runaway turn cannot fan out.
+_MAX_TOOL_CALLS_PER_TURN = 8
 
 
 def _active_tool_names(active_tools: list[dict]) -> list[str]:
@@ -90,16 +98,25 @@ def strip_tool_markup_streaming(
     *,
     auto_heal_tool_calls: bool = True,
     tool_protocol_active: bool = False,
+    enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Strip open-ended tool XML from display text without trimming whitespace."""
+    """Strip open-ended tool XML from display text without trimming whitespace.
+    ``enabled_tool_names`` gates the markerless Gemma ``call:NAME{...}`` strip so a
+    disabled/example name in prose is kept (mirrors the parser gate)."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    # Mirror the final strip (no final trim): drop a leading Magistral ``[THINK]...[/THINK]``
-    # block, then Mistral calls, then a parser-accurate function-XML scan before the regex
-    # arms. An unclosed ``[THINK]`` holds until ``[/THINK]`` so text stays monotonic.
+    # Mirror the final strip's scan order so streaming and final display agree:
+    # balanced strips first (nested JSON removed whole), then the guarded
+    # function-XML/GLM scans that close at each call's REAL terminator, so literal
+    # markup inside argument values is data and trailing prose survives. No final
+    # trim so streaming length comparisons hold. Leading Magistral [THINK]...[/THINK]
+    # is dropped (bracket form, not the reasoning channel's <think>); an unclosed
+    # [THINK] holds until [/THINK] so the cleaned text stays monotonic.
     text = _strip_mistral_reasoning(text)
     text = _strip_mistral_closed_calls(text)
+    text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
     text = _strip_function_xml_calls(text, final = True)
+    text = _strip_glm_calls(text, final = True)
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text
@@ -110,10 +127,11 @@ def _strip_tool_markup_final(
     *,
     auto_heal_tool_calls: bool,
     tool_protocol_active: bool = False,
+    enabled_tool_names: Optional[set] = None,
 ) -> str:
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    return strip_tool_markup(text, final = True)
+    return strip_tool_markup(text, final = True, enabled_tool_names = enabled_tool_names)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -247,8 +265,9 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
-    # Only turns that executed a tool count against ``max_tool_iterations``; a no-op or
-    # re-prompt turn must not consume budget (GGUF parity).
+    # Real tool-call turns completed. Only turns that actually executed a tool count
+    # against ``max_tool_iterations``; a duplicate/disabled no-op correction turn (and a
+    # plan-without-action re-prompt) must not consume budget, matching the GGUF loop.
     _executed_tool_iters = 0
 
     def _tool_succeeded(tool_name: str) -> bool:
@@ -285,7 +304,7 @@ def run_safetensors_tool_loop(
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
-        # Gate the markerless bare-JSON form on enabled names so a JSON answer isn't misread as a call.
+        # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
         detect_state = _state_buffering
@@ -373,6 +392,7 @@ def run_safetensors_tool_loop(
                         before_tool,
                         auto_heal_tool_calls = auto_heal_tool_calls,
                         tool_protocol_active = tool_protocol_active,
+                        enabled_tool_names = _enabled_tool_names,
                     )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
@@ -403,6 +423,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_tool_names,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -425,8 +446,9 @@ def run_safetensors_tool_loop(
                     is_prefix = True
                     break
 
-            # Bare Llama-3.2 ``{"name":..,"parameters":..}`` carries no XML signal. Hold a leading
-            # ``{`` (after any sentinel) until it closes: drain if it parses as a call, else stream.
+            # Llama-3.2 ``custom_tools`` emits a bare ``{"name":..,"parameters":..}`` with no XML
+            # signal. Hold a leading ``{`` (after any sentinel) until it closes: drain if it parses
+            # as a call, else stream as content. Non-call text is always recovered downstream.
             bare_probe = strip_llama3_leading_sentinels(stripped)
             if (
                 not is_match
@@ -439,7 +461,7 @@ def run_safetensors_tool_loop(
                         continue  # object still open -- keep buffering
                     elif _looks_like_enabled_bare_json(bare_probe, _enabled_tool_names):
                         # Oversized still-open ENABLED-tool call: stop holding (memory bound) but
-                        # DRAIN, not leak; a giant ordinary JSON answer still streams.
+                        # DRAIN instead of leaking the raw prefix; a giant ordinary JSON answer still streams.
                         detect_state = _state_draining
                         continue
                 elif parse_tool_calls_from_text(
@@ -453,6 +475,35 @@ def run_safetensors_tool_loop(
                     continue
                 # Closed non-call object (or oversized non-call) -- stream as text.
 
+            # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
+            # buffer it here or it streams raw until the end-of-turn safety net.
+            # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
+            if (
+                not is_match
+                and not is_prefix
+                and tool_protocol_active
+                and (
+                    "call:".startswith(stripped)
+                    or _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None
+                    or _GEMMA_BARE_TC_RE.match(stripped) is not None
+                )
+            ):
+                if _GEMMA_BARE_TC_RE.match(stripped):
+                    detect_state = _state_draining
+                    continue
+                # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep
+                # buffering the variable-length name instead of leaking ``call:longname``.
+                # Names can exceed 32 chars (OpenAI 64, MCP longer), so a fixed cap would
+                # flush real calls raw. The prefix regex self-terminates on ordinary prose
+                # and the ``{`` drains above; bound generously like the bare-JSON path.
+                if _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None:
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
+                    detect_state = _state_draining
+                    continue
+                if len(stripped) < _MAX_BUFFER_CHARS:
+                    continue  # bare "call:" prefix still forming
+
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
@@ -461,6 +512,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_tool_names,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -493,6 +545,7 @@ def run_safetensors_tool_loop(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
+                    enabled_tool_names = _enabled_tool_names,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -515,23 +568,25 @@ def run_safetensors_tool_loop(
             elif tool_protocol_active and _looks_like_enabled_bare_json(
                 _bare_eos, _enabled_tool_names
             ):
-                # Held ENABLED-tool bare-JSON fragment has no XML signal; DRAIN it (a JSON answer
-                # falls through to the else and streams, GGUF parity).
+                # A held bare-JSON ENABLED-tool fragment has no XML signal; DRAIN it (an ordinary
+                # JSON answer falls through to the else and streams as content, GGUF parity).
                 detect_state = _state_draining
             else:
                 # Drain and fall through to STREAMING so the intent re-prompt + safety-net parser
                 # still fire on short emissions like "Let me search." that never exit BUFFERING.
                 if content_buffer:
                     cumulative_display += content_buffer
-                    cleaned = strip_tool_markup(cumulative_display, final = True)
+                    cleaned = strip_tool_markup(
+                        cumulative_display, final = True, enabled_tool_names = _enabled_tool_names
+                    )
                     if len(cleaned) > len(last_emitted):
                         last_emitted = cleaned
                         yield {"type": "content", "text": cleaned}
                 detect_state = _state_streaming
 
         if detect_state == _state_streaming:
-            # Run the parser even with no XML signal (bare-JSON carries none); it's strict so
-            # plain answers stay untouched. Mirrors GGUF.
+            # Run the parser even with no XML signal (the Llama-3.2 bare-JSON form carries none); it's
+            # strict so plain answers stay untouched. Mirrors GGUF.
             safety_tc = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
@@ -539,8 +594,8 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_tool_names,
             )
             if not safety_tc:
-                # Re-prompt only when the model planned without acting (intent signal);
-                # "4" / "Hello!" never trigger. Mirrors GGUF.
+                # Re-prompt only when the model planned without acting (intent
+                # signal); "4" / "Hello!" never trigger. Mirrors GGUF.
                 _stripped = content_accum.strip()
                 if (
                     tools
@@ -569,9 +624,9 @@ def run_safetensors_tool_loop(
                     yield {"type": "status", "text": ""}
                     continue
 
-                # Final answer. If a literal tool marker in prose was buffered but never
-                # parsed as a call, restore the raw text so the prose surfaces; route
-                # cleanup still applies the Auto-Heal policy.
+                # Final answer. If a literal tool marker in prose was buffered but
+                # never parsed as a call, restore the raw text so the prose surfaces
+                # in full; route-level cleanup still applies the Auto-Heal policy.
                 if content_accum and any(sig in content_accum for sig in tool_xml_signals):
                     yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}
@@ -581,6 +636,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 tool_protocol_active = True,
+                enabled_tool_names = _enabled_tool_names,
             )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
@@ -603,9 +659,10 @@ def run_safetensors_tool_loop(
                         content_accum,
                         auto_heal_tool_calls = auto_heal_tool_calls,
                         tool_protocol_active = False,
+                        enabled_tool_names = _enabled_tool_names,
                     )
-                    # Drained bare-JSON call that didn't parse: with Auto-Heal on drop the fragment
-                    # (plain JSON untouched); off keeps it visible per the strict contract.
+                    # Drained bare-JSON call that didn't parse: with Auto-Heal on, drop the fragment
+                    # (plain JSON answers are left untouched); off keeps it visible per the strict contract.
                     if tool_protocol_active and auto_heal_tool_calls:
                         _drain_text = strip_leading_bare_json_call(_drain_text, _enabled_tool_names)
                     if _drain_text:
@@ -625,12 +682,13 @@ def run_safetensors_tool_loop(
                 content_accum,
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 tool_protocol_active = True,
+                enabled_tool_names = _enabled_tool_names,
             )
 
         if tool_calls:
             next_call_id += len(tool_calls)
-            # Strip a leading bare-JSON call so it isn't replayed as text or next-turn history
-            # (``_strip_tool_markup_final`` only knows XML). No-op for plain JSON answers.
+            # Strip a leading bare-JSON call from the kept content so it isn't replayed as text or
+            # next-turn history (``_strip_tool_markup_final`` only knows XML). No-op for plain JSON answers.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
 
         if final_attempt_done:
@@ -639,6 +697,27 @@ def run_safetensors_tool_loop(
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
             return
+
+        # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
+        if tool_calls:
+            seen_keys: set = set()
+            deduped: list = []
+            for _tc in tool_calls:
+                _fn = _tc.get("function", {}) or {}
+                _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
+                if _key in seen_keys:
+                    continue
+                seen_keys.add(_key)
+                deduped.append(_tc)
+                if len(deduped) >= _MAX_TOOL_CALLS_PER_TURN:
+                    break
+            if len(deduped) != len(tool_calls):
+                logger.info(
+                    "Safetensors: collapsed %d repeated tool call(s) in one turn to %d",
+                    len(tool_calls),
+                    len(deduped),
+                )
+            tool_calls = deduped
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
@@ -771,7 +850,8 @@ def run_safetensors_tool_loop(
         if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
             continue
-        # Count only real tool turns against the cap so a no-op turn doesn't consume budget (GGUF parity).
+        # Count only turns that executed a tool against the cap; a no-op correction turn doesn't
+        # consume budget so the model gets its nudge and another tool-enabled turn (GGUF parity).
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
