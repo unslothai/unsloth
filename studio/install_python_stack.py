@@ -1091,34 +1091,62 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     """True when an explicit ROCm pin names a different ROCm family than the
     already-installed ROCm torch, so the pin needs a reinstall to be applied.
 
-    Mirrors setup.ps1's stale-venv ROCm comparison:
-      - both +rocmX.Y versions readable  -> compare them exactly
-      - gfx pin, or an unreadable installed version -> compare on the torch 2.11
-        line (gfx*/rocm>=7.2 serve 2.11+, older ROCm does not)
+    Mirrors setup.ps1's stale-venv ROCm comparison. The pin leaf classifies into
+    three cases, matching the install-spec path in _ensure_rocm_torch:
+      * rocmX.Y leaf -> compare the pinned rocm version to the installed one
+        exactly when both are readable; else fall back to the torch 2.11 line
+        (rocm>=7.2 serves 2.11, older rocm does not).
+      * gfx leaf in _ROCM_GFX_TORCH211_LEAVES (gfx120x-all/gfx1151/gfx1150) ->
+        the install path pulls AMD's per-arch wheel (tagged with a THREE-part
+        +rocmA.B.C local version, e.g. 2.11.0+rocm7.13.0). A generic pytorch.org
+        rocm wheel (two-part +rocmA.B, e.g. +rocm7.2) or any pre-2.11 build is a
+        mismatch even when both are torch 2.11 -- the user asked for the per-arch
+        index. An already-installed per-arch wheel (three-part tag) is NOT a
+        mismatch, so a satisfied gfx pin does not reinstall-loop.
+      * gfx leaf NOT in the 2.11 allowlist (gfx110X-all/gfx90a/gfx908) -> the
+        install path uses the default <2.11 specs, so a correct 2.10+rocm wheel
+        must NOT be flagged. Mismatch only when the installed torch is 2.11+.
     A pin that resolves to the same family as what is installed is NOT a mismatch,
     so a correct ROCm venv is never needlessly reinstalled. Pure function.
     """
     leaf = pin_url.rstrip("/").rsplit("/", 1)[-1].lower()
-    # Pinned ROCm version (from a rocmX.Y leaf) and whether the pin serves 2.11+.
+    # Pinned ROCm version (from a rocmX.Y leaf).
     _pin_rocm = re.match(r"^rocm(\d+)\.(\d+)", leaf)
     _pin_ver = (int(_pin_rocm.group(1)), int(_pin_rocm.group(2))) if _pin_rocm else None
-    if leaf.startswith("gfx"):
-        _pin_is_211 = True
-    elif _pin_ver is not None:
-        _pin_is_211 = _pin_ver >= (7, 2)
-    else:
-        _pin_is_211 = False
-    # Installed ROCm version (+rocmX.Y) and whether the installed torch is 2.11+.
+    # Installed ROCm version (+rocmX.Y) and whether the installed wheel carries a
+    # THREE-part local version (+rocmA.B.C) -- the AMD per-arch signature that
+    # distinguishes a repo.amd.com/gfx* wheel from a two-part pytorch.org one.
     _inst_rocm = re.search(r"\+rocm(\d+)\.(\d+)", installed_ver)
     _inst_ver = (int(_inst_rocm.group(1)), int(_inst_rocm.group(2))) if _inst_rocm else None
+    _inst_is_perarch = re.search(r"\+rocm\d+\.\d+\.\d+", installed_ver) is not None
+    # Whether the installed torch RELEASE (before "+") is 2.11+.
     _inst_rel = re.match(r"^(\d+)\.(\d+)", installed_ver)
     _inst_is_211 = (
         (int(_inst_rel.group(1)), int(_inst_rel.group(2))) >= (2, 11) if _inst_rel else False
     )
+
+    if leaf.startswith("gfx"):
+        # gfx per-arch pin: only the _grouped_mm-bug arches (the 2.11 allowlist)
+        # pull the AMD per-arch wheel; other gfx leaves stay on the default
+        # <2.11 specs (see _ROCM_TORCH_PKG_SPECS selection below).
+        if leaf in _ROCM_GFX_TORCH211_LEAVES:
+            # Expect the AMD per-arch wheel (three-part +rocmA.B.C, torch 2.11+).
+            # A satisfied per-arch install is NOT a mismatch (no reinstall loop);
+            # a generic rocm wheel or any pre-2.11 build IS a mismatch even at 2.11.
+            return not (_inst_is_211 and _inst_is_perarch)
+        # Non-2.11 gfx leaf: install path uses default <2.11 specs, so a correct
+        # <2.11 wheel must stay. Mismatch only when the installed torch is 2.11+.
+        return _inst_is_211
+
+    # rocmX.Y pin.
+    _pin_is_211 = _pin_ver >= (7, 2) if _pin_ver is not None else False
     if _pin_ver is not None and _inst_ver is not None:
-        # Both ROCm versions readable: exact comparison.
+        # Both ROCm versions readable: exact (major, minor) comparison. A generic
+        # rocm7.2 pin over the AMD per-arch (+rocm7.13.x) wheel compares (7, 2) vs
+        # (7, 13) -> mismatch, which correctly reinstalls the generic wheel the
+        # user pinned instead of leaving the per-arch one in place.
         return _pin_ver != _inst_ver
-    # gfx pin or unreadable version: compare on the torch 2.11 line.
+    # rocm pin with an unreadable installed version: compare on the torch 2.11 line.
     return _pin_is_211 != _inst_is_211
 
 
@@ -1524,9 +1552,12 @@ def _ensure_rocm_torch() -> None:
     # capture the installed ROCm build tag so a pin mismatch can be detected.
     # Do NOT skip for CUDA-only builds: they are unusable on AMD-only hosts
     # (the NVIDIA check above already handled mixed AMD+NVIDIA setups).
-    # Line 1: the HIP presence marker (HIP version, "rocm" sentinel, or "").
-    # Line 2: the installed wheel version string (e.g. "2.10.0+rocm6.4"), used to
-    #         compare the installed ROCm family against an explicit pin below.
+    # Emit ONE "<hip_marker>|<version>" line (mirrors _ensure_cuda_torch) so the
+    # parse is positional and robust: the HIP marker is the field before "|" (HIP
+    # version, "rocm" sentinel, or empty for CPU/CUDA torch), the installed wheel
+    # version (e.g. "2.10.0+rocm6.4") is the field after it. Do NOT filter empty
+    # LINES and take slot 0 -- for CPU/CUDA torch the marker field IS empty, and
+    # dropping it would shift the version into slot 0 and wrongly flag has_hip_torch.
     try:
         probe = subprocess.run(
             [
@@ -1536,11 +1567,11 @@ def _ensure_rocm_torch() -> None:
                     "import torch; "
                     "hip=getattr(torch.version,'hip','') or ''; "
                     "ver=getattr(torch,'__version__','').lower(); "
-                    # Print the HIP version when present (back-compat), else a
-                    # "rocm" sentinel when only torch.__version__ flags ROCm
-                    # (AMD SDK / Radeon wheels). Empty string = CPU/CUDA.
-                    "print(hip if hip else ('rocm' if 'rocm' in ver else '')); "
-                    "print(ver)"
+                    # HIP version when present (back-compat), else a "rocm"
+                    # sentinel when only torch.__version__ flags ROCm (AMD SDK /
+                    # Radeon wheels). Empty marker before "|" = CPU/CUDA torch.
+                    "marker=hip if hip else ('rocm' if 'rocm' in ver else ''); "
+                    "print(marker + '|' + ver)"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1549,13 +1580,22 @@ def _ensure_rocm_torch() -> None:
         )
     except (OSError, subprocess.TimeoutExpired):
         probe = None
-    _probe_lines = (
+    # Take the last non-empty stdout line so stray sitecustomize / import-hook
+    # output cannot mask the marker; then split positionally on the FIRST "|" --
+    # the empty HIP-marker field for CPU/CUDA torch is preserved (has_hip_torch
+    # is driven by that field, not by "first non-empty line").
+    _marker_lines = (
         [ln.strip() for ln in probe.stdout.decode(errors = "replace").splitlines() if ln.strip()]
         if (probe is not None and probe.returncode == 0)
         else []
     )
-    has_hip_torch = bool(_probe_lines) and _probe_lines[0] != ""
-    _installed_torch_ver = _probe_lines[1] if len(_probe_lines) > 1 else ""
+    _hip_marker, _sep, _installed_torch_ver = (
+        _marker_lines[-1].partition("|") if _marker_lines else ("", "", "")
+    )
+    # A "|"-delimited marker line is required: without the separator the probe
+    # output is unrecognised (old torch, injected noise), so treat HIP as absent
+    # and fall through to a reinstall rather than trusting an ambiguous string.
+    has_hip_torch = bool(_sep) and _hip_marker != ""
 
     # An explicit ROCm pin whose family differs from the already-installed ROCm
     # torch must reinstall, mirroring _ensure_cuda_torch (installed cuXXX != pin).

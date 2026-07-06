@@ -61,7 +61,11 @@ function Install-UnslothStudio {
     function Get-TauriGpuBranch {
         param([string]$TorchIndexFamily)
         if ($SkipTorch) { return "no_torch" }
-        if ($TorchIndexFamily -like "cu*") { return "cuda" }
+        # Require digits after "cu" (cu118/cu128/...) so an odd mirror leaf like
+        # "custom"/"current" is not mis-branded CUDA. $TorchIndexFamily is already
+        # normalised by Get-TauriTorchIndexFamily today, but keep the guard narrow
+        # to match the ^cu[0-9] rule in setup.ps1 / install_python_stack.py.
+        if ($TorchIndexFamily -match '^cu[0-9]') { return "cuda" }
         if ($TorchIndexFamily -like "rocm*") { return "rocm" }
         if ($TorchIndexFamily -eq "cpu") { return "cpu" }
         return "unknown"

@@ -334,7 +334,11 @@ _tauri_gpu_branch() {
         return
     fi
     case "$_diag_family" in
-        cu*) echo "cuda" ;;
+        # Require a digit after cu (cu118/cu128/...) so an odd leaf like custom /
+        # current is not branded CUDA -- matches the ^cu[0-9] rule in setup.ps1 /
+        # install_python_stack.py. $_diag_family is already normalised by
+        # _tauri_torch_index_family, but keep the guard narrow for parity.
+        cu[0-9]*) echo "cuda" ;;
         rocm*)
             if [ "$_diag_radeon" = true ]; then
                 echo "rocm_radeon"

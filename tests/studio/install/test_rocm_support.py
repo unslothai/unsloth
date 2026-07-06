@@ -569,19 +569,27 @@ class TestEnsureRocmTorch:
                     _ensure_rocm_torch()
         mock_pip.assert_not_called()
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
-    def test_torch_already_has_cuda_skips(self, mock_ver, mock_gpu, mock_nvidia, mock_pip):
-        """If torch already has CUDA, should skip ROCm reinstall."""
+    def test_cuda_torch_on_amd_host_reinstalls(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A CUDA-only torch build is unusable on an AMD-only host, so it must be
+        reinstalled to ROCm (has_hip_torch is driven by the empty HIP marker, not
+        by treating the CUDA version string as a HIP marker)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"12.6\n"  # CUDA version
+        # New single-line probe: empty HIP marker before "|" for a CUDA build.
+        mock_probe.stdout = b"|2.10.0+cu126\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
-        mock_pip.assert_not_called()
+        assert mock_pip.call_count == 1
+        assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
@@ -591,11 +599,33 @@ class TestEnsureRocmTorch:
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.1.12345\n"  # HIP version
+        mock_probe.stdout = b"7.1.12345|2.10.0+rocm7.1\n"  # HIP marker + version
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
+    def test_cpu_torch_probe_line_not_read_as_hip(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip
+    ):
+        """Regression: a CPU torch probe emits an EMPTY HIP marker before "|"; the
+        positional parse must keep that empty field so has_hip_torch stays False
+        (an earlier parse dropped the empty line and shifted the version into the
+        marker slot, wrongly reporting HIP and skipping the ROCm reinstall)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"|2.10.0+cpu\n"
+        # has_hip_torch False -> the AMD host reinstalls ROCm; assert we do NOT skip.
+        with patch("os.path.isdir", return_value = True):
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        assert mock_pip.call_count == 1
+        assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
@@ -724,7 +754,7 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         # HIP marker present (has_hip_torch=True) + installed +rocm6.4 wheel.
-        mock_probe.stdout = b"6.4.12345\n2.10.0+rocm6.4\n"
+        mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
         env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
@@ -747,7 +777,7 @@ class TestEnsureRocmTorch:
         """A gfx* pin (2.11 line) over an installed pre-2.11 +rocm6.4 build reinstalls."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"6.4.12345\n2.10.0+rocm6.4\n"
+        mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -774,7 +804,7 @@ class TestEnsureRocmTorch:
         (no false reinstall of a correct ROCm venv)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.2.12345\n2.11.0+rocm7.2\n"
+        mock_probe.stdout = b"7.2.12345|2.11.0+rocm7.2\n"
         env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
@@ -794,20 +824,118 @@ class TestEnsureRocmTorch:
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
         )
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
+    def test_non211_gfx_pin_over_210_rocm_no_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A gfx110X-all pin (NOT in the 2.11 allowlist) over a correct 2.10+rocm
+        wheel must NOT be flagged stale -- the install path uses the default <2.11
+        specs for that arch, so re-flagging would reinstall-loop on every update."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx110X-all"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        # has_hip_torch True + no mismatch -> torch must NOT be reinstalled.
+        assert not any(
+            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+        )
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_gfx_pin_over_generic_rocm211_reinstalls(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A gfx1151 pin over a GENERIC (two-part +rocm7.2) 2.11 wheel must reinstall
+        the AMD per-arch wheel -- even though both are torch 2.11, the generic wheel
+        is not the per-arch build the user pinned (Strix stays off the generic wheel)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.2.12345|2.11.0+rocm7.2\n"
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
+                        _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_gfx_pin_over_installed_perarch_no_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A gfx1151 pin over an already-installed AMD per-arch (+rocm7.13.0) wheel
+        must NOT reinstall torch -- once the correct per-arch wheel is present the
+        pin is satisfied, so `studio update` does not reinstall-loop."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.13.0|2.11.0+rocm7.13.0\n"
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
+                        _ensure_rocm_torch()
+        assert not any(
+            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+        )
+
     def test_rocm_pin_family_mismatch_helper(self):
         """_rocm_pin_family_mismatch: exact rocm compare, else the 2.11 line."""
         f = stack_mod._rocm_pin_family_mismatch
         base = "https://download.pytorch.org/whl"
+        amd = "https://repo.amd.com/rocm/whl"
         # Exact rocm version comparison.
         assert f(f"{base}/rocm7.2", "2.11.0+rocm7.2") is False
         assert f(f"{base}/rocm7.2", "2.10.0+rocm6.4") is True
         assert f(f"{base}/rocm6.4", "2.10.0+rocm6.4") is False
         # gfx pin (2.11 line) vs installed release line.
-        assert f("https://repo.amd.com/rocm/whl/gfx1151", "2.10.0+rocm6.4") is True
-        assert f("https://repo.amd.com/rocm/whl/gfx1151", "2.11.0+rocm7.13.0") is False
+        assert f(f"{amd}/gfx1151", "2.10.0+rocm6.4") is True
+        assert f(f"{amd}/gfx1151", "2.11.0+rocm7.13.0") is False
         # rocm7.2 pin vs unreadable installed rocm version -> compare on 2.11 line.
         assert f(f"{base}/rocm7.2", "2.10.0") is True
         assert f(f"{base}/rocm7.2", "2.11.0") is False
+        # A 2.11-allowlist gfx pin over a GENERIC (two-part +rocm7.2) 2.11 wheel is a
+        # mismatch -- the user wants AMD's per-arch (three-part) wheel, not generic.
+        assert f(f"{amd}/gfx1151", "2.11.0+rocm7.2") is True
+        assert f(f"{amd}/gfx120X-all", "2.11.0+rocm7.2") is True
+        # ...but an already-installed per-arch (three-part) wheel is NOT re-flagged
+        # (no reinstall loop once the correct gfx wheel is present).
+        assert f(f"{amd}/gfx120X-all", "2.11.0+rocm7.13.0") is False
+        assert f(f"{amd}/gfx1150", "2.11.0+rocm7.13.0") is False
+        # A NON-2.11 gfx pin (gfx110X-all/gfx90a/gfx908) tracks the default <2.11
+        # spec: a correct 2.10+rocm wheel is NOT a mismatch (no reinstall loop);
+        # a 2.11 build is (the arch's index does not publish 2.11 wheels).
+        assert f(f"{amd}/gfx110X-all", "2.10.0+rocm6.4") is False
+        assert f(f"{amd}/gfx90a", "2.10.0+rocm6.3") is False
+        assert f(f"{amd}/gfx908", "2.10.0+rocm7.0") is False
+        assert f(f"{amd}/gfx110X-all", "2.11.0+rocm7.2") is True
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
