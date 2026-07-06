@@ -605,6 +605,21 @@ def detect_reasoning_flags(
         else []
     )
     if effort_levels:
+        # DeepSeek-V4's official encoder (encoding_dsv4.py) accepts
+        # reasoning_effort in {'high', 'max'} (plus off via enable_thinking),
+        # yet its shipped chat template only *branches* on 'max' -- 'high'
+        # renders identically to thinking-on-without-the-max-preamble, so the
+        # literal-scan above surfaces only 'max'. Add 'high' so the picker
+        # exposes the encoder's full none/high/max ladder instead of none/max.
+        normalized_id = (model_identifier or "").lower()
+        if (
+            ("deepseek-v4" in normalized_id or "deepseek4" in normalized_id)
+            and "high" not in effort_levels
+        ):
+            _wanted = set(effort_levels) | {"high"}
+            effort_levels = [
+                level for level in _REASONING_EFFORT_SCALE if level in _wanted
+            ]
         # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
         # level among a discrete set (e.g. 'high' | 'max'). Distinct from
         # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
