@@ -567,6 +567,23 @@ class TestParser:
         assert len(result) == 1
         assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
 
+    def test_mistral_array_scalar_string_argument_not_double_encoded(self):
+        # A bare scalar string argument in the Mistral array form must be kept
+        # raw, exactly like the <tool_call> path, so the downstream argument
+        # healer wraps ``weather`` into the single-string tool's key -- not
+        # ``"weather"`` with literal quotes from a redundant json.dumps.
+        array = parse_tool_calls_from_text(
+            '[TOOL_CALLS][{"name":"web_search","arguments":"weather"}]'
+        )
+        xml = parse_tool_calls_from_text(
+            '<tool_call>{"name":"web_search","arguments":"weather"}</tool_call>'
+        )
+        assert array[0]["function"]["arguments"] == xml[0]["function"]["arguments"] == "weather"
+        healed = _coerce_arguments(
+            array[0]["function"]["arguments"], heal = True, tool_name = "web_search"
+        )
+        assert healed == {"query": "weather"}
+
     def test_mistral_array_strip_keeps_trailing_prose(self):
         # The array form must be removed whole, not deleted to end-of-string.
         text = 'answer [TOOL_CALLS] [{"name":"a","arguments":{}}] tail'

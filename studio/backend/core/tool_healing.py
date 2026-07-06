@@ -809,7 +809,10 @@ def parse_tool_calls_from_text(
                             "type": "function",
                             "function": {
                                 "name": item.get("name", ""),
-                                "arguments": json.dumps(args),
+                                # A bare scalar string stays raw (like the <tool_call> path); only
+                                # a dict is serialized. json.dumps on a string double-encodes it,
+                                # so the arg healer would wrap "weather" with its literal quotes.
+                                "arguments": args if isinstance(args, str) else json.dumps(args),
                             },
                         }
                     )
