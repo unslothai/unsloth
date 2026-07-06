@@ -74,7 +74,7 @@ HIGH_ONLY_TEMPLATE = """
 def _render(template: str, **kwargs) -> str:
     env = jinja2.Environment()
     tmpl = env.from_string(template)
-    return tmpl.render(bos_token="<BOS>", add_generation_prompt=True, **kwargs)
+    return tmpl.render(bos_token = "<BOS>", add_generation_prompt = True, **kwargs)
 
 
 # ── Classifier ───────────────────────────────────────────────────────
@@ -115,11 +115,11 @@ def _kwargs_for(flags: dict, enable_thinking, reasoning_effort):
     from core.inference.llama_cpp import LlamaCppBackend
 
     shim = SimpleNamespace(
-        _supports_reasoning=flags["supports_reasoning"],
-        _reasoning_always_on=flags["reasoning_always_on"],
-        _reasoning_style=flags["reasoning_style"],
-        _reasoning_effort_levels=flags["reasoning_effort_levels"],
-        _supports_preserve_thinking=flags["supports_preserve_thinking"],
+        _supports_reasoning = flags["supports_reasoning"],
+        _reasoning_always_on = flags["reasoning_always_on"],
+        _reasoning_style = flags["reasoning_style"],
+        _reasoning_effort_levels = flags["reasoning_effort_levels"],
+        _supports_preserve_thinking = flags["supports_preserve_thinking"],
     )
     build = LlamaCppBackend._request_reasoning_kwargs.__get__(shim)
     return build(enable_thinking, reasoning_effort, None) or {}
@@ -127,32 +127,31 @@ def _kwargs_for(flags: dict, enable_thinking, reasoning_effort):
 
 def _flags():
     from core.inference.llama_cpp import detect_reasoning_flags
-
     return detect_reasoning_flags(DEEPSEEK_V4_TEMPLATE, "unsloth/DeepSeek-V4-Flash")
 
 
 def test_none_state_renders_non_thinking():
     """UI 'None' -> enable_thinking=false -> closed </think>, no preamble."""
-    kwargs = _kwargs_for(_flags(), enable_thinking=False, reasoning_effort=None)
+    kwargs = _kwargs_for(_flags(), enable_thinking = False, reasoning_effort = None)
     assert kwargs == {"enable_thinking": False}
-    out = _render(DEEPSEEK_V4_TEMPLATE, messages=[{"role": "user", "content": "hi"}], **kwargs)
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("</think>")
     assert "Absolute maximum" not in out
 
 
 def test_high_state_renders_plain_thinking():
     """UI 'High' -> et=true, effort=high -> open <think>, no max preamble."""
-    kwargs = _kwargs_for(_flags(), enable_thinking=True, reasoning_effort="high")
+    kwargs = _kwargs_for(_flags(), enable_thinking = True, reasoning_effort = "high")
     assert kwargs == {"enable_thinking": True, "reasoning_effort": "high"}
-    out = _render(DEEPSEEK_V4_TEMPLATE, messages=[{"role": "user", "content": "hi"}], **kwargs)
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("<think>")
     assert "Absolute maximum" not in out
 
 
 def test_max_state_injects_max_preamble():
     """UI 'Max' -> et=true, effort=max -> open <think> plus the max preamble."""
-    kwargs = _kwargs_for(_flags(), enable_thinking=True, reasoning_effort="max")
+    kwargs = _kwargs_for(_flags(), enable_thinking = True, reasoning_effort = "max")
     assert kwargs == {"enable_thinking": True, "reasoning_effort": "max"}
-    out = _render(DEEPSEEK_V4_TEMPLATE, messages=[{"role": "user", "content": "hi"}], **kwargs)
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("<think>")
     assert "Absolute maximum" in out
