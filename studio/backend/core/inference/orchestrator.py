@@ -655,10 +655,22 @@ class InferenceOrchestrator:
             preserve_thinking = preserve_thinking,
         )
 
-        # Create mailbox BEFORE sending command
+        # Create mailbox BEFORE sending command. Recheck _unload_pending while
+        # holding _mailbox_lock: an unload sets _unload_pending before
+        # _wait_dispatcher_idle reads _mailboxes under this same lock, so either
+        # that idle check sees this mailbox (and tears the dispatcher/subprocess
+        # down, which _consume_token_stream detects) or we observe the pending
+        # unload here and bail. Registering after the idle check already stopped the
+        # dispatcher would orphan the mailbox -- the worker's skipped-generate reply
+        # has nothing to route it, so the compare stream would hang forever.
         mailbox: queue.Queue = queue.Queue()
         with self._mailbox_lock:
-            self._mailboxes[request_id] = mailbox
+            unloading = self._unload_pending
+            if not unloading:
+                self._mailboxes[request_id] = mailbox
+        if unloading:
+            yield "Error: model is being unloaded"
+            return
 
         try:
             self._send_cmd(cmd)
@@ -881,6 +893,35 @@ class InferenceOrchestrator:
             self.models.clear()
             raise
 
+    def cancel_load(self, model_name: str) -> bool:
+        """Abort an in-flight load by terminating its subprocess.
+
+        Returns True if a load for ``model_name`` (matched case-insensitively) was
+        cancelled, False if nothing was loading under that name. This only tears the
+        loading subprocess down -- it sends no command to a worker -- so, unlike the
+        rest of ``unload_model``, it is safe to run WITHOUT the inference lifecycle
+        gate. ``/unload`` calls it off-gate so the "stop loading" button can interrupt
+        a safetensors load that holds the gate for its whole (multi-minute) duration;
+        a gated cancel could never preempt that load.
+        """
+        target = model_name
+        if target not in self.loading_models:
+            target = next(
+                (m for m in self.loading_models if m.lower() == model_name.lower()),
+                model_name,
+            )
+        if target not in self.loading_models:
+            return False
+        logger.info(
+            "Cancelling in-flight load for model '%s' by terminating subprocess",
+            target,
+        )
+        self._shutdown_subprocess(timeout = 0.5)
+        self.loading_models.discard(target)
+        self.active_model_name = None
+        self.models.clear()
+        return True
+
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
         # The load path treats a differently-cased repo id as the same model
@@ -896,15 +937,9 @@ class InferenceOrchestrator:
             and model_name.lower() == self.active_model_name.lower()
         ):
             model_name = self.active_model_name
-        if model_name in self.loading_models:
-            logger.info(
-                "Cancelling in-flight load for model '%s' by terminating subprocess",
-                model_name,
-            )
-            self._shutdown_subprocess(timeout = 0.5)
-            self.loading_models.discard(model_name)
-            self.active_model_name = None
-            self.models.clear()
+        # In-flight load: tear its subprocess down (shares the loading-cancel logic
+        # with the off-gate /unload fast path). No worker command is sent here.
+        if self.cancel_load(model_name):
             return True
 
         if not self._ensure_subprocess_alive():

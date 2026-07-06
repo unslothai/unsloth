@@ -3800,6 +3800,25 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
+        # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
+        # model promptly. /load holds the lifecycle gate for the whole load, so taking
+        # the gate first would make the cancel wait out the entire (multi-minute) load
+        # before it could act. cancel_load only tears the loading subprocess down (it
+        # sends no unload command that could land on a freshly swapped worker), so it is
+        # safe off-gate; the wrong-model race the gate guards is limited to the
+        # active-model command round-trip below.
+        backend = get_inference_backend()
+        loading = getattr(backend, "get_loading_model", lambda: None)()
+        if (
+            loading is not None
+            and hasattr(backend, "cancel_load")
+            and (request.model_path == loading or request.model_path.lower() == loading.lower())
+        ):
+            if await asyncio.to_thread(backend.cancel_load, request.model_path):
+                note_model_unloaded()
+                logger.info(f"Cancelled in-flight load: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now
         # runs off the event loop (asyncio.to_thread), so without this a concurrent
         # /load could swap in a fresh subprocess/queue mid-unload and the unload

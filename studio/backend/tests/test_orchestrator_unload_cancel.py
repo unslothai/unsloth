@@ -562,3 +562,140 @@ def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
         assert unloaded == ["m"]
 
     asyncio.run(scenario())
+
+
+# ----------------------------------------------------------------------------
+# Cancel an in-flight load OFF the lifecycle gate (Stop-loading regression).
+# /load holds the gate for the whole load, so a gated /unload could never
+# interrupt it; cancel_load only tears the loading subprocess down.
+# ----------------------------------------------------------------------------
+
+
+def test_cancel_load_terminates_loading_subprocess_and_sends_no_command(monkeypatch):
+    o = _bare_orchestrator()
+    o.loading_models = {"m"}
+    o.active_model_name = None
+    o.models = {}
+    shutdown = []
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("cancel_load must not send a worker command")
+    )
+
+    assert o.cancel_load("m") is True
+    assert shutdown, "must tear the loading subprocess down"
+    assert "m" not in o.loading_models
+    assert o.active_model_name is None
+    # A name that is not loading -> no-op, returns False so the caller takes the gate.
+    assert o.cancel_load("other") is False
+
+
+def test_cancel_load_matches_loading_model_case_insensitively(monkeypatch):
+    o = _bare_orchestrator()
+    o.loading_models = {"unsloth/Qwen3-4B"}
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: None)
+
+    assert o.cancel_load("unsloth/qwen3-4b") is True
+    assert o.loading_models == set()
+
+
+def test_unload_model_cancels_a_loading_model_via_cancel_load(monkeypatch):
+    # unload_model still cancels an in-flight load (shared logic with cancel_load).
+    o = _bare_orchestrator()
+    o.loading_models = {"m"}
+    o.active_model_name = None
+    shutdown = []
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send a command to cancel a load")
+    )
+
+    assert o.unload_model("m") is True
+    assert shutdown
+    assert "m" not in o.loading_models
+
+
+def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch):
+    # The regression: /unload wrapped its whole body in the lifecycle gate, so the
+    # Stop-loading button (cancelLoading -> /unload) could not interrupt a safetensors
+    # load that holds the gate for its full duration. The cancel must run off-gate.
+    import asyncio
+
+    import routes.inference as inference_route
+    from core.inference import llama_keepwarm as kw
+    from models.inference import UnloadRequest
+
+    class _Llama:
+        is_active = False
+        is_loaded = False
+        model_identifier = None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
+
+    cancelled: list = []
+
+    class _Backend:
+        active_model_name = None
+        models: dict = {}
+
+        def get_loading_model(self):
+            return "m"
+
+        def cancel_load(self, name):
+            cancelled.append(name)
+            return True
+
+        def unload_model(self, name):
+            pytest.fail("must not take the gated unload path for a still-loading model")
+
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+
+    async def scenario():
+        # Hold the real gate, exactly as an in-flight /load would.
+        assert kw._lifecycle_lock.acquire(blocking = False)
+        try:
+            # Even with the gate held, the loading-cancel must go through.
+            resp = await inference_route.unload_model(UnloadRequest(model_path = "m"), "tester")
+            assert resp.status == "unloaded"
+            assert cancelled == ["m"]
+        finally:
+            kw._lifecycle_lock.release()
+
+    asyncio.run(scenario())
+
+
+# ----------------------------------------------------------------------------
+# A dispatched (compare-mode) request that races an unload must not orphan its
+# mailbox after _wait_dispatcher_idle stops the dispatcher.
+# ----------------------------------------------------------------------------
+
+
+def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypatch):
+    # The request passes the pre-work _unload_pending check, then an unload sets
+    # _unload_pending and _wait_dispatcher_idle stops the dispatcher (mailboxes empty)
+    # before this request registers its mailbox. The recheck under _mailbox_lock must
+    # make it bail, or the worker's skipped-generate reply has nothing to route it and
+    # the compare stream hangs on an orphaned mailbox.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._unload_pending = False
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
+
+    # Flip the unload flag after the pre-work check (626) but before mailbox
+    # registration -- exactly the window _wait_dispatcher_idle exploits.
+    def flip(*a, **k):
+        o._unload_pending = True
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", flip)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
+    )
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert o._mailboxes == {}, "must not leave an orphaned mailbox"
