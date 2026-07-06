@@ -629,6 +629,78 @@ function oaiMessagesToRecords(
   return records;
 }
 
+// Reverses the ad-hoc plain-text encoding `contentBlocksToText` produces for
+// ShareGPT/CSV export: `[thinking]...[/thinking]` wrappers for reasoning
+// blocks (joined into the surrounding text with blank lines) and a bespoke
+// `{tool_call, args, result}` JSON blob for tool calls. Without this, a
+// re-imported thread stores everything as a single `{type: "text"}` part and
+// the reasoning/tool-call UI never gets the typed content it needs to render
+// (see #6179). `toolCallId` isn't part of the exported format, so it's
+// synthesized on the way back in, same as the OpenAI JSONL importer does for
+// tool calls that arrive without one.
+function parseToolCallSegment(segment: string): Record<string, unknown> | null {
+  if (!segment.startsWith("{") || !segment.endsWith("}")) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(segment) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (typeof parsed.tool_call !== "string") return null;
+  const args = parsed.args ?? {};
+  return {
+    type: "tool-call",
+    toolCallId: crypto.randomUUID(),
+    toolName: parsed.tool_call,
+    args,
+    argsText: JSON.stringify(args),
+    ...(parsed.result !== undefined ? { result: parsed.result } : {}),
+  };
+}
+
+function textToContentParts(value: string): Record<string, unknown>[] {
+  const parts: Record<string, unknown>[] = [];
+  const thinkingRegex = /\[thinking\]\n([\s\S]*?)\n\[\/thinking\]/g;
+
+  // Segments between (or around) thinking blocks may still contain a
+  // tool-call blob alongside plain text, both joined with blank lines. Keep
+  // consecutive plain-text segments merged into one part and only split off
+  // the ones that parse as a tool call, so an ordinary multi-paragraph
+  // message doesn't get fragmented into several text parts.
+  const pushChunk = (chunk: string) => {
+    let textBuffer: string[] = [];
+    const flushText = () => {
+      if (textBuffer.length > 0) {
+        parts.push({ type: "text", text: textBuffer.join("\n\n") });
+        textBuffer = [];
+      }
+    };
+    for (const segment of chunk.split("\n\n")) {
+      const trimmed = segment.trim();
+      if (!trimmed) continue;
+      const toolCall = parseToolCallSegment(trimmed);
+      if (toolCall) {
+        flushText();
+        parts.push(toolCall);
+      } else {
+        textBuffer.push(trimmed);
+      }
+    }
+    flushText();
+  };
+
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = thinkingRegex.exec(value)) !== null) {
+    pushChunk(value.slice(lastIndex, match.index));
+    parts.push({ type: "reasoning", text: match[1] });
+    lastIndex = thinkingRegex.lastIndex;
+  }
+  pushChunk(value.slice(lastIndex));
+
+  return parts;
+}
+
 function sharegptToRecords(
   conversations: unknown[],
   threadId: string,
