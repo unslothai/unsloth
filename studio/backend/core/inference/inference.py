@@ -232,13 +232,11 @@ class InferenceBackend:
         tokenizer = getattr(container, "tokenizer", container)  # unwrap processors
         if model is None or tokenizer is None:
             return
-        # Vision models store the chat_template on the ProcessorMixin (the same
-        # object _generate_vision_response calls apply_chat_template on), while the
-        # unwrapped inner tokenizer often has none. Read the turn-end markers from
-        # whichever object actually carries a template but resolve their ids on the
-        # generation tokenizer; otherwise the processor's turn-end token is missed
-        # and the vision path (which relies on this cache / generation_config) runs
-        # past the assistant boundary.
+        # Vision models carry the chat_template on the ProcessorMixin while the
+        # inner tokenizer often has none. Read the markers from whichever object
+        # has a template but resolve their ids on the generation tokenizer; else
+        # the processor's turn-end token is missed and the vision path runs past
+        # the assistant boundary.
         template_source = container if getattr(container, "chat_template", None) else tokenizer
         try:
             turn_end_ids = resolve_chat_turn_end_eos_ids_using(template_source, tokenizer)
@@ -999,21 +997,14 @@ class InferenceBackend:
                     tokenizer,
                     chat_template = template_name,
                 )
-                # The mapper installs the effective chat template here, at
-                # generate time. For mapper models whose tokenizer shipped no
-                # chat_template of its own, the load-time turn-end-eos resolution
-                # saw an empty template and cached only the document eos, so
-                # generate_stream below would miss the ChatML turn-end token and
-                # run past the assistant boundary (the loop this PR fixes).
-                # Re-resolve with the now-templated tokenizer and UNION into the
-                # existing cache -- never overwrite. get_chat_template can hand back a
-                # different tokenizer object whose vocab was remapped (map_eos_token=True
-                # templates fold the turn-end token onto the doc-eos id), while
-                # generate_stream below re-reads model_info["tokenizer"] (the original).
-                # So read the turn-end marker STRINGS from the mapped tokenizer's
-                # template but resolve their IDs on the ORIGINAL generation tokenizer;
-                # otherwise the stored id is the wrong (doc-eos) one and generation runs
-                # past the real turn marker. Union keeps every valid load-time id.
+                # The mapper installs the effective template here, at generate time.
+                # A mapper model whose tokenizer shipped no template of its own had
+                # only the document eos cached at load, so re-resolve now and UNION
+                # into the cache -- never overwrite. get_chat_template can return a
+                # remapped tokenizer (map_eos_token folds the turn-end onto the
+                # doc-eos id) while generate_stream re-reads the original tokenizer,
+                # so read the marker strings from the mapped template but resolve
+                # their ids on the original; else the stored id is the wrong doc-eos.
                 try:
                     _gen_tok = model_info.get("tokenizer") or tokenizer
                     refreshed = resolve_chat_turn_end_eos_ids_using(

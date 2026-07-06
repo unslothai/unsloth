@@ -27,8 +27,8 @@ _CHAT_TURN_END_TOKENS = (
     "<|end|>",  # Phi
     "<|end_of_turn|>",  # OpenChat / Starling (barred, distinct from Gemma's)
 )
-# gpt-oss/harmony uses <|end|> as an intra-message channel delimiter (not the turn
-# end) and has a dedicated streamer, so its eos is left untouched.
+# harmony/gpt-oss uses <|end|> as a channel delimiter, not the turn end, and has
+# its own streamer, so its eos is left untouched.
 _HARMONY_MARKERS = ("<|channel|>", "<|constrain|>")
 
 
