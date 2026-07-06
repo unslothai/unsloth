@@ -1482,9 +1482,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
                         )
                         # debug: hand-edit this condition to force re-verify every step
-                        if (
-                            _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS
-                        ):
+                        if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
                             _pk_use = True  # already verified for this shape
                         else:
                             # verify against the per-row forward (ground truth)
