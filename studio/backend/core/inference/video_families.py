@@ -292,6 +292,11 @@ def default_video_generation_params(
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
-            if key in needle:
+            # Match the key as a name segment, not a raw substring: reject a
+            # preceding ASCII letter so an opaque path/repo like "user/swan-video"
+            # or "taiwan-clips" does not false-match "wan" and silently apply Wan's
+            # 50-step/CFG-5 schedule to a non-Wan model. Trailing chars stay free so
+            # "wan2.2-ti2v", "ltxv-2.3" and "...-distilled-..." still match.
+            if re.search(r"(?<![a-z])" + re.escape(key), needle):
                 return steps, guidance
     return fallback

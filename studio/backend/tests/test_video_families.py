@@ -193,6 +193,24 @@ def test_generation_defaults_fallback_honors_family():
     assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (50, 5.0)
 
 
+def test_generation_defaults_wan_is_segment_not_substring():
+    # "wan" must match as a name segment, not a raw substring, so an opaque non-Wan
+    # repo/path whose name merely contains the letters "wan" ("swan", "taiwan") does
+    # NOT silently pick up Wan's 50-step/CFG-5 schedule ahead of its canonical base repo.
+    assert default_video_generation_params(
+        "user/swan-video", "Lightricks/LTX-2", fallback = (40, 4.0)
+    ) == (40, 4.0)
+    assert default_video_generation_params(
+        "taiwan-clips.gguf", "user/taiwan-clips", fallback = (40, 4.0)
+    ) == (40, 4.0)
+    # Genuine Wan identifiers (segment-initial, with a version suffix or separator) still match.
+    assert default_video_generation_params("wan2.2-ti2v-5b-Q4_K_M.gguf") == (50, 5.0)
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B") == (50, 5.0)
+    # An "ltxv" style name still resolves to LTX (trailing letters stay free).
+    assert default_video_generation_params("ltxv-2.3-distilled") == (8, 1.0)
+    assert default_video_generation_params("Lightricks/LTXV-2.3") == (40, 4.0)
+
+
 def test_wan_size_tables_present():
     ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
