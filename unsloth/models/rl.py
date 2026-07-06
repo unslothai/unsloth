@@ -1651,7 +1651,22 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
 
-        if trl_version >= Version("0.27.0"):
+        if trl_version >= Version("1.7.0"):
+            peft_pattern = (
+                r"\s*elif is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"param\.data = param\.data\.to\(torch\.bfloat16\)"
+            )
+
+            replacement_comment = (
+                "\n        # PEFT initialization logic removed via script for trl >= 1.7.0\n"
+            )
+
+            RLTrainer_source = re.sub(
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+            )
+
+        elif trl_version >= Version("0.27.0"):
             peft_pattern = (
                 r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
                 r".*?"
