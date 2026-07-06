@@ -21,8 +21,9 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
 @pytest.mark.parametrize(
     "cloudflare,host,secure,api_only,is_colab,expected",
     [
-        # Non-secure: historical 0.0.0.0-only behaviour preserved.
+        # Non-secure wildcard binds tunnel by default.
         (True, "0.0.0.0", False, False, False, True),
+        (True, "::", False, False, False, True),
         (True, "127.0.0.1", False, False, False, False),
         (True, "localhost", False, False, False, False),
         # --secure tunnels a loopback bind too.
@@ -30,13 +31,16 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         (True, "0.0.0.0", True, False, False, True),
         # --no-cloudflare always wins.
         (False, "0.0.0.0", False, False, False, False),
+        (False, "::", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
         # Non-secure api-only never tunnels (Tauri).
         (True, "0.0.0.0", False, True, False, False),
+        (True, "::", False, True, False, False),
         # --secure tunnels even api-only (headless secure API server).
         (True, "127.0.0.1", True, True, False, True),
         # Colab never tunnels, even --secure.
         (True, "0.0.0.0", False, False, True, False),
+        (True, "::", False, False, True, False),
         (True, "127.0.0.1", True, False, True, False),
         (True, "127.0.0.1", True, True, True, False),
     ],
@@ -132,7 +136,7 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     import run
 
     monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
-    monkeypatch.setattr(run, "_print_cloudflare_line", lambda: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
 
     run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)

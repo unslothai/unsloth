@@ -47,7 +47,7 @@ except ImportError:
     from utils.paths import resolve_dataset_path
 
 # Auth
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 
 from utils.utils import log_and_http_error
 
@@ -114,7 +114,9 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
 
 @router.post("/start")
 async def start_training(
-    request: TrainingStartRequest, current_subject: str = Depends(get_current_subject)
+    request: TrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     Start a training job.
@@ -124,6 +126,22 @@ async def start_training(
     """
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+
+        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # training while a request is in flight: training frees VRAM by unloading
+        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # still starts training and coexists/frees VRAM as before. (A mixed UI+API
+        # session is not yet special-cased.)
+        if via_api_key is True:
+            from core.inference.llama_keepwarm import other_inference_request_count
+            if other_inference_request_count(current_request_counted = False) > 0:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Cannot start training over the API while an inference request is in "
+                        "progress. Wait for it to finish, or start training from the Studio UI."
+                    ),
+                )
 
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
@@ -255,6 +273,7 @@ async def start_training(
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
+            "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
