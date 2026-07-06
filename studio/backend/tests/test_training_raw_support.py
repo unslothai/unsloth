@@ -161,9 +161,9 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertNotIn("lora_random_state", config)
 
     def test_route_forwards_all_grad_clipping_fields(self):
-        # The HTTP route builds the config dict by hand; a schema field that
-        # is not forwarded here is silently dropped for REST callers.
-        source = (_BACKEND_ROOT / "routes" / "training.py").read_text()
+        # The shared launch path builds the config dict by hand; a schema field
+        # that is not forwarded here is silently dropped for REST callers.
+        source = (_BACKEND_ROOT / "core" / "training" / "launch.py").read_text()
         self.assertIn('"max_grad_norm": request.max_grad_norm', source)
         self.assertIn('"max_grad_value": request.max_grad_value', source)
         self.assertIn('"max_grad_leaf_norm": request.max_grad_leaf_norm', source)

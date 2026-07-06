@@ -6,6 +6,9 @@
 from .training import (
     TrainingStartRequest,
     TrainingJobResponse,
+    TrainingQueueItem,
+    TrainingQueueMoveRequest,
+    TrainingQueueStateResponse,
     TrainingStatus,
     TrainingProgress,
     TrainingRunSummary,
@@ -73,6 +76,9 @@ __all__ = [
     # Training schemas
     "TrainingStartRequest",
     "TrainingJobResponse",
+    "TrainingQueueItem",
+    "TrainingQueueMoveRequest",
+    "TrainingQueueStateResponse",
     "TrainingStatus",
     "TrainingProgress",
     "TrainingRunSummary",

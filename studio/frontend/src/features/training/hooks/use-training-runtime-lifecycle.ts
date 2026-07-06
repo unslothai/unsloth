@@ -14,6 +14,7 @@ import {
   isAbortError,
   streamTrainingProgress,
 } from "../api/train-api";
+import { emitTrainingRunsChanged } from "../events";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingRuntimeStore } from "../types/runtime";
@@ -150,6 +151,11 @@ export function useTrainingRuntimeLifecycle(): void {
         runtimeStore.getState().applyStatus(status);
 
         const nextState = runtimeStore.getState();
+        // Out-of-band run (queue runner, another client): nudge the dormant
+        // history sidebar or the new run stays invisible until a refresh.
+        if (nextState.jobId && nextState.jobId !== previousState.jobId) {
+          emitTrainingRunsChanged();
+        }
         if (!options?.suppressNativeNotifications) {
           maybeNotifyTrainingTerminalTransition(previousState, nextState);
         }

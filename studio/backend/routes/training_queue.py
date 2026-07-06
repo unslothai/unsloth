@@ -1,0 +1,127 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Training queue API routes."""
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from auth.authentication import get_current_subject
+from core.training.queue import get_training_queue_manager
+from loggers import get_logger
+from models import (
+    TrainingQueueItem,
+    TrainingQueueMoveRequest,
+    TrainingQueueStateResponse,
+    TrainingStartRequest,
+)
+from utils.utils import log_and_http_error
+
+router = APIRouter()
+logger = get_logger(__name__)
+
+
+# TrainingQueueItem has no request payload field: the stored request may carry
+# credentials (hf_token) and must never leave the backend.
+def _item_model(item: dict) -> TrainingQueueItem:
+    return TrainingQueueItem(
+        id = item["id"],
+        position = item["position"],
+        status = item["status"],
+        model_name = item["model_name"],
+        dataset_summary = item["dataset_summary"],
+        job_id = item.get("job_id"),
+        result_status = item.get("result_status"),
+        error_message = item.get("error_message"),
+        created_at = item["created_at"],
+        started_at = item.get("started_at"),
+        finished_at = item.get("finished_at"),
+    )
+
+
+def _state_response() -> TrainingQueueStateResponse:
+    state = get_training_queue_manager().state()
+    return TrainingQueueStateResponse(
+        paused = state["paused"],
+        paused_reason = state["paused_reason"],
+        pending_count = state["pending_count"],
+        max_pending = state["max_pending"],
+        active_job_id = state["active_job_id"],
+        items = [_item_model(item) for item in state["items"]],
+    )
+
+
+@router.get("/queue", response_model = TrainingQueueStateResponse)
+async def get_queue_state(current_subject: str = Depends(get_current_subject)):
+    try:
+        return _state_response()
+    except Exception as e:
+        raise log_and_http_error(
+            e, 500, "Failed to read training queue",
+            event = "training_queue.state_failed", log = logger,
+        )
+
+
+@router.post("/queue/items", response_model = TrainingQueueItem, status_code = 201)
+async def enqueue_item(
+    request: TrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        item = get_training_queue_manager().enqueue(request, subject = current_subject)
+        return _item_model(item)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except Exception as e:
+        raise log_and_http_error(
+            e, 500, "Failed to enqueue training job",
+            event = "training_queue.enqueue_failed", log = logger,
+        )
+
+
+@router.delete("/queue/items/{item_id}")
+async def remove_item(
+    item_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    from storage.studio_db import get_queue_item
+
+    if get_queue_item(item_id) is None:
+        raise HTTPException(status_code = 404, detail = "Queue item not found")
+    if not get_training_queue_manager().remove(item_id):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Only pending items can be removed from the queue.",
+        )
+    return {"status": "ok"}
+
+
+@router.post("/queue/items/{item_id}/move", response_model = TrainingQueueStateResponse)
+async def move_item(
+    item_id: str,
+    body: TrainingQueueMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    from storage.studio_db import get_queue_item
+
+    if get_queue_item(item_id) is None:
+        raise HTTPException(status_code = 404, detail = "Queue item not found")
+    if not get_training_queue_manager().move(item_id, body.direction):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Item can't move that way (not pending, or already at the edge).",
+        )
+    return _state_response()
+
+
+@router.post("/queue/pause", response_model = TrainingQueueStateResponse)
+async def pause_queue(current_subject: str = Depends(get_current_subject)):
+    get_training_queue_manager().pause("user")
+    return _state_response()
+
+
+@router.post("/queue/resume", response_model = TrainingQueueStateResponse)
+async def resume_queue(current_subject: str = Depends(get_current_subject)):
+    get_training_queue_manager().resume()
+    return _state_response()

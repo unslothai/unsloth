@@ -777,6 +777,37 @@ export const ptBR = {
       halfwayDone: "Metade concluída. O treinamento passou de 50%.",
       doneNextStep:
         "Treinamento concluído. Próximo passo: comparar as saídas do modelo base vs fine-tuned.",
+      queue: {
+        title: "Fila de Treinamento",
+        description:
+          "As execuções na fila rodam uma após a outra na sua GPU — enfileire e deixe rodando durante a noite.",
+        buttonLabel: "Fila",
+        addToQueue: "Adicionar à Fila ({count}/{max})",
+        adding: "Adicionando...",
+        queueFull: "Fila cheia",
+        queueFullNote:
+          "A fila está cheia. Remova um item ou aguarde o job atual terminar.",
+        empty: "Nenhum job na fila. Configure uma execução e adicione à fila.",
+        pausedNote:
+          "A fila está pausada: jobs concluídos ficam registrados, mas nenhum novo job da fila inicia até você retomar.",
+        restartBanner:
+          "{count} job(s) de treinamento na fila estão pausados após um reinício. Retome a fila para continuar.",
+        resume: "Retomar",
+        pause: "Pausar",
+        dismiss: "Dispensar",
+        moveUp: "Mover para cima",
+        moveDown: "Mover para baixo",
+        remove: "Remover da fila",
+        runsNext: "Próximo a executar",
+        recentlyFinished: "Concluídos recentemente",
+        pendingOfMax: "{count} de {max} pendentes",
+        statusPending: "Pendente",
+        statusRunning: "Executando",
+        statusSkipped: "Ignorado",
+        statusCompleted: "Concluído",
+        statusFailed: "Falhou",
+        statusStopped: "Interrompido",
+      },
     },
     history: {
       title: "Histórico",

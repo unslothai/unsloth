@@ -296,6 +296,7 @@ from routes import (
     providers_router,
     rag_router,
     training_history_router,
+    training_queue_router,
     training_router,
 )
 from routes.llama import router as llama_router
@@ -514,6 +515,14 @@ async def lifespan(app: FastAPI):
         cleanup_orphaned_runs()
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+    # Training queue: skip items orphaned mid-run, restart paused when pending
+    # work survived (the user resumes explicitly), then start the runner.
+    try:
+        from core.training.queue import get_training_queue_manager
+        get_training_queue_manager().restore_on_startup()
+    except Exception as exc:
+        _lifespan_log.warning("training queue restore failed at startup: %s", exc)
 
     reap_hub_orphan_workers()
 
@@ -958,6 +967,7 @@ app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
+app.include_router(training_queue_router, prefix = "/api/train", tags = ["training-queue"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 

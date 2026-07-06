@@ -192,7 +192,37 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
     set({ currentRunViewActive }),
 
   applyStatus: (payload) =>
-    set((state) => {
+    set((prev) => {
+      // A new job id means the backend started a run out-of-band (queue
+      // runner); reset run-scoped state so it doesn't inherit the old charts.
+      const isNewJob =
+        Boolean(payload.job_id) && Boolean(prev.jobId) && payload.job_id !== prev.jobId;
+      const state = isNewJob
+        ? {
+            ...prev,
+            sseConnected: false,
+            firstStepReceived: false,
+            lastEventId: null,
+            stopRequested: false,
+            currentStep: 0,
+            totalSteps: 0,
+            currentEpoch: 0,
+            currentLoss: 0,
+            currentLearningRate: 0,
+            progressPercent: 0,
+            elapsedSeconds: null,
+            etaSeconds: null,
+            currentGradNorm: null,
+            currentNumTokens: null,
+            outputDir: null,
+            lossHistory: [] as TrainingSeriesPoint[],
+            lrHistory: [] as TrainingSeriesPoint[],
+            gradNormHistory: [] as TrainingSeriesPoint[],
+            evalLossHistory: [] as TrainingSeriesPoint[],
+            resetGeneration: prev.resetGeneration + 1,
+          }
+        : prev;
+
       const metricHistory = applyMetricHistoryFromStatus(payload);
       const detailStep = payload.details?.step;
       const detailTotal = payload.details?.total_steps;

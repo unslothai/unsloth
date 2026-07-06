@@ -6,7 +6,17 @@ export {
   shouldShowTrainingView,
   useTrainingRuntimeStore,
 } from "./stores/training-runtime-store";
+export { useTrainingQueueStore } from "./stores/training-queue-store";
 export { useTrainingActions } from "./hooks/use-training-actions";
+export {
+  useTrainingQueue,
+  useTrainingQueueActions,
+} from "./hooks/use-training-queue";
+export type {
+  TrainingQueueItem,
+  TrainingQueueItemStatus,
+  TrainingQueueState,
+} from "./types/queue";
 
 export {
   getTrainingRunDisplayTitle,

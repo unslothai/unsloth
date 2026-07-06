@@ -675,6 +675,37 @@ export const ja = {
       milestone: "マイルストーン",
       halfwayDone: "半分完了しました。トレーニングの進捗が 50% を超えました。",
       doneNextStep: "トレーニングが完了しました。次のステップ: ベースモデルとファインチューニング後の出力を比較します。",
+      queue: {
+        title: "トレーニングキュー",
+        description:
+          "キューに入れた実行は GPU 上で順番に実行されます。まとめて登録して一晩実行できます。",
+        buttonLabel: "キュー",
+        addToQueue: "キューに追加 ({count}/{max})",
+        adding: "追加中...",
+        queueFull: "キューが満杯です",
+        queueFullNote:
+          "キューが満杯です。項目を削除するか、現在のジョブの完了をお待ちください。",
+        empty: "キューにジョブはありません。実行を設定してキューに追加してください。",
+        pausedNote:
+          "キューは一時停止中です。完了したジョブは記録されますが、再開するまで新しいジョブは開始されません。",
+        restartBanner:
+          "再起動後、{count} 件のキュー済みトレーニングジョブが一時停止しています。続行するにはキューを再開してください。",
+        resume: "再開",
+        pause: "一時停止",
+        dismiss: "閉じる",
+        moveUp: "上へ移動",
+        moveDown: "下へ移動",
+        remove: "キューから削除",
+        runsNext: "次に実行",
+        recentlyFinished: "最近完了",
+        pendingOfMax: "{count} / {max} 件待機中",
+        statusPending: "待機中",
+        statusRunning: "実行中",
+        statusSkipped: "スキップ",
+        statusCompleted: "完了",
+        statusFailed: "失敗",
+        statusStopped: "停止",
+      },
     },
     history: {
       title: "履歴",

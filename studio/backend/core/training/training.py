@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, Any, TYPE_CHECKING
+from typing import Callable, Optional, Tuple, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -254,6 +254,10 @@ class TrainingBackend:
         self._in_model_load: bool = False
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
+
+        # Queue-runner wake-up; best-effort only, the runner's poll is the
+        # source of truth.
+        self.on_job_finished: Optional[Callable[[], None]] = None
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
@@ -1141,6 +1145,18 @@ class TrainingBackend:
             self._run_finalized = True
         except Exception:
             logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
+        # Every terminal path funnels through here; fires even when the DB
+        # write failed, the run is over either way.
+        self._notify_job_finished()
+
+    def _notify_job_finished(self) -> None:
+        callback = self.on_job_finished
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.warning("on_job_finished callback failed", exc_info = True)
 
     def _flush_metrics_to_db(self) -> None:
         """Flush buffered metrics to the database and update live progress."""

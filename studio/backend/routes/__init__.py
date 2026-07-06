@@ -6,6 +6,7 @@ API Routes
 """
 
 from routes.training import router as training_router
+from routes.training_queue import router as training_queue_router
 from routes.models import router as models_router
 from routes.inference import router as inference_router
 from routes.inference import studio_router as inference_studio_router
@@ -21,6 +22,7 @@ from routes.rag import router as rag_router
 
 __all__ = [
     "training_router",
+    "training_queue_router",
     "models_router",
     "inference_router",
     "inference_studio_router",

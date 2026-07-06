@@ -5,6 +5,7 @@ import {
   shouldShowTrainingView,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
+  useTrainingQueue,
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
@@ -14,13 +15,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSidebar } from "@/components/ui/sidebar";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { DatasetSection } from "./sections/dataset-section";
 import { ModelSection } from "./sections/model-section";
 import { ParamsSection } from "./sections/params-section";
 import { TrainingSection } from "./sections/training-section";
+import { TrainingQueuePanel } from "./sections/training-queue-panel";
+import { QueueResumeBanner } from "./queue-resume-banner";
 import { LiveTrainingView } from "./live-training-view";
 import { HistoricalTrainingView } from "./historical-training-view";
 import { HistoryCardGrid } from "./history-card-grid";
@@ -29,6 +39,7 @@ import { useT } from "@/i18n";
 export function StudioPage(): ReactElement {
   const t = useT();
   useTrainingRuntimeLifecycle();
+  useTrainingQueue();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
   const currentJobId = useTrainingRuntimeStore((state) => state.jobId);
@@ -61,15 +72,13 @@ export function StudioPage(): ReactElement {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
 
-  // Auto-switch to "current-run" only while training runs; afterward honour
-  // the user's clicked tab. If "current-run" has nothing to show, use
-  // "configure".
+  // Honour the user's clicked tab; the edge effect below switches to
+  // "current-run" once per run start. If "current-run" has nothing to show,
+  // use "configure".
   const activeTab =
-    isTrainingRunning && requestedTab !== "history"
-      ? "current-run"
-      : requestedTab === "current-run" && !showTrainingView
-        ? "configure"
-        : requestedTab;
+    requestedTab === "current-run" && !showTrainingView
+      ? "configure"
+      : requestedTab;
 
   // Mirror "Current Run" tab state into the store so the sidebar can highlight
   // the run this view refers to. Cleared on unmount (leaving the studio page).
@@ -103,10 +112,13 @@ export function StudioPage(): ReactElement {
     setTourOpen(false);
   }, [activeTab, setTourOpen]);
 
-  // When training auto-switches us to "current-run", persist that in
-  // requestedTab so the user stays on results after training ends.
+  // Edge-triggered so the user can navigate back to Configure mid-run
+  // (e.g. to build the next queue item) without being snapped away.
+  const wasTrainingRunning = useRef(false);
   useEffect(() => {
-    if (isTrainingRunning && requestedTab !== "history" && requestedTab !== "current-run") {
+    const startedRunning = isTrainingRunning && !wasTrainingRunning.current;
+    wasTrainingRunning.current = isTrainingRunning;
+    if (startedRunning && requestedTab !== "history" && requestedTab !== "current-run") {
       setRequestedTab("current-run");
       setSelectedHistoryRunId(null);
     }
@@ -176,6 +188,8 @@ export function StudioPage(): ReactElement {
             {t("studio.loadingRuntime")}
           </div>
         ) : (
+          <>
+          <QueueResumeBanner />
           <Tabs value={activeTab} onValueChange={handleTabChange}>
             <div className="flex items-center gap-3 pb-3">
               {selectedHistoryRunId && activeTab === "history" && (
@@ -190,7 +204,7 @@ export function StudioPage(): ReactElement {
                 </Button>
               )}
               <TabsList variant="line">
-                <TabsTrigger value="configure" disabled={isTrainingRunning}>
+                <TabsTrigger value="configure">
                   {t("studio.tabs.configure")}
                 </TabsTrigger>
                 <TabsTrigger value="current-run" disabled={!showTrainingView}>
@@ -198,6 +212,9 @@ export function StudioPage(): ReactElement {
                 </TabsTrigger>
                 <TabsTrigger value="history">{t("studio.tabs.history")}</TabsTrigger>
               </TabsList>
+              <div className="ml-auto">
+                <TrainingQueuePanel />
+              </div>
             </div>
 
             <TabsContent value="configure">
@@ -232,6 +249,7 @@ export function StudioPage(): ReactElement {
               )}
             </TabsContent>
           </Tabs>
+          </>
         )}
       </main>
     </div>
