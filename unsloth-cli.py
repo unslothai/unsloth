@@ -131,6 +131,34 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
 
 
+def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
+    config_kwargs = dict(
+        per_device_train_batch_size = args.per_device_train_batch_size,
+        gradient_accumulation_steps = args.gradient_accumulation_steps,
+        warmup_steps = args.warmup_steps,
+        max_steps = args.max_steps,
+        learning_rate = args.learning_rate,
+        fp16 = not bf16_supported,
+        bf16 = bf16_supported,
+        logging_steps = args.logging_steps,
+        optim = args.optim,
+        weight_decay = args.weight_decay,
+        lr_scheduler_type = args.lr_scheduler_type,
+        seed = args.seed,
+        output_dir = args.output_dir,
+        report_to = args.report_to,
+        max_length = args.max_seq_length,
+        dataset_num_proc = 2,
+        packing = args.packing,
+    )
+    if is_mlx:
+        if args.per_device_eval_batch_size != 4:
+            print("Warning: --per_device_eval_batch_size is ignored on MLX without eval data.")
+    else:
+        config_kwargs["per_device_eval_batch_size"] = args.per_device_eval_batch_size
+    return SFTConfig(**config_kwargs)
+
+
 def run(args):
     import unsloth
     from unsloth import FastLanguageModel
@@ -230,27 +258,9 @@ def run(args):
     print("Data is formatted and ready!")
 
     # Configure training arguments
-    training_args = SFTConfig(
-        per_device_train_batch_size = args.per_device_train_batch_size,
-        per_device_eval_batch_size = args.per_device_eval_batch_size,
-        gradient_accumulation_steps = args.gradient_accumulation_steps,
-        warmup_steps = args.warmup_steps,
-        max_steps = args.max_steps,
-        learning_rate = args.learning_rate,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
-        logging_steps = args.logging_steps,
-        optim = args.optim,
-        weight_decay = args.weight_decay,
-        lr_scheduler_type = args.lr_scheduler_type,
-        seed = args.seed,
-        output_dir = args.output_dir,
-        report_to = args.report_to,
-        max_length = args.max_seq_length,
-        dataset_num_proc = 2,
-        ddp_find_unused_parameters = False if distributed else None,
-        packing = args.packing,
-    )
+    training_args = _build_sft_config(SFTConfig, args, is_mlx, is_bfloat16_supported())
+    if distributed:
+        training_args.ddp_find_unused_parameters = False
 
     # Initialize trainer
     trainer = SFTTrainer(
