@@ -106,6 +106,7 @@ from ._utils import (
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
     set_task_config_attr,
+    maybe_prefetch_hf_snapshot,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -865,6 +866,28 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
+            # Warm the adapter repo: PeftModel downloads it in-process and can hang on Xet.
+            _prefetched = maybe_prefetch_hf_snapshot(
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                # Adapter always loads in-process via PeftModel, so warm it even under fast_inference.
+                fast_inference = False,
+                force_download = kwargs.get("force_download", False),
+                # Leave use_safetensors auto (inheriting base format could skip a safetensors-only
+                # adapter). adapter_only restricts the warm to the adapter files + root aux.
+                adapter_only = True,
+            )
+            # Child did the forced download; clear the flag so the load reuses the warm cache.
+            if _prefetched and kwargs.get("force_download", False):
+                kwargs["force_download"] = False
+            # Forward cache_dir so the load reads the warmed adapter. No subfolder (that targets the
+            # base checkpoint; adapters live at the root).
+            peft_load_kwargs = {}
+            if kwargs.get("cache_dir") is not None:
+                peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -873,6 +896,7 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
+                **peft_load_kwargs,
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
@@ -1790,6 +1814,28 @@ class FastModel(FastBaseModel):
 
                 _LoraModel._create_and_replace = _patched_car
 
+            # Warm the adapter repo: PeftModel downloads it in-process and can hang on Xet.
+            _prefetched = maybe_prefetch_hf_snapshot(
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                # Adapter always loads in-process via PeftModel, so warm it even under fast_inference.
+                fast_inference = False,
+                force_download = kwargs.get("force_download", False),
+                # Leave use_safetensors auto (inheriting base format could skip a safetensors-only
+                # adapter). adapter_only restricts the warm to the adapter files + root aux.
+                adapter_only = True,
+            )
+            # Child did the forced download; clear the flag so the load reuses the warm cache.
+            if _prefetched and kwargs.get("force_download", False):
+                kwargs["force_download"] = False
+            # Forward cache_dir so the load reads the warmed adapter. No subfolder (that targets the
+            # base checkpoint; adapters live at the root).
+            peft_load_kwargs = {}
+            if kwargs.get("cache_dir") is not None:
+                peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             try:
                 model = PeftModel.from_pretrained(
                     model,
@@ -1799,6 +1845,7 @@ class FastModel(FastBaseModel):
                     local_files_only = local_files_only,
                     is_trainable = True,
                     trust_remote_code = trust_remote_code,
+                    **peft_load_kwargs,
                 )
             finally:
                 # Always restore original PEFT method, even if loading fails

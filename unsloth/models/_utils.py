@@ -83,6 +83,7 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "get_moe_target_parameters",
     "make_fast_generate_wrapper",
@@ -903,6 +904,411 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bit
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
+
+
+# Artifacts a Transformers/PEFT load never reads (ONNX/TF/Flax/CoreML/GGUF/training state), skipped
+# when prewarming so a mixed-format repo is not pulled in full.
+_PREFETCH_IGNORE_PATTERNS = (
+    "*.onnx",
+    "onnx/*",
+    "*.h5",
+    "*.msgpack",
+    "*.tflite",
+    "coreml/*",
+    "*.mlpackage/*",
+    "*.mlmodel",
+    "*.gguf",
+    # Training / checkpoint formats from_pretrained never reads.
+    "*.pt",
+    "*.pth",
+    "*.ckpt",
+    "optimizer.*",
+    "scheduler.*",
+    "rng_state*",
+    "trainer_state.json",
+    "events.out.tfevents*",
+    "checkpoint-*/*",
+)
+
+
+# Repo-root tokenizer / config / processor files from_pretrained reads from root even when weights
+# load from a subfolder. Exact names (no wildcard) so they match only root-level files.
+_ROOT_AUX_PREFETCH_PATTERNS = (
+    "config.json",
+    "generation_config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "tokenizer.model",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "vocab.txt",
+    "merges.txt",
+    "spiece.model",
+    # More VOCAB_FILES_NAMES the slow tokenizer may fetch (DeBERTa-v2, Whisper, Mistral, XLM-R/mBART, Marian, FSMT/XLM, GPT-2).
+    "spm.model",
+    "normalizer.json",
+    "tokenizer.model.v3",
+    "sentencepiece.bpe.model",
+    "source.spm",
+    "target.spm",
+    "bpe.codes",
+    "vocab.bpe",
+    # More VOCAB_FILES_NAMES (RemBERT, FSMT) a distinct-tokenizer-repo warm must cache too.
+    "sentencepiece.model",
+    "vocab-src.json",
+    "vocab-tgt.json",
+    "chat_template.jinja",
+    "chat_template.json",
+    # chat_template="<name>" fetches additional_chat_templates/<name>.jinja.
+    "additional_chat_templates/*.jinja",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "video_preprocessor_config.json",  # Qwen2.5-VL-style video processors
+    # trust_remote_code auto_map can name any module, so warm every *.py (tiny; none in a non-remote repo).
+    "*.py",
+    "*.tiktoken",  # tiktoken vocab (e.g. Qwen's qwen.tiktoken)
+)
+
+
+# Files a PEFT adapter load reads: config + weights (glob covers sharded adapters). Any merged
+# full-model weights the repo also ships match none of these.
+_ADAPTER_PREFETCH_PATTERNS = (
+    "adapter_config.json",
+    "adapter_model*",
+)
+
+
+# Weight files in a SUBDIRECTORY. A bare root load reads only root weights, so ignoring these drops
+# alternate-precision/experimental dirs (fp16/, experimental/). "*/*" spans "/" (HF fnmatch), so nested
+# weights match while root "model.safetensors" is kept. Only applied when weights_at_root (diffusion
+# keeps weights in subfolders).
+_SUBDIR_WEIGHT_IGNORE_PATTERNS = (
+    "*/*.safetensors",
+    "*/*.bin",
+    "*/*.h5",
+    "*/*.msgpack",
+    "*/*.pt",
+    "*/*.pth",
+)
+
+
+def _in_requested_load_scope(filename, subfolder):
+    """True if *filename* is in the location being loaded (*subfolder*, else root). Scopes the ".bin is
+    redundant when safetensors exist" test so a .bin-only subfolder keeps its .bin."""
+    filename = filename.replace("\\", "/")
+    if isinstance(subfolder, str) and subfolder.strip("/"):
+        return filename.startswith(subfolder.strip("/") + "/")
+    return "/" not in filename  # root load: no directory component
+
+
+# .safetensors training-state files that are NOT model weights (e.g. optimizer.safetensors next to a
+# real pytorch_model.bin); counting them as "model safetensors present" would drop the needed .bin.
+_NON_MODEL_WEIGHT_STEMS = frozenset(
+    {
+        "optimizer",
+        "scheduler",
+        "scaler",
+        "rng_state",
+        "training_args",
+    }
+)
+
+
+def _is_model_weight_safetensors(filename):
+    """True if *filename* is a model-weights safetensors, not a PEFT adapter/sidecar
+    (adapter_model.safetensors) or trainer-state (optimizer.safetensors). Only a real one proves the
+    .bin redundant; counting a sidecar would wrongly drop the needed .bin (fetched then without Xet fallback)."""
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name.endswith((".safetensors", ".safetensors.index.json")):
+        return False
+    if name.startswith("adapter_"):
+        return False
+    # Stem before first dot: "optimizer.safetensors" -> "optimizer" (real shards kept); rng_state via prefix.
+    stem = name.split(".", 1)[0].lower()
+    if stem in _NON_MODEL_WEIGHT_STEMS or stem.startswith("rng_state"):
+        return False
+    return True
+
+
+def _is_canonical_variant_model_weight_safetensors(filename, variant):
+    """True for a canonical model-weights safetensors carrying the requested *variant*, in the forms
+    transformers reads (single, either numbered-shard layout, or the index). Strict (base must be
+    "model"): a sidecar like consolidated.<variant>.safetensors does not prove the variant .bin redundant."""
+    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    v = re.escape(variant)
+    return bool(
+        re.match(
+            rf"^(?:model\.{v}\.safetensors"
+            rf"|model\.{v}-\d{{5}}-of-\d{{5}}\.safetensors"
+            rf"|model-\d{{5}}-of-\d{{5}}\.{v}\.safetensors"
+            rf"|model\.safetensors\.index\.{v}\.json)$",
+            base,
+        )
+    )
+
+
+_CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE = re.compile(
+    r"^(?:model\.safetensors|model-\d{5}-of-\d{5}\.safetensors|model\.safetensors\.index\.json)$"
+)
+
+
+def _is_canonical_model_weight_safetensors(filename):
+    """True for a canonical (non-variant) model-weights safetensors a default load reads (model.safetensors,
+    a numbered shard, or the index). Strict: an unrecognized name keeps both formats, so a variant-only
+    safetensors + pytorch_model.bin repo never has its .bin dropped for a no-variant load."""
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE.match(name))
+
+
+def _adapter_repo_has_safetensors(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+):
+    """Best-effort: does the adapter repo ship a root safetensors adapter weight (making the .bin
+    redundant)? Scoped to root adapter_model* files; any failure returns False."""
+    try:
+        from huggingface_hub import HfApi
+        siblings = HfApi().model_info(model_name, revision = revision, token = token).siblings or []
+        return any(
+            "/" not in sibling.rfilename.replace("\\", "/")  # root only
+            and sibling.rfilename.startswith("adapter_model")
+            and sibling.rfilename.endswith(".safetensors")
+            for sibling in siblings
+        )
+    except Exception:
+        return False
+
+
+def _prefetch_ignore_patterns(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    subfolder = None,
+    use_safetensors = None,
+    from_tf = False,
+    from_flax = False,
+    variant = None,
+    weights_at_root = False,
+):
+    """ignore_patterns for the prewarm snapshot: the static skip list, minus the checkpoint guard when
+    loading from a checkpoint-* subfolder, minus the weight format the load will not read. use_safetensors
+    is a format allowlist (True -> skip *.bin, False -> skip *.safetensors); auto (None) skips *.bin only
+    when in-scope safetensors are shipped. from_tf/from_flax keep *.h5/*.msgpack.
+
+    Suppressed for a whole multi-component snapshot (weights_at_root=False, no subfolder: ST/diffusers
+    repos with per-subfolder weights, each in its own format), since "*" spans "/" so dropping "*.bin"
+    would strip a module's only weight."""
+    # Keep checkpoint-*/* under a checkpoint-* subfolder; keep *.h5 / *.msgpack under from_tf/flax.
+    ignore_patterns = [
+        pattern
+        for pattern in _PREFETCH_IGNORE_PATTERNS
+        if not (
+            (
+                pattern == "checkpoint-*/*"
+                and isinstance(subfolder, str)
+                and subfolder.startswith("checkpoint-")
+            )
+            or (from_tf and pattern == "*.h5")
+            or (from_flax and pattern == "*.msgpack")
+        )
+    ]
+    # Drop the format the load will not read (the other doubles the download); skipped for a whole
+    # multi-component snapshot (see docstring).
+    whole_multi_component = not weights_at_root and not (
+        isinstance(subfolder, str) and subfolder.strip("/")
+    )
+    if whole_multi_component:
+        pass
+    elif from_tf or from_flax:
+        # TF / Flax loads never read the PyTorch formats; drop safetensors and .bin.
+        ignore_patterns.extend(
+            (
+                "*.safetensors",
+                "*.safetensors.index.json",
+                "*.bin",
+                "*.bin.index.json",
+            )
+        )
+    elif use_safetensors is True:
+        # Explicit safetensors: load never reads .bin (no model_info call needed).
+        ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+    elif use_safetensors is False:
+        # Explicit .bin: load never reads safetensors.
+        ignore_patterns.extend(("*.safetensors", "*.safetensors.index.json"))
+    else:
+        # Auto: skip .bin only once in-scope safetensors are confirmed (best-effort; any failure keeps both).
+        try:
+            from huggingface_hub import HfApi
+
+            siblings = (
+                HfApi()
+                .model_info(
+                    model_name,
+                    revision = revision,
+                    token = token,
+                )
+                .siblings
+                or []
+            )
+            # Count only in-scope model-weights safetensors (not adapters/sidecars): variant-matching if
+            # a variant is requested, else canonical, proving the .bin redundant.
+            has_safetensors = any(
+                _is_model_weight_safetensors(sibling.rfilename)
+                and _in_requested_load_scope(sibling.rfilename, subfolder)
+                and (
+                    _is_canonical_variant_model_weight_safetensors(sibling.rfilename, variant)
+                    if variant
+                    else _is_canonical_model_weight_safetensors(sibling.rfilename)
+                )
+                for sibling in siblings
+            )
+            if has_safetensors:
+                ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+        except Exception:
+            pass
+    return ignore_patterns
+
+
+def maybe_prefetch_hf_snapshot(
+    model_name,
+    token = None,
+    *,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+    fast_inference = False,
+    subfolder = None,
+    force_download = False,
+    use_safetensors = None,
+    from_tf = False,
+    from_flax = False,
+    tokenizer_only = False,
+    adapter_only = False,
+    weights_at_root = False,
+    variant = None,
+    gguf_file = None,
+):
+    """Warm the HF cache for a remote repo before the in-process load.
+
+    Xet can hang on a blob with no progress or exception, and a blocked native Xet thread cannot be
+    killed in-process. So pull the snapshot first in a killable subprocess that falls back Xet -> HTTP
+    on a stall (unsloth_zoo.hf_xet_fallback), making from_pretrained a cache hit.
+
+    Returns True iff warmed (caller can clear force_download), else False (skipped: local/offline/
+    local_files_only/fast_inference/old unsloth_zoo, or failed). Only a both-transports-stalled
+    DownloadStallError is raised; other failures are left for from_pretrained to surface.
+    """
+    try:
+        from unsloth_zoo.hf_xet_fallback import (
+            snapshot_download_with_xet_fallback,
+            DownloadStallError,
+        )
+    except Exception:
+        return False  # older unsloth_zoo without the helper: load normally
+
+    if not isinstance(model_name, str) or not model_name:
+        return False
+    # Local path: nothing to download. Expand ~ first (os.path.exists does not).
+    model_path = os.path.expanduser(model_name)
+    if os.path.isdir(model_path) or os.path.exists(model_path):
+        return False
+    # Looks local but not yet on disk (e.g. an uncreated output dir): not a Hub repo id, so leave it
+    # for from_pretrained rather than download it.
+    if (
+        os.path.isabs(model_path)
+        or model_name.startswith(("~", "./", "../", ".\\", "..\\"))
+        or "\\" in model_name
+    ):
+        return False
+    if local_files_only:  # cache-only: never reach out
+        return False
+    if any(
+        os.environ.get(flag, "0").lower() in ("1", "true", "yes", "on")
+        for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    ):
+        return False
+    if fast_inference:  # vLLM has its own download path
+        return False
+
+    # tokenizer-only / adapter-only warms allow-list exact files below, so the weight-format ignore
+    # list (and its auto-branch model_info call) is skipped.
+    ignore_patterns = (
+        None
+        if tokenizer_only or adapter_only or gguf_file
+        else _prefetch_ignore_patterns(
+            model_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder,
+            use_safetensors = use_safetensors,
+            from_tf = from_tf,
+            from_flax = from_flax,
+            variant = variant,
+            weights_at_root = weights_at_root,
+        )
+    )
+    # Narrow the warm to what the load reads (skip extra checkpoints/precisions); every branch still warms
+    # root tokenizer/config/custom-code so those never fall in-process.
+    allow_patterns = None
+    if gguf_file:
+        # gguf_file=NAME reads exactly that GGUF, but the static ignore list drops *.gguf; so warm just
+        # that file (plus root aux), under <subfolder>/ if set.
+        _gguf_path = (
+            f"{subfolder.strip('/')}/{gguf_file}"
+            if isinstance(subfolder, str) and subfolder.strip("/")
+            else gguf_file
+        )
+        allow_patterns = [_gguf_path, *_ROOT_AUX_PREFETCH_PATTERNS]
+    elif tokenizer_only:
+        # A distinct tokenizer repo: warm only tokenizer / config / vocab files, never its weights.
+        allow_patterns = list(_ROOT_AUX_PREFETCH_PATTERNS)
+    elif adapter_only:
+        # A PEFT adapter load reads only adapter_config.json + adapter_model.* (plus root aux), not any
+        # merged weights the repo may also publish.
+        allow_patterns = [*_ADAPTER_PREFETCH_PATTERNS, *_ROOT_AUX_PREFETCH_PATTERNS]
+        # PeftModel reads one format (safetensors when present): explicit use_safetensors wins, else
+        # prefer safetensors when shipped (best-effort; any failure keeps both).
+        if use_safetensors is False:
+            ignore_patterns = [
+                "adapter_model*.safetensors",
+                "adapter_model*.safetensors.index.json",
+            ]
+        elif use_safetensors is True or _adapter_repo_has_safetensors(
+            model_name, token = token, revision = revision
+        ):
+            ignore_patterns = ["adapter_model*.bin", "adapter_model*.bin.index.json"]
+    elif isinstance(subfolder, str) and subfolder.strip("/"):
+        # subfolder=X: load resolves every weight under X/, so warm that subfolder (plus root aux).
+        allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
+    elif weights_at_root:
+        # A bare load reads only root weights: drop subdir weights (fp16/, checkpoint dirs) while keeping
+        # subdir configs. Diffusion leaves weights_at_root False.
+        ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
+    try:
+        snapshot_download_with_xet_fallback(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            allow_patterns = allow_patterns,
+            ignore_patterns = ignore_patterns,
+            force_download = force_download,
+            variant = variant,
+        )
+        return True
+    except DownloadStallError:
+        # Both transports stalled: surface a clear network error, not a silent in-process hang.
+        raise
+    except Exception as exception:
+        logger.warning_once(
+            f"Unsloth: Could not pre-download {model_name} "
+            f"({type(exception).__name__}: {exception}); continuing with the normal load."
+        )
+        return False
 
 
 # Ignore logging messages
