@@ -753,13 +753,16 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
         assert task not in ("text-generation", "text-to-image")
-    # Video archs the video backend loads surface with the Video-picker task,
-    # which is neither chat nor an image task (unsloth LTX-2.x GGUFs ship
-    # general.architecture "ltxv"; community Wan GGUFs ship "wan").
-    for arch in ("ltxv", "wan"):
-        task = models_route._arch_to_task(arch)
-        assert task == models_route._VIDEO_GEN_TASK
-        assert task not in ("text-generation", "text-to-image")
+    # A video arch with a REGISTERED VideoFamily surfaces with the Video-picker task (unsloth
+    # LTX-2.x GGUFs ship general.architecture "ltxv" and ltx-2 is registered).
+    assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
+    assert models_route._arch_to_task("ltxv") not in ("text-generation", "text-to-image")
+    # A video arch that is pre-registered in _VIDEO_GGUF_ARCHS but has NO VideoFamily yet ("wan"
+    # in this build) must NOT be advertised as loadable video -- it would 400 on load. It falls to
+    # the unsupported bucket (hidden from chat and from the Video/Images pickers) until its family
+    # lands, rather than surfacing a GGUF that cannot load.
+    assert models_route._arch_to_task("wan") == models_route._UNSUPPORTED_DIFFUSION_TASK
+    assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
     # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
     # classified here as some non-chat task (image, video, or unsupported).
     from core.inference.llama_cpp import LlamaCppBackend

@@ -3209,7 +3209,16 @@ def _arch_to_task(arch: Optional[str]) -> Optional[str]:
     if a in _DIFFUSION_GGUF_ARCHS:
         return "text-to-image"
     if a in _VIDEO_GGUF_ARCHS:
-        return _VIDEO_GEN_TASK
+        # Only advertise as loadable video when a VideoFamily is actually registered for this arch
+        # (the video registry differs across the stacked video PRs -- wan is pre-registered here but
+        # its family lands later). An unregistered video arch would 400 on load, so fall it through
+        # to the unsupported bucket (hidden from chat, not surfaced in the Video/Images pickers)
+        # until its family exists, rather than advertising a GGUF that cannot load.
+        from core.inference.video_families import detect_video_family
+
+        if detect_video_family("", override = a) is not None:
+            return _VIDEO_GEN_TASK
+        return _UNSUPPORTED_DIFFUSION_TASK
     # A diffusion arch the backend can't assemble: hide it from chat (it would die
     # in llama.cpp) without surfacing it in Images (it would 400 in validate_load).
     if a in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:
