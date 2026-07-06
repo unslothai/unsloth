@@ -278,6 +278,26 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
     )
     assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
 
+    # The blob lives in a NON-active cache root (legacy / default): the active probe (no cache_dir)
+    # misses, but the per-root probe finds it, so a GGUF the picker offered from any root resolves.
+    import hub.utils.paths as hub_paths
+
+    monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: "/fake/legacy")
+    monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: "/fake/default")
+    monkeypatch.setattr(
+        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        # Active root (cache_dir absent) misses; only the legacy/default roots have the blob.
+        lambda repo_id, filename, cache_dir = None: (
+            "/fake/legacy/blobs/model.gguf" if cache_dir else None
+        ),
+    )
+    fam = _detect_load_family("someorg/opaque-quants", "model.gguf", None)
+    assert fam is not None and fam.name == "ltx-2"
+
 
 def test_loading_repo_ids_guards_in_flight_delete():
     # During a background load status()["loaded"] is still False, but the target repo (+ its

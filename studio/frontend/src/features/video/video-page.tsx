@@ -507,6 +507,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
+  // Whether this session holds a reapply descriptor (set only by our own loads). On a mount/refresh
+  // with a model already resident, status.loaded is true but lastLoad is null, so Reapply would
+  // silently do nothing -- hide the button in that case rather than offer a dead control.
+  const [canReapply, setCanReapply] = useState(false);
 
   const [busy, setBusy] = useState<Busy>(null);
   // Live per-step progress (phase / step / total + ETA) polled during generation.
@@ -873,6 +877,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      setCanReapply(true);
       try {
         // Returns immediately -- the load runs in the background; we poll for it. The backend
         // infers the family + base diffusers repo from the repo id. Advanced options map
@@ -992,6 +997,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     pollTimer.current = null;
     dismissLoadToast();
     lastLoadSig.current = null;
+    lastLoad.current = null;
+    setCanReapply(false);
     setBusy("unloading");
     try {
       setStatus(await unloadVideoModel());
@@ -1153,7 +1160,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           ["fbcache", "First-Block-Cache"],
         ]}
       />
-      {status?.loaded && (
+      {status?.loaded && canReapply && (
         <Button
           variant="secondary"
           size="sm"

@@ -132,10 +132,24 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
         path = Path(repo_id).expanduser() / gguf_filename
         if not path.is_file():
             # Not a local dir: resolve a cached HUB blob from the HF cache (no network). The
-            # cached-gguf picker only offers already-downloaded repos, so the blob is on disk.
+            # cached-gguf picker only offers already-downloaded repos, so the blob is on disk --
+            # but that listing scans the active, legacy, AND default cache roots, so probe all
+            # three here or a GGUF cached in a non-active root would be offered yet 400 on load.
             from huggingface_hub import try_to_load_from_cache
 
             cached = try_to_load_from_cache(repo_id, gguf_filename)
+            if not isinstance(cached, str):
+                from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+
+                for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+                    try:
+                        cached = try_to_load_from_cache(
+                            repo_id, gguf_filename, cache_dir = str(root_fn())
+                        )
+                    except Exception:  # noqa: BLE001 -- a bad/absent root just falls through
+                        cached = None
+                    if isinstance(cached, str):
+                        break
             if not isinstance(cached, str):
                 return None
             path = Path(cached)
