@@ -281,6 +281,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "precision_modes": dit_modes if is_dit else [],
                 "recommended_precision": dit_recommended if is_dit else "nf4",
                 "supports_compile": is_dit,
+                # Krea trains on Raw but previews adapters on Turbo; None elsewhere.
+                "deploy_base": fam.deploy_base_repo,
             }
         )
     return infos

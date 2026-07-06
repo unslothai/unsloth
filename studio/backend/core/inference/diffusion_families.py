@@ -126,6 +126,13 @@ class DiffusionFamily:
     # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA-friendly
     # prequant repo, then a bf16 repo). Surfaced by the Train UI as the base-model choices.
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
+    # When set, deploying a LoRA trained on this family loads THIS repo instead of the
+    # checkpoint it was trained on -- for families whose release guidance is to train on one
+    # checkpoint but run adapters on another (Krea: train on Raw, preview on Turbo). Both
+    # sides must be the same precision so the swap never enlarges the load (unlike the
+    # nf4 -> bf16 gap that would risk an OOM on deploy). Unset elsewhere, so every other
+    # family deploys on the base it was trained on.
+    deploy_base_repo: Optional[str] = None
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -300,6 +307,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # inference/base repo.
         trainable = True,
         train_base_repos = ("krea/Krea-2-Raw", "krea/Krea-2-Turbo"),
+        # Per Krea's guidance, adapters trained on Raw are meant to run on Turbo; deploy
+        # previews them on Turbo (same bf16 precision, so the swap never enlarges the load).
+        deploy_base_repo = "krea/Krea-2-Turbo",
         # The checkpoint is exported bf16-only (the model card pins bfloat16); fp16 is
         # unvalidated upstream, so keep the fp16 fallback off like z-image.
         fp16_incompatible = True,
@@ -451,6 +461,10 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 # (studio/frontend/src/features/images/images-page.tsx); keep the two in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
+    # Krea 2 Turbo is distilled (TDM): 8 steps, no CFG -- matching the Create UI seed, so
+    # the OpenAI /v1/images/generations route uses the documented recipe instead of falling
+    # through to the generic (9, 0.0). "krea" collides with no other model id.
+    ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
     # Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
     ("kontext", 28, 2.5),

@@ -135,7 +135,11 @@ def test_load_krea2_pipeline_requires_krea_capable_diffusers(monkeypatch):
 
 def test_krea2_family_wiring():
     from core.inference.diffusion import _is_trusted_diffusion_repo
-    from core.inference.diffusion_families import detect_family, family_sd_cpp_supported
+    from core.inference.diffusion_families import (
+        default_generation_params,
+        detect_family,
+        family_sd_cpp_supported,
+    )
     from core.inference.diffusion_transformer_quant import TQ_INT8, exclude_tokens_for_scheme
 
     fam = detect_family("krea/Krea-2-Turbo")
@@ -147,6 +151,13 @@ def test_krea2_family_wiring():
     assert not family_sd_cpp_supported(fam)
     # Krea2TimestepEmbedding runs at M = batch; int8 (torch._int_mm, M > 16) must skip it.
     assert "time_embed" in exclude_tokens_for_scheme(TQ_INT8)
+    # Adapters train on Raw but run on Turbo, so the family carries a deploy override.
+    assert fam.deploy_base_repo == "krea/Krea-2-Turbo"
+    # The OpenAI /v1/images/generations route reads (steps, guidance) from this table; Krea
+    # Turbo is distilled (8 steps, no CFG), matching the Create UI seed instead of the
+    # generic (9, 0.0) fallback.
+    assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
+    assert default_generation_params("krea/Krea-2-Raw") == (8, 0.0)
 
 
 # ── training wiring ──────────────────────────────────────────────────────────
@@ -175,6 +186,10 @@ def test_krea2_training_registry():
     assert info["default_base"] == "krea/Krea-2-Raw"
     assert info["base_repos"] == ["krea/Krea-2-Raw", "krea/Krea-2-Turbo"]
     assert info["supports_compile"] is True
+    # Deploy previews the adapter on Turbo, not the Raw checkpoint it trained on, so the UI
+    # loads the distilled inference recipe; other families leave this None.
+    assert info["deploy_base"] == "krea/Krea-2-Turbo"
+    assert {i["name"]: i for i in family_train_infos()}["flux.1"]["deploy_base"] is None
 
 
 def test_krea2_spec_registered_with_authors_targets():

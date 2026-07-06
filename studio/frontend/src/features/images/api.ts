@@ -443,6 +443,10 @@ export interface DiffusionTrainableFamily {
   recommended_precision?: string;
   // Whether the family's transformer can be torch.compile'd (gates the Speed > Compile row).
   supports_compile?: boolean;
+  // When set, deploying a LoRA trained on this family previews it on this repo instead of
+  // the checkpoint it was trained on (Krea trains on Raw but runs adapters on Turbo). Null
+  // for families that deploy on the base they trained on.
+  deploy_base?: string | null;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.
