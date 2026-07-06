@@ -243,6 +243,62 @@ def test_detect_load_family_filename_fallback():
     assert _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "bogus") is None
 
 
+def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
+    # A CACHED HUB GGUF is admitted to the picker by its general.architecture (the cached-gguf
+    # listing tags it text-to-video), but an opaque repo id + renamed file carry no family token,
+    # so name detection misses. The local-file arch read misses too (a hub repo id is not a local
+    # dir), so without a cache fallback the loader 400s a SUPPORTED checkpoint the picker offered.
+    import huggingface_hub
+
+    import utils.models.gguf_metadata as gguf_meta
+
+    # No local file at Path(repo_id)/filename; resolve the arch from the cached blob instead.
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo_id, filename, **kw: "/fake/cache/blobs/model.gguf",
+    )
+    monkeypatch.setattr(
+        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "ltxv"}
+    )
+    fam = _detect_load_family("someorg/opaque-quants", "model.gguf", None)
+    assert fam is not None and fam.name == "ltx-2"
+
+    # A cache MISS (blob not present -> None) still yields None (400 exactly as before).
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
+
+    # A recognised-but-unsupported video arch (wan has no backend family in this build) stays None,
+    # so an unsupported cached pick 400s just like the local-dir case.
+    monkeypatch.setattr(
+        huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/fake/cache/blobs/model.gguf"
+    )
+    monkeypatch.setattr(
+        gguf_meta, "read_gguf_general_metadata", lambda path: {"general.architecture": "wan"}
+    )
+    assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
+
+
+def test_loading_repo_ids_guards_in_flight_delete():
+    # During a background load status()["loaded"] is still False, but the target repo (+ its
+    # companion base) is being downloaded, so the delete-cached guard needs loading_repo_ids to
+    # refuse deletion and avoid yanking blobs from under the in-flight download/assembly.
+    from core.inference.video import _VideoLoadingState
+
+    backend = VideoBackend()
+    assert backend.loading_repo_ids() == ()  # idle: nothing to guard
+    backend._loading = _VideoLoadingState(repo_id = "org/ckpt", base_repo = "Lightricks/LTX-2")
+    assert set(backend.loading_repo_ids()) == {"org/ckpt", "Lightricks/LTX-2"}
+    # An errored load is no longer in flight -> the files are safe to delete.
+    backend._loading = _VideoLoadingState(
+        repo_id = "org/ckpt", base_repo = "Lightricks/LTX-2", error = "boom"
+    )
+    assert backend.loading_repo_ids() == ()
+    # A load whose base equals the repo (or is empty) yields just the one id.
+    backend._loading = _VideoLoadingState(repo_id = "org/ckpt", base_repo = "")
+    assert backend.loading_repo_ids() == ("org/ckpt",)
+
+
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     backend = VideoBackend()
     status = _load_gguf(backend, tmp_path)

@@ -3521,13 +3521,25 @@ async def delete_cached_model(
     # pipeline -- the same invariant the three guards above enforce. Repo-level match.
     try:
         from core.inference.video import get_video_backend
-        video_status = get_video_backend().status()
+
+        video_backend = get_video_backend()
+        video_status = video_backend.status()
         if video_status.get("loaded") and video_status.get("repo_id"):
             loaded_id = str(video_status["repo_id"]).lower()
             if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
+                )
+        # Also refuse while a background VIDEO load is DOWNLOADING this repo (or its companion
+        # base): status().loaded is still False in that window, but deleting would remove blobs
+        # from under the in-flight download/assembly -- same as the Images guard above.
+        for lid in getattr(video_backend, "loading_repo_ids", tuple)():
+            lid = str(lid).lower()
+            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "A Video model load is using this repo; wait for it to finish",
                 )
     except HTTPException:
         raise

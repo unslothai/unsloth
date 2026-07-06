@@ -613,6 +613,26 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     });
   }, [durationOptions, loadedFamily, familyDefaultFrames]);
 
+  // Seed steps/guidance from the loaded model's backend-authoritative defaults. On mount with a
+  // model already loaded (browser refresh, or a load from another client) only refreshStatus runs
+  // -- handleModelSelect never fires -- so the controls otherwise stick at the pre-load DEFAULT_GEN
+  // (8/1) and a base checkpoint that wants 40/4 silently generates a degraded clip. Key on the repo
+  // id so it fires once per newly-loaded model (a distilled vs base checkpoint of the same family
+  // has different defaults); a later user edit is not clobbered because the key only changes when
+  // the loaded model changes, and a gallery restore (which keeps the same repo) is left untouched.
+  const loadedModelKey = status?.loaded ? status.repo_id : null;
+  const defaultSteps = status?.defaults?.steps;
+  const defaultGuidance = status?.defaults?.guidance;
+  const prevLoadedModelRef = useRef<string | null>(null);
+  useEffect(() => {
+    const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
+    prevLoadedModelRef.current = loadedModelKey;
+    if (modelChanged && loadedModelKey && defaultSteps != null && defaultGuidance != null) {
+      setSteps(defaultSteps);
+      setGuidance(defaultGuidance);
+    }
+  }, [loadedModelKey, defaultSteps, defaultGuidance]);
+
   // Fetch (once) the object URL for a record's MP4; cached across remounts. Same
   // auth-protected blob pattern the images gallery uses.
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
