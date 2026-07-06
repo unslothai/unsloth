@@ -1061,6 +1061,7 @@ class VideoBackend:
             target,
             mode = text_encoder_quant,
             family = fam.name,
+            offload_active = plan.offload_policy != "none",
             logger = logger,
         )
 

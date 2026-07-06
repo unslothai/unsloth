@@ -107,12 +107,15 @@ def quantize_text_encoders(
     *,
     mode: Optional[str],
     family: Optional[str] = None,
+    offload_active: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
     """Quantise each present text encoder in place with ``mode`` (fp8 / fp8_dynamic / int8 / nvfp4).
     Returns the mode actually applied, or None when disabled, unsupported, or no encoder was cast.
     ``int8`` needs a per-family keep-bf16 schedule (``_TE_INT8_SKIP``); a family without one falls
-    back to ``fp8``. Best-effort: any failure leaves the encoder dense."""
+    back to ``fp8``. When ``offload_active`` the torchao modes are skipped (their tensor subclasses
+    reject the ``Module.to()`` an offload hook uses); layerwise ``fp8`` still engages. Best-effort:
+    any failure leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
         return None
@@ -122,6 +125,17 @@ def quantize_text_encoders(
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
+    # The torchao modes (int8 with a schedule, fp8_dynamic, nvfp4) produce tensor subclasses that
+    # reject Module.to(); an offload placement moves the encoder that way and hard-crashes -- the
+    # DiT path skips torchao quant under offload for exactly this reason. Layerwise fp8 is not
+    # torchao and streams fine, so it still engages. Skip the torchao modes under offload.
+    if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
+        _note(
+            logger,
+            f"text-encoder '{mode}' skipped under offload (torchao tensors reject Module.to()); "
+            "pin a resident memory mode or use fp8",
+        )
+        return None
     if not te_quant_supported(target, mode):
         return None
     if mode == TE_QUANT_INT8:
