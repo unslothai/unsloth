@@ -463,12 +463,10 @@ def run_safetensors_tool_loop(
                     allow_incomplete = auto_heal_tool_calls,
                 )
             if not safety_tc:
-                # Re-prompt on plan-without-action (GGUF loop parity): the model
-                # described what it will do without acting; the conditions below
-                # fire it at most once, before any tool runs. Unlike the GGUF
-                # loop (where the re-prompt predates the flag, so None keeps it
-                # on), this retry is new here, so omitting nudge_tool_calls must
-                # not change API behavior. Studio sends True.
+                # Re-prompt once on plan-without-action, before any tool runs
+                # (GGUF loop parity). This retry is new here, so it requires a
+                # truthy nudge_tool_calls (unlike GGUF's None-keeps-on) to leave
+                # API behavior unchanged when the flag is omitted. Studio sends True.
                 stripped_answer = content_accum.strip()
                 if (
                     auto_heal_tool_calls

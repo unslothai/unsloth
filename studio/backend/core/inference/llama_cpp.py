@@ -206,8 +206,8 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
-# Plan-without-action re-prompt state (intent signal, caps, message) lives in
-# core.inference.tool_call_parser, imported above under its old aliases.
+# Plan-without-action re-prompt state (intent signal, caps, message) now lives
+# in tool_call_parser, imported above under its old aliases.
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -8457,11 +8457,9 @@ class LlamaCppBackend:
         _kb_search_count = 0
 
         # ── Re-prompt on plan-without-action ─────────────────
-        # When the model describes what it intends to do (forward-looking
-        # language) without calling a tool, re-prompt once. Only triggers on
-        # responses signaling intent/planning -- a direct answer like "4" or
-        # "Hello!" won't match. Pattern shared with the safetensors loop
-        # (tool_call_parser.INTENT_SIGNAL).
+        # Model describes intent without calling a tool: re-prompt once. A
+        # direct answer ("4", "Hello!") won't match. Pattern shared with the
+        # safetensors loop (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
         _forced_tool_call_pending = False
 

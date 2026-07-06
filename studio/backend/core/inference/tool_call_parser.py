@@ -83,20 +83,16 @@ RAG_SEARCH_CAP_NUDGE = (
 
 
 # ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
-# Forward-looking intent signals: the model is describing what it *will*
-# do rather than giving a final answer.
+# Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
     r"(?i)("
-    # Direct intent ("I'll ...", "Let me ...", straight + curly apostrophes).
-    # Excludes "I can"/"I should"/"I want to"/"let's" (common in answers).
-    # Negative lookahead drops negated forms ("I will not") so a refusal
-    # doesn't trigger a re-prompt.
+    # Direct intent ("I'll", "Let me"); lookahead drops negated forms
+    # ("I will not") so a refusal does not re-prompt.
     r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
     r"|"
     # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
     r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
-    # "Now I" / "Next I" patterns
     r"\b(?:now i|next i)\b"
     r")"
 )
