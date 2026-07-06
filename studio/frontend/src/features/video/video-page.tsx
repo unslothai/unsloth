@@ -954,7 +954,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
         setQuant(null);
-        const d = defaultsFor(id);
+        // The distilled variant lives in the single-file checkpoint name
+        // (ltx-2.3-...-distilled...), not the repo id, so include the filename when
+        // seeding defaults -- mirroring the GGUF branch below. Without it these
+        // distilled BF16/FP8 entries fall through to the generic LTX 40-step/CFG-4
+        // defaults instead of the distilled 8-step/guidance-1 schedule.
+        const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
         void handleLoad(id, { kind: spec.kind, filename: spec.filename });

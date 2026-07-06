@@ -523,6 +523,73 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     backend.unload()
 
 
+def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
+    # A dense model loaded with Speed left on Auto but Attention explicitly pinned
+    # (e.g. "native" to avoid cuDNN) must KEEP that choice when the 3rd generation
+    # engages the deferred `default` profile. The auto cuDNN upgrade only applies when
+    # attention was left on auto -- never when the caller pinned a backend.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
+    )
+    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+
+    # A select mock that -- unlike a bare "auto -> cuDNN" stub -- HONORS an explicit
+    # request: "native" stays on the default (None) even under a speed profile, and only
+    # a left-unset ("auto"/None) request upgrades to cuDNN when speed is active.
+    def fake_select(
+        target,
+        requested,
+        speed_active = False,
+    ):
+        if requested in (None, "", "auto"):
+            return "_native_cudnn" if speed_active else None
+        if str(requested).lower() in ("native", "sdpa"):
+            return None
+        return requested
+
+    monkeypatch.setattr(dmod, "select_attention_backend", fake_select)
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+        attention_backend = "native",
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    backend.generate(prompt = "three")  # deferred profile engages here
+    status = backend.status()
+    assert status["speed_mode"] == "default"  # the compile profile still engaged
+    assert "compiled" in status["speed_optims"]
+    # The pinned "native" survived: NOT silently upgraded to cuDNN.
+    assert status["attention_backend"] is None
+    assert status["resolved"]["attention_backend"]["value"] == "native"
+    assert status["resolved"]["attention_backend"]["source"] == "explicit"
+
+    # Control: with attention left on auto, the same 3rd-generation deferral DOES upgrade
+    # to cuDNN -- so the assertion above is not vacuously passing.
+    backend.unload()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    for p in ("a", "b", "c"):
+        backend.generate(prompt = p)
+    assert backend.status()["attention_backend"] == "_native_cudnn"
+    backend.unload()
+
+
 def _tiny_png_b64() -> str:
     import base64
     import io

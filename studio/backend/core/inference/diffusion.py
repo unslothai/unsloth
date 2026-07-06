@@ -306,6 +306,12 @@ class _LoadState:
     # Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), or
     # None for the default SDPA. Set before compile; orthogonal to the weight quant.
     attention_backend: Optional[str] = None
+    # The caller's ORIGINAL attention request (None / "auto" left it to the backend, else
+    # an explicit alias like "native" / "sage" / "flash"). Carried so the deferred-speed
+    # engagement re-runs the SAME selection the load-time path did, instead of forcing the
+    # auto cuDNN upgrade -- otherwise an explicitly pinned backend (e.g. "native" to avoid
+    # cuDNN) is silently discarded when the 3rd generation engages the deferred profile.
+    attention_request: Optional[str] = None
     # Step cache engaged ("fbcache") or None. Opt-in, for many-step models.
     transformer_cache: Optional[str] = None
     # True when the cache decision was AUTO on a cache-capable transformer: generate()
@@ -1544,6 +1550,7 @@ class DiffusionBackend:
                         text_encoder_quant = te_quant,
                         transformer_quant = transformer_quant_engaged,
                         attention_backend = attention_engaged,
+                        attention_request = attention_backend,
                         transformer_cache = cache_engaged,
                         cache_auto = cache_may_toggle,
                         cache_quant_active = cache_quant_active,
@@ -2063,9 +2070,13 @@ class DiffusionBackend:
         install_compile_safe_patches()
         install_arch_patches()
         object.__setattr__(state, "eager_patched", True)
+        # Re-run the load-time selection with the caller's ORIGINAL request (not a bare
+        # None): an explicit backend must survive the deferred upgrade. auto still upgrades
+        # to cuDNN here (speed_active=True), but an explicit "native"/"sage"/"flash" is
+        # honored verbatim rather than silently replaced by the auto cuDNN choice.
         attention_engaged = apply_attention_backend(
             state.pipe,
-            select_attention_backend(target, None, speed_active = True),
+            select_attention_backend(target, state.attention_request, speed_active = True),
             logger = logger,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)

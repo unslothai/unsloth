@@ -1443,6 +1443,23 @@ function localModelMatchesFormat(
   );
 }
 
+/** Whether a curated catalog group offers any artifact matching the format toggle.
+ *  A group spans several formats, so it stays visible under a filter only when at
+ *  least one of its artifacts qualifies -- otherwise a GGUF/Safetensors/MLX filter
+ *  would still list groups whose click loads a different format (and MLX, which no
+ *  catalog artifact provides, would show every group). */
+function catalogGroupMatchesFormat(
+  group: CatalogGroup,
+  filter: FormatFilter,
+): boolean {
+  return (
+    filter === "all" ||
+    group.artifacts.some((a) =>
+      matchesFormatFilter(a.repoId, a.format === "gguf", filter),
+    )
+  );
+}
+
 export function HubModelPicker({
   models,
   loraModels = [],
@@ -2379,8 +2396,12 @@ export function HubModelPicker({
   // all match); rendered as canonical rows above the remaining search results.
   const matchedCatalogGroups = useMemo(() => {
     if (!catalog || !showHfSection) return [];
-    return catalog.filter((g) => groupMatchesQuery(g, debouncedQuery.trim()));
-  }, [catalog, showHfSection, debouncedQuery]);
+    return catalog.filter(
+      (g) =>
+        groupMatchesQuery(g, debouncedQuery.trim()) &&
+        catalogGroupMatchesFormat(g, formatFilter),
+    );
+  }, [catalog, showHfSection, debouncedQuery, formatFilter]);
 
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -3121,7 +3142,31 @@ export function HubModelPicker({
                     } on disk`}
                     selected={selected}
                     optionProps={hubModelList.getOptionProps(optionKey, selected)}
-                    onClick={() => void routeGroupClick(group)}
+                    onClick={() => {
+                      // routeGroupClick picks the best CURATED artifact; when one is on
+                      // disk pickDefaultArtifact returns it, so keep that path. But this
+                      // group can appear in On Device solely because a cached member
+                      // matched by key/alias (a sibling prequant that is not a curated
+                      // artifact). In that case the routed artifact is NOT downloaded, so
+                      // load an actual on-disk member instead of downloading a different
+                      // artifact -- the On Device row must "load the best on-disk artifact".
+                      if (!isRepoDownloaded(routedArtifactFor(group).repoId)) {
+                        const cachedModel = rows.models[0];
+                        if (cachedModel) {
+                          onSelect(cachedModel.repo_id, {
+                            source: "hub",
+                            isLora: false,
+                            isDownloaded: true,
+                          });
+                          return;
+                        }
+                        if (rows.gguf.length > 0) {
+                          toggleGroupExpanded(expandKey);
+                          return;
+                        }
+                      }
+                      void routeGroupClick(group);
+                    }}
                     vramStatus={null}
                     className={downloadedRowButtonClassName}
                   />
@@ -3973,7 +4018,9 @@ export function HubModelPicker({
                       listing's task tags. Without one (legacy), the flat curated
                       safetensors rows. */}
                   {catalog
-                    ? catalog.map((g) => renderCatalogGroupRow(g, "catalog-group"))
+                    ? catalog
+                        .filter((g) => catalogGroupMatchesFormat(g, formatFilter))
+                        .map((g) => renderCatalogGroupRow(g, "catalog-group"))
                     : curatedSafetensorsRows.map((m) => {
                         const optionKey = makeModelOptionKey(
                           "curated-safetensors",
