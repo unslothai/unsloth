@@ -426,6 +426,7 @@ def run_safetensors_tool_loop(
     session_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
+    confirm_code_execution: bool = False,
     bypass_permissions: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
@@ -453,7 +454,7 @@ def run_safetensors_tool_loop(
     conversation = list(messages)
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
-    from core.inference.tools import build_rag_autoinject
+    from core.inference.tools import CODE_EXECUTION_TOOL_NAMES, build_rag_autoinject
 
     _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
     if _auto:
@@ -1056,7 +1057,16 @@ def run_safetensors_tool_loop(
 
             # Bypass wins over the confirm gate at the loop level too, so a
             # direct internal caller passing both flags never prompts.
-            needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+            # confirm_code_execution narrows the gate to python/terminal so a
+            # code-execution call pauses for approval even when confirm_tool_calls
+            # is off (search/render tools still run without a prompt).
+            needs_confirm = (
+                bool(confirm_tool_calls)
+                or (
+                    bool(confirm_code_execution)
+                    and decision.tool_name in CODE_EXECUTION_TOOL_NAMES
+                )
+            ) and not bypass_permissions
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()

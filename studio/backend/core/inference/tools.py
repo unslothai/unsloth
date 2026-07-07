@@ -832,6 +832,12 @@ ALL_TOOLS = [
     SEARCH_KNOWLEDGE_BASE_TOOL,
 ]
 
+# Built-in tools that run arbitrary model-authored code/commands (through the
+# sandbox unless bypassed). The confirmation gate can target just these
+# (confirm_code_execution) so a code-execution call pauses for approval while
+# search/render tools stay instant.
+CODE_EXECUTION_TOOL_NAMES = frozenset({"python", "terminal"})
+
 
 # OpenAI's function.name regex ^[a-zA-Z0-9_-]{1,64}$, enforced before streaming.
 # MCP tool names with '.', '/', spaces, etc. would 400 the whole request, so we

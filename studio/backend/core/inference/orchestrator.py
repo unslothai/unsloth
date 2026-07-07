@@ -1225,6 +1225,7 @@ class InferenceOrchestrator:
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
+        confirm_code_execution: bool = False,
         bypass_permissions: bool = False,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
@@ -1291,6 +1292,7 @@ class InferenceOrchestrator:
             session_id = session_id,
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
+            confirm_code_execution = confirm_code_execution,
             bypass_permissions = bypass_permissions,
         )
 

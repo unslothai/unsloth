@@ -8446,6 +8446,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        confirm_code_execution: bool = False,
         bypass_permissions: bool = False,
     ) -> Generator[dict, None, None]:
         """
@@ -8456,7 +8457,11 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import build_rag_autoinject, execute_tool
+        from core.inference.tools import (
+            CODE_EXECUTION_TOOL_NAMES,
+            build_rag_autoinject,
+            execute_tool,
+        )
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
@@ -9373,7 +9378,16 @@ class LlamaCppBackend:
 
                     # Bypass wins over the confirm gate at the loop level too,
                     # so a direct internal caller with both flags never prompts.
-                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+                    # confirm_code_execution narrows the gate to python/terminal so
+                    # a code-execution call pauses for approval even when
+                    # confirm_tool_calls is off (search/render tools stay instant).
+                    needs_confirm = (
+                        bool(confirm_tool_calls)
+                        or (
+                            bool(confirm_code_execution)
+                            and decision.tool_name in CODE_EXECUTION_TOOL_NAMES
+                        )
+                    ) and not bypass_permissions
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None

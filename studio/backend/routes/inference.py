@@ -1763,6 +1763,18 @@ async def _select_request_tools(
     return tools
 
 
+def _enables_code_execution_tool(tools: list[dict]) -> bool:
+    """True when the resolved tool list includes a local code-execution tool
+    (python/terminal). Used to scope the ``confirm_code_execution`` stream
+    requirement so a request that never exposes code execution isn't rejected."""
+    from core.inference.tools import CODE_EXECUTION_TOOL_NAMES
+
+    return any(
+        (t.get("function") or {}).get("name") in CODE_EXECUTION_TOOL_NAMES
+        for t in (tools or [])
+    )
+
+
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set). The
@@ -6221,6 +6233,22 @@ async def openai_chat_completions(
                         param = "confirm_tool_calls",
                     ),
                 )
+            if (
+                payload.confirm_code_execution
+                and not payload.bypass_permissions
+                and not payload.stream
+                and _enables_code_execution_tool(tools_to_use)
+            ):
+                raise _reject(
+                    400,
+                    openai_error_body(
+                        "confirm_code_execution requires stream=true when a "
+                        "code-execution tool (python/terminal) is enabled.",
+                        status = 400,
+                        code = "invalid_request_error",
+                        param = "confirm_code_execution",
+                    ),
+                )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
@@ -6288,6 +6316,8 @@ async def openai_chat_completions(
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
                     confirm_tool_calls = bool(payload.confirm_tool_calls)
+                    and not bool(payload.bypass_permissions),
+                    confirm_code_execution = bool(payload.confirm_code_execution)
                     and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                 )
@@ -6945,6 +6975,22 @@ async def openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
+        if (
+            payload.confirm_code_execution
+            and not payload.bypass_permissions
+            and not payload.stream
+            and _enables_code_execution_tool(_sf_tools_to_use)
+        ):
+            raise _reject(
+                400,
+                openai_error_body(
+                    "confirm_code_execution requires stream=true when a "
+                    "code-execution tool (python/terminal) is enabled.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_code_execution",
+                ),
+            )
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
@@ -7013,6 +7059,8 @@ async def openai_chat_completions(
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
                 confirm_tool_calls = bool(payload.confirm_tool_calls)
+                and not bool(payload.bypass_permissions),
+                confirm_code_execution = bool(payload.confirm_code_execution)
                 and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 use_adapter = payload.use_adapter,

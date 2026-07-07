@@ -612,6 +612,51 @@ class TestChatCompletionRequestToolFields:
         assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
+    def test_confirm_code_execution_requires_streaming_for_safetensors_tools(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {"chat_template_info": {"template": "chatml"}}}
+
+            def generate_chat_completion_with_tools(self, **kwargs):
+                raise AssertionError("tool loop should be rejected before starting")
+
+            def generate_chat_completion(self, **kwargs):
+                raise AssertionError("plain path should not be used")
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda backend, chat_template: {"supports_tools": True},
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "run code"}],
+                "enable_tools": True,
+                "enabled_tools": ["python"],
+                "confirm_code_execution": True,
+                "stream": False,
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_code_execution"
+        assert "requires stream=true" in body["error"]["message"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "confirm_code_execution requires stream=true" in entry["error"]
+        assert monitor.active_count() == 0
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [
@@ -1491,6 +1536,53 @@ class TestGgufVisionToolRouting:
         [entry] = monitor.snapshot()
         assert entry["status"] == "error"
         assert "confirm_tool_calls requires stream=true" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def test_confirm_code_execution_requires_streaming_for_gguf_tools(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            raise AssertionError("tool loop should be rejected before starting")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["python"],
+            confirm_code_execution = True,
+            stream = False,
+            messages = [{"role": "user", "content": "run code"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == "confirm_code_execution"
+        assert "requires stream=true" in exc.value.detail["error"]["message"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "confirm_code_execution requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
