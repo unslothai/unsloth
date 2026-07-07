@@ -445,6 +445,25 @@ def test_service_reserve_marks_active_and_rolls_back():
     assert svc.is_active() is False
 
 
+def test_service_reserve_is_compare_and_set():
+    # reserve() is the concurrency gate: two /diffusion/start requests can interleave between the
+    # is_active() check and the reservation, so reserve() itself must reject a second reservation
+    # atomically. Without the compare-and-set, both callers would reserve, both would free the
+    # GPU's resident chat/image model, and the loser would only 409 AFTER the eviction -- exactly
+    # the evict-then-fail the reservation exists to prevent. A second reserve must raise; the first
+    # stays reserved; after unreserve the slot is claimable again.
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    svc = DiffusionTrainingService()
+    svc.reserve()
+    with pytest.raises(RuntimeError, match = "already running"):
+        svc.reserve()
+    assert svc.is_active() is True  # the losing reserve did not clear the winner's claim
+    svc.unreserve()
+    svc.reserve()  # claimable again once released
+    assert svc.is_active() is True
+
+
 def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monkeypatch):
     # _preflight_gated_base does a blocking urlopen HEAD (up to a 5s timeout) to Hugging Face, so
     # the async start route must offload it via asyncio.to_thread rather than run it inline and

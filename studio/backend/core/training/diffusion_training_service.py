@@ -246,8 +246,16 @@ class DiffusionTrainingService:
         read is_active) refuse a concurrent load BEFORE the route frees resident GPU models.
         Without this the training becomes active only at start(), after the free, so an
         overlapping load passes its guard, acquires the GPU, and both workloads allocate VRAM.
-        Paired with unreserve() in a finally, so a failed start never leaves training 'active'."""
+
+        Compare-and-set: raise if a start is already reserved or a job is already running, so a
+        second overlapping /diffusion/start is rejected (409) BEFORE it frees GPU residents,
+        instead of both requests tearing down residents and racing to start() (whichever finishes
+        first wins, so a double-click or a retry with different parameters could start the wrong
+        config). Paired with unreserve() in a finally by the reserving caller, so a failed start
+        never leaves training 'active'."""
         with self._lock:
+            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+                raise RuntimeError("A diffusion training job is already running.")
             self._reserved = True
 
     def unreserve(self) -> None:
