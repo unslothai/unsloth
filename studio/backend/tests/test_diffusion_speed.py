@@ -211,6 +211,7 @@ def test_speed_off_applies_nothing(monkeypatch):
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "fp16_accum": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (bit-identical reference path).
@@ -351,3 +352,154 @@ def test_apply_tolerates_missing_optims(monkeypatch):
         bare, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
     )
     assert applied["channels_last"] is False and applied["fused_qkv"] is False
+
+
+# ── fp16 accumulation (consumer fp16-GEMM fast path) ──────────────────────────
+
+
+def _stub_torch_fp16_accum(
+    monkeypatch,
+    *,
+    consumer = True,
+    with_flag = True,
+):
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+    torch.channels_last = "channels_last"
+    matmul_attrs = {"allow_tf32": False}
+    if with_flag:
+        matmul_attrs["allow_fp16_accumulation"] = False
+    torch.backends = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(**matmul_attrs)),
+        cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    import core.inference.diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: consumer)
+    return torch
+
+
+def test_snapshot_captures_fp16_accum_when_present(monkeypatch):
+    torch = _stub_torch_fp16_accum(monkeypatch)
+    torch.backends.cuda.matmul.allow_fp16_accumulation = True
+    snap = snapshot_backend_flags()
+    assert snap["matmul_fp16_accum"] is True
+    torch.backends.cuda.matmul.allow_fp16_accumulation = False
+    restore_backend_flags(snap)
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
+
+
+def test_snapshot_skips_fp16_accum_on_older_torch(monkeypatch):
+    _stub_torch_fp16_accum(monkeypatch, with_flag = False)
+    snap = snapshot_backend_flags()
+    assert "matmul_fp16_accum" not in snap
+    restore_backend_flags(snap)  # nothing to restore, no error
+
+
+def test_fp16_accum_engages_on_consumer_cuda(monkeypatch):
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+    )
+    assert applied["fp16_accum"] is True
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
+
+
+def test_fp16_accum_skipped_on_datacenter(monkeypatch):
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = False)
+    _stub_gguf_accel(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+    )
+    assert applied["fp16_accum"] is False
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
+
+
+def test_fp16_accum_respects_kill_switch(monkeypatch):
+    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", "1")
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+    )
+    assert applied["fp16_accum"] is False
+
+
+@pytest.mark.parametrize("value", ["TRUE", "Yes", "On", " true "])
+def test_fp16_accum_kill_switch_is_case_insensitive(monkeypatch, value):
+    # The documented safety escape hatch must honor the common boolean spellings, not only
+    # lowercase "1"/"true"/"yes": an operator setting UNSLOTH_DISABLE_FP16_ACCUM=TRUE to stop
+    # fp16-accumulation drift would otherwise be silently ignored.
+    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", value)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+    )
+    assert applied["fp16_accum"] is False
+
+
+def test_fp16_accum_respects_family_deny_list(monkeypatch):
+    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_FP16_ACCUM_DENY", frozenset({"fragile-family"}))
+    fam = types.SimpleNamespace(supports_torch_compile = True, name = "fragile-family")
+    applied = apply_speed_optims(_Pipe(), _target(), is_gguf = True, family = fam, speed_mode = "default")
+    assert applied["fp16_accum"] is False
+
+
+def test_fp16_accum_skipped_when_flag_missing(monkeypatch):
+    _stub_torch_fp16_accum(monkeypatch, consumer = True, with_flag = False)
+    _stub_gguf_accel(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+    )
+    assert applied["fp16_accum"] is False
+
+
+def test_fp16_accum_not_touched_off_cuda(monkeypatch):
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    applied = apply_speed_optims(
+        _Pipe(),
+        _target(device = "mps"),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = "eager",
+    )
+    assert applied["fp16_accum"] is False
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
+
+
+def test_fp16_accum_denied_on_fp16_dtype_below_max(monkeypatch):
+    # fp16 compute is where the accumulator width actually changes results (measured
+    # same-seed drift, mean 2-5%): the quality-neutral tiers must refuse it.
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    for mode in ("eager", "default"):
+        applied = apply_speed_optims(
+            _Pipe(),
+            _target(dtype = "float16"),
+            is_gguf = True,
+            family = _family(),
+            speed_mode = mode,
+        )
+        assert applied["fp16_accum"] is False
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
+
+
+def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
+    # max already trades exactness for speed (conv algos, max-autotune), so the 2x
+    # fp16 accumulate joins that tier for fp16 pipelines.
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_gguf_accel(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, with_fuse = True),
+        _target(dtype = "float16"),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = "MAX",
+    )
+    assert applied["fp16_accum"] is True
+    assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
