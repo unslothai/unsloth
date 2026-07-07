@@ -647,6 +647,13 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
     return null;
   }
   if (typeof parsed.tool_call !== "string") return null;
+  // `contentBlocksToText` omits `result` entirely for a pending/cancelled
+  // tool call, and chat-adapter's replay (canReplayToolCallWithoutRoleTool)
+  // drops a non-builtin tool-call part with no result -- decoding one here
+  // would make the imported thread silently lose that content on the next
+  // send, so leave it as the literal JSON blob instead (parseToolCallSegment
+  // returning null falls through to plain text in the caller).
+  if (parsed.result === undefined) return null;
   const args = parsed.args !== null && typeof parsed.args === "object" ? parsed.args : {};
   return {
     type: "tool-call",
@@ -654,7 +661,7 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
     toolName: parsed.tool_call,
     args,
     argsText: JSON.stringify(args),
-    ...(parsed.result !== undefined ? { result: parsed.result } : {}),
+    result: parsed.result,
   };
 }
 
@@ -670,21 +677,34 @@ function textToContentParts(value: string, role: string): Record<string, unknown
   }
 
   const parts: Record<string, unknown>[] = [];
-  const thinkingRegex = /\[thinking\]\r?\n([\s\S]*?)\r?\n\[\/thinking\]/g;
+  // The leading boundary is consumed into the match itself (not a
+  // lookbehind) so `match.index` lands on the separator, not after it --
+  // that's what lets the gap chunk *before* a match exclude the join
+  // separator while still keeping any of the previous block's own genuine
+  // trailing blank lines (see pushChunk's `afterMatch` handling for the
+  // mirror case on the trailing side, where the separator isn't consumable
+  // this way because whatever follows isn't necessarily another match).
+  const thinkingRegex =
+    /(?:^|\r?\n\r?\n)\[thinking\]\r?\n([\s\S]*?)\r?\n\[\/thinking\](?=\r?\n\r?\n|$)/g;
 
   // Segments between (or around) thinking blocks may still contain a
   // tool-call blob alongside plain text, both joined with blank lines. Keep
   // consecutive plain-text segments merged into one part and only split off
   // the ones that parse as a tool call, so an ordinary multi-paragraph
   // message doesn't get fragmented into several text parts.
-  const pushChunk = (chunk: string) => {
-    const segments = chunk.split(/\r?\n\r?\n/);
-    // Cosmetic leading/trailing blank segments (e.g. a chunk that starts or
-    // ends exactly at a thinking-block boundary) are dropped, but interior
-    // blank paragraphs are kept so text with multiple blank lines still
-    // round-trips exactly.
-    while (segments.length > 0 && segments[0].trim() === "") segments.shift();
-    while (segments.length > 0 && segments[segments.length - 1].trim() === "") segments.pop();
+  //
+  // `afterMatch` is true whenever this chunk immediately follows a
+  // "[/thinking]" -- in that position, exactly one leading "\n\n" is the
+  // encoder's join separator, not part of this chunk's own content, and is
+  // stripped once. It's false for the very first chunk (nothing precedes it
+  // but the start of the value), so a message with no thinking blocks at
+  // all -- or genuine leading blank lines before the first block -- is
+  // never touched.
+  const pushChunk = (chunk: string, afterMatch: boolean) => {
+    const withoutJoin = afterMatch ? chunk.replace(/^\r?\n\r?\n/, "") : chunk;
+    if (withoutJoin === "") return;
+    const segments = withoutJoin.split(/\r?\n\r?\n/);
+    if (segments.every((s) => s.trim() === "")) return;
 
     let textBuffer: string[] = [];
     const flushText = () => {
@@ -709,13 +729,15 @@ function textToContentParts(value: string, role: string): Record<string, unknown
   };
 
   let lastIndex = 0;
+  let hadMatch = false;
   let match: RegExpExecArray | null;
   while ((match = thinkingRegex.exec(value)) !== null) {
-    pushChunk(value.slice(lastIndex, match.index));
+    pushChunk(value.slice(lastIndex, match.index), hadMatch);
     parts.push({ type: "reasoning", text: match[1] });
     lastIndex = thinkingRegex.lastIndex;
+    hadMatch = true;
   }
-  pushChunk(value.slice(lastIndex));
+  pushChunk(value.slice(lastIndex), hadMatch);
 
   return parts;
 }
