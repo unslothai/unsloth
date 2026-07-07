@@ -24,17 +24,66 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
-_ns = {"_re": _re}
+# The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;
+# pin the DeepSeek + bare-Kimi arms so a silent truncation fails loudly here.
+assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
+    1
+), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
+# The regex reuses the parser's shared DeepSeek opener alternation; provide it so the extracted
+# ``_re.compile`` expression resolves the same source.
+from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+from core.inference.tool_call_parser import (
+    _strip_function_xml_calls,
+    _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
+    _strip_mistral_closed_calls,
+)
+
+from typing import Optional as _Optional
+
+_ns = {
+    "_re": _re,
+    "_DS_OPEN_SRC": _DS_OPEN_SRC,
+    "Optional": _Optional,
+    "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
+    "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
+    "_strip_glm_calls": _strip_glm_calls,
+    "_strip_function_xml_calls": _strip_function_xml_calls,
+}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+
+# Signatures may span multiple lines and now carry the enabled_tool_names gate; match
+# the whole (possibly multi-line) signature up to ``-> str:`` then the indented body.
+_xml_helper = _re.search(
+    r"def _strip_tool_xml\((?:.|\n)*?\) -> str:\n(?:    .+\n)+",
+    _src,
+)
+assert _xml_helper, "could not extract _strip_tool_xml source"
+assert "_strip_mistral_closed_calls" in _xml_helper.group(
+    0
+), "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
+exec(_xml_helper.group(0), _ns)
+_strip_tool_xml = _ns["_strip_tool_xml"]
+
 _helper = _re.search(
-    r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
-    r"(?:    .+\n)+",
+    r"def _strip_tool_xml_for_display\((?:.|\n)*?\) -> str:\n(?:    .+\n)+",
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
+# After the V1 fix the display helper delegates to _strip_tool_xml; confirm the
+# extracted body actually reached that call rather than truncating early.
+assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegates"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
+
+_gate_src = _re.search(
+    r"def _gemma_strip_gate\((?:.|\n)*?\) -> set:\n(?:    .+\n)+",
+    _src,
+)
+assert _gate_src, "could not extract _gemma_strip_gate source"
+exec(_gate_src.group(0), _ns)
+_gemma_strip_gate = _ns["_gemma_strip_gate"]
 
 
 # ── Well-formed pairs ─────────────────────────────────────────────
@@ -44,6 +93,16 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
+def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
+    # _TOOL_XML_RE has no [TOOL_CALLS] arm, so the helper delegates to _strip_tool_xml for the Mistral
+    # balanced-brace strip (a non-greedy \{.*?\} would truncate nested JSON).
+    text = 'ok [TOOL_CALLS]web_search{"filters":{"date":"2024"},"query":"cats"} tail'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "web_search" not in out, out
+    assert out == "ok  tail"
 
 
 def test_strips_well_formed_tool_call():
@@ -71,6 +130,26 @@ def test_strips_function_only_well_formed():
     assert "<function=" not in cleaned
     assert "Setup." in cleaned
     assert "Done." in cleaned
+
+
+def test_strips_function_attribute_form():
+    # Attribute form ``<function name="...">`` (MiniCPM-5 / MiniMax-M2) must strip from the route too
+    # (it previously leaked into the UI); a dotted/hyphenated name also strips.
+    text = (
+        'Sure.\n<function name="get_weather">\n'
+        "<parameter=city>\nSydney\n</parameter>\n</function>\nDone."
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "<function name=" not in cleaned
+    assert "</function>" not in cleaned
+    assert "Sure." in cleaned and "Done." in cleaned
+
+    dotted = 'A <function name="srv.list-issues">x</function> B'
+    assert _TOOL_XML_RE.sub("", dotted) == "A  B"
+
+    # Auto-Heal-disabled display contract still preserves literal markup.
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    assert "<function name=" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
 
 # ── Orphan openings ───────────────────────────────────────────────
@@ -281,3 +360,241 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
     assert "<tool_call>" not in cleaned
+
+
+# ── DeepSeek opener variants + bare Kimi (parse/strip symmetry) ──
+
+
+def test_strips_deepseek_space_opener_variant():
+    # The space-separated opener is parsed by the parser, so the display strip
+    # must remove it too (the shared opener alternation is reused here).
+    text = (
+        "pre <｜tool calls begin｜><｜tool▁call▁begin｜>get_x<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "tool" not in cleaned.replace("post", "").replace("pre", "")
+    assert cleaned == "pre  post"
+
+
+def test_strips_deepseek_escaped_underscore_opener_variant():
+    text = (
+        "pre <｜tool\\_calls\\_begin｜><｜tool▁call▁begin｜>get_y<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "pre  post"
+
+
+def test_strips_bare_kimi_call_without_section_wrapper():
+    # Kimi can emit a bare <|tool_call_begin|>...<|tool_call_end|> with no
+    # section wrapper; the parser accepts it, so the strip must cover it.
+    text = (
+        "pre <|tool_call_begin|>functions.get_w:0<|tool_call_argument_begin|>"
+        '{"a":1}<|tool_call_end|> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "tool_call_begin" not in cleaned
+    assert cleaned == "pre  post"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Prose that merely names a Kimi/DeepSeek marker (no real call follows) must
+        # survive: the call-shaped lookahead fires only on a real call or a bare EOF
+        # fragment, so an answer discussing the protocol is never truncated.
+        "See <|tool_call_begin|> in the docs. More prose after it.",
+        "The <|tool_calls_section_begin|> marker opens a batch. Read on.",
+        "DeepSeek uses <｜tool▁calls▁begin｜> to start a call block, then continues.",
+    ],
+)
+def test_deepseek_kimi_false_alarm_prose_is_kept(text):
+    # Regression for the route arm truncating a prose answer that references a marker
+    # without a following call (parser _TOOL_ALL_PATS already had this lookahead).
+    assert _TOOL_XML_RE.sub("", text) == text
+
+
+def test_deepseek_kimi_real_calls_still_strip_after_false_alarm_fix():
+    # The lookahead must not weaken real-call stripping: closed, truncated, and bare
+    # EOF-fragment forms all still get removed.
+    closed = (
+        "answer <|tool_call_begin|>functions.get_w:0<|tool_call_argument_begin|>"
+        '{"a":1}<|tool_call_end|> tail'
+    )
+    assert _TOOL_XML_RE.sub("", closed) == "answer  tail"
+    eof_fragment = "prefix <|tool_call_begin|>"
+    assert _TOOL_XML_RE.sub("", eof_fragment) == "prefix "
+    deepseek = (
+        "reply <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_x<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    assert _TOOL_XML_RE.sub("", deepseek) == "reply "
+
+
+# ── Llama-3 <|python_tag|> arm bounds on REAL sentinels only ──────
+
+
+# Llama-3 <|python_tag|> arm bounds on REAL sentinels only
+def test_python_tag_strip_consumes_literal_sentinel_in_arg():
+    # A <|python_tag|> tool call whose JSON argument carries a literal <|...|>
+    # token (here <|cite|>) must be stripped whole. The old `<(?!\|)` arm stopped
+    # at any `<|`, leaking the call tail (e.g. `<|cite|> here"}}`) into display.
+    text = '<|python_tag|>{"name": "send", "parameters": {"text": "use <|cite|> here"}}'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "", f"python_tag call leaked at literal sentinel: {cleaned!r}"
+
+
+@pytest.mark.parametrize(
+    "sentinel",
+    [
+        "<|eot_id|>",
+        "<|eom_id|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+    ],
+)
+def test_python_tag_strip_stops_at_real_sentinel(sentinel):
+    # A genuine Llama control sentinel still bounds the strip so following
+    # assistant text is preserved (the arm must not swallow past it).
+    text = f'<|python_tag|>{{"name": "x", "parameters": {{}}}}{sentinel}visible answer'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert (
+        cleaned == f"{sentinel}visible answer"
+    ), f"strip did not stop at real sentinel {sentinel!r}: {cleaned!r}"
+
+
+def test_python_tag_strip_restarts_on_second_python_tag():
+    # A second <|python_tag|> opens a new tool-call region, so the whole pair is
+    # stripped (the arm bounds the first, then the next match consumes the rest).
+    text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"
+
+
+def test_glm_call_with_literal_close_tag_in_arg_value_is_stripped_whole():
+    # GLM 4.x emits <tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value> ...</tool_call>.
+    text = (
+        "<tool_call>web_search\n<arg_key>query</arg_key>\n"
+        "<arg_value>find </tool_call> here</arg_value>\n</tool_call> done"
+    )
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "</arg_value>" not in out
+    assert "<arg_key>" not in out
+    assert out.strip() == "done"
+
+
+def test_glm_normal_and_qwen_calls_still_stripped_by_route():
+    # Regression: a normal GLM call (no literal close tag) and a Qwen
+    # <tool_call>{json}</tool_call> are still stripped; trailing prose is kept.
+    glm = "<tool_call>get_time\n<arg_key>tz</arg_key>\n<arg_value>UTC</arg_value>\n</tool_call> ok"
+    assert _strip_tool_xml_for_display(glm, auto_heal_tool_calls = True).strip() == "ok"
+    qwen = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call> after'
+    assert _strip_tool_xml_for_display(qwen, auto_heal_tool_calls = True).strip() == "after"
+
+
+def test_route_strip_removes_param_alias_close_tag():
+    # The parser accepts the <param name="...">...</param> attribute-form alias of
+    # <parameter=...>; the route tail cleanup must strip an orphan </param> close too.
+    assert _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True) == "answer "
+    assert (
+        _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True) == "answer "
+    )
+
+
+def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
+    # A literal <function=...></function> in a value must not truncate the strip: the route runs the
+    # parser's guarded function-XML scan before the regex, matching the core strip.
+    text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"
+
+
+def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
+    # The route strip must gate the markerless Gemma call:NAME{...} form on the enabled tool names,
+    # like the parser/loop, so a disabled/example name in prose is preserved in ...
+    prose = "To document syntax you write call:foo{query:example}. That shows the format."
+    assert "call:foo{query:example}" in _strip_tool_xml(prose, {"web_search"})
+    # An enabled name is still a real call and stripped.
+    assert "call:web_search" not in _strip_tool_xml(
+        "Answer. call:web_search{query:x}", {"web_search"}
+    )
+    # No gate (legacy) strips every closed call.
+    assert "call:foo" not in _strip_tool_xml(prose)
+
+
+def test_gemma_strip_gate_empty_tools_preserves_prose():
+    # With NO tools enabled the gate must return an EMPTY set (strip nothing), not None: None falls
+    # back to strip-all and deletes an answer that documents the call:NAME{...} syntax.
+    assert _gemma_strip_gate([]) == set()
+    assert _gemma_strip_gate(None) == set()
+    assert _gemma_strip_gate([{"function": {"name": "web_search"}}]) == {"web_search"}
+    prose = "To document syntax you write call:foo{query:example}. That shows the format."
+    assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate([]))
+    assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate(None))
+    # An enabled tool's real call is still stripped.
+    assert "call:web_search" not in _strip_tool_xml(
+        "Answer. call:web_search{query:x}",
+        _gemma_strip_gate([{"function": {"name": "web_search"}}]),
+    )
+
+
+def test_strip_keeps_prose_after_closed_function_call_with_literal_close():
+    # The call ends at its first non-data close: prose after it survives the
+    # strip even when it mentions a literal </function>.
+    from core.inference.tool_call_parser import strip_tool_markup
+    text = (
+        "<function=web_search><parameter=query>cats</parameter></function>"
+        " Done. The tag </function> closes a call."
+    )
+    assert strip_tool_markup(text, final = True) == "Done. The tag </function> closes a call."
+
+
+def test_final_strip_keeps_prose_mentioning_bare_markers():
+    # A false-alarm marker in a normal answer must not lose everything after
+    # it; only text that looks like that family's call start drops.
+    from core.inference.tool_call_parser import strip_tool_markup
+    for text in (
+        "See [TOOL_CALLS] docs for details. More prose after.",
+        "<|python_tag|> is the Llama marker. Explanation continues.",
+        "The <|tool_call> opener wraps Gemma calls.",
+    ):
+        assert strip_tool_markup(text, final = True) == text
+    # A bare marker at end-of-text is a fragment and still drops.
+    assert strip_tool_markup("Answer text [TOOL_CALLS]", final = True) == "Answer text"
+
+
+def test_final_strip_still_drops_truncated_marker_calls():
+    from core.inference.tool_call_parser import strip_tool_markup
+    for text in (
+        '[TOOL_CALLS][{"name":"web_search","argu',
+        '[TOOL_CALLS]web_search[ARGS]{"q":"x',
+        '<|python_tag|>{"name":"web_search","par',
+        '<|python_tag|>foo.call(items=["a',
+        "<|tool_call>call:web_search{query:tru",
+    ):
+        assert strip_tool_markup(text, final = True) == ""
+
+
+def test_chained_bare_json_strip_consumes_all_calls():
+    # The loops keep this text as next-turn history: a leftover executed call
+    # would be replayed alongside the structured tool_calls.
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    enabled = {"web_search", "python"}
+    chained = (
+        '{"name":"web_search","parameters":{"q":"first"}};'
+        '{"name":"python","parameters":{"code":"x"}}'
+    )
+    assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
+    assert (
+        strip_leading_bare_json_call(chained + " trailing prose", enabled_tool_names = enabled)
+        == "trailing prose"
+    )
+    # The chain stops at a non-call answer object, which stays visible.
+    call_then_answer = (
+        '{"name":"web_search","parameters":{"q":"x"}};{"name":"web_search","result":"data"}'
+    )
+    assert (
+        strip_leading_bare_json_call(call_then_answer, enabled_tool_names = enabled)
+        == '{"name":"web_search","result":"data"}'
+    )

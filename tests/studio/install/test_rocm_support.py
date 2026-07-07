@@ -2296,6 +2296,70 @@ class TestRocmTorchInstalledEnvVar:
         mock_bnb.assert_not_called()
 
 
+class TestWindowsRocmTorchaoGuard:
+    """Verify the torchao skip can detect an installed Windows ROCm torch build."""
+
+    def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = "yes"
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is True
+
+    def test_installed_torch_is_windows_rocm_rejects_non_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = ""
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    def test_installed_torch_is_windows_rocm_is_non_windows_noop(self):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    @patch.object(stack_mod, "_repair_bad_anyio")
+    @patch.object(stack_mod, "_ensure_rocm_torch")
+    @patch.object(stack_mod, "_ensure_cuda_torch")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    @patch.object(stack_mod, "run")
+    @patch.object(stack_mod, "pip_install")
+    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+    ):
+        unstructured_plugin = tmp_path / "unstructured"
+        github_plugin = tmp_path / "github"
+        unstructured_plugin.mkdir()
+        github_plugin.mkdir()
+
+        subprocess_result = MagicMock()
+        subprocess_result.returncode = 0
+        subprocess_result.stdout = ""
+
+        with (
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "IS_MAC_ARM", False),
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "_rocm_windows_torch_installed", False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = True),
+            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+        ):
+            assert stack_mod.install_python_stack() == 0
+
+        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
+        assert not any("torchao" in arg for arg in installed_specs)
+
+
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
 
 

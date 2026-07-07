@@ -125,7 +125,7 @@ export function SummaryStep() {
               <span className="text-xs text-muted-foreground">GPU</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{hw.gpuName ?? "---"}</span>
-                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "---"}</Badge>
+                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GiB` : "---"}</Badge>
               </div>
             </div>
           </div>
