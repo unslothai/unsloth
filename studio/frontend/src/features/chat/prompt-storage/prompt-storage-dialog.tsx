@@ -899,30 +899,52 @@ function textToContentParts(value: string, role: string): Record<string, unknown
     const contentStart = openMatch.index + openMatch[0].length;
 
     // A reasoning block's own content can legitimately contain the literal
-    // text "[/thinking]" followed by a blank line -- e.g. a model
-    // explaining the format it was trained on -- which a naive lazy match
-    // would mistake for the wrapper's real close, truncating the
-    // reasoning early and leaking the remainder as plain (visible) text.
-    // The real close can never be past the *next* genuine "[thinking]"
-    // open boundary (or the end of the value), so search only within that
-    // window, and take the LAST valid close in it rather than the first --
-    // an embedded false close is never the actual wrapper boundary.
-    const nextOpenProbe = new RegExp(openThinkingRegex.source, "g");
-    nextOpenProbe.lastIndex = contentStart;
-    const nextOpenMatch = nextOpenProbe.exec(value);
-    const windowEnd = nextOpenMatch ? nextOpenMatch.index : value.length;
+    // text "[thinking]"/"[/thinking]" as part of a blank-line-delimited
+    // example (e.g. a model explaining the format it was trained on), and
+    // separately, ordinary *visible* text right after the real close can
+    // just as legitimately mention "[/thinking]" on its own. Neither
+    // "always take the first close" nor "always take the last close in the
+    // window up to the next open" handles both: the first rule swallows an
+    // embedded fake close into visible text, the second rule swallows
+    // visible text (that merely mentions the tag) into reasoning.
+    //
+    // What actually distinguishes them is nesting: an embedded example is
+    // a *complete open+close pair* inside the content, so it doesn't
+    // change how many opens are still waiting on a close; a real close is
+    // the one that brings that count back to zero. Track it like balanced
+    // brackets -- start at depth 1 for this wrapper's own open, treat every
+    // further open as needing its own close before this one can, and take
+    // the first close that brings the depth back to 0. A lone embedded
+    // close with no paired open (no way to tell it apart from the real one
+    // syntactically at all) is the one residual case this can't resolve,
+    // same as it was before either of these fixes existed.
+    const nestedOpenProbe = new RegExp(openThinkingRegex.source, "g");
+    const nestedCloseProbe = new RegExp(closeThinkingRegex.source, "g");
+    nestedOpenProbe.lastIndex = contentStart;
+    nestedCloseProbe.lastIndex = contentStart;
 
-    closeThinkingRegex.lastIndex = contentStart;
-    let lastClose: RegExpExecArray | null = null;
-    let closeMatch: RegExpExecArray | null;
-    while ((closeMatch = closeThinkingRegex.exec(value)) !== null) {
-      if (closeMatch.index >= windowEnd) break;
-      lastClose = closeMatch;
-      closeThinkingRegex.lastIndex = closeMatch.index + 1;
+    let depth = 1;
+    let pendingOpen: RegExpExecArray | null = nestedOpenProbe.exec(value);
+    let pendingClose: RegExpExecArray | null = nestedCloseProbe.exec(value);
+    let realClose: RegExpExecArray | null = null;
+    while (pendingClose !== null) {
+      if (pendingOpen !== null && pendingOpen.index < pendingClose.index) {
+        depth += 1;
+        nestedOpenProbe.lastIndex = pendingOpen.index + pendingOpen[0].length;
+        pendingOpen = nestedOpenProbe.exec(value);
+        continue;
+      }
+      depth -= 1;
+      if (depth === 0) {
+        realClose = pendingClose;
+        break;
+      }
+      nestedCloseProbe.lastIndex = pendingClose.index + 1;
+      pendingClose = nestedCloseProbe.exec(value);
     }
 
-    if (!lastClose) {
-      // No real close before the next block (or end of value) -- this
+    if (!realClose) {
+      // Depth never returned to 0 before running out of closes -- this
       // "[thinking]" was never actually closed (malformed/truncated
       // export), so it isn't a genuine wrapper. Leave it as literal text:
       // resume scanning right after this open match instead of consuming
@@ -933,8 +955,8 @@ function textToContentParts(value: string, role: string): Record<string, unknown
     }
 
     pushChunk(value.slice(lastIndex, openMatch.index), hadMatch);
-    parts.push({ type: "reasoning", text: value.slice(contentStart, lastClose.index) });
-    lastIndex = lastClose.index + lastClose[0].length;
+    parts.push({ type: "reasoning", text: value.slice(contentStart, realClose.index) });
+    lastIndex = realClose.index + realClose[0].length;
     hadMatch = true;
     openThinkingRegex.lastIndex = lastIndex;
   }
