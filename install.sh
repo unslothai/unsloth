@@ -1497,6 +1497,61 @@ _wsl_amd_gpu_name() {
     _WSL_AMD_GPU_NAME_CACHE="-"; return 1
 }
 
+# ── Bounded command runner ──
+# Runs a command under a 10s timeout when the `timeout` binary is available,
+# otherwise runs it unbounded. Keeps a wedged nvidia-smi (blocking during
+# driver init or after a reset) from hanging the installer: a timed-out probe
+# exits nonzero and is treated exactly like a failed probe. No-op semantics on
+# hosts without `timeout` (e.g. macOS) or when the probe is healthy.
+_run_bounded() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
+# Returns 0 (true) when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every
+# NVIDIA device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to
+# the AMD card). Unset means all devices visible. nvidia-smi ignores this env
+# var, so the probes below cannot see the distinction on their own.
+_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
+}
+
+# ── NVIDIA usable-GPU helper ──
+# Returns 0 (true) if an NVIDIA GPU is present and usable.
+# Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
+# which the NVIDIA driver populates on Linux regardless of nvidia-smi state
+# -- handles PATH gaps, subprocess timeouts, and driver init races that
+# could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
+# A GPU hidden via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so AMD/CPU routing still runs.
+_has_usable_nvidia_gpu() {
+    if _cvd_hides_nvidia; then
+        return 1
+    fi
+    _nvsmi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _nvsmi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _nvsmi="/usr/bin/nvidia-smi"
+    fi
+    if [ -n "$_nvsmi" ]; then
+        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    # Fallback: NVIDIA driver exposes one subdir per GPU under this path.
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 # Strix Halo ROCm-on-WSL only targets Ubuntu 24.04. On a newer distro (e.g. 26.04)
 # with a 24.04 distro present, re-run the install there and stop; else fall through
 # to CPU + the `wsl --install` hint below (never auto-create a distro). Runs before
@@ -1507,20 +1562,10 @@ _maybe_reroute_strixhalo_to_2404() {
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
     [ -e /dev/dxg ] || return 0
-    # A usable NVIDIA GPU (common on hybrid AMD+NVIDIA hosts) means the CUDA path works
-    # on this distro, so don't reroute for AMD. Honor CUDA_VISIBLE_DEVICES=""/-1 (user
-    # forcing AMD) as "NVIDIA hidden", matching _has_usable_nvidia_gpu (defined later).
-    # _has_usable_nvidia_gpu isn't defined yet here, so probe nvidia-smi inline; awk
-    # consumes all input (no SIGPIPE under pipefail).
-    _rr_cvd="$(printf '%s' "${CUDA_VISIBLE_DEVICES-}" | tr -d '[:space:]')"
-    if [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] && { [ -z "$_rr_cvd" ] || [ "$_rr_cvd" = "-1" ]; }; then
-        : # NVIDIA hidden by CUDA_VISIBLE_DEVICES; fall through to the AMD reroute
-    elif command -v nvidia-smi >/dev/null 2>&1; then
-        _rr_nvsmi="nvidia-smi"; command -v timeout >/dev/null 2>&1 && _rr_nvsmi="timeout 10 nvidia-smi"
-        if $_rr_nvsmi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{f=1} END{exit !f}'; then
-            return 0
-        fi
-    fi
+    # A usable NVIDIA GPU (common on hybrid AMD+NVIDIA hosts) means the CUDA path works on
+    # this distro, so don't reroute for AMD. _has_usable_nvidia_gpu (moved above) honors
+    # CUDA_VISIBLE_DEVICES=""/-1 and the /proc/driver/nvidia fallback for PATH/timeout gaps.
+    if _has_usable_nvidia_gpu; then return 0; fi
     # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
     if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
@@ -1986,61 +2031,6 @@ _has_amd_rocm_gpu() {
         # 560+) can register KFD topology nodes with non-zero gpu_id but
         # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
         # NVIDIA-only hosts to the ROCm install path.
-        return 0
-    fi
-    return 1
-}
-
-# ── Bounded command runner ──
-# Runs a command under a 10s timeout when the `timeout` binary is available,
-# otherwise runs it unbounded. Keeps a wedged nvidia-smi (blocking during
-# driver init or after a reset) from hanging the installer: a timed-out probe
-# exits nonzero and is treated exactly like a failed probe. No-op semantics on
-# hosts without `timeout` (e.g. macOS) or when the probe is healthy.
-_run_bounded() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 10 "$@"
-    else
-        "$@"
-    fi
-}
-
-# Returns 0 (true) when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every
-# NVIDIA device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to
-# the AMD card). Unset means all devices visible. nvidia-smi ignores this env
-# var, so the probes below cannot see the distinction on their own.
-_cvd_hides_nvidia() {
-    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
-    _cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
-    [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
-}
-
-# ── NVIDIA usable-GPU helper ──
-# Returns 0 (true) if an NVIDIA GPU is present and usable.
-# Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
-# which the NVIDIA driver populates on Linux regardless of nvidia-smi state
-# -- handles PATH gaps, subprocess timeouts, and driver init races that
-# could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
-# A GPU hidden via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
-# install_llama_prebuilt.py has_usable_nvidia), so AMD/CPU routing still runs.
-_has_usable_nvidia_gpu() {
-    if _cvd_hides_nvidia; then
-        return 1
-    fi
-    _nvsmi=""
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        _nvsmi="nvidia-smi"
-    elif [ -x "/usr/bin/nvidia-smi" ]; then
-        _nvsmi="/usr/bin/nvidia-smi"
-    fi
-    if [ -n "$_nvsmi" ]; then
-        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
-            return 0
-        fi
-    fi
-    # Fallback: NVIDIA driver exposes one subdir per GPU under this path.
-    if [ -d /proc/driver/nvidia/gpus ] && \
-       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
     return 1

@@ -3446,23 +3446,30 @@ _STRIXHALO_WSL_PATH = PACKAGE_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh"
 
 
 class TestWslRerouteNvidiaGuard:
-    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute when a usable NVIDIA GPU is
-    present (hybrid AMD+NVIDIA hosts): the NVIDIA probe runs before the AMD/WMI signal."""
+    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute on hybrid AMD+NVIDIA hosts by
+    reusing _has_usable_nvidia_gpu (CUDA_VISIBLE_DEVICES-aware + /proc/driver/nvidia fallback),
+    which must be defined before the reroute's call site so it is actually available."""
 
-    def test_reroute_guards_usable_nvidia_before_amd_signal(self):
+    def test_reroute_calls_nvidia_helper_before_amd_signal(self):
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         start = source.find("_maybe_reroute_strixhalo_to_2404()")
         assert start != -1
-        body = source[start : start + 1800]
-        nv = body.find("_rr_nvsmi")
-        cvd = body.find("CUDA_VISIBLE_DEVICES")
+        body = source[start : start + 1200]
+        nv = body.find("_has_usable_nvidia_gpu")
         wmi = body.find("_wsl_amd_gpu_name")
-        assert nv != -1, "reroute must probe nvidia-smi to skip the AMD reroute on NVIDIA hosts"
-        assert cvd != -1, "reroute must honor CUDA_VISIBLE_DEVICES=''/-1 (user-hidden NVIDIA)"
+        assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
         assert wmi != -1
-        # The NVIDIA guard (CVD-aware) must precede the AMD/WMI signal and return early.
-        assert cvd < wmi and nv < wmi
+        # The NVIDIA guard must precede the AMD/WMI signal and return early.
+        assert nv < wmi
         assert body.find("return 0", nv) < wmi
+
+    def test_nvidia_helper_and_deps_defined_before_reroute_callsite(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        call = source.find("\n_maybe_reroute_strixhalo_to_2404 || true")
+        assert call != -1
+        for fn in ("_run_bounded() {", "_cvd_hides_nvidia() {", "_has_usable_nvidia_gpu() {"):
+            idx = source.find(fn)
+            assert idx != -1 and idx < call, f"{fn} must be defined before the reroute call"
 
 
 class TestStrixhaloGfxOverridePipefail:
