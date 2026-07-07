@@ -1277,7 +1277,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
     setPrompt(image.prompt);
-    setNegativePrompt(image.negative_prompt ?? "");
+    // Negative prompt only applies when guidance>0; don't restore a hidden value.
+    setNegativePrompt(image.guidance > 0 ? (image.negative_prompt ?? "") : "");
     setSteps(image.steps);
     setGuidance(image.guidance);
     setSeed(String(image.seed));
@@ -1312,6 +1313,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
+    // The control image isn't persisted, so clear any stale ControlNet selection.
+    setControlnetId("");
+    setControlImage(null);
     toast.success("Settings restored to inputs");
   }, []);
 
@@ -1649,11 +1653,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error("Only unsloth or on-device image models can be loaded here");
         return;
       }
+      // Optimistically clear the quant label, revert it if the load never starts.
+      const prevQuant = quant;
+      quantRevert.current = { prev: prevQuant };
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void handleLoad(id, { kind: "pipeline" });
+      void handleLoad(id, { kind: "pipeline" }).then((started) => {
+        if (!started) {
+          setQuant(prevQuant);
+          quantRevert.current = null;
+        }
+      });
     },
     [busy, handleLoad, quant],
   );

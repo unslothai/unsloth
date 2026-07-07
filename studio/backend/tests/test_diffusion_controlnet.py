@@ -56,13 +56,29 @@ def test_resolve_controlnet_enforces_family_match():
 
 
 def test_union_control_mode_maps_only_union_entries():
-    # Union entries map a known control type to its integer mode; passthrough / unknown
-    # types and non-union ids return None so the caller omits control_mode.
+    # Union entries map a known control type to its integer mode; a union model always
+    # needs a concrete mode, so an unmapped type (passthrough) defaults to 0. A non-union
+    # id returns None so the caller omits control_mode.
     assert dc.union_control_mode("flux-union-pro", "canny") == 0
     assert dc.union_control_mode("flux-union-pro", "depth") == 2
     assert dc.union_control_mode("flux-union-pro", "pose") == 4
-    assert dc.union_control_mode("flux-union-pro", "passthrough") is None
+    assert dc.union_control_mode("flux-union-pro", "passthrough") == 0
     assert dc.union_control_mode("some/bare-repo", "canny") is None
+
+
+def test_union_control_mode_rejects_unknown_type():
+    # An unknown / typo'd control type (e.g. 'detph') must NOT silently fall back to the canny
+    # head (0): preprocess_control passes non-canny maps through unchanged, so mode 0 would
+    # condition a map meant for another mode as canny -- silently wrong. Only passthrough (or an
+    # empty type) defaults to 0; anything else raises so the route returns a 400.
+    with pytest.raises(ValueError, match = "Unknown control type"):
+        dc.union_control_mode("flux-union-pro", "detph")
+    with pytest.raises(ValueError, match = "Unknown control type"):
+        dc.union_control_mode("flux-union-pro", "scribble")
+    # passthrough and empty still default to 0 (the intended no-intrinsic-mode case); a non-union
+    # entry is unaffected (returns None, never raises).
+    assert dc.union_control_mode("flux-union-pro", "") == 0
+    assert dc.union_control_mode("some/bare-repo", "detph") is None
 
 
 def test_resolve_controlnet_local(tmp_path, monkeypatch):

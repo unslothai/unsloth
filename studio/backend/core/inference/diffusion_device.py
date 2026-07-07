@@ -14,6 +14,7 @@ dtype choice and the capability flags the backend keys optimisation paths off.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -234,6 +235,11 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation
+        # (the bfloat16 probe below), so it must be relaxed before that. Otherwise the
+        # allocator caps the process at ~1.7x recommendedMaxWorkingSetSize and can OOM a
+        # model that would otherwise fit in unified RAM. setdefault respects an override.
+        os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
         # Prefer bfloat16; otherwise fall back to float32, NEVER silent float16.
         # Modern diffusion transformers (Z-Image, FLUX.2, ...) produce activations
         # far outside float16's finite range (~6.5e4) -- Z-Image's MLP
@@ -254,7 +260,9 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
-    if dtype is None:
+    # torch is None on the no-torch CPU fallback; leave dtype=None then (matching the
+    # no-torch DiffusionDeviceTarget elsewhere) rather than crashing on torch.float32.
+    if dtype is None and torch is not None:
         dtype = torch.float32
     return DiffusionDeviceTarget(
         device = "cpu",

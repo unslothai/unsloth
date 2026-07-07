@@ -204,8 +204,8 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
 
 # Union ControlNet mode indices. A single "union" model covers several control modes and
 # selects the active one via an integer ``control_mode`` argument; these are the standard
-# indices used by the FLUX.1 / Qwen-Image union ControlNets. "passthrough" (an already-made
-# map) carries no intrinsic mode, so it maps to nothing (the caller omits control_mode).
+# indices used by the FLUX.1 / Qwen-Image union ControlNets. "passthrough" carries no
+# intrinsic mode, so union_control_mode() defaults it to 0.
 _UNION_CONTROL_MODES: dict[str, int] = {
     "canny": 0,
     "tile": 1,
@@ -220,13 +220,24 @@ _UNION_CONTROL_MODES: dict[str, int] = {
 def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     """The integer ``control_mode`` for a union ControlNet, or None.
 
-    Returns a mode only for a curated *union* catalog entry AND a control type that maps to a
-    known index; otherwise None so the caller omits the kwarg (a non-union ControlNet has a
-    single fixed mode, and 'passthrough' does not name one). Pure lookup, no network."""
+    A union model requires a concrete mode (diffusers raises on None). A known mode maps to its
+    index; ``passthrough`` (or an empty type) carries no intrinsic mode and defaults to 0 (the
+    canny head). An unknown/typo'd type (e.g. 'detph') raises ValueError so the route rejects it
+    with a 400 instead of silently running the canny head against a map meant for another mode,
+    which would produce wrong conditioning. A non-union entry returns None so the caller omits the
+    kwarg."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None or not entry.is_union:
         return None
-    return _UNION_CONTROL_MODES.get((control_type or "").strip().lower())
+    ct = (control_type or "").strip().lower()
+    if ct in _UNION_CONTROL_MODES:
+        return _UNION_CONTROL_MODES[ct]
+    if ct in ("", "passthrough"):
+        return 0  # already-preprocessed map with no intrinsic mode; canny is the default head
+    raise ValueError(
+        f"Unknown control type {control_type!r} for a union ControlNet. Use one of: "
+        f"{', '.join(sorted(_UNION_CONTROL_MODES))}, or passthrough."
+    )
 
 
 def preprocess_control(image: Any, control_type: str) -> Any:

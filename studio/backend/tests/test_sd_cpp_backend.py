@@ -771,6 +771,22 @@ def test_generate_rejects_controlnet_on_native_engine():
         b.generate(prompt = "x", steps = 4, seed = 1, controlnet = ("id", "img", "canny", 1.0, 0.0, 1.0))
 
 
+@pytest.mark.parametrize("cn_strength", [0, 0.0, None])
+def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
+    # strength 0 (or None) disables ControlNet -- the diffusers path treats it as plain
+    # txt2img and the request model documents it -- so a strength-0 spec must succeed on the
+    # native engine too, not 400. Only a genuinely active (strength > 0) ControlNet is rejected.
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    out = b.generate(
+        prompt = "x",
+        steps = 4,
+        seed = 1,
+        controlnet = ("id", "img", "canny", cn_strength, 0.0, 1.0),
+    )
+    assert len(out["images"]) == 1
+
+
 def test_generate_rejects_image_conditioned_on_native_engine():
     # img2img / inpaint / reference / upscale are likewise diffusers-only; a direct API call
     # with an init image on the native engine gets a clean ValueError, not a silent txt2img.

@@ -236,14 +236,19 @@ def estimate_gguf_resident_mib(storage_mib: Optional[int]) -> Optional[int]:
     return int(storage_mib * 1.05)  # small margin for allocator + bf16 norms/biases
 
 
-def estimate_safetensors_dense_mib(storage_mib: Optional[int]) -> Optional[int]:
+def estimate_safetensors_dense_mib(
+    storage_mib: Optional[int], *, fp8_upcast: bool = False
+) -> Optional[int]:
     """Resident size of a safetensors checkpoint, in MiB.
 
-    Unlike a GGUF (which is dequantised to bf16/fp16 on load, so a 4-bit file
-    expands ~4x), a safetensors checkpoint loads near its on-disk size: a dense
-    bf16 file is already bf16, and a bnb-4bit / fp8 file stays compressed in VRAM.
-    So the on-disk size is the estimate, returned unchanged (None passes through).
-    """
+    Unlike a GGUF (dequantised on load, so a 4-bit file expands ~4x), a safetensors
+    checkpoint usually loads near its on-disk size (None passes through unchanged).
+    Exception: ``fp8_upcast`` -- an fp8 single-file transformer loads with no
+    quantization_config, so diffusers upcasts it to bf16 (~2x on-disk resident)."""
+    if storage_mib is None:
+        return None
+    if fp8_upcast:
+        return storage_mib * 2
     return storage_mib
 
 

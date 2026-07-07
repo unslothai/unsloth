@@ -37,6 +37,28 @@ from core.inference.diffusion_families import (
 # set overrides this in its own defaults; kept here so DiffusionLoraConfig has a sane fallback.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")
 
+# diffusers' SchedulerType names (diffusers.optimization.get_scheduler). piecewise_constant is
+# intentionally excluded: it is the only scheduler that needs a `step_rules` string, which the
+# trainers never pass (get_scheduler is called with only warmup/training steps, and there is no
+# config field for it). Accepting it would pass normalized(), free the resident GPU workloads,
+# then crash in the trainer subprocess (get_piecewise_constant_schedule does step_rules.split(",")
+# on None) -- the exact evict-then-fail the up-front validation exists to prevent. The remaining
+# six all run with only warmup/training steps.
+_LR_SCHEDULERS: frozenset[str] = frozenset(
+    {
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    }
+)
+
+# DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Must stay
+# in sync with the DiT trainer's own specs (kept separate to avoid an import cycle).
+_FORCE_BF16_FAMILIES: frozenset[str] = frozenset({"qwen-image", "z-image"})
+
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
 # diffusers' canonical single-file LoRA name, so load_lora_weights(dir) finds it.
@@ -85,7 +107,11 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # GGUF weights (a ``.gguf`` file or a ``*-GGUF`` repo) are inference-only: training needs
     # the full diffusers pipeline (transformer + VAE + text encoders), which a GGUF repo does
     # not provide. Reject by name even when the family itself is trainable.
-    if name.endswith(".gguf") or "gguf" in name:
+    # Exempt a local diffusers checkout that merely has "gguf" in its path, identified by its
+    # ``model_index.json`` marker (same marker the loader uses), not a bare ``is_dir()``.
+    local = Path(base_model).expanduser() if base_model else None
+    is_local_diffusers = bool(local and (local / "model_index.json").is_file())
+    if name.endswith(".gguf") or ("gguf" in name and not is_local_diffusers):
         raise ValueError(
             f"'{base_model}' is a GGUF checkpoint/repo, which can't be a training base "
             f"(training needs the full diffusers model). {_trainable_hint()}"
@@ -471,6 +497,17 @@ class DiffusionLoraConfig:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
+        # Refuse fp16 for a bf16-only DiT family up front, before evicting resident models.
+        if self.mixed_precision == "fp16" and resolved_family in _FORCE_BF16_FAMILIES:
+            raise ValueError(
+                f"'{resolved_family}' LoRA training requires bf16: fp16 overflows its fp32 "
+                f"RoPE / embedder internals. Set mixed precision to bf16."
+            )
+        if str(self.lr_scheduler) not in _LR_SCHEDULERS:
+            raise ValueError(
+                f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
+                f"got {self.lr_scheduler!r}"
+            )
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
         compile_transformer = str(self.compile_transformer or "auto").strip().lower()
@@ -870,8 +907,19 @@ def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Option
             else Path(cfg.output_dir).name
         )
         alias = sanitize_alias(base)
+        src_resolved = Path(lora_path).resolve()
         dest = loras_dir() / f"{alias}.safetensors"
-        if Path(lora_path).resolve() != dest.resolve():
+        # A retrain with the same adapter name must not clobber a prior mirror: pick the next
+        # free numeric suffix instead.
+        if dest.exists() and dest.resolve() != src_resolved:
+            n = 2
+            while True:
+                candidate = loras_dir() / f"{alias}-{n}.safetensors"
+                if not candidate.exists() or candidate.resolve() == src_resolved:
+                    dest = candidate
+                    break
+                n += 1
+        if src_resolved != dest.resolve():
             shutil.copy2(lora_path, dest)
         _write_lora_sidecar(dest.with_suffix(".json"), cfg)
         return str(dest)

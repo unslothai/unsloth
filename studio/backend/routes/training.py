@@ -1581,6 +1581,9 @@ async def upload_diffusion_dataset(
     total_bytes = 0
     uploaded = 0
     allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
+    # Validate every filename up front so a valid image ahead of a bad one is not left
+    # written on disk when the 400 fires -- make the upload all-or-nothing.
+    names: list[str] = []
     for f in files:
         # Normalise to a safe basename. Path.name does not split on a backslash on POSIX, so a
         # Windows client that sends a backslash path in the multipart filename would otherwise be
@@ -1597,40 +1600,61 @@ async def upload_diffusion_dataset(
                 status_code = 400,
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
-        dest = folder / filename
         # Reject a second IMAGE that shares this one's stem but differs by extension (sample.png
         # vs sample.jpg): both resolve to the same <stem>.txt caption sidecar (the kohya/diffusers
         # convention the reader, editor, and delete paths all use), so keeping both would silently
-        # make them share -- and corrupt -- one caption during training. Scan the whole folder, not
-        # just this batch, because uploads accumulate (earlier-in-batch files are already on disk).
-        # Re-uploading the exact same name (same stem AND extension) stays allowed as an overwrite;
-        # caption/text files are exempt (attaching sample.txt to sample.png is the intended flow).
+        # share -- and corrupt -- one caption during training. Check both files already on disk
+        # (uploads accumulate) and earlier images validated in THIS batch (nothing is on disk yet
+        # in this up-front pass). Re-uploading the exact same name (same stem AND extension) stays
+        # an overwrite; caption/text files are exempt (sample.txt for sample.png is intended).
         if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
             stem = Path(filename).stem
-            for existing in folder.iterdir():
-                if (
-                    existing.is_file()
-                    and existing.name != filename
-                    and existing.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
-                    and existing.stem == stem
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            f"Duplicate image name '{stem}'. '{existing.name}' is already in this "
-                            f"dataset; two images sharing a name would share one '{stem}.txt' "
-                            f"caption. Rename one before uploading."
-                        ),
-                    )
-        # Stream into a sibling temp file and only atomically promote it once the whole file
-        # is written and within the limit. A mid-stream 413 (or any abort) then removes the
-        # TEMP file, never dest, so re-uploading a batch that trips the limit can no longer
-        # truncate/delete an example that was already stored under the same name.
-        fd, tmp_name = tempfile.mkstemp(dir = folder, prefix = ".upload-", suffix = ext)
-        tmp = Path(tmp_name)
-        complete = False
-        try:
-            with os.fdopen(fd, "wb") as out:
+            clash = next(
+                (
+                    p.name
+                    for p in folder.iterdir()
+                    if p.is_file()
+                    and p.name != filename
+                    and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+                    and p.stem == stem
+                ),
+                None,
+            )
+            if clash is None:
+                clash = next(
+                    (
+                        n
+                        for n in names
+                        if n != filename
+                        and Path(n).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+                        and Path(n).stem == stem
+                    ),
+                    None,
+                )
+            if clash is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"Duplicate image name '{stem}'. '{clash}' is already in this "
+                        f"dataset; two images sharing a name would share one '{stem}.txt' "
+                        f"caption. Rename one before uploading."
+                    ),
+                )
+        names.append(filename)
+    # Stage each file to a temp name and only move it into place once the whole batch is
+    # written, so a mid-batch failure (size limit, disk error, disconnect) leaves the
+    # dataset untouched -- including any pre-existing file that shares a name, which a
+    # direct write would have truncated (repeat uploads into the same name accumulate).
+    staged: list[tuple[Path, Path]] = []  # (temp, final)
+    committed = False
+    try:
+        for f, filename in zip(files, names):
+            dest = folder / filename
+            # A filename-independent temp name so a long (but valid, <= NAME_MAX) filename
+            # can't overflow NAME_MAX once the staging suffix is added.
+            tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
+            staged.append((tmp, dest))
+            with open(tmp, "wb") as out:
                 while chunk := await f.read(1024 * 1024):
                     total_bytes += len(chunk)
                     if total_bytes > limit_bytes:
@@ -1643,15 +1667,17 @@ async def upload_diffusion_dataset(
                             ),
                         )
                     out.write(chunk)
-            os.replace(tmp, dest)
-            complete = True
-        finally:
-            if not complete:
+            uploaded += 1
+        for tmp, dest in staged:
+            tmp.replace(dest)  # atomic on the same filesystem
+        committed = True
+    finally:
+        if not committed:
+            for tmp, _ in staged:
                 try:
                     tmp.unlink(missing_ok = True)
                 except OSError:
                     pass
-        uploaded += 1
 
     summary = _diffusion_dataset_summary(folder)
     return DiffusionDatasetUploadResponse(
@@ -2123,7 +2149,7 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     )
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
-    for jf in snap.rglob("*.jsonl"):
+    for jf in sorted(snap.rglob("*.jsonl")):
         for line in jf.read_text(encoding = "utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -2134,7 +2160,8 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
                 continue
             fn = row.get("file_name") or row.get("image") or row.get("file")
             if fn and caption_col in row:
-                captions[Path(str(fn)).name] = str(row[caption_col])
+                # First writer wins over sorted manifests, for deterministic results.
+                captions.setdefault(Path(str(fn)).name, str(row[caption_col]))
     # Copy images (those with a caption first, so a cap keeps captioned pairs).
     images = sorted(
         p

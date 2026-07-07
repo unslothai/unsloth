@@ -2396,6 +2396,112 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
     assert _FakeTransformer.last["path"]  # GGUF path used
 
 
+def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The GGUF fits resident (plan `none`), but the DENSE bf16 transformer the fast path
+    # materializes does not. The fast path must be skipped up front (preflighted against
+    # the dense transformer, not the GGUF), and GGUF loads RESIDENT -- not evicted, OOMed
+    # in finalization, then offloaded.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    # A scheme resolves and there is no prequant, so the dense bf16 is materialized and the
+    # dense-fit re-check runs against a large (won't-fit) dense transformer.
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_transformer_resident_bytes",
+        staticmethod(lambda base: 40 * 1024**3),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def plan_wrap(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        # GGUF budget fits (real plan -> none); the dense-transformer preflight does not.
+        if transformer_resident_override_mib is not None:
+            return types.SimpleNamespace(offload_policy = "model")
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", plan_wrap)
+
+    @classmethod
+    def _fp_fail(cls, *a, **k):
+        pytest.fail("dense transformer must not load when it won't fit resident")
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] is None  # dense quant skipped
+    assert status["offload_policy"] == "none"  # GGUF loaded resident, not offloaded
+    assert _FakeTransformer.last["path"]  # GGUF path used
+
+
+def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypatch):
+    # With a prequant checkpoint, the fast path loads the small quantized file, not the
+    # dense bf16 -- so the dense-transformer re-check must NOT run and must NOT decline the
+    # fast path, even when the base's dense shards happen to be cached and large.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    # Large dense shards cached: if the re-check ran, it would wrongly decline the fast path.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_transformer_resident_bytes",
+        staticmethod(lambda base: 999 * 1024**3),
+    )
+    dense_refit_ran = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        if transformer_resident_override_mib is not None:
+            dense_refit_ran.append(True)
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(True)
+        return None, None  # fall through to GGUF; we only assert the path was reached
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert dense_refit_ran == []  # prequant -> dense re-check skipped
+    assert attempted == [True]  # fast path still attempted (with the prequant)
+
+
 def test_transformer_quant_unsupported_scheme_skips_dense_download(
     fake_runtime, tmp_path, monkeypatch
 ):

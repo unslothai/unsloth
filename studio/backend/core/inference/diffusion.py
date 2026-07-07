@@ -19,11 +19,12 @@ bar. GPU-handoff policy lives in the arbiter the routes call, not here.
 from __future__ import annotations
 
 import inspect
+import json
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 from utils.hardware import clear_gpu_cache
@@ -1010,10 +1011,14 @@ class DiffusionBackend:
         return total, base_files
 
     @staticmethod
-    def _cache_bytes(repo_id: str) -> int:
+    def _hub_cache_repo_dir(repo_id: str) -> Path:
+        """Local HF hub cache dir for ``repo_id``."""
         from huggingface_hub import constants
+        return Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}"
 
-        blobs = Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "blobs"
+    @staticmethod
+    def _cache_bytes(repo_id: str) -> int:
+        blobs = DiffusionBackend._hub_cache_repo_dir(repo_id) / "blobs"
         total = 0
         try:
             for entry in blobs.iterdir():
@@ -1050,18 +1055,71 @@ class DiffusionBackend:
         return total
 
     @staticmethod
+    def _max_over_cached_revs(base: str, fn: Callable[[Path], int]) -> int:
+        """Apply ``fn`` to a LOCAL diffusers dir, or to the fullest cached hub snapshot
+        revision (the active one is the fullest), returning that count. 0 when nothing is
+        cached. Multiple revisions may be cached, so take the max."""
+        local = Path(base).expanduser()
+        if local.is_dir():
+            return fn(local)
+        snapshots = DiffusionBackend._hub_cache_repo_dir(base) / "snapshots"
+        if not snapshots.is_dir():
+            return 0
+        return max((fn(rev) for rev in snapshots.iterdir() if rev.is_dir()), default = 0)
+
+    @staticmethod
     def _companion_cache_bytes(base: str) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan.
 
-        For a hub base repo this is the cached blob total (``_cache_bytes``). For a
-        LOCAL diffusers base directory the blob cache is empty, so sum the on-disk
-        component weights instead, excluding ``transformer/`` (the GGUF supplies the
-        transformer). Without this a local base folds its multi-GB VAE / text-encoder
-        weights to zero and auto planning can pick a resident placement that OOMs."""
-        local = Path(base).expanduser()
-        if local.is_dir():
-            return DiffusionBackend._local_dir_weight_bytes(local, exclude_transformer = True)
-        return DiffusionBackend._cache_bytes(base)
+        Excludes ``transformer/`` (supplied by the GGUF/single file, not resident here) --
+        otherwise the dense-quant prefetch's cached transformer shards would inflate this
+        and wrongly force offload. Walks the snapshot dir, not the flat ``blobs/`` cache,
+        since only the snapshot preserves the subfolder split needed to exclude it."""
+        return DiffusionBackend._max_over_cached_revs(
+            base, lambda d: DiffusionBackend._local_dir_weight_bytes(d, exclude_transformer = True)
+        )
+
+    @staticmethod
+    def _safetensors_param_count(path: Path) -> int:
+        """Total tensor elements in a safetensors file, read from its JSON header without
+        touching the tensor data. 0 on any read/parse failure."""
+        try:
+            with open(path, "rb") as fh:
+                header_len = int.from_bytes(fh.read(8), "little")
+                header = json.loads(fh.read(header_len))
+            total = 0
+            for name, meta in header.items():
+                if name == "__metadata__" or not isinstance(meta, dict):
+                    continue
+                numel = 1
+                for dim in meta.get("shape", []):
+                    numel *= dim
+                total += numel
+            return total
+        except Exception:  # noqa: BLE001 — best-effort estimate; a corrupt/crafted shard
+            # (bad header length, non-dict header, odd shape) must degrade to 0 so the caller
+            # gates on the plain plan, never crash the load.
+            return 0
+
+    @staticmethod
+    def _dense_transformer_resident_bytes(base: str) -> int:
+        """Resident bf16 size of the base repo's dense ``transformer/`` for the dense-quant
+        preflight. That fast path loads the transformer at the compute dtype (bf16, 2
+        bytes/param) before quantizing, so budget num_params * 2 -- NOT the on-disk bytes,
+        which for an F32 base (e.g. Z-Image) are ~2x the resident size. Read from the
+        safetensors shard headers. Returns 0 when no ``transformer/*.safetensors`` shards
+        are present (an uncached base, or a .bin-only transformer); the caller then gates
+        the fast path on the plain plan."""
+
+        def _params(d: Path) -> int:
+            tdir = d / "transformer"
+            if not tdir.is_dir():
+                return 0
+            return sum(
+                DiffusionBackend._safetensors_param_count(s) for s in tdir.glob("*.safetensors")
+            )
+
+        return DiffusionBackend._max_over_cached_revs(base, _params) * 2  # bf16: 2 bytes/param
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
@@ -1181,9 +1239,8 @@ class DiffusionBackend:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
                 # Decide placement up front (the weights are still on CPU, so free VRAM is
-                # the real budget) -- this also doubles as the dense-quant preflight: the
-                # dense bf16 transformer must fit resident, so the fast path is offered only
-                # when the plan is `none`.
+                # the real budget). This plan budgets the GGUF file and places the plain
+                # load; the dense-quant fast path is preflighted separately below.
                 plan = self._plan_memory(
                     target,
                     single_file_path,
@@ -1227,48 +1284,96 @@ class DiffusionBackend:
                 pipe = None
                 transformer_quant_engaged = None
                 quant_plan = None
+                # The GGUF-size `plan` can mis-budget the dense-quant fast path two ways, so
+                # preflight the real footprint BEFORE evicting the current pipeline. Both
+                # branches need the base repo + a resolved scheme, so gate on the dense-path
+                # preconditions first.
+                dense_declined = False
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
-                    and plan.offload_policy != OFFLOAD_NONE
                 ):
-                    # The GGUF-size plan picked offload, but the dense-quant artifact has
-                    # a DIFFERENT footprint: int8/fp8 weights are ~half the bf16 bytes, and
-                    # a pre-quantized checkpoint never materialises dense bf16 at all. Ask
-                    # the auto-policy for the candidate's estimate and re-plan against it:
-                    # a resident quantised build beats an offloaded GGUF on speed AND
-                    # quality, so it must be attempted before settling for offload.
-                    candidate = resolve_dense_quant_candidate(
-                        fam = fam,
-                        target = target,
-                        requested = transformer_quant,
-                        base_repo = base,
-                        prequant_path = transformer_prequant_path,
-                        logger = logger,
-                    )
-                    if candidate is not None:
-                        replanned = self._plan_memory(
-                            target,
-                            single_file_path,
-                            base,
-                            fam,
-                            memory_mode,
-                            cpu_offload,
-                            kind = kind,
-                            repo_id = repo_id,
-                            transformer_resident_override_mib = (candidate.transient_transformer_mib),
-                            # The dense path prefetches the base transformer/ shards into the
-                            # cache _companion_cache_bytes reads; pass the auto-policy's own
-                            # companion estimate so the re-plan does not double-count them.
-                            companion_override_mib = candidate.companions_mib,
+                    if plan.offload_policy != OFFLOAD_NONE:
+                        # The GGUF-size plan picked offload, but the dense-quant artifact has
+                        # a DIFFERENT footprint: int8/fp8 weights are ~half the bf16 bytes, and
+                        # a pre-quantized checkpoint never materialises dense bf16 at all. Ask
+                        # the auto-policy for the candidate's estimate and re-plan against it:
+                        # a resident quantised build beats an offloaded GGUF on speed AND
+                        # quality, so it must be attempted before settling for offload.
+                        candidate = resolve_dense_quant_candidate(
+                            fam = fam,
+                            target = target,
+                            requested = transformer_quant,
+                            base_repo = base,
+                            prequant_path = transformer_prequant_path,
+                            logger = logger,
                         )
-                        if replanned.offload_policy == OFFLOAD_NONE:
-                            quant_plan = replanned
+                        if candidate is not None:
+                            replanned = self._plan_memory(
+                                target,
+                                single_file_path,
+                                base,
+                                fam,
+                                memory_mode,
+                                cpu_offload,
+                                kind = kind,
+                                repo_id = repo_id,
+                                transformer_resident_override_mib = (
+                                    candidate.transient_transformer_mib
+                                ),
+                                # The dense path prefetches the base transformer/ shards into the
+                                # cache _companion_cache_bytes reads; pass the auto-policy's own
+                                # companion estimate so the re-plan does not double-count them.
+                                companion_override_mib = candidate.companions_mib,
+                            )
+                            if replanned.offload_policy == OFFLOAD_NONE:
+                                quant_plan = replanned
+                    else:
+                        # The GGUF fits resident, but this path first materialises the base
+                        # repo's dense bf16 transformer -- bigger than the quantised GGUF -- so
+                        # re-check the fit against THAT. A card that fits the GGUF but not the
+                        # dense transformer must skip the fast path up front, not evict the
+                        # current pipeline then OOM in finalization. A prequant checkpoint loads
+                        # a small quantised file (no dense bf16), so skip the re-check there
+                        # (mirrors the prefetch guard). _dense_transformer_resident_bytes reads
+                        # the on-disk shard headers, so it also covers families the size table
+                        # (resolve_dense_quant_candidate) does not list; it returns 0 when the
+                        # shards are absent, in which case the fast path keeps today's behaviour.
+                        scheme = select_transformer_quant_scheme(
+                            target,
+                            transformer_quant,  # normalized above
+                            family = getattr(fam, "name", None),
+                        )
+                        prequant = (
+                            resolve_prequant_source(
+                                fam, scheme, path_override = transformer_prequant_path
+                            )
+                            if scheme is not None
+                            else None
+                        )
+                        if prequant is None:
+                            dense_mib = int(
+                                self._dense_transformer_resident_bytes(base) // (1024 * 1024)
+                            )
+                            if dense_mib > 0:
+                                dense_plan = self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    transformer_resident_override_mib = dense_mib,
+                                )
+                                dense_declined = dense_plan.offload_policy != OFFLOAD_NONE
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
+                    and not dense_declined
                     and (plan.offload_policy == OFFLOAD_NONE or quant_plan is not None)
                 ):
                     try:
@@ -1837,7 +1942,8 @@ class DiffusionBackend:
 
         The size estimate is per-kind: diffusers keeps GGUF weights packed (per-matmul
         transient dequant), so a GGUF loads near its on-disk size; a safetensors
-        single-file loads near its on-disk size (it carries its dtype); and a full
+        single-file loads near its on-disk size (it carries its dtype), except an fp8
+        transformer file that gets upcast to bf16 on load (~2x resident); and a full
         pipeline is one cached download (transformer + companions), already compressed.
         ``transformer_resident_override_mib`` replaces the file-size transformer estimate
         when the loader is planning for a DIFFERENT artifact than the file on disk (the
@@ -1900,9 +2006,15 @@ class DiffusionBackend:
                 # file-size derivation; companions below stay measured from the cache.
                 transformer_resident = transformer_resident_override_mib
             elif kind == "single_file":
-                # Safetensors single-file: no dequant expansion (it carries its dtype).
+                # An fp8 transformer checkpoint loads via from_single_file with a bf16
+                # compute dtype and no quantization_config, so diffusers upcasts it to
+                # bf16 (~2x resident); detect it from the basename. Excludes the
+                # single-file-is-pipeline (SDXL) case, which is already a bf16 pipeline.
+                fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
+                    "fp8" in Path(single_file_path).name.lower() if single_file_path else False
+                )
                 transformer_resident = estimate_safetensors_dense_mib(
-                    file_size_mib(single_file_path)
+                    file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
@@ -2011,6 +2123,13 @@ class DiffusionBackend:
                 _cn_fs = evaluate_file_security(resolved_cn.path, hf_token = state.hf_token or None)
                 if _cn_fs.blocked:
                     raise ValueError(_cn_fs.reason)
+            # Keep at most one ControlNet resident: evict the previous module + its
+            # from_pipe wrapper before loading the new one, or swapping ControlNets
+            # within a base-model load accumulates until OOM.
+            if self._cn_models or self._cn_pipes:
+                self._cn_models.clear()
+                self._cn_pipes.clear()
+                clear_gpu_cache()
             import torch
 
             # state.dtype is the display string saved at load ("bfloat16"), NOT a
@@ -2414,6 +2533,12 @@ class DiffusionBackend:
                     if init_image is None:
                         raise ValueError(
                             f"{state.family.name} is an image-editing model: provide an input image."
+                        )
+                    if mask_image is not None:
+                        # The edit family has no inpaint pipeline; a mask would be silently dropped.
+                        raise ValueError(
+                            f"{state.family.name} is an image-editing model and does not "
+                            "support masks (mask_image)."
                         )
                     workflow = "edit"
                     init_pil = _decode_b64_image(init_image, mode = "RGB")

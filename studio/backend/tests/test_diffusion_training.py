@@ -1015,6 +1015,50 @@ def test_import_example_partial_failure_leaves_no_partial_dataset(
     assert not any(p.name.startswith(".dreambooth-dog.import-") for p in ds_root.iterdir())
 
 
+def test_diffusion_dataset_upload_over_cap_rolls_back_whole_batch(
+    client, dataset_roots, monkeypatch
+):
+    # All-or-nothing: a valid image ahead of the one that trips the size cap must NOT be
+    # left on disk (the 413 mid-batch rolls back every file written this request).
+    import utils.upload_limits as ul
+
+    monkeypatch.setattr(ul, "get_upload_limit_bytes", lambda: 100)
+    ds_root, _ = dataset_roots
+    files = [
+        ("files", ("small.png", b"x" * 50, "image/png")),
+        ("files", ("big.png", b"y" * 200, "image/png")),
+    ]
+    r = client.post("/api/train/diffusion/dataset", data = {"name": "rollback"}, files = files)
+    assert r.status_code == 413, r.text
+    folder = ds_root / "rollback"
+    assert not (folder / "small.png").exists()  # the earlier valid file was rolled back
+    assert not (folder / "big.png").exists()
+
+
+def test_diffusion_dataset_upload_over_cap_preserves_existing_file(
+    client, dataset_roots, monkeypatch
+):
+    # A failed batch that reuses an existing filename must NOT delete the user's
+    # pre-existing file (repeat uploads accumulate). Staging to a temp file keeps the
+    # original intact until the whole batch commits.
+    import utils.upload_limits as ul
+
+    monkeypatch.setattr(ul, "get_upload_limit_bytes", lambda: 100)
+    ds_root, _ = dataset_roots
+    folder = ds_root / "keep"
+    folder.mkdir(parents = True)
+    (folder / "existing.png").write_bytes(b"ORIGINAL")  # from an earlier upload
+    files = [
+        ("files", ("existing.png", b"NEW", "image/png")),  # re-upload, small
+        ("files", ("big.png", b"y" * 200, "image/png")),  # trips the cap
+    ]
+    r = client.post("/api/train/diffusion/dataset", data = {"name": "keep"}, files = files)
+    assert r.status_code == 413, r.text
+    assert (folder / "existing.png").read_bytes() == b"ORIGINAL"  # untouched
+    assert not (folder / "big.png").exists()
+    assert not list(folder.glob(".*.part"))  # no leftover temp files
+
+
 def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypatch):
     # A doomed start (non-SDXL base) must 400 BEFORE resident GPU workloads are freed,
     # so a bad pick never unloads the user's working chat/Images model.

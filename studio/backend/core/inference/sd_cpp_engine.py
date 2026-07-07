@@ -125,7 +125,9 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
 def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
     """``stem`` locations under a stable-diffusion.cpp checkout/install ``root``,
     highest priority first: the cmake ``build/bin`` tree, then a Windows Release
-    subdir, then the root itself."""
+    subdir, then the root itself, then the prebuilt archive's versioned subdir.
+
+    The prebuilt lands in its own versioned subdir rather than flattening into ``root``."""
     name = _binary_name(stem)
     cands = [
         root / "build" / "bin" / name,
@@ -133,6 +135,15 @@ def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
         root / "bin" / name,
         root / name,
     ]
+    # Newest install first, by mtime -- tag strings don't sort numerically.
+    try:
+        subdirs = [p for p in root.iterdir() if p.is_dir()]
+        subdirs.sort(key = lambda p: p.stat().st_mtime, reverse = True)
+        for sub in subdirs:
+            cands.append(sub / name)
+            cands.append(sub / "bin" / name)
+    except OSError:
+        pass
     return cands
 
 

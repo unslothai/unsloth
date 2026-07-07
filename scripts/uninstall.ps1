@@ -315,7 +315,7 @@ function Uninstall-UnslothStudio {
         # 2. A loaded module under a target root (orphaned mp-fork python holding a
         #    venv DLL). Scoped to names that load our DLLs to keep the scan fast.
         try {
-            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli -ErrorAction SilentlyContinue
+            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli, sd-cli, sd-server -ErrorAction SilentlyContinue
             foreach ($proc in $cands) {
                 $hit = $false
                 try {

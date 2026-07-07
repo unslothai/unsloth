@@ -722,7 +722,14 @@ class DiffusionTrainingStartRequest(BaseModel):
         5.0, gt = 0, description = "Min-SNR loss weighting; null disables"
     )
     gradient_checkpointing: bool = Field(True)
-    lr_scheduler: str = Field("constant")
+    lr_scheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = Field("constant")
     lr_warmup_steps: int = Field(0, ge = 0)
     center_crop: bool = Field(False)
     random_flip: bool = Field(True)

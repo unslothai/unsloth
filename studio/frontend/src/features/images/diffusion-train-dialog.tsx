@@ -120,24 +120,27 @@ export function DiffusionTrainDialog({
   }, [open, poll]);
 
   const active = Boolean(status?.active) || status?.status === "running";
-  const completed = status?.status === "completed";
+  // A stopped run still saves + publishes a deployable adapter (catalog_path set), so
+  // treat it as finished-with-adapter too; a save=False cancel has no catalog_path.
+  const hasSavedAdapter =
+    status?.status === "completed" ||
+    (status?.status === "stopped" && Boolean(status?.catalog_path));
+  const completed = hasSavedAdapter;
   const pct =
     status && status.total_steps > 0
       ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
       : 0;
 
-  // Notify the parent exactly once when a run reaches "completed", so it can rescan the
-  // LoRA picker (a LoRA trained while a model is loaded is otherwise invisible until a
-  // model swap re-runs the discovery effect).
+  // Notify the parent exactly once per finished run so it rescans the LoRA picker.
   const [notifiedComplete, setNotifiedComplete] = useState(false);
   useEffect(() => {
-    if (status?.status === "completed" && !notifiedComplete) {
+    if (hasSavedAdapter && !notifiedComplete) {
       setNotifiedComplete(true);
       onTrainingComplete?.();
     } else if (status?.status === "running" && notifiedComplete) {
       setNotifiedComplete(false); // arm again for the next run
     }
-  }, [status?.status, notifiedComplete, onTrainingComplete]);
+  }, [hasSavedAdapter, status?.status, notifiedComplete, onTrainingComplete]);
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
