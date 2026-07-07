@@ -410,18 +410,22 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 
 /// Cheap launchability guard for the cached fast path. A matching capability
 /// fingerprint only proves the binary's path/size/mtime/markers are unchanged,
-/// not that it can still be executed: the executable bit may have been cleared
-/// without touching mtime/size. When the binary is clearly not launchable, skip
-/// the cache shortcut and fall back to the CLI help probe so preflight reports
-/// Stale/repair instead of letting a later backend start fail confusingly.
+/// not that the current user can still execute it: the executable bit may have
+/// been cleared, or be set only for another owner/group, or be denied by an ACL,
+/// all without touching mtime/size. Use a real access(X_OK) check (which honors
+/// the caller's uid/gid and ACLs, unlike a raw mode bitmask) so a
+/// permission/ownership change is caught. When the binary is not launchable,
+/// skip the cache shortcut and fall back to the CLI help probe so preflight
+/// reports Stale/repair instead of letting a later backend start fail confusingly.
 #[cfg(unix)]
 fn managed_bin_is_executable(bin: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match fs::metadata(bin) {
-        Ok(metadata) => metadata.permissions().mode() & 0o111 != 0,
-        // If we cannot stat the binary, let the CLI probe decide.
-        Err(_) => false,
-    }
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(bin.as_os_str().as_bytes()) else {
+        // A path with an interior NUL cannot name a real file; let the probe decide.
+        return false;
+    };
+    // SAFETY: c_path is a valid NUL-terminated C string kept alive for the call.
+    unsafe { libc::access(c_path.as_ptr(), libc::X_OK) == 0 }
 }
 
 #[cfg(not(unix))]
