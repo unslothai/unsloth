@@ -26,7 +26,12 @@ export {
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
 export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
-export { isExternalModelId } from "./external-providers";
+export {
+  customProviderDisplayName,
+  isExternalModelId,
+  parseExternalModelId,
+} from "./external-providers";
+export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
