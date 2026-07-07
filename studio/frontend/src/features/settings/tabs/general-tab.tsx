@@ -79,6 +79,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_auto_title",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
+  "unsloth_nudge_tool_calls",
   "unsloth_max_tool_calls_per_message",
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
