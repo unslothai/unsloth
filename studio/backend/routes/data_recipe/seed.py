@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import re
+import shutil
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -578,6 +579,19 @@ async def remove_unstructured_file(block_id: str, file_id: str):
         pass
 
     return {"status": "ok"}
+
+
+@router.delete("/seed/unstructured-block/{block_id}")
+async def remove_unstructured_block(block_id: str):
+    """Delete a block's upload directory; files on disk still count toward its quota."""
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    if not block_dir.exists():
+        return {"status": "ok", "deleted": False}
+
+    shutil.rmtree(block_dir, ignore_errors = True)
+    return {"status": "ok", "deleted": True}
 
 
 @router.post("/seed/inspect-upload", response_model = SeedInspectResponse)

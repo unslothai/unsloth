@@ -197,6 +197,7 @@ export function parseSeedConfig(
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
+    unstructuredUploadUid?: string;
     unstructuredFileIds?: string[];
     unstructuredFileNames?: string[];
     unstructuredFileSizes?: number[];
@@ -229,6 +230,9 @@ export function parseSeedConfig(
       : {}),
     ...(options?.local_file_name !== undefined
       ? { local_file_name: options.local_file_name }
+      : {}),
+    ...(options?.unstructuredUploadUid
+      ? { unstructured_upload_uid: options.unstructuredUploadUid }
       : {}),
     ...(options?.unstructuredFileIds !== undefined
       ? { unstructured_file_ids: options.unstructuredFileIds }

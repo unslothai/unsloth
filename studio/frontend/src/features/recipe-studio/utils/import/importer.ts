@@ -43,6 +43,7 @@ type UiInput = {
   seed_drop_columns?: unknown;
   seed_preview_rows?: unknown;
   local_file_name?: unknown;
+  unstructured_upload_uid?: unknown;
   unstructured_file_ids?: unknown;
   unstructured_file_names?: unknown;
   unstructured_file_sizes?: unknown;
@@ -411,6 +412,7 @@ export function importRecipePayload(input: string): ImportResult {
     : undefined;
   const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
   // Preserve file IDs/names from saved recipes (cleared at share time by sanitizeSeedForShare)
+  const uiUnstructuredUploadUid = readString(ui?.unstructured_upload_uid) ?? undefined;
   const uiUnstructuredFileIds: string[] = Array.isArray(ui?.unstructured_file_ids)
     ? (ui.unstructured_file_ids as string[]).filter((v): v is string => typeof v === "string")
     : [];
@@ -459,6 +461,7 @@ export function importRecipePayload(input: string): ImportResult {
           : payloadSeedDropColumns,
       seed_preview_rows: uiSeedPreviewRows,
       local_file_name: uiLocalFileName,
+      unstructuredUploadUid: uiUnstructuredUploadUid,
       unstructuredFileIds: uiUnstructuredFileIds,
       unstructuredFileNames: uiUnstructuredFileNames,
       unstructuredFileSizes: uiUnstructuredFileSizes,

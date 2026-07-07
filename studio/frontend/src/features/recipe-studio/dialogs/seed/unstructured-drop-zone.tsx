@@ -134,15 +134,27 @@ export function UnstructuredDropZone({
       if (entry.status === "uploading" && entry.abortController) {
         entry.abortController.abort();
       }
-      if (
+      const needsServerRemove =
         entry.id &&
         entry.status === "ok" &&
-        !deletedIdsRef.current.has(entry.id)
-      ) {
-        deletedIdsRef.current.add(entry.id);
-        void removeUnstructuredFile(blockId, entry.id).catch(() => {});
-      }
+        !deletedIdsRef.current.has(entry.id);
       onFilesChange((prev) => prev.filter((_, i) => i !== index));
+      if (!needsServerRemove) return;
+      deletedIdsRef.current.add(entry.id);
+      removeUnstructuredFile(blockId, entry.id).catch(() => {
+        // Still exists server-side (counts toward quota); restore it.
+        deletedIdsRef.current.delete(entry.id);
+        onFilesChange((prev) => [
+          ...prev,
+          {
+            id: entry.id,
+            name: entry.name,
+            size: entry.size,
+            status: "ok",
+            error: "Remove failed — try again",
+          },
+        ]);
+      });
     },
     [blockId, onFilesChange],
   );
