@@ -126,6 +126,13 @@ class DiffusionFamily:
     # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA-friendly
     # prequant repo, then a bf16 repo). Surfaced by the Train UI as the base-model choices.
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
+    # When set, deploying a LoRA trained on this family loads THIS repo instead of the
+    # checkpoint it was trained on -- for families whose release guidance is to train on one
+    # checkpoint but run adapters on another (Krea: train on Raw, preview on Turbo). Both
+    # sides must be the same precision so the swap never enlarges the load (unlike the
+    # nf4 -> bf16 gap that would risk an OOM on deploy). Unset elsewhere, so every other
+    # family deploys on the base it was trained on.
+    deploy_base_repo: Optional[str] = None
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -282,6 +289,31 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
         ),
     ),
+    # Krea 2 (diffusers >= 0.39): a ~12B single-stream flow-matching DiT with a
+    # Qwen3-VL-4B text encoder (12 tapped hidden layers fused in-transformer) and the
+    # Qwen-Image VAE. Loaded per-component through core/inference/diffusion_krea2.py
+    # because the krea repo ships transformers-5.x style configs (see that module).
+    # No GGUF/sd.cpp mapping yet, so the no-GPU route falls back to diffusers.
+    DiffusionFamily(
+        name = "krea-2",
+        pipeline_class = "Krea2Pipeline",
+        transformer_class = "Krea2Transformer2DModel",
+        base_repo = "krea/Krea-2-Turbo",
+        aliases = ("krea2",),
+        # LoRA training via the DiT trainer (no prequant repo yet, so nf4 quantizes the
+        # 12B transformer on the fly under the default precision). Krea's release guidance
+        # is explicit: train LoRAs on the undistilled Raw checkpoint and apply them on
+        # Turbo for inference, so Raw is the default training base and Turbo stays the
+        # inference/base repo.
+        trainable = True,
+        train_base_repos = ("krea/Krea-2-Raw", "krea/Krea-2-Turbo"),
+        # Per Krea's guidance, adapters trained on Raw are meant to run on Turbo; deploy
+        # previews them on Turbo (same bf16 precision, so the swap never enlarges the load).
+        deploy_base_repo = "krea/Krea-2-Turbo",
+        # The checkpoint is exported bf16-only (the model card pins bfloat16); fp16 is
+        # unvalidated upstream, so keep the fp16 fallback off like z-image.
+        fp16_incompatible = True,
+    ),
     # SDXL is the one U-Net family here: the denoiser is ``pipe.unet``
     # (UNet2DConditionModel), not a DiT ``pipe.transformer``, and a single-file
     # ``.safetensors`` is the WHOLE pipeline rather than a transformer-only file.
@@ -429,6 +461,14 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 # (studio/frontend/src/features/images/images-page.tsx); keep the two in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
+    # Krea 2 Raw is the undistilled base (both Turbo and Raw are in _TRUSTED_NON_GGUF_REPOS, so
+    # either is inference-loadable): its model card runs 52 steps at guidance 3.5. It must precede
+    # the generic "krea" key, or the distilled recipe below would degrade a Raw load to garbage.
+    ("krea-2-raw", 52, 3.5),
+    # Krea 2 Turbo is distilled (TDM): 8 steps, no CFG -- matching the Create UI seed, so the
+    # OpenAI /v1/images/generations route uses the documented recipe instead of falling through
+    # to the generic (9, 0.0). "krea" then covers Turbo and any other krea id but Raw (above).
+    ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
     # Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
     ("kontext", 28, 2.5),

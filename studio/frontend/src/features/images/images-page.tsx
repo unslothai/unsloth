@@ -98,6 +98,8 @@ const editGguf = (id: string, name: string): ModelOption => ({
 type SafetensorsSpec = { kind: "pipeline" | "single_file"; filename?: string };
 const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
   "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
+  // Krea 2 Turbo: official vendor repo (bf16 pipeline), on the backend allowlist.
+  "krea/Krea-2-Turbo": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-FP8": {
     kind: "single_file",
@@ -132,6 +134,7 @@ const MODELS: ModelOption[] = [
     "Z-Image-Turbo (bnb-4bit)",
     "Safetensors · bnb-4bit",
   ),
+  safetensors("krea/Krea-2-Turbo", "Krea 2 Turbo", "Safetensors · bf16"),
   safetensors(
     "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
     "Qwen-Image 2512 (bnb-4bit)",
@@ -208,6 +211,13 @@ const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "z-image-turbo", steps: 9, guidance: 0 },
+  // Krea 2 Raw is the undistilled base (also inference-loadable): its card runs 52 steps at
+  // guidance 3.5, so it must precede the distilled "krea-2" key below or a Raw load would run
+  // the 8-step recipe and produce garbage.
+  { match: "krea-2-raw", steps: 52, guidance: 3.5 },
+  // Krea 2 Turbo is distilled (TDM): 8 steps, no CFG. "krea-2" then covers Turbo (and any
+  // other krea id) but Raw, which is matched more specifically above.
+  { match: "krea-2", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
   { match: "kontext", steps: 28, guidance: 2.5 },

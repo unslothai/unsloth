@@ -723,23 +723,38 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
+  // Resolve the repo an adapter should be PREVIEWED on. Krea (and any family that trains on
+  // one checkpoint but runs adapters on another) declares a deploy_base: preview the adapter
+  // there instead of the training checkpoint, so the default Krea train-on-Raw flow does not
+  // load the adapter on Raw's non-distilled recipe. Only a recognised training base is
+  // overridden; a custom repo the user typed is respected as-is.
+  const deployBaseFor = useCallback(
+    (trainedBase: string, famName: string): string => {
+      const rec = info?.families?.find((f) => f.name === famName);
+      if (rec?.deploy_base && rec.base_repos.includes(trainedBase)) return rec.deploy_base;
+      return trainedBase;
+    },
+    [info?.families],
+  );
+
   const onDeployClick = useCallback(() => {
     if (!status?.catalog_path) {
       toast.error("The trained adapter is not available yet.");
       return;
     }
-    const baseRepo = status.base_model || (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase);
-    if (!baseRepo) {
+    const trainedBase = status.base_model || (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase);
+    if (!trainedBase) {
       toast.error("Could not determine the base model to load for this adapter.");
       return;
     }
+    const famName = status.family || family?.name || "";
     onDeploy?.({
-      baseRepo,
-      family: status.family || family?.name || "",
+      baseRepo: deployBaseFor(trainedBase, famName),
+      family: famName,
       catalogPath: status.catalog_path,
       trigger: instancePrompt.trim(),
     });
-  }, [status, baseChoice, customBase, family, instancePrompt, onDeploy]);
+  }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
 
   const numberField = (
     label: string,
@@ -1217,7 +1232,7 @@ export function DiffusionTrainPanel({
                     size="sm"
                     onClick={() =>
                       onDeploy?.({
-                        baseRepo: viewRun.base_model || "",
+                        baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
                         family: viewRun.family || "",
                         catalogPath: viewRun.catalog_path || "",
                         trigger: viewRun.instance_prompt || "",

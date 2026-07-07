@@ -82,6 +82,14 @@ def test_detect_family_from_repo_id():
     assert detect_family("unsloth/FLUX.1-dev-GGUF").name == "flux.1"
     # A plain Qwen-Image checkpoint must still resolve to the base family, not edit.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
+    # Krea 2 (diffusers >= 0.39): bf16-only single-stream DiT, no GGUF/sd.cpp mapping.
+    krea2 = detect_family("krea/Krea-2-Turbo")
+    assert krea2.name == "krea-2"
+    assert krea2.pipeline_class == "Krea2Pipeline"
+    assert krea2.transformer_class == "Krea2Transformer2DModel"
+    assert krea2.cfg_kwarg == "guidance_scale"
+    assert krea2.fp16_incompatible is True
+    assert krea2.sd_cpp_text_encoders == ()
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
@@ -122,7 +130,7 @@ def test_detect_family_override():
 def test_supported_family_names():
     names = supported_family_names()
     # The unknown-model error lists these, so the key families must be present.
-    for expected in ("flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "z-image"):
+    for expected in ("flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "z-image", "krea-2"):
         assert expected in names
     # Every listed name is a valid family_override (round-trips through detect_family).
     for name in names:

@@ -870,6 +870,10 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
+    # When set, deploying a LoRA trained on this family previews it on this repo instead of
+    # the training base (Krea trains on Raw but runs adapters on Turbo). Null for families
+    # that deploy on the base they trained on.
+    deploy_base: Optional[str] = None
 
 
 class DiffusionTrainingInfoResponse(BaseModel):

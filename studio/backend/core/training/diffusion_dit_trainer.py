@@ -72,6 +72,26 @@ _FLUX_TARGETS = (
 )
 _QWEN_TARGETS = _FLUX_TARGETS
 _ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
+# The Krea 2 authors' recommended default target set (their DreamBooth reference script):
+# attention + SwiGLU + the text-fusion projector + the conditioning embedders. For long
+# runs they suggest narrowing to the attention layers so prompt adherence doesn't drop.
+_KREA2_TARGETS = (
+    "img_in",
+    "final_layer.linear",
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out.0",
+    "to_gate",
+    "ff.up",
+    "ff.down",
+    "text_fusion.projector",
+    "txt_in.linear_1",
+    "txt_in.linear_2",
+    "time_embed.linear_1",
+    "time_embed.linear_2",
+    "time_mod_proj",
+)
 
 
 def _select_lora_targets(
@@ -698,6 +718,105 @@ def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# ── Krea 2 ────────────────────────────────────────────────────────────────────
+def _krea2_load_conditioners(cfg, device, weight_dtype):
+    # The krea repo ships transformers-5.x style configs the pinned 4.x line cannot
+    # parse, so the conditioning pipeline is assembled per-component (with the tokenizer
+    # and rope compat) instead of from_pretrained(transformer = None); see
+    # core/inference/diffusion_krea2.py for the exact compat story.
+    import torch
+    from core.inference.diffusion_krea2 import load_krea2_pipeline
+
+    pipe = load_krea2_pipeline(
+        cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
+    )
+    pipe.vae.to(device, dtype = torch.float32)
+    return pipe, pipe.vae
+
+
+def _krea2_load_transformer(cfg, device, weight_dtype, base_precision):
+    # The transformer subfolder is diffusers-format (no transformers compat needed).
+    # There is no prequant repo yet, so nf4 quantizes the 12B transformer on the fly.
+    from diffusers import Krea2Transformer2DModel
+    return _load_dit_transformer(Krea2Transformer2DModel, cfg, device, base_precision)
+
+
+def _krea2_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            # encode_prompt pads/truncates to the fixed max_sequence_length, so every
+            # embed is [1, 512, num_text_layers, 2560] with a [1, 512] validity mask --
+            # static shapes (the padding sits mid-template, BEFORE the assistant suffix,
+            # matching how the model was sampled at training time).
+            pe, mask = pipe.encode_prompt(
+                prompt = cap,
+                device = device,
+                num_images_per_prompt = 1,
+                max_sequence_length = 512,
+            )
+            out.append((pe.cpu(), mask.cpu()))
+    return out
+
+
+# Krea 2 conditions on the Qwen-Image VAE (AutoencoderKLQwenImage) with the same
+# per-channel latents_mean / latents_std normalisation, so latent encoding is shared.
+_krea2_encode_latents = _qwen_encode_latents
+_krea2_encode_latent_stats = _qwen_encode_latent_stats
+
+
+def _krea2_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    import torch
+
+    # Fixed-length embeds (see _krea2_encode_prompts), so collation is a plain concat
+    # with the mask riding along; ``pad_to`` is moot because the shapes are static.
+    pe_b = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
+    mask_b = torch.cat([e[1] for e in entries]).to(device)
+    return (pe_b, mask_b)
+
+
+def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    from diffusers import Krea2Pipeline
+
+    pe, mask = embeds_batch
+    # [B,16,1,H,W] -> [B, (H/2)*(W/2), 64] 2x2 patches. Krea2Pipeline._pack_latents /
+    # _unpack_latents are instance methods (they read self.patch_size), so the packing is
+    # inlined here exactly like the reference DreamBooth script (patch_size = 2).
+    bsz, c, _f, h, w = noisy.shape
+    packed = noisy.reshape(bsz, c, h // 2, 2, w // 2, 2)
+    packed = packed.permute(0, 2, 4, 1, 3, 5).reshape(bsz, (h // 2) * (w // 2), c * 4)
+    # Text tokens sit at the rotary origin, so one shared position grid serves the batch.
+    position_ids = Krea2Pipeline.prepare_position_ids(pe.shape[1], h // 2, w // 2, device)
+    pred = transformer(
+        hidden_states = packed,
+        encoder_hidden_states = pe,
+        timestep = timesteps / 1000,
+        position_ids = position_ids,
+        encoder_attention_mask = mask,
+        return_dict = False,
+    )[0]
+    pred = pred.view(bsz, h // 2, w // 2, c, 2, 2)
+    pred = pred.permute(0, 3, 1, 4, 2, 5)
+    return pred.reshape(bsz, c, 1, h, w)
+
+
+def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
+    from diffusers import Krea2Pipeline
+    Krea2Pipeline.save_lora_weights(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+    )
+
+
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
         family = "flux.1",
@@ -740,6 +859,20 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _zimage_collate,
         forward = _zimage_forward,
         save = _zimage_save,
+    ),
+    "krea-2": _FamilySpec(
+        family = "krea-2",
+        lora_targets = _KREA2_TARGETS,
+        force_bf16 = True,
+        dense_bf16_gb = 26.3,
+        load_conditioners = _krea2_load_conditioners,
+        load_transformer = _krea2_load_transformer,
+        encode_prompts = _krea2_encode_prompts,
+        encode_latents = _krea2_encode_latents,
+        encode_latent_stats = _krea2_encode_latent_stats,
+        collate = _krea2_collate,
+        forward = _krea2_forward,
+        save = _krea2_save,
     ),
 }
 

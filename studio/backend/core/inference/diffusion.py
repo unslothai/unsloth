@@ -42,6 +42,7 @@ from .diffusion_device import (
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
+from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     OFFLOAD_NONE,
     apply_memory_plan,
@@ -205,6 +206,12 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "black-forest-labs/flux.1-dev",
         "tongyi-mai/z-image-turbo",
         "qwen/qwen-image",
+        # Krea 2: official vendor repos, safetensors-only, no remote code. Loaded
+        # per-component via core/inference/diffusion_krea2.py (no GGUF variant yet).
+        # Turbo is the inference model; Raw is the undistilled base Krea recommends
+        # training LoRAs on (train on Raw, run adapters on Turbo).
+        "krea/krea-2-turbo",
+        "krea/krea-2-raw",
     }
 )
 
@@ -1042,15 +1049,21 @@ class DiffusionBackend:
                         # (transformer + VAE + text encoders + scheduler) from the repo
                         # and re-applies any embedded quantization_config (e.g. bnb-4bit),
                         # so a pre-quantized pipeline reloads quantized with no extra config.
-                        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
-                        if hf_token:
-                            pipe_kwargs["token"] = hf_token
-                        # The prefetched snapshot dir keeps from_pretrained off the hub:
-                        # its own snapshot sweep re-downloads files the scoped prefetch
-                        # skipped (root packaged singles, e.g. 24 GB per FLUX.1 repo).
-                        pipe = pipeline_cls.from_pretrained(
-                            _base_local_dir or repo_id, **pipe_kwargs
-                        )
+                        if fam.name == KREA2_FAMILY_NAME:
+                            # The krea repo ships transformers-5.x style configs the 4.x
+                            # line cannot parse; assemble the pipeline per-component
+                            # (see diffusion_krea2.py for the exact compat story).
+                            pipe = load_krea2_pipeline(repo_id, dtype, hf_token = hf_token)
+                        else:
+                            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+                            if hf_token:
+                                pipe_kwargs["token"] = hf_token
+                            # The prefetched snapshot dir keeps from_pretrained off the
+                            # hub: its own snapshot sweep re-downloads files the scoped
+                            # prefetch skipped (packaged root singles, 24 GB per FLUX.1).
+                            pipe = pipeline_cls.from_pretrained(
+                                _base_local_dir or repo_id, **pipe_kwargs
+                            )
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline
                         # (U-Net + VAE + both text encoders), not a transformer-only file,
@@ -1083,10 +1096,17 @@ class DiffusionBackend:
                             single_file_path, **sf_kwargs
                         )
 
-                        pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
-                        if hf_token:
-                            pipe_kwargs["token"] = hf_token
-                        pipe = pipeline_cls.from_pretrained(_base_local_dir or base, **pipe_kwargs)
+                        if fam.name == KREA2_FAMILY_NAME:
+                            pipe = load_krea2_pipeline(
+                                base, dtype, hf_token = hf_token, transformer = transformer
+                            )
+                        else:
+                            pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
+                            if hf_token:
+                                pipe_kwargs["token"] = hf_token
+                            pipe = pipeline_cls.from_pretrained(
+                                _base_local_dir or base, **pipe_kwargs
+                            )
 
                 # Resolve the effective speed mode: GGUF models default to the
                 # near-lossless `default` profile (compile is ~2.2x and sits below

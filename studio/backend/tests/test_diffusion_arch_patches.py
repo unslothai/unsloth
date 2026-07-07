@@ -236,6 +236,37 @@ def test_flux2_single_forward_matches_stock():
     _close_any(got, ref)
 
 
+def test_krea2_forward_matches_stock():
+    from diffusers.models.transformers.transformer_krea2 import (
+        Krea2RotaryPosEmbed,
+        Krea2TransformerBlock,
+    )
+    from diffusers.pipelines.krea2.pipeline_krea2 import Krea2Pipeline
+
+    torch.manual_seed(4)
+    blk = Krea2TransformerBlock(
+        hidden_size = D,
+        intermediate_size = 2 * D,
+        num_heads = H,
+        num_kv_heads = H // 2,
+        norm_eps = 1e-6,
+    ).eval()
+    # Give the zero-init modulation table real values so all six scale/shift/gate
+    # branches contribute to the output.
+    with torch.no_grad():
+        blk.scale_shift_table.normal_()
+    # A [text + 2x2 image grid] sequence with the real rotary embed (axes sum to head_dim).
+    position_ids = Krea2Pipeline.prepare_position_ids(4, 2, 2, torch.device("cpu"))
+    rope = Krea2RotaryPosEmbed(theta = 10000, axes_dim = [D // H // 2, D // H // 4, D // H // 4])
+    image_rotary_emb = rope(position_ids)
+    hs = torch.randn(B, position_ids.shape[0], D)
+    tm = torch.randn(B, 1, 6 * D)
+    with torch.inference_mode():
+        ref = Krea2TransformerBlock.forward(blk, hs, tm, image_rotary_emb).clone()
+        got = ap._krea2_block_forward(blk, hs, tm, image_rotary_emb)
+    torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
+
+
 # ── lifecycle ───────────────────────────────────────────────────────────────────
 
 
@@ -246,7 +277,7 @@ def test_install_idempotent_and_reversible():
     q_orig, z_orig = Q._modulate, Z.forward
     n1 = ap.install_arch_patches()
     n2 = ap.install_arch_patches()  # idempotent
-    assert n1 == 6 and n2 == n1  # qwen + z-image + flux.1 x2 + flux.2 x2
+    assert n1 == 7 and n2 == n1  # qwen + z-image + flux.1 x2 + flux.2 x2 + krea-2
     assert Q._modulate is not q_orig and Z.forward is not z_orig
     assert ap.is_installed()
 
