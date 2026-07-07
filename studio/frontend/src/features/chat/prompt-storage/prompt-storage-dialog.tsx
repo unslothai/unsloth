@@ -771,6 +771,26 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
 // or system message that happens to *contain* one of these markers literally
 // (e.g. a prompt showing example output) would be silently reinterpreted and
 // dropped from the context on the next send.
+// Splits a run of pure "[\r\n]+" characters into its constituent newline
+// units, treating "\r\n" as one unit and a bare "\n" as one unit, so
+// slicing "the join" (always exactly two units) off either end of a run
+// works the same whether the source file is bare-LF, fully
+// CRLF-normalized, or (in principle) a mix of both.
+function newlineRunUnits(run: string): string[] {
+  const units: string[] = [];
+  let i = 0;
+  while (i < run.length) {
+    if (run[i] === "\r" && run[i + 1] === "\n") {
+      units.push("\r\n");
+      i += 2;
+    } else {
+      units.push(run[i]);
+      i += 1;
+    }
+  }
+  return units;
+}
+
 function textToContentParts(value: string, role: string): Record<string, unknown>[] {
   if (role !== "assistant") {
     return value.trim() ? [{ type: "text", text: value }] : [];
@@ -844,7 +864,19 @@ function textToContentParts(value: string, role: string): Record<string, unknown
       let boundary: RegExpExecArray | null;
       while ((boundary = runRegex.exec(withoutJoin)) !== null) {
         const run = boundary[0];
-        if (run.includes("\n\n")) {
+        // A run counts as a genuine encoder boundary if it contains a
+        // blank-line-shaped break at all, in either the encoder's own LF
+        // ("\n\n") form or a CRLF-normalized ("\r\n\r\n") form -- the
+        // latter happens when a whole exported file gets re-saved with
+        // Windows line endings, turning the join into 4 bytes instead of
+        // 2, same as pushChunk's own join-strip and both thinking-block
+        // regexes already tolerate. A run that's pure CRLF with no bare
+        // "\n\n" can still legitimately be an incidental blank line
+        // pasted inside an ordinary CRLF paragraph, but over-splitting
+        // there is harmless: when neither resulting side is a tool call,
+        // the run is added straight back into the text buffer unchanged
+        // below, reconstructing the original bytes either way.
+        if (/\r?\n\r?\n/.test(run)) {
           islands.push({ content: withoutJoin.slice(curStart, boundary.index), runBefore: pendingRun });
           pendingRun = run;
           curStart = boundary.index + run.length;
@@ -889,9 +921,10 @@ function textToContentParts(value: string, role: string): Record<string, unknown
           havePendingText = true;
         } else if (prevToolCall && !toolCall) {
           // The preceding block contributed nothing, so the run is
-          // exactly "\n\n" followed by whatever this (text) island's own
-          // leading whitespace is.
-          const leftover = runBefore.slice(2);
+          // exactly one join (two newline units -- "\n\n", or
+          // "\r\n\r\n" if this file was CRLF-normalized) followed by
+          // whatever this (text) island's own leading whitespace is.
+          const leftover = newlineRunUnits(runBefore).slice(2).join("");
           if (leftover) {
             textBuffer += leftover;
             havePendingText = true;
@@ -899,8 +932,9 @@ function textToContentParts(value: string, role: string): Record<string, unknown
         } else if (!prevToolCall && toolCall) {
           // The upcoming block contributes nothing, so the run is
           // whatever the preceding (text) island's own trailing
-          // whitespace is, followed by exactly "\n\n".
-          const leftover = runBefore.slice(0, runBefore.length - 2);
+          // whitespace is, followed by exactly one join.
+          const units = newlineRunUnits(runBefore);
+          const leftover = units.slice(0, units.length - 2).join("");
           if (leftover) {
             textBuffer += leftover;
             havePendingText = true;
@@ -911,11 +945,11 @@ function textToContentParts(value: string, role: string): Record<string, unknown
           // still sit between them as its own island (e.g. tool1, a text
           // part whose content is "\n\n", tool2), contributing a join on
           // each side plus its own content in between. Strip exactly one
-          // join's worth (2 bytes) off each end and keep whatever's left
-          // as its own text part; a run that's only the two joins with
-          // nothing between them (length 2 or 4, no middle block at all,
-          // or an empty-string middle block) correctly yields nothing.
-          const middle = runBefore.length > 4 ? runBefore.slice(2, runBefore.length - 2) : "";
+          // join's worth (two newline units) off each end and keep
+          // whatever's left as its own text part; a run that's only the
+          // two joins with nothing between them correctly yields nothing.
+          const units = newlineRunUnits(runBefore);
+          const middle = units.slice(2, units.length - 2).join("");
           if (middle) {
             textBuffer += middle;
             havePendingText = true;
