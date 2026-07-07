@@ -535,7 +535,15 @@ def _fp8_scale_snapshot_allow_patterns(
     if use_safetensors is False:
         return []
     if variant:
-        patterns = [f"*.{variant}.safetensors", f"*.safetensors.index.{variant}.json"]
+        # transformers applies the variant BEFORE the shard suffix, so a sharded variant shard
+        # is `model.<variant>-00001-of-00002.safetensors` (matched by `*.<variant>-*.safetensors`),
+        # not `model.<variant>.safetensors` (only the single-file form). Cover both, else
+        # snapshot_download fetches the variant index but none of its shards and no scales load. #6749
+        patterns = [
+            f"*.{variant}.safetensors",
+            f"*.{variant}-*.safetensors",
+            f"*.safetensors.index.{variant}.json",
+        ]
     else:
         patterns = ["*.safetensors", "*.safetensors.index.json"]
     if subfolder:
@@ -741,6 +749,19 @@ def _restore_missing_fp8_weight_scale_inv(
         if isinstance(reference, torch.Tensor):
             try:
                 restored_scale = restored_scale.to(dtype = reference.dtype)
+            except Exception:
+                pass
+        elif (
+            isinstance(weight, torch.Tensor)
+            and weight.is_floating_point()
+            and not _has_float8_dtype(weight.dtype)
+        ):
+            # Floating (fp16/bf16) FP8 owner whose scale placeholder was dropped: no reference to
+            # match, so mirror the weight dtype like the placeholder path does instead of leaving
+            # the buffer in the checkpoint's fp32. Packed (int8) and real float8 weights keep the
+            # checkpoint dtype. #6749
+            try:
+                restored_scale = restored_scale.to(dtype = weight.dtype)
             except Exception:
                 pass
         if attr_name in module._buffers:

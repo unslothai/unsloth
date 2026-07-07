@@ -1,8 +1,10 @@
 import ast
+import fnmatch
 import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import types
@@ -132,6 +134,7 @@ def test_restores_missing_fp8_weight_scale_inv():
 
     assert restored == 1
     assert skipped == 0
+    assert model.fp8.weight_scale_inv.dtype == torch.float16
     assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.25], dtype = torch.float16))
     assert "fp8.weight_scale_inv" in model.state_dict()
     assert torch.equal(
@@ -416,7 +419,82 @@ def test_remote_scale_restore_snapshot_patterns_respect_variant(monkeypatch):
     assert skipped == 0
     allow_patterns = recorded["allow_patterns"]
     assert allow_patterns is not None
-    assert all(".fp8.safetensors" in p or ".index.fp8.json" in p for p in allow_patterns)
+    # Every pattern must be variant-scoped (mentions the variant) and none may be the bare
+    # non-variant safetensors/index globs, so the snapshot stays limited to the selected variant.
+    assert all("fp8" in p for p in allow_patterns)
+    assert not any(p in ("*.safetensors", "*.safetensors.index.json") for p in allow_patterns)
+
+
+def test_remote_scale_restore_snapshot_patterns_cover_sharded_variant_shards(monkeypatch):
+    # transformers names a sharded variant shard `model.<variant>-00001-of-00002.safetensors`
+    # (variant applied before the shard suffix). The scale-restore allow_patterns must cover that
+    # form, or snapshot_download pulls the variant index but none of its shards and no scales are
+    # restored - a silent regression for remote sharded variant FP8 checkpoints. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+
+    with tempfile.TemporaryDirectory() as remote_dir, tempfile.TemporaryDirectory() as snap_dir:
+        shard_name = "model.fp8-00001-of-00002.safetensors"
+        _make_checkpoint(
+            remote_dir,
+            {"fp8.weight_scale_inv": torch.tensor([7.0], dtype = torch.float32)},
+            filename = shard_name,
+        )
+        index = {"weight_map": {"fp8.weight_scale_inv": shard_name}}
+        (Path(remote_dir) / "model.safetensors.index.fp8.json").write_text(json.dumps(index))
+        # A non-variant shard the variant patterns must NOT pull.
+        _make_checkpoint(
+            remote_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+            filename = "model-00001-of-00002.safetensors",
+        )
+        import huggingface_hub
+
+        def fake_snapshot_download(repo_id, **kwargs):
+            # Emulate the hub applying allow_patterns: only matching files land in the snapshot.
+            patterns = kwargs.get("allow_patterns") or ["*"]
+            for name in os.listdir(remote_dir):
+                if any(fnmatch.fnmatch(name, p) for p in patterns):
+                    shutil.copy(os.path.join(remote_dir, name), os.path.join(snap_dir, name))
+            return snap_dir
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = "unsloth/does-not-exist-fp8",
+            local_files_only = False,
+            variant = "fp8",
+        )
+        assert not os.path.isfile(os.path.join(snap_dir, "model-00001-of-00002.safetensors"))
+
+    assert restored == 1
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([7.0], dtype = torch.float32))
+
+
+def test_restored_floating_owner_scale_matches_weight_dtype():
+    # A floating (fp16/bf16) FP8 owner with no scale placeholder has no reference dtype to match,
+    # so the restored buffer must mirror the weight dtype (like the placeholder path) rather than
+    # keep the checkpoint's fp32, which would disagree with the module dtype at matmul. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.bfloat16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.25], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert model.fp8.weight_scale_inv.dtype == torch.bfloat16
 
 
 def test_variant_safetensors_index_uses_transformers_name(monkeypatch):
