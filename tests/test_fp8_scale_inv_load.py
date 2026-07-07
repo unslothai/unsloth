@@ -637,7 +637,9 @@ def test_restores_missing_weightless_fp8_expert_scale_tensors():
     assert torch.equal(
         model.expert.gate_up_proj_scale_inv, torch.full((2,), 9.0, dtype = torch.float32)
     )
-    assert torch.equal(model.expert.down_proj_scale_inv, torch.full((2,), 10.0, dtype = torch.float32))
+    assert torch.equal(
+        model.expert.down_proj_scale_inv, torch.full((2,), 10.0, dtype = torch.float32)
+    )
 
 
 def test_restores_fp8_scale_alias_tensors():
@@ -827,15 +829,21 @@ def test_fastmodel_peft_base_mapping_clears_fp8_after_remap():
                     for target in child.targets
                 ):
                     has_old_model_name = True
-                if any(
-                    isinstance(target, ast.Name) and target.id == "load_in_fp8"
-                    for target in child.targets
-                ) and isinstance(child.value, ast.Constant) and child.value.value is False:
+                if (
+                    any(
+                        isinstance(target, ast.Name) and target.id == "load_in_fp8"
+                        for target in child.targets
+                    )
+                    and isinstance(child.value, ast.Constant)
+                    and child.value.value is False
+                ):
                     has_clear = True
         if has_old_model_name and has_clear:
             return
 
-    pytest.fail("FastModel PEFT FP8 base remap must clear load_in_fp8 after selecting an FP8 sibling.")
+    pytest.fail(
+        "FastModel PEFT FP8 base remap must clear load_in_fp8 after selecting an FP8 sibling."
+    )
 
 
 def test_offline_fp8_cache_uses_safe_serialization():
