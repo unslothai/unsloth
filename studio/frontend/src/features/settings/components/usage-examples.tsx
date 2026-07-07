@@ -420,6 +420,19 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
+// `codex` only runs against a GGUF model served by llama-server (see
+// unsloth_cli's `_require_gguf_for_codex`); anything else makes the copied
+// `unsloth start codex` command fail immediately. This tells the agent
+// picker below whether the currently loaded model actually qualifies.
+function useActiveModelIsGguf(): boolean {
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const models = useChatRuntimeStore((s) => s.models);
+  return useMemo(
+    () => models.find((m) => m.id === checkpoint)?.isGguf ?? false,
+    [models, checkpoint],
+  );
+}
+
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
@@ -471,6 +484,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
   const agentPickedByUserRef = useRef(false);
+  const activeModelIsGguf = useActiveModelIsGguf();
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
@@ -504,6 +518,18 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       cancelled = true;
     };
   }, []);
+
+  // Steers away from an auto-picked "codex" once we know the loaded model
+  // isn't GGUF (codex would otherwise be handed to the user as a ready-to-run
+  // command that's guaranteed to fail against a transformers-backed model).
+  // Runs on its own so it also re-corrects if the model changes after the
+  // initial detection resolved; never touches a choice the user made by hand.
+  useEffect(() => {
+    if (agentPickedByUserRef.current) return;
+    if (agent !== "codex" || activeModelIsGguf) return;
+    const fallback = detectedAgents.find((id) => id !== "codex");
+    if (fallback) setAgent(fallback);
+  }, [agent, activeModelIsGguf, detectedAgents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -776,7 +802,11 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   aria-pressed={active}
                   title={
                     installed
-                      ? t("settings.apiKeys.codingAgentDetected")
+                      ? t(
+                          useTunnel
+                            ? "settings.apiKeys.codingAgentDetectedRemote"
+                            : "settings.apiKeys.codingAgentDetected",
+                        )
                       : undefined
                   }
                   className={cn(
@@ -815,11 +845,16 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           </div>
           <span className="text-[11px] leading-snug text-muted-foreground">
             {detectedAgents.length > 0
-              ? t("settings.apiKeys.codingAgentsDetectedHint", {
-                  agents: detectedAgents
-                    .map((id) => AGENT_LABELS[id] ?? id)
-                    .join(", "),
-                })
+              ? t(
+                  useTunnel
+                    ? "settings.apiKeys.codingAgentsDetectedHintRemote"
+                    : "settings.apiKeys.codingAgentsDetectedHint",
+                  {
+                    agents: detectedAgents
+                      .map((id) => AGENT_LABELS[id] ?? id)
+                      .join(", "),
+                  },
+                )
               : t("settings.apiKeys.codingAgentsSwap")}
           </span>
         </div>
