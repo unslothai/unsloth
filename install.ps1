@@ -647,6 +647,32 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$studioExe = '$SingleQuotedExePath'
+
+function Repair-StudioInstallId {
+    if (-not `$_ExpectedStudioRootId) { return }
+    if (`$_ExpectedStudioRootId.Length -ne 64 -or `$_ExpectedStudioRootId -notmatch '^[0-9a-f]{64}$') { return }
+
+    try {
+        `$studioHome = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent `$studioExe))
+        `$idDir = Join-Path `$studioHome 'share'
+        `$idFile = Join-Path `$idDir 'studio_install_id'
+        `$current = ''
+        if (Test-Path -LiteralPath `$idFile -PathType Leaf) {
+            `$current = ([System.IO.File]::ReadAllText(`$idFile)).Trim()
+        }
+        if (`$current -eq `$_ExpectedStudioRootId) { return }
+        if (`$current -match '^[0-9a-f]{64}$') { return }
+
+        [System.IO.Directory]::CreateDirectory(`$idDir) | Out-Null
+        `$idTmp = "`$idFile.`$PID.tmp"
+        [System.IO.File]::WriteAllText(`$idTmp, `$_ExpectedStudioRootId)
+        Move-Item -LiteralPath `$idTmp -Destination `$idFile -Force
+    } catch {
+        if (`$idTmp) { Remove-Item -LiteralPath `$idTmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+Repair-StudioInstallId
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -767,7 +793,6 @@ try {
     }
 
     `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    `$studioExe = '$SingleQuotedExePath'
     `$launchPort = Find-FreeLaunchPort
     if (-not `$launchPort) {
         `$msg = "No free port found in range `$basePort-`$(`$basePort + `$maxPortOffset)"

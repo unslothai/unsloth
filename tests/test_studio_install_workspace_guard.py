@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -515,6 +516,31 @@ def test_install_ps1_bakes_studio_root_id_into_launcher():
     ), "install.ps1 must bake $_ExpectedStudioRootId into the launcher"
 
 
+def test_install_ps1_launcher_repairs_missing_studio_install_id():
+    """launch-studio.ps1 must restore a missing/invalid id before health checks."""
+    src = INSTALL_PS1.read_text()
+    launcher_start = src.index('$launcherContent = @"')
+    launcher_end = src.index('\n"@', launcher_start)
+    launcher = src[launcher_start:launcher_end]
+    assert (
+        "function Repair-StudioInstallId" in launcher
+    ), "launch-studio.ps1 must include an install id repair helper"
+    repair_call_idx = launcher.index("\nRepair-StudioInstallId\n")
+    assert (
+        repair_call_idx < launcher.index("function Test-StudioHealth")
+    ), "launch-studio.ps1 must repair the id before health checks"
+    assert (
+        "`$_ExpectedStudioRootId.Length -ne 64"
+        in launcher
+    ), "repair helper must reject malformed baked ids"
+    assert (
+        "`$current -match '^[0-9a-f]{64}$'" in launcher
+    ), "repair helper must preserve a different valid install id"
+    assert (
+        "Move-Item -LiteralPath `$idTmp -Destination `$idFile -Force" in launcher
+    ), "repair helper must write via a temp file then rename"
+
+
 def test_health_endpoint_exposes_studio_root_id_not_raw_path():
     """/api/health must expose studio_root_id (hex digest), NOT the raw path (info disclosure on -H 0.0.0.0)."""
     main_py = REPO_ROOT / "studio" / "backend" / "main.py"
@@ -550,6 +576,45 @@ def test_install_sh_bakes_studio_root_id_into_launcher():
     assert (
         "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" in src
     ), "install.sh must sed-substitute @@STUDIO_ROOT_ID@@ unconditionally (not just env-mode)"
+
+
+def test_install_sh_launcher_repairs_missing_studio_install_id(tmp_path):
+    """launch-studio.sh must restore a missing/invalid id before health checks."""
+    src = INSTALL_SH.read_text()
+    heredoc_start = src.index("cat > \"$_css_launcher\" << 'LAUNCHER_EOF'")
+    heredoc_body_start = src.index("\n", heredoc_start) + 1
+    heredoc_body_end = src.index("LAUNCHER_EOF\n", heredoc_start)
+    template = src[heredoc_body_start:heredoc_body_end]
+    repair_start = template.index("# Restore a missing install id")
+    repair_end = template.index("\nBASE_PORT=", repair_start)
+    repair_block = template[repair_start:repair_end]
+
+    studio_home = tmp_path / "studio"
+    exe = studio_home / "unsloth_studio" / "bin" / "unsloth"
+    exe.parent.mkdir(parents = True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    id_file = studio_home / "share" / "studio_install_id"
+    expected_id = "ab12" * 16
+
+    def _run_repair() -> str:
+        script = (
+            "set -euo pipefail\n"
+            f"_EXPECTED_STUDIO_ROOT_ID='{expected_id}'\n"
+            f"UNSLOTH_EXE={shlex.quote(str(exe))}\n"
+            f"{repair_block}\n"
+            f"cat {shlex.quote(str(id_file))}\n"
+        )
+        res = subprocess.run(["bash", "-c", script], text = True, capture_output = True)
+        assert res.returncode == 0, res.stderr
+        return res.stdout.strip()
+
+    assert _run_repair() == expected_id
+    id_file.write_text("not-a-valid-id")
+    assert _run_repair() == expected_id
+    other_valid_id = "cd34" * 16
+    id_file.write_text(other_valid_id)
+    assert _run_repair() == other_valid_id
 
 
 def test_tauri_preflight_scrubs_studio_home_env():
