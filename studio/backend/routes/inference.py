@@ -3394,12 +3394,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
-            # Unload any active Unsloth model to free VRAM
+            # Unload any active Unsloth model to free VRAM (off the event loop:
+            # unload takes _gen_lock and can wait on an in-flight stream).
             if unsloth_backend.active_model_name:
                 logger.info(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
-                unsloth_backend.unload_model(unsloth_backend.active_model_name)
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -4063,28 +4066,76 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
-    from core.inference.llama_keepwarm import note_model_unloaded
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
-        # Check if the GGUF backend has this model loaded or is loading it.
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_active and (
-            llama_backend.model_identifier == request.model_path
-            or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
-            or not llama_backend.is_loaded
+        # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
+        # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
+        # so gating first would make the cancel wait it out. cancel_load only tears the
+        # loading subprocess down (no unload command), so it is safe off-gate.
+        backend = get_inference_backend()
+        loading = getattr(backend, "get_loading_model", lambda: None)()
+        if (
+            loading is not None
+            and hasattr(backend, "cancel_load")
+            and (request.model_path == loading or request.model_path.lower() == loading.lower())
         ):
-            # A manual unload is a deliberate user action: tear down now even if a
-            # request is mid-stream (only the automatic idle loop defers to it).
-            llama_backend.unload_model()
+            if await asyncio.to_thread(backend.cancel_load, request.model_path):
+                note_model_unloaded()
+                logger.info(f"Cancelled in-flight load: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+
+        # Same "stop loading" fast path for a still-loading GGUF (llama-server spawned,
+        # health check not yet passed). A gated unload would wait out the multi-minute
+        # load; unload_model() sets the cancel_event load_model polls off its own lock and
+        # kills the child, sending no worker command, so it is safe off-gate like
+        # cancel_load. The gated GGUF branch below handles the already-loaded case. Gate on
+        # the loading model (identifier or native label): the single llama-server loads one
+        # GGUF at a time, so an unload for a different model must not cancel this load.
+        llama_backend = get_llama_cpp_backend()
+        if (
+            llama_backend.is_active
+            and not llama_backend.is_loaded
+            and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+            )
+        ):
+            await asyncio.to_thread(llama_backend.unload_model)
             note_model_unloaded()
-            logger.info(f"Unloaded GGUF model: {request.model_path}")
+            logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Otherwise, unload from Unsloth backend
-        backend = get_inference_backend()
-        backend.unload_model(request.model_path)
-        note_model_unloaded()
-        logger.info(f"Unloaded model: {request.model_path}")
-        return UnloadResponse(status = "unloaded", model = request.model_path)
+        # Serialize with /load under the same lifecycle gate: the Unsloth unload now runs
+        # off the event loop (asyncio.to_thread), so without this a concurrent /load could
+        # swap in a fresh subprocess mid-unload and the unload command would land on the
+        # new worker. The gate makes load and unload exclusive.
+        async with inference_lifecycle_gate():
+            # Check if the GGUF backend has this model loaded or is loading it.
+            llama_backend = get_llama_cpp_backend()
+            if llama_backend.is_active and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+                or not llama_backend.is_loaded
+            ):
+                # A manual unload is a deliberate user action: tear down now even if a
+                # request is mid-stream (only the automatic idle loop defers to it).
+                llama_backend.unload_model()
+                note_model_unloaded()
+                logger.info(f"Unloaded GGUF model: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+
+            # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
+            # a slow SSE stream paused between tokens still holds, so a sync call would block
+            # the loop that drives the stream's next token and the lock release.
+            backend = get_inference_backend()
+            await asyncio.to_thread(backend.unload_model, request.model_path)
+            note_model_unloaded()
+            logger.info(f"Unloaded model: {request.model_path}")
+            return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
