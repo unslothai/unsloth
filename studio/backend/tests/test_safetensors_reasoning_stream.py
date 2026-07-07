@@ -3,9 +3,11 @@
 
 """Safetensors/MLX reasoning-block parity with GGUF.
 
-enable_thinking templates prefill an unclosed ``<think>``, so the stream must split the leading
-text into ``reasoning_content`` deltas (per turn, monitor gets visible text only). Replays a copy
-of ``sf_tool_stream``'s reasoning loop from routes/inference.py against synthetic events.
+enable_thinking templates (Qwen3/GLM) prefill an unclosed ``<think>`` so the model
+emits only the closing ``</think>`` then the answer; the safetensors stream must
+split the leading text into ``reasoning_content`` deltas (plain stream and tool
+loop), resetting per turn and appending only visible text to the monitor. Replays a
+copy of ``sf_tool_stream``'s reasoning loop against synthetic events.
 """
 
 from __future__ import annotations
@@ -24,8 +26,40 @@ from routes.inference import (
 )
 
 
+_THINK_TPL = "...<think>...</think>..."
+_ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
+_ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
+
+
+def test_prefill_mode_on_for_enable_thinking_default():
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _THINK_TPL) is True
+
+
+def test_prefill_mode_off_when_thinking_disabled():
+    assert _sf_reasoning_prefill_mode(_ETHINK, False, _THINK_TPL) is False
+
+
+def test_prefill_mode_off_for_reasoning_effort_none():
+    # enable_thinking_effort turns thinking off via reasoning_effort="none"; prefilled mode
+    # would capture the whole answer as reasoning_content.
+    assert (
+        _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "none")
+        is False
+    )
+    assert (
+        _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "high")
+        is True
+    )
+
+
+def test_prefill_mode_off_without_think_markers():
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, "no markers here") is False
+
+
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
-    """Mirror sf_tool_stream's reasoning loop: diff cumulative snapshots, reset (flushing) on turn end."""
+    """Mirror sf_tool_stream's reasoning loop: diff each cumulative ``content``
+    snapshot, feed the delta through the extractor, and reset (flushing first) on
+    ``tool_start`` / empty ``status`` so each turn splits independently."""
     prev_text = ""
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = True, reasoning_prefilled = prefilled
@@ -34,7 +68,7 @@ def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
     visible_deltas: list[str] = []
     monitor: list[str] = []
     tool_starts: list[dict] = []
-    order: list[str] = []  # "reasoning" | "visible" | "tool_start" sequence
+    order: list[str] = []  # sequence of ("reasoning"|"visible"|"tool_start") events
 
     def _flush():
         fr, fv = extractor.finish()
@@ -151,12 +185,12 @@ def test_s5_thinking_off_no_reasoning_deltas():
     assert out["monitor"] == "Just the plain answer, no thinking."
 
 
-_THINK_TPL = "...{% if enable_thinking %}<think>{% endif %}...</think>..."
-
-
 def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
-    # GLM-5.2 enable_thinking_effort + reasoning_effort="none" disables thinking like
-    # enable_thinking=False, so prefilled must be OFF (else the answer is swallowed into reasoning).
+    # GLM-5.2-style enable_thinking_effort: a request with reasoning_effort="none" (and
+    # enable_thinking omitted) disables thinking exactly like enable_thinking=False, so
+    # prefilled mode must be OFF. Otherwise the model emits no </think> and a plain
+    # answer is swallowed whole into reasoning_content, leaving the visible response
+    # empty (the exact bug: prefilled=True below eats the whole answer).
     feats = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "none") is False
     # Thinking on (effort level or default) still prefills.
@@ -171,7 +205,8 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
     plain = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(plain, None, _THINK_TPL, "none") is True
 
-    # End-to-end: with prefilled=False, a plain no-</think> answer stays visible.
+    # End-to-end: with the corrected prefilled=False, a plain no-</think> answer is
+    # emitted as visible content rather than swallowed into the thinking drawer.
     events = [{"type": "content", "text": "The capital of France is Paris."}]
     out = _replay_sf_reasoning_stream(events, prefilled = False)
     assert out["visible"] == "The capital of France is Paris."

@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
@@ -127,8 +129,8 @@ def test_detect_safetensors_features_gptoss_disables_tools():
     assert flags["supports_tools"] is False
 
 
-# Llama-3 / Mistral / Gemma 4 tool-call formats are parser-supported, so supports_tools stays True;
-# only templates matching none of the known markers are suppressed.
+# Llama-3 / Mistral / Gemma 4 tool-call formats are now parser-supported, so supports_tools=True
+# must hold for all of them; only templates matching none of the five known markers are suppressed.
 
 LLAMA3_TEMPLATE = """
 {%- if tools %}
@@ -181,7 +183,9 @@ def test_detect_safetensors_features_llama3_template_keeps_tools_on():
 
 
 def test_detect_safetensors_features_mistral_template_keeps_tools_on():
-    """Mistral emits [TOOL_CALLS]; parser now supports it."""
+    """Mistral emits [TOOL_CALLS]name{json}, which the safetensors loop now parses
+    (the shared bracket-tag parser). The gate must no longer suppress it, or the
+    PR's Mistral tool support is unreachable through normal capability detection."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/mistral-7b-instruct-v0.3")
@@ -195,6 +199,86 @@ def test_detect_safetensors_features_gemma4_template_keeps_tools_on():
 
     backend = SimpleNamespace(active_model_name = "unsloth/gemma-4-E2B-it-UD-MLX-4bit")
     flags = _detect_safetensors_features(backend, GEMMA4_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+# DeepSeek V3 / V3.1 / R1 emit ``<｜tool▁calls▁begin｜>...`` blocks.
+# Note the full-width pipe (U+FF5C) and lower-1/8-block (U+2581).
+DEEPSEEK_TEMPLATE = """
+{%- if tools %}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+{%- for message in messages %}
+  {%- if message.role == 'assistant' and message.tool_calls %}
+    {%- for tc in message.tool_calls %}
+      {{- '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>' + tc.function.name +
+          '<｜tool▁sep｜>' + tc.function.arguments + '<｜tool▁call▁end｜>' }}
+    {%- endfor %}
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_detect_safetensors_features_deepseek_template_keeps_tools_on():
+    """DeepSeek emits ``<｜tool▁calls▁begin｜>...``; parser now supports it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/DeepSeek-V3.1")
+    flags = _detect_safetensors_features(backend, DEEPSEEK_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+# GLM 4.5 / 4.6 / 4.7 emit ``<tool_call>NAME\n<arg_key>...<arg_value>...
+GLM_TEMPLATE = """
+{%- if tools %}
+  For each function call, output the function name and arguments within
+  the following XML format:
+  <tool_call>{function-name}
+  <arg_key>{arg-key}</arg_key>
+  <arg_value>{arg-value}</arg_value>
+  </tool_call>
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+"""
+
+
+def test_detect_safetensors_features_glm_template_keeps_tools_on():
+    """GLM 4.x emits ``<tool_call>NAME\\n<arg_key>...``; parser handles it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/GLM-4.6")
+    flags = _detect_safetensors_features(backend, GLM_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+# Kimi K2 / Moonshot uses ``<|tool_calls_section_begin|>...`` blocks
+# with ``functions.NAME:IDX`` as the per-call id.
+KIMI_TEMPLATE = """
+{%- if tools %}
+  <|im_system|>tool_declare<|im_middle|>{{ tools | tojson }}<|im_end|>
+{%- endif %}
+{%- for message in messages %}
+  {%- if message.role == 'assistant' and message.tool_calls %}
+    <|tool_calls_section_begin|>
+    {%- for tc in message.tool_calls %}
+      <|tool_call_begin|>{{ tc.id }}<|tool_call_argument_begin|>{{ tc.function.arguments | tojson }}<|tool_call_end|>
+    {%- endfor %}
+    <|tool_calls_section_end|>
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_detect_safetensors_features_kimi_template_keeps_tools_on():
+    """Kimi K2 emits ``<|tool_calls_section_begin|>...``; parser handles it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Kimi-K2-Instruct")
+    flags = _detect_safetensors_features(backend, KIMI_TEMPLATE)
     assert flags["supports_tools"] is True
 
 
@@ -534,7 +618,34 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_preserve_thinking"] is True
 
 
-# Templates advertising tools whose ``{"name":`` example is pretty-printed or JSON-escaped.
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "<｜tool▁calls▁begin｜>",  # canonical
+        "<｜tool_calls_begin｜>",  # ASCII underscores
+        "<｜tool▁calls｜>",  # short form
+        "<｜tool calls begin｜>",  # spaces
+        "<｜tool\\_calls\\_begin｜>",  # escaped underscores
+    ],
+)
+def test_detect_safetensors_features_deepseek_opener_variants_keep_tools_on(opener):
+    # Every DeepSeek opener the parser accepts must keep supports_tools on; the route gate derives
+    # its markers from the parser's TOOL_XML_SIGNALS so it can no longer drift behind the parser ...
+    from routes.inference import _detect_safetensors_features
+
+    tpl = (
+        "{%- if tools %}tools{%- endif %}"
+        + opener
+        + "<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_time{}"
+        "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    backend = SimpleNamespace(active_model_name = "unsloth/DeepSeek-V3.1")
+    flags = _detect_safetensors_features(backend, tpl)
+    assert flags["supports_tools"] is True
+
+
+# Templates that advertise tools ({%- if tools %}) and prompt the bare-JSON
+# call form, but whose ``{"name":`` example is pretty-printed or JSON-escaped.
 _WHITESPACE_BARE_JSON_TEMPLATE = (
     "{%- if tools %}\n"
     "To call a tool, output JSON of the form:\n"
@@ -554,7 +665,8 @@ _TOOLS_ADVERTISED_NO_PARSEABLE_FORM = (
 
 
 def test_detect_safetensors_features_keeps_tools_for_pretty_printed_bare_json():
-    # Pretty-printed bare-JSON (``{ "name" :``) keeps supports_tools: parser accepts the whitespace.
+    # A pretty-printed bare-JSON example (``{ "name" :``) must keep supports_tools since the parser
+    # accepts that whitespace via raw_decode.
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
@@ -571,7 +683,8 @@ def test_detect_safetensors_features_keeps_tools_for_escaped_bare_json():
 
 
 def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
-    # Negative control: tools advertised but no parser-recognised emission form -> pill dropped.
+    # Negative control: tools advertised but no parser-recognised emission form at
+    # all -> the pill is still dropped (the gate is not now matching everything).
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
@@ -580,7 +693,8 @@ def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
 
 
 def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
-    # The {"function":...} bare-JSON alias keeps supports_tools, mirroring {"name":...}.
+    # A template documenting the parser-supported {"function":...} bare-JSON alias
+    # must keep supports_tools, mirroring the {"name":...} form.
     from routes.inference import _detect_safetensors_features
 
     tpl = (
@@ -594,12 +708,28 @@ def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
     assert flags["supports_tools"] is True
 
 
-# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor for enable_thinking models.
+# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor (GGUF reasoning parity).
 class TestSafetensorsReasoningPrefillGate:
-    # Qwen3-style template with the standard <think>/</think> markers.
+    # A minimal Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."
     # gemma-style bespoke reasoning channel -- no standard markers.
     _GEMMA_TPL = "{% if enable_thinking %}<|think|>{% endif %}<|channel>thought<channel|>"
+    # always-on template whose GENERATION PROMPT opens an unclosed <think> (DeepSeek-R1 / QwQ /
+    # Qwen3-Thinking shape): the model emits only the closing </think>, so prefill.
+    _ALWAYS_ON_OPEN_TPL = (
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>\n{% endif %}"
+    )
+    # always-on template that renders PAST assistant <think>...</think> history but leaves the
+    # generation prompt open with no <think> (Kimi-K2-Thinking shape): the model self-emits its
+    # own block, so prefill mode would blank a normal answer.
+    _ALWAYS_ON_HISTORY_TPL = (
+        "{% for m in messages %}"
+        "{% if m['role'] == 'assistant' %}<think>{{ m.get('reasoning_content', '') }}</think>"
+        "{{ m['content'] }}{% endif %}"
+        "{% endfor %}"
+        "{% if add_generation_prompt %}<|im_assistant|>assistant<|im_middle|>{% endif %}"
+    )
 
     def _features(self, **over):
         base = {
@@ -643,15 +773,23 @@ class TestSafetensorsReasoningPrefillGate:
         feats = self._features(supports_reasoning = False, reasoning_style = None)
         assert _sf_reasoning_prefill_mode(feats, True, self._QWEN_TPL) is False
 
-    def test_g7_reasoning_always_on(self):
-        # G7: hardcoded-<think> template -> prefilled regardless of the flag.
+    def test_g7_reasoning_always_on_prompt_opens_think(self):
+        # G7: always-on template whose generation prompt opens <think> -> prefilled regardless of the flag.
         from routes.inference import _sf_reasoning_prefill_mode
         feats = self._features(reasoning_always_on = True)
-        assert _sf_reasoning_prefill_mode(feats, False, self._QWEN_TPL) is True
+        assert _sf_reasoning_prefill_mode(feats, False, self._ALWAYS_ON_OPEN_TPL) is True
+
+    def test_g7b_reasoning_always_on_history_only_not_prefilled(self):
+        # G7b (#5704): always-on classification from rendered assistant HISTORY <think></think>
+        # (Kimi-K2-Thinking) whose generation prompt opens no <think>. Prefill mode would capture a
+        # normal answer entirely as reasoning_content and blank the visible answer, so it must be off.
+        from routes.inference import _sf_reasoning_prefill_mode
+        feats = self._features(reasoning_always_on = True)
+        assert _sf_reasoning_prefill_mode(feats, None, self._ALWAYS_ON_HISTORY_TPL) is False
 
     def test_g8_gemma_bespoke_channel_excluded(self):
-        # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled (else the
-        # whole answer is swallowed as reasoning). Regression guard.
+        # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
+        # (would otherwise swallow the whole answer as reasoning). Regression guard.
         from routes.inference import _sf_reasoning_prefill_mode
         assert _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
 
