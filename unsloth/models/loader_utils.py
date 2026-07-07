@@ -393,7 +393,7 @@ def _is_real_fp8_owner(module):
 
     try:
         from unsloth.kernels.fp8 import FbgemmFp8Linear, FP8Linear
-    except ModuleNotFoundError as exc:
+    except Exception as exc:
         logger.debug("Optional fp8 kernels not available: %s", exc)
         FbgemmFp8Linear, FP8Linear = None, None
     if FbgemmFp8Linear is not None and isinstance(module, FbgemmFp8Linear):
@@ -628,6 +628,16 @@ def _restore_missing_fp8_weight_scale_inv(
             skipped += 1
             continue
         if isinstance(reference, torch.Tensor) and reference.shape != scale_tensor.shape:
+            skipped += 1
+            continue
+        if (
+            not isinstance(reference, torch.Tensor)
+            and isinstance(weight, torch.Tensor)
+            and scale_tensor.numel() != 1
+            and scale_tensor.ndim > 0
+            and weight.ndim > 0
+            and scale_tensor.shape[0] > weight.shape[0]
+        ):
             skipped += 1
             continue
 

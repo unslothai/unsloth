@@ -418,6 +418,27 @@ def test_restores_multielement_scale_without_local_placeholder():
     assert torch.equal(model.fp8.weight_scale_inv, torch.ones((2, 1), dtype = torch.float16))
 
 
+def test_skips_oversized_scale_without_local_placeholder():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.ones((8, 1), dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 0
+    assert skipped == 1
+    assert not hasattr(model.fp8, "weight_scale_inv")
+
+
 def test_restores_fbgemm_weight_scale_tensor():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
@@ -587,6 +608,29 @@ def test_loader_passes_selected_artifact_knobs_to_fp8_restore():
     assert hit_count == 2
 
 
+def test_fp8_owner_probe_tolerates_optional_kernel_import_errors():
+    tree = ast.parse(LOADER_UTILS.read_text())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        if not any(
+            isinstance(child, ast.ImportFrom)
+            and child.module == "unsloth.kernels.fp8"
+            for child in node.body
+        ):
+            continue
+        assert any(
+            handler.type is not None
+            and isinstance(handler.type, ast.Name)
+            and handler.type.id == "Exception"
+            for handler in node.handlers
+        )
+        return
+
+    raise AssertionError("FP8 owner probe import guard not found")
+
+
 def test_fastmodel_peft_base_mapping_forwards_load_in_fp8():
     tree = ast.parse(LOADER.read_text())
 
@@ -646,7 +690,7 @@ def test_model_has_real_fp8_modules_detects_nested_fp8_layers():
     assert loader_utils._model_has_real_fp8_modules(model) is True
 
 
-def test_fp8_probe_uses_absolute_optional_import_and_narrow_missing_module_guard():
+def test_fp8_probe_uses_absolute_optional_import_and_broad_nonfatal_guard():
     tree = ast.parse(LOADER_UTILS.read_text())
 
     for node in ast.walk(tree):
@@ -665,7 +709,7 @@ def test_fp8_probe_uses_absolute_optional_import_and_narrow_missing_module_guard
             handler = handlers[0]
             assert import_stmt.module == "unsloth.kernels.fp8"
             assert isinstance(handler.type, ast.Name)
-            assert handler.type.id == "ModuleNotFoundError"
+            assert handler.type.id == "Exception"
             return
 
     pytest.fail("_is_real_fp8_owner no longer protects the optional fp8 kernel import.")
