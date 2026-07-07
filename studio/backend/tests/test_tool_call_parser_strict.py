@@ -266,6 +266,133 @@ class TestHealingPathUnaffected:
         assert healed[span[0] : span[1]] == "<function=web_search><parameter=query>dogs"
 
 
+class TestEnabledToolNameGate:
+    """``enabled_tool_names`` disambiguates the ambiguous bare-rehearsal
+    ``NAME[ARGS]{json}`` form (#5704): NAME is a call only when it is an active tool,
+    otherwise it is prose. ``None`` (the default) keeps the legacy unrestricted parse
+    so existing callers are unaffected."""
+
+    def _names(self, calls):
+        return [c["function"]["name"] for c in calls]
+
+    def test_inactive_rehearsal_before_active_call_does_not_swallow_it(self):
+        # P1: an inactive ``foo[ARGS]{...}`` before a real call must not consume the real call.
+        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert self._names(calls) == ["web_search"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_inactive_rehearsal_alone_is_not_a_call(self):
+        text = 'foo[ARGS]{"a":1}'
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+    def test_active_rehearsal_is_still_parsed(self):
+        text = 'web_search[ARGS]{"query":"cats"}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert self._names(calls) == ["web_search"]
+
+    def test_unrestricted_gate_none_preserves_legacy_behavior(self):
+        # Without a gate every ``NAME[ARGS]{...}`` is parsed, as before the gate landed.
+        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
+        assert self._names(parse_tool_calls_from_text(text)) == ["foo", "web_search"]
+        assert self._names(parse_tool_calls_from_text(text, enabled_tool_names = None)) == [
+            "foo",
+            "web_search",
+        ]
+
+
+class TestBracketCallSpans:
+    """with_spans tiling for Mistral bracket calls: promoted markup strips
+    exactly once, filtered calls' bytes stay visible, closers strip too."""
+
+    def test_mixed_array_filtered_first_keeps_its_bytes_only(self):
+        from core.inference.passthrough_healing import heal_openai_message_events
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        content = (
+            '[TOOL_CALLS][{"name":"bad","arguments":{"x":1}},'
+            '{"name":"lookup","arguments":{"q":"cats"}}]'
+        )
+        events = heal_openai_message_events(
+            {"role": "assistant", "content": content}, {"lookup"}, tools
+        )
+        kinds = [k for k, _v in events]
+        assert kinds == ["text", "tool_call"]
+        text = events[0][1]
+        assert '"bad"' in text
+        # The promoted call's markup must not survive in the text event.
+        assert '"lookup"' not in text
+
+    def test_mixed_array_filtered_second_stays_visible(self):
+        from core.inference.passthrough_healing import heal_openai_message_events
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        content = (
+            '[TOOL_CALLS][{"name":"lookup","arguments":{"q":"cats"}},'
+            '{"name":"bad","arguments":{"x":1}}]'
+        )
+        events = heal_openai_message_events(
+            {"role": "assistant", "content": content}, {"lookup"}, tools
+        )
+        assert events[0][0] == "tool_call"
+        trailing = "".join(v for k, v in events if k == "text")
+        assert '"bad"' in trailing
+
+    def test_v11_closer_inside_span(self):
+        from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
+
+        text = '[TOOL_CALLS]web_search[ARGS]{"query":"cats"}[/TOOL_CALLS] after'
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
+        (call,) = calls
+        assert call["function"]["name"] == "web_search"
+        (span,) = spans
+        assert text[span[0] : span[1]].endswith("[/TOOL_CALLS]")
+        assert text[span[1] :] == " after"
+
+    def test_fully_promoted_array_strips_whole_region(self):
+        from core.inference.passthrough_healing import heal_openai_message_events
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        content = (
+            '[TOOL_CALLS][{"name":"lookup","arguments":{"q":"a"}},'
+            '{"name":"lookup","arguments":{"q":"b"}}] after'
+        )
+        events = heal_openai_message_events(
+            {"role": "assistant", "content": content}, {"lookup"}, tools
+        )
+        assert [k for k, _v in events] == ["tool_call", "tool_call", "text"]
+        assert events[2][1] == " after"
+
+
+class TestMistralArrayHealing:
+    """Draining the whole [TOOL_CALLS] array for the shapes the repo's own
+    Mistral/Ollama templates emit."""
+
+    def test_comma_less_multi_call_array_parses_all_calls(self):
+        # ollama_template_mappers.py renders multi-call turns as [{...}{...}] with no
+        # comma separator; a single json.loads of the body rejects it and dropped every
+        # call. The element-by-element decode must recover all of them.
+        text = '[TOOL_CALLS] [{"name":"a","arguments":{"x":1}}{"name":"b","arguments":{"y":2}}]'
+        calls = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in calls] == ["a", "b"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"x": 1}
+        assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
+
+    def test_comma_separated_and_single_arrays_still_parse(self):
+        both = parse_tool_calls_from_text(
+            '[TOOL_CALLS] [{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+        )
+        assert [c["function"]["name"] for c in both] == ["a", "b"]
+        one = parse_tool_calls_from_text('[TOOL_CALLS] [{"name":"a","arguments":{}}]')
+        assert [c["function"]["name"] for c in one] == ["a"]
+
+    def test_mistral_array_null_arguments_normalized_to_empty_object(self):
+        # ``"arguments": null`` is a no-arg call; it must become {} (as the <tool_call>
+        # path does), not the string "null" that auto-heal turns into {"query":"null"}.
+        calls = parse_tool_calls_from_text('[TOOL_CALLS][{"name":"get_time","arguments":null}]')
+        assert calls[0]["function"]["arguments"] == "{}"
+
+
 class TestGlmStrict:
     def test_closed_glm_call_is_accepted(self):
         text = (
@@ -740,22 +867,26 @@ class TestMistralOuterOverXmlLiteral:
 
 
 class TestHealerSignalAlignment:
-    """The healer buffers only promotable formats; Mistral/Llama text calls stream through."""
+    """The healer buffers only formats its shared parser can promote. Mistral's
+    ``[TOOL_CALLS]`` is promotable (rescued), so it is a heal signal; the loop-only
+    text-call markers (Llama ``<|python_tag|>``, bare ``[ARGS]``) are not, so they
+    stream through instead of stalling as prose that never yields a call."""
 
     def test_heal_signals_subset_of_promotable_formats(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {"<tool_call>", "<|tool_call>", "<function="}
+        assert set(_HEAL_SIGNALS) == {"<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]"}
 
-    def test_stream_healer_does_not_hold_mistral_text(self):
+    def test_stream_healer_does_not_hold_llama_python_tag_text(self):
         from core.inference.passthrough_healing import StreamToolCallHealer
 
         healer = StreamToolCallHealer(
             {"web_search"},
             [{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
         )
-        events = list(healer.feed('[TOOL_CALLS]web_search[ARGS]{"query":"cats"}'))
+        # Llama <|python_tag|> is not a healer-promotable format, so it streams through as text.
+        events = list(healer.feed('<|python_tag|>web_search.call(query="cats")'))
         text_out = "".join(v for k, v in events if k == "text")
-        assert "[TOOL_CALLS]" in text_out  # streamed through, not buffered
+        assert "<|python_tag|>" in text_out  # streamed through, not buffered
         assert not list(healer.finalize()) or all(k == "text" for k, _v in healer.finalize())
 
 

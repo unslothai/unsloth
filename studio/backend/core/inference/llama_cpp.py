@@ -44,7 +44,8 @@ from core.inference.llama_server_args import (
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS,
+    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
+    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
@@ -58,12 +59,28 @@ from core.inference.tool_call_parser import (
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
 )
+
+# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
+# pattern lists, so the GGUF streaming strip stays aligned with the parser.
+from core.tool_healing import (
+    _REHEARSAL_TAIL_STRIP_RE,
+    _strip_bracket_tag_calls,
+    apply_tool_strip_patterns,
+    strip_outside_think,
+    strip_tool_call_markup,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
+from core.inference.tool_call_parser import (
+    MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
+    REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
+    is_short_intent_without_action as _is_short_intent_without_action,
+    reprompt_to_act_message as _reprompt_to_act_message,
+)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     tool_event_provenance,
@@ -212,25 +229,8 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
-# ── Pre-compiled patterns for plan-without-action re-prompt ──
-# Forward-looking intent signals: the model is describing what it *will*
-# do rather than giving a final answer.
-_INTENT_SIGNAL = re.compile(
-    r"(?i)("
-    # Direct intent ("I'll ...", "Let me ...", straight + curly apostrophes).
-    # Excludes "I can"/"I should"/"I want to"/"let's" (common in answers).
-    # Negative lookahead drops negated forms ("I will not") so a refusal
-    # doesn't trigger a re-prompt.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
-    r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
-    r"|"
-    # "Now I" / "Next I" patterns
-    r"\b(?:now i|next i)\b"
-    r")"
-)
-_MAX_REPROMPTS = 3
+# Plan-without-action re-prompt state (intent signal, caps, message) now lives
+# in tool_call_parser, imported above under its old aliases.
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -241,7 +241,6 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
-_REPROMPT_MAX_CHARS = 2000
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
@@ -256,9 +255,70 @@ _FINAL_ANSWER_SIGNAL = re.compile(
 )
 
 
-def _is_short_intent_without_action(text: str) -> bool:
-    stripped = text.strip()
-    return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
+def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
+    names = [
+        (tool.get("function") or {}).get("name")
+        for tool in (active_tools or [])
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    ]
+    return [name for name in names if name]
+
+
+# Rehearsal NAME chars (word + hyphen, matching the parser); the lookbehind excludes the
+# Mistral [CALL_ID]...[ARGS] shape.
+_GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
+
+
+def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
+    """Index of the first ``NAME[ARGS]`` whose NAME is an active tool, else -1. A
+    bare/inactive-name ``foo[ARGS]`` in prose is not a call; mirrors the safetensors
+    ``_earliest_tool_signal`` name-gating (no unrestricted GGUF mode)."""
+    active = set(_gguf_active_tool_names(active_tools))
+    if not active:
+        return -1
+    for m in _GGUF_REHEARSAL_ARGS_RE.finditer(text):
+        if m.group(1) in active:
+            return m.start()
+    return -1
+
+
+def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) -> bool:
+    """True when ``text`` holds a genuine tool-call boundary for one of ``signals``.
+
+    Unambiguous markers (``<tool_call>``, ``[TOOL_CALLS]``, ``<function=``) count on a
+    plain substring hit; an ``[ARGS]`` hit is genuine only when an active tool name
+    precedes it, so inactive-name prose is neither drained nor parsed."""
+    for sig in signals:
+        if sig == "[ARGS]":
+            if _gguf_rehearsal_signal_pos(text, active_tools) >= 0:
+                return True
+            continue
+        if sig in text:
+            return True
+    return False
+
+
+def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
+    active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
+    Mirrors the safetensors loop so the split rehearsal call is not streamed."""
+    if not stripped or any(ch.isspace() for ch in stripped):
+        return False
+    for name in _gguf_active_tool_names(active_tools):
+        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+            return True
+    return False
+
+
+def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
+    """Length of a trailing bare tool-name token that may be a split rehearsal call
+    (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
+    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors."""
+    i = len(text)
+    while i > 0 and not text[i - 1].isspace():
+        i -= 1
+    tail = text[i:]
+    return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
 
 
 def _should_suppress_forced_no_tool_output(text: str) -> bool:
@@ -8379,6 +8439,7 @@ class LlamaCppBackend:
         preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
+        nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
@@ -8418,6 +8479,13 @@ class LlamaCppBackend:
         _reasoning_started_at: Optional[float] = None
         _reasoning_summary_emitted = False
 
+        # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
+        # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = no gate.
+        _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+        # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
+        # one-shot), else its repeat is stripped but never drained and the turn ends blank.
+        _detect_tools = list(tools or [])
+
         def _reasoning_summary_event(started_at: float) -> dict:
             return {
                 "type": "reasoning_summary",
@@ -8436,25 +8504,42 @@ class LlamaCppBackend:
         ) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
+            # Delegate to the shared parser-side strip so the GGUF cleanup covers every family the
+            # parser promotes (Llama <|python_tag|>, Mistral [TOOL_CALLS], bare rehearsal, function
+            # XML, Gemma) and stays aligned with detection; tool_healing's strip omits the loop-only
+            # forms (python_tag / Mistral name) and would leak them into display.
             return _shared_strip_tool_markup(
-                text, final = final, enabled_tool_names = _enabled_tool_names
+                text, final = final, enabled_tool_names = _enabled_names_gate
             )
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            # Shared parser patterns (not the legacy tool_healing set) so textual
-            # Mistral/python_tag calls entering DRAINING never leak. Balanced strips
-            # first (nested JSON removed whole); no final trim so length compares hold.
-            text = _strip_mistral_closed_calls(text)
-            text = _strip_gemma_wrapperless_calls(text, _enabled_tool_names)
-            # Parser-accurate scans close at each call's REAL terminator before
-            # the regex arms: literal markup inside a value is data.
-            text = _strip_function_xml_calls(text, final = True)
-            text = _strip_glm_calls(text, final = True)
-            for pat in _TOOL_ALL_PATS:
-                text = pat.sub("", text)
-            return text
+
+            def _seg(segment: str, is_last: bool) -> str:
+                # Same scan order as the parser's _strip_segment (seg_final -> is_last): balanced
+                # strips first (nested JSON removed whole; literal markup inside a value is that
+                # call's data), then the guarded function-XML / GLM scans, then the regex arms
+                # (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
+                # segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal + markerless
+                # strips are name-gated on the ORIGINAL list (strip/detect aligned).
+                seg = _strip_mistral_closed_calls(segment)
+                seg = _strip_bracket_tag_calls(seg, enabled_tool_names = _enabled_names_gate)
+                if is_last:
+                    seg = _strip_gemma_wrapperless_calls(seg, _enabled_names_gate)
+                seg = _strip_function_xml_calls(seg, final = is_last)
+                seg = _strip_glm_calls(seg, final = is_last)
+                pats = _PARSER_TOOL_ALL_PATS if is_last else _PARSER_TOOL_CLOSED_PATS
+                for pat in pats:
+                    seg = pat.sub("", seg)
+                if is_last:
+                    seg = apply_tool_strip_patterns(
+                        seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = _enabled_names_gate
+                    )
+                return seg
+
+            # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
+            return strip_outside_think(text, _seg)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -8525,11 +8610,9 @@ class LlamaCppBackend:
         _kb_search_count = 0
 
         # ── Re-prompt on plan-without-action ─────────────────
-        # When the model describes what it intends to do (forward-looking
-        # language) without calling a tool, re-prompt once. Only triggers on
-        # responses signaling intent/planning -- a direct answer like "4" or
-        # "Hello!" won't match. Pattern compiled at module level
-        # (_INTENT_SIGNAL).
+        # Model describes intent without calling a tool: re-prompt once. A
+        # direct answer ("4", "Hello!") won't match. Pattern shared with the
+        # safetensors loop (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
         # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
@@ -8814,12 +8897,18 @@ class LlamaCppBackend:
                                             in_thinking = False
                                         cumulative_display += token
                                         cleaned = _strip_tool_markup_streaming(cumulative_display)
-                                        if len(cleaned) > len(_last_emitted):
-                                            _last_emitted = cleaned
+                                        # Hold a trailing bare active-tool-name (split rehearsal)
+                                        # until [ARGS] arrives; released by later prose or stream end.
+                                        _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
+                                        _emit = (
+                                            cleaned[: len(cleaned) - _hold] if _hold else cleaned
+                                        )
+                                        if len(_emit) > len(_last_emitted):
+                                            _last_emitted = _emit
                                             if not _suppress_visible_output:
                                                 yield {
                                                     "type": "content",
-                                                    "text": cleaned,
+                                                    "text": _emit,
                                                 }
 
                                     elif detect_state == _S_BUFFERING:
@@ -8828,7 +8917,8 @@ class LlamaCppBackend:
                                         if not stripped_buf:
                                             continue
 
-                                        # Check tool signal prefixes.
+                                        # Bracket tags arrive mid-buffer, so substring-check too;
+                                        # ``[ARGS]`` counts only as a regex-matched NAME[ARGS].
                                         is_prefix = False
                                         is_match = False
                                         for sig in _tool_xml_signals:
@@ -8838,6 +8928,31 @@ class LlamaCppBackend:
                                             if sig.startswith(stripped_buf):
                                                 is_prefix = True
                                                 break
+                                            if sig == "[ARGS]":
+                                                # Active NAME[ARGS] only; inactive-name prose
+                                                # is gated out, not drained/parsed.
+                                                if (
+                                                    _gguf_rehearsal_signal_pos(
+                                                        stripped_buf, _detect_tools
+                                                    )
+                                                    >= 0
+                                                ):
+                                                    is_match = True
+                                                    break
+                                            elif sig.startswith("[") and sig in stripped_buf:
+                                                is_match = True
+                                                break
+
+                                        # Split rehearsal: hold the bare name until
+                                        # its [ARGS] arrives and matches above.
+                                        is_rehearsal_prefix = False
+                                        if (
+                                            not is_match
+                                            and not is_prefix
+                                            and _is_rehearsal_prefix(stripped_buf, _detect_tools)
+                                        ):
+                                            is_prefix = True
+                                            is_rehearsal_prefix = True
 
                                         # Signal-less call shapes (mirror the safetensors
                                         # loop): Llama-3.2 bare {"name":..} and Gemma
@@ -8884,9 +8999,14 @@ class LlamaCppBackend:
                                             # Tool signal -- flush any visible
                                             # prefix before DRAINING so the
                                             # route sends it before tool_start.
+                                            # Use the final strip (all families incl. Llama
+                                            # <|python_tag|> / Mistral name): the buffer holds
+                                            # the whole call, so a streaming closed-only strip
+                                            # would leak its open-ended markup as display text.
                                             _flush_reasoning_and_buffer()
-                                            cleaned = _strip_tool_markup_streaming(
+                                            cleaned = _strip_tool_markup(
                                                 cumulative_display,
+                                                final = True,
                                                 force = True,
                                             )
                                             if len(cleaned) > len(_last_emitted):
@@ -8898,8 +9018,14 @@ class LlamaCppBackend:
                                                     }
                                             detect_state = _S_DRAINING
                                         elif _hold_buffer or (
-                                            is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS
+                                            is_prefix
+                                            and (
+                                                is_rehearsal_prefix
+                                                or len(stripped_buf) < _MAX_BUFFER_CHARS
+                                            )
                                         ):
+                                            # A rehearsal prefix is self-bounded; the buffer
+                                            # cap must not cut long MCP names short.
                                             pass  # keep buffering
                                         else:
                                             # Not a tool -- flush buffer
@@ -8910,12 +9036,20 @@ class LlamaCppBackend:
                                             cleaned = _strip_tool_markup(
                                                 cumulative_display,
                                             )
-                                            if len(cleaned) > len(_last_emitted):
-                                                _last_emitted = cleaned
+                                            # Same trailing-name hold as STREAMING for this
+                                            # first flush out of BUFFERING.
+                                            _hold = _held_rehearsal_tail_len(cleaned, _detect_tools)
+                                            _emit = (
+                                                cleaned[: len(cleaned) - _hold]
+                                                if _hold
+                                                else cleaned
+                                            )
+                                            if len(_emit) > len(_last_emitted):
+                                                _last_emitted = _emit
                                                 if not _suppress_visible_output:
                                                     yield {
                                                         "type": "content",
-                                                        "text": cleaned,
+                                                        "text": _emit,
                                                     }
 
                             except json.JSONDecodeError:
@@ -8933,7 +9067,9 @@ class LlamaCppBackend:
                     _is_bare_tc = bool(active_tools) and _looks_like_enabled_bare_json(
                         _bare_eos, _enabled_tool_names
                     )
-                    if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
+                    if stripped_buf and _gguf_has_genuine_tool_signal(
+                        stripped_buf, _tool_xml_signals, _detect_tools
+                    ):
                         detect_state = _S_DRAINING
                     elif _is_bare_tc:
                         detect_state = _S_DRAINING
@@ -8999,8 +9135,10 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
+                        # None keeps the default-on re-prompt; False disables it.
                         if (
                             auto_heal_tool_calls
+                            and (nudge_tool_calls is None or nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
@@ -9029,12 +9167,7 @@ class LlamaCppBackend:
                             conversation.append(
                                 {
                                     "role": "user",
-                                    "content": (
-                                        "You have access to enabled tools. If a tool is needed to satisfy "
-                                        "the user's request or complete the action you described, call "
-                                        f"{tool_hint} now. If no tool is needed, provide the final answer "
-                                        "and follow the user's requested format."
-                                    ),
+                                    "content": _reprompt_to_act_message(tool_hint),
                                 }
                             )
                             # Accumulate tokens and timing from this iteration.
@@ -9066,6 +9199,12 @@ class LlamaCppBackend:
                                         "type": "content",
                                         "text": forced_visible_text,
                                     }
+                        elif not _suppress_visible_output:
+                            # Turn ended as a plain answer (no [ARGS] followed): the held
+                            # rehearsal tail is real prose, release it.
+                            _final_clean = _strip_tool_markup_streaming(cumulative_display)
+                            if len(_final_clean) > len(_last_emitted):
+                                yield {"type": "content", "text": _final_clean}
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}

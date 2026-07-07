@@ -183,7 +183,9 @@ def test_detect_safetensors_features_llama3_template_keeps_tools_on():
 
 
 def test_detect_safetensors_features_mistral_template_keeps_tools_on():
-    """Mistral emits [TOOL_CALLS]; parser now supports it."""
+    """Mistral emits [TOOL_CALLS]name{json}, which the safetensors loop now parses
+    (the shared bracket-tag parser). The gate must no longer suppress it, or the
+    PR's Mistral tool support is unreachable through normal capability detection."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/mistral-7b-instruct-v0.3")
@@ -706,13 +708,28 @@ def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
     assert flags["supports_tools"] is True
 
 
-# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor so safetensors/MLX reach
-# GGUF reasoning-block parity for enable_thinking models.
+# _sf_reasoning_prefill_mode gates the prefilled-<think> extractor (GGUF reasoning parity).
 class TestSafetensorsReasoningPrefillGate:
     # A minimal Qwen3-style template with the standard <think>/</think> markers.
     _QWEN_TPL = "{% if enable_thinking %}<think>{% endif %}...</think>..."
     # gemma-style bespoke reasoning channel -- no standard markers.
     _GEMMA_TPL = "{% if enable_thinking %}<|think|>{% endif %}<|channel>thought<channel|>"
+    # always-on template whose GENERATION PROMPT opens an unclosed <think> (DeepSeek-R1 / QwQ /
+    # Qwen3-Thinking shape): the model emits only the closing </think>, so prefill.
+    _ALWAYS_ON_OPEN_TPL = (
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|><think>\n{% endif %}"
+    )
+    # always-on template that renders PAST assistant <think>...</think> history but leaves the
+    # generation prompt open with no <think> (Kimi-K2-Thinking shape): the model self-emits its
+    # own block, so prefill mode would blank a normal answer.
+    _ALWAYS_ON_HISTORY_TPL = (
+        "{% for m in messages %}"
+        "{% if m['role'] == 'assistant' %}<think>{{ m.get('reasoning_content', '') }}</think>"
+        "{{ m['content'] }}{% endif %}"
+        "{% endfor %}"
+        "{% if add_generation_prompt %}<|im_assistant|>assistant<|im_middle|>{% endif %}"
+    )
 
     def _features(self, **over):
         base = {
@@ -756,11 +773,19 @@ class TestSafetensorsReasoningPrefillGate:
         feats = self._features(supports_reasoning = False, reasoning_style = None)
         assert _sf_reasoning_prefill_mode(feats, True, self._QWEN_TPL) is False
 
-    def test_g7_reasoning_always_on(self):
-        # G7: hardcoded-<think> template -> prefilled regardless of the flag.
+    def test_g7_reasoning_always_on_prompt_opens_think(self):
+        # G7: always-on template whose generation prompt opens <think> -> prefilled regardless of the flag.
         from routes.inference import _sf_reasoning_prefill_mode
         feats = self._features(reasoning_always_on = True)
-        assert _sf_reasoning_prefill_mode(feats, False, self._QWEN_TPL) is True
+        assert _sf_reasoning_prefill_mode(feats, False, self._ALWAYS_ON_OPEN_TPL) is True
+
+    def test_g7b_reasoning_always_on_history_only_not_prefilled(self):
+        # G7b (#5704): always-on classification from rendered assistant HISTORY <think></think>
+        # (Kimi-K2-Thinking) whose generation prompt opens no <think>. Prefill mode would capture a
+        # normal answer entirely as reasoning_content and blank the visible answer, so it must be off.
+        from routes.inference import _sf_reasoning_prefill_mode
+        feats = self._features(reasoning_always_on = True)
+        assert _sf_reasoning_prefill_mode(feats, None, self._ALWAYS_ON_HISTORY_TPL) is False
 
     def test_g8_gemma_bespoke_channel_excluded(self):
         # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
