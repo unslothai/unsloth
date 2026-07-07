@@ -750,21 +750,26 @@ _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
 # image upload under the protected /api/train prefix. Like /api/datasets/upload it enforces
 # its own get_upload_limit_bytes() cap, so it must bypass the default body cap here or the
 # middleware would 413 near-limit batches (and ignore a raised max_upload_size_mb) before the
-# handler runs. Its small-JSON sub-routes (import-example, caption) merely inherit the more
-# generous cap, which is harmless.
-_DIFFUSION_DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/train/diffusion/dataset"
+# handler runs. Matched as an EXACT path (not a prefix): its JSON sub-routes
+# (PUT .../{name}/caption/{filename}, POST .../import-example) live under the same prefix but
+# must keep the normal small-JSON cap, or a large caption/import body would be buffered and
+# parsed up to the far larger upload limit before the route-level length checks run.
+_DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     _DATASET_UPLOAD_PASSTHROUGH_PREFIX,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
-    _DIFFUSION_DATASET_UPLOAD_PASSTHROUGH_PREFIX,
 )
+# Passthrough routes matched by EXACT path (the multipart upload only), so sibling JSON
+# sub-routes under the same prefix are not swept into the generous upload cap.
+_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
-    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX) or path.startswith(
-        _DIFFUSION_DATASET_UPLOAD_PASSTHROUGH_PREFIX
+    if (
+        path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX)
+        or path == _DIFFUSION_DATASET_UPLOAD_PATH
     ):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
@@ -814,12 +819,21 @@ class MaxBodyMiddleware:
         protected_prefixes: tuple,
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
+        upload_passthrough_exact_paths: tuple = (),
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
         self.upload_passthrough_prefixes = upload_passthrough_prefixes
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
+        # Passthrough routes matched by exact path, not prefix: an upload route whose prefix
+        # also covers sibling JSON sub-routes that must keep the normal (small) body cap.
+        self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
+
+    def _is_upload_passthrough(self, path: str) -> bool:
+        return path in self.upload_passthrough_exact_paths or any(
+            path.startswith(p) for p in self.upload_passthrough_prefixes
+        )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
         if self.upload_passthrough_max_bytes_getter is None:
@@ -856,7 +870,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if any(path.startswith(p) for p in self.upload_passthrough_prefixes):
+        if self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is None:
                 await _send_411(send)
@@ -913,6 +927,7 @@ app.add_middleware(
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
+    upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.

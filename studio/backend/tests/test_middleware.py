@@ -35,6 +35,7 @@ def _make_protected_app(
     main_module,
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
+    upload_passthrough_exact_paths: tuple = (),
 ):
     app = FastAPI()
     app.add_middleware(
@@ -43,6 +44,7 @@ def _make_protected_app(
         protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
+        upload_passthrough_exact_paths = upload_passthrough_exact_paths,
     )
 
     @app.post("/v1/chat/completions")
@@ -169,17 +171,38 @@ class TestMaxBodyMiddleware:
         # The diffusion dataset upload route lives under the protected /api/train prefix, so it
         # must be in the REAL passthrough allowlist with the DB-aware + multipart-overhead cap;
         # otherwise MaxBodyMiddleware would 413 near-limit batches (and ignore a raised
-        # max_upload_size_mb) before the handler's own get_upload_limit_bytes() check runs.
+        # max_upload_size_mb) before the handler's own get_upload_limit_bytes() check runs. It is
+        # matched by EXACT path (not prefix) so its JSON sub-routes keep the normal small cap.
         from utils.upload_limits import (
             default_request_body_limit_bytes,
             upload_request_limit_bytes,
         )
 
         path = "/api/train/diffusion/dataset"
-        assert any(path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES)
+        assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert not any(path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES)
         cap = main_module._get_upload_passthrough_request_max_bytes(path)
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
+
+    def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
+        # The exact-path passthrough must NOT sweep in the JSON sub-routes that live under the same
+        # /api/train/diffusion/dataset prefix (PUT .../{name}/caption/{filename},
+        # POST .../import-example). A prefix match would let a large caption/import body bypass the
+        # default JSON cap and be buffered + parsed up to the far larger upload limit. They must
+        # get the plain default body cap, and never be treated as upload passthrough.
+        from utils.upload_limits import default_request_body_limit_bytes
+        for path in (
+            "/api/train/diffusion/dataset/my-set/caption/img.png",
+            "/api/train/diffusion/dataset/import-example",
+        ):
+            assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert not any(
+                path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES
+            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                default_request_body_limit_bytes()
+            ), path
 
     def test_v1_surface_is_body_protected(self, main_module):
         # /images/generations is mounted at both /api/inference and /v1; the /v1 alias (and every
@@ -232,6 +255,42 @@ class TestMaxBodyMiddleware:
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
+
+    def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
+        # The exact-path passthrough lifts the cap for the upload path itself, but a sibling
+        # sub-path under the same prefix stays on the small protected cap: a large JSON body to
+        # the sub-route is 413'd (buffered+capped), not waved through at the upload limit.
+        app = FastAPI()
+        app.add_middleware(
+            main_module.MaxBodyMiddleware,
+            max_bytes_getter = lambda: 128,
+            protected_prefixes = ("/api/train",),
+            upload_passthrough_exact_paths = ("/api/train/ds",),
+            upload_passthrough_max_bytes_getter = lambda path: 10_000,
+        )
+
+        @app.post("/api/train/ds")
+        async def _upload(request: Request):
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+            return {"ok": True, "total": total}
+
+        @app.post("/api/train/ds/import-example")
+        async def _import(payload: dict):
+            return {"ok": True}
+
+        c = TestClient(app)
+        # The exact upload path takes the large cap: a 512-byte body passes.
+        r = c.post(
+            "/api/train/ds",
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 200 and r.json()["total"] == 512
+        # The sibling JSON sub-route keeps the 128-byte default cap: a large body is 413'd.
+        r = c.post("/api/train/ds/import-example", json = {"text": "x" * 5000})
+        assert r.status_code == 413
 
 
 # SecurityHeadersMiddleware / CSP
