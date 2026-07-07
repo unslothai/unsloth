@@ -1536,7 +1536,7 @@ exit 0
                 $probe = 'import os, sys; expected = os.path.normcase(os.path.abspath(os.environ["UNSLOTH_EXPECTED_VENV"])); prefix = os.path.normcase(os.path.abspath(sys.prefix)); base_prefix = os.path.normcase(os.path.abspath(sys.base_prefix)); raise SystemExit(0 if prefix == expected and prefix != base_prefix else 1)'
                 $global:LASTEXITCODE = -1
                 $null = & $PythonExe -c $probe 2>$null
-                return ($? -and $LASTEXITCODE -eq 0)
+                return ($LASTEXITCODE -eq 0)
             } catch {
                 return $false
             } finally {

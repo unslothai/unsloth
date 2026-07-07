@@ -246,6 +246,8 @@ def test_install_ps1_rechecks_uv_success_before_continuing():
     assert 'Join-Path $VenvRoot "pyvenv.cfg"' in body
     assert "sys.prefix" in body
     assert "sys.base_prefix" in body
+    assert "return ($LASTEXITCODE -eq 0)" in body
+    assert "return ($? -and $LASTEXITCODE -eq 0)" not in body
     assert "Invoke-InstallCommand { & $PythonExe -c" not in body
     assert "Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue" in body
     assert "& $DetectedPython.Path -m venv $VenvDir" in body
