@@ -490,6 +490,52 @@ def test_validate_rejects_kind_extension_mismatch(tmp_path):
         )
 
 
+def test_validate_rejects_local_file_suffix_kind_mismatch(tmp_path):
+    backend = VideoBackend()
+    # A local FILE is handed straight to the gguf/single_file loader: _resolve_checkpoint_path
+    # returns the file itself, IGNORING gguf_filename, so the file's OWN suffix must match the
+    # kind. A .gguf file picked as single_file (or a .safetensors file picked as gguf) slips
+    # past the gguf_filename suffix checks, so it must be rejected HERE, before the route evicts
+    # the resident GPU owner and then fails deep in from_single_file / the GGUF reader.
+    gguf_file = tmp_path / "ltx.gguf"
+    gguf_file.write_bytes(b"weights")
+    safetensors_file = tmp_path / "ltx.safetensors"
+    safetensors_file.write_bytes(b"weights")
+    with pytest.raises(ValueError, match = "not a .safetensors file"):
+        backend.validate_load_request(
+            str(gguf_file),
+            gguf_filename = "ltx.safetensors",
+            model_kind = "single_file",
+            family_override = "ltx-2",
+        )
+    with pytest.raises(ValueError, match = "not a .gguf file"):
+        backend.validate_load_request(
+            str(safetensors_file),
+            gguf_filename = "ltx.gguf",
+            model_kind = "gguf",
+            family_override = "ltx-2",
+        )
+    # Matching pairs still validate: the local file's suffix agrees with the resolved kind.
+    assert (
+        backend.validate_load_request(
+            str(gguf_file),
+            gguf_filename = "ltx.gguf",
+            model_kind = "gguf",
+            family_override = "ltx-2",
+        ).name
+        == "ltx-2"
+    )
+    assert (
+        backend.validate_load_request(
+            str(safetensors_file),
+            gguf_filename = "ltx.safetensors",
+            model_kind = "single_file",
+            family_override = "ltx-2",
+        ).name
+        == "ltx-2"
+    )
+
+
 def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
     backend = VideoBackend()
     # A missing Windows-shaped local pick (backslash path, or a C:/ drive path) must fail HERE,

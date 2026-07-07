@@ -194,3 +194,47 @@ def test_active_status_injects_engine_and_reason(monkeypatch):
     st = r.active_status()
     assert st["engine"] == ENGINE_DIFFUSERS
     assert st["fallback_reason"] and "binary unavailable" in st["fallback_reason"]
+
+
+# ── engine-switch eviction ordering ───────────────────────────────────────────
+
+
+def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
+    # The arbiter's diffusion evictor unloads get_active_diffusion_engine(); if the router
+    # published the new (empty) engine BEFORE the old one finished unloading, a concurrent
+    # chat/video acquire_for could evict the empty engine and take the GPU while the old
+    # model was still resident (two large models briefly co-resident -> OOM). Assert the
+    # OLD engine stays the published active target until its unload() completes, then the
+    # new engine is published.
+    seen = {}
+
+    def _fake_engine():
+        return SimpleNamespace(
+            unload = lambda: seen.__setitem__("active_during_unload", r.active_engine_name()),
+            status = lambda: {"loaded": False, "repo_id": None},
+        )
+
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: _fake_engine())
+    r._active_engine_name = ENGINE_SD_CPP
+    r._activate(ENGINE_DIFFUSERS, "switch test")
+    assert seen["active_during_unload"] == ENGINE_SD_CPP
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+
+
+def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
+    # When the engine does not change, _activate must not spuriously unload anything and must
+    # still refresh the recorded fallback reason (the diffusers-only steady state).
+    calls = {"unload": 0}
+
+    def _fake_engine():
+        return SimpleNamespace(
+            unload = lambda: calls.__setitem__("unload", calls["unload"] + 1),
+            status = lambda: {"loaded": False, "repo_id": None},
+        )
+
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: _fake_engine())
+    r._active_engine_name = ENGINE_DIFFUSERS
+    r._activate(ENGINE_DIFFUSERS, "still diffusers")
+    assert calls["unload"] == 0
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+    assert r.active_status()["fallback_reason"] == "still diffusers"

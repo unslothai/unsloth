@@ -103,13 +103,25 @@ def _activate(name: str, reason: Optional[str]) -> Any:
         if name != _active_engine_name:
             engine_to_unload = get_active_diffusion_engine()
             old_name = _active_engine_name
-        _active_engine_name = name
-        _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
+        else:
+            # No engine change: publish the (possibly refreshed) fallback reason now.
+            _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
     if engine_to_unload is not None:
+        # Publish the new engine only AFTER the old one has finished unloading. The
+        # arbiter's diffusion evictor unloads get_active_diffusion_engine(), so flipping
+        # _active_engine_name to the new (empty) engine first would let a concurrent
+        # chat/video acquire_for evict that empty engine and take the GPU while the old
+        # model is still freeing VRAM in this thread -- two large models briefly resident.
+        # Keeping the OLD engine published as the evict target means a concurrent evict
+        # serializes on its unload() (idempotent under the backend's _lock/_generate_lock)
+        # and the GPU is granted only once its VRAM is freed.
         try:
             engine_to_unload.unload()
         except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch
             logger.warning("failed to unload previous engine %s: %s", old_name, exc)
+        with _lock:
+            _active_engine_name = name
+            _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
     if name == ENGINE_SD_CPP:
         logger.info("diffusion engine: sd_cpp")
     else:

@@ -475,7 +475,25 @@ class VideoBackend:
                     resolve_local_gguf_child(root, gguf_filename or "")
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
                     raise ValueError(str(exc)) from exc
-            elif path_shaped and not root.is_file():
+            elif root.is_file():
+                # The loader hands a local FILE straight to the gguf/single_file loader
+                # (_resolve_checkpoint_path returns the file itself, ignoring gguf_filename),
+                # so the file's OWN suffix must match the kind. Otherwise a .gguf picked as
+                # single_file (or a .safetensors picked as gguf) slips past the gguf_filename
+                # checks above, evicts the resident model in the route, and only then fails
+                # in from_single_file / the GGUF reader. Reject it here, before the handoff.
+                suffix = root.suffix.lower()
+                if kind == "gguf" and suffix != ".gguf":
+                    raise ValueError(
+                        f"Local checkpoint '{repo_id}' is not a .gguf file; a 'gguf' load "
+                        f"needs a .gguf checkpoint."
+                    )
+                if kind == "single_file" and suffix != ".safetensors":
+                    raise ValueError(
+                        f"Local checkpoint '{repo_id}' is not a .safetensors file; a "
+                        f"'single_file' load needs a .safetensors checkpoint."
+                    )
+            elif path_shaped:
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
         # A local pipeline pick must be a real diffusers directory (model_index.json), or it
         # would only fail deep in from_pretrained AFTER the route evicted the resident model.
