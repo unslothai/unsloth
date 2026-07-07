@@ -3143,6 +3143,12 @@ class LlamaCppBackend:
     _CTX_COMPUTE_BYTES_PER_EMBD = 2.25  # quantized KV, regular attention (dequant scratch)
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
     _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
+    # DeepSeek-V4 (deepseek4): its lightning indexer + sparse attention reserve a large
+    # context-scaling compute buffer the rates above miss (present even with an f16
+    # cache). Measured on UD-Q4_K_XL (ub=512): ~2 GiB at 16k -> ~65.5 GiB at 1M. Without
+    # it auto-fit commits the full 1M train context, OOMs the reserve, and spills to CPU.
+    _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024 ** 3  # ctx-independent indexer scratch
+    _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
 
     def _estimate_compute_buffer_bytes(
         self,
@@ -3192,6 +3198,14 @@ class LlamaCppBackend:
         if n_embd <= 0 or n_ctx <= 0:
             return 0
         ub = max(1, int(n_ubatch if n_ubatch else self._DEFAULT_N_UBATCH))
+        if getattr(self, "_architecture", None) == "deepseek4":
+            # DSV4 indexer/CSA buffer (see constants): flat + linear, ub-scaled. Fires
+            # for any KV type -- the indexer scratch is present even with an f16 cache.
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            return int(
+                self._DSV4_CTX_COMPUTE_FLAT_BYTES
+                + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
+            )
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the dequant scratch dominates and scales with n_embd.
             # MLA (compressed KV) needs far less of it: measured 0.94 x n_embd on
