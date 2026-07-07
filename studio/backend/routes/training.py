@@ -1564,9 +1564,16 @@ async def upload_diffusion_dataset(
     uploaded = 0
     allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
     for f in files:
-        filename = Path(f.filename or "").name.strip().replace("\x00", "")
+        # Normalise to a safe basename. Path.name does not split on a backslash on POSIX, so a
+        # Windows client that sends a backslash path in the multipart filename would otherwise be
+        # stored verbatim; fold backslashes to forward slashes first so the true basename is
+        # taken for both separators. The read/caption/delete endpoints run the stored name through
+        # _safe_dataset_image_path (rejects "\\" / ".." / path chars), so a name that still holds
+        # ".." here would list an image the labeling grid can never preview, caption, or delete --
+        # reject it now instead of persisting an unmanageable orphan.
+        filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
         ext = Path(filename).suffix.lower()
-        if not filename or ext not in allowed:
+        if not filename or ".." in filename or ext not in allowed:
             exts = ", ".join(sorted(allowed))
             raise HTTPException(
                 status_code = 400,

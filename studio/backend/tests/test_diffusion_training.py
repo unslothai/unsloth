@@ -758,6 +758,34 @@ def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
     assert r.json()["image_count"] == 3
 
 
+def test_diffusion_dataset_upload_normalizes_windows_and_rejects_dotdot(client, dataset_roots):
+    ds_root, _ = dataset_roots
+    # A Windows client can send a backslash path in the multipart filename; POSIX Path.name does
+    # not split on backslash, so it must be folded to the true basename, or the stored name holds
+    # backslashes that _safe_dataset_image_path later rejects -- an image the labeling grid can
+    # list but never preview/caption/delete (an orphan).
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "winset"},
+        files = [("files", ("C:\\Users\\me\\pics\\cat.png", b"png-bytes", "image/png"))],
+    )
+    assert r.status_code == 200, r.text
+    assert (ds_root / "winset" / "cat.png").read_bytes() == b"png-bytes"
+    # It is listed under the clean basename and the per-image endpoints accept it (not an orphan).
+    recs = client.get("/api/train/diffusion/dataset/winset/images").json()["images"]
+    assert any(rec["filename"] == "cat.png" for rec in recs)
+    assert client.get("/api/train/diffusion/dataset/winset/image/cat.png").status_code == 200
+
+    # A basename that still contains ".." (which _safe_dataset_image_path rejects) is refused at
+    # upload rather than persisted as an unmanageable entry.
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "winset"},
+        files = [("files", ("a..b.png", b"x", "image/png"))],
+    )
+    assert r.status_code == 400 and "Unsupported file" in r.json()["detail"]
+
+
 def test_diffusion_dataset_upload_over_cap_keeps_existing_example(
     client, dataset_roots, monkeypatch
 ):
