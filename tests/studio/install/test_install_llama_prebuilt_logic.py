@@ -3226,7 +3226,7 @@ def test_build_validation_sandbox_plan_linux_without_bwrap_skips_ldd_probe(monke
     assert "skip ldd probe" in plan.reason
 
 
-def test_build_validation_sandbox_plan_linux_without_bwrap_falls_back_validation(monkeypatch):
+def test_build_validation_sandbox_plan_linux_without_bwrap_skips_validation(monkeypatch):
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_resolve_command_path",
@@ -3241,8 +3241,11 @@ def test_build_validation_sandbox_plan_linux_without_bwrap_falls_back_validation
         runtime_line = None,
         env = {},
     )
-    assert plan.is_fallback
+    assert plan.is_skipped
     assert plan.reason is not None
+    assert "skip downloaded-binary validation" in plan.reason
+    assert plan.network_policy is None
+    assert plan.server_probe_mode is None
 
 
 def test_build_validation_sandbox_plan_linux_unusable_bwrap_skips_ldd(monkeypatch):
@@ -4091,6 +4094,33 @@ def test_run_validation_ldd_probe_reports_error_on_nonzero_returncode(monkeypatc
     assert "bind failed" in result.reason
 
 
+def test_run_validation_ldd_probe_accepts_static_binary_output(monkeypatch, tmp_path):
+    binary_path = tmp_path / "server"
+    binary_path.write_text("")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: f"/usr/bin/{command}",
+    )
+
+    def fake_capture(plan, *, timeout: int):
+        return subprocess.CompletedProcess(
+            plan.command,
+            1,
+            stdout = "",
+            stderr = "not a dynamic executable",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_capture", fake_capture)
+
+    result = run_validation_ldd_probe(binary_path, env = {"LD_LIBRARY_PATH": ""})
+    assert result.status == LINUX_LDD_PROBE_OK
+    assert result.missing == []
+    assert result.reason == "static executable"
+
+
 def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
     binary_path = tmp_path / "server"
     binary_path.write_text("")
@@ -4268,7 +4298,7 @@ def test_validate_quantize_routes_through_sandbox_plan(monkeypatch, tmp_path):
     assert quantized_path.exists()
 
 
-def test_validate_quantize_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
+def test_validate_quantize_skips_without_linux_sandbox(monkeypatch, tmp_path):
     quantize_path = tmp_path / "llama-quantize"
     quantize_path.write_text("")
     probe_path = tmp_path / "probe.gguf"
@@ -4290,7 +4320,7 @@ def test_validate_quantize_falls_back_without_linux_sandbox(monkeypatch, tmp_pat
         return ValidationLaunchPlan(
             command = command,
             env = env,
-            action = "fallback",
+            action = "skip",
             purpose = purpose,
             reason = "no sandbox",
         )
@@ -4299,16 +4329,21 @@ def test_validate_quantize_falls_back_without_linux_sandbox(monkeypatch, tmp_pat
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT, "binary_env", lambda *_a, **_k: {"PATH": str(tmp_path)}
     )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "run_capture",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_capture must not be used")),
+    )
 
-    with pytest.raises(PrebuiltFallback, match = "no sandbox"):
-        validate_quantize(
-            quantize_path,
-            probe_path,
-            quantized_path,
-            tmp_path,
-            linux_host(),
-            runtime_line = None,
-        )
+    validate_quantize(
+        quantize_path,
+        probe_path,
+        quantized_path,
+        tmp_path,
+        linux_host(),
+        runtime_line = None,
+    )
+    assert not quantized_path.exists()
 
 
 def test_validate_server_routes_through_sandbox_plan(monkeypatch, tmp_path):
@@ -4545,7 +4580,7 @@ def test_validate_server_skips_gpu_layers_for_macos_arm64(monkeypatch, tmp_path)
     assert recorded["enable_gpu_layers"] is False
 
 
-def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
+def test_validate_server_skips_without_linux_sandbox(monkeypatch, tmp_path):
     server_path = tmp_path / "llama-server"
     server_path.write_text("")
     probe_path = tmp_path / "probe.gguf"
@@ -4566,22 +4601,26 @@ def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path)
         return ValidationLaunchPlan(
             command = command,
             env = env,
-            action = "fallback",
+            action = "skip",
             purpose = purpose,
             reason = "no sandbox",
         )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.subprocess,
+        "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Popen must not be used")),
+    )
 
-    with pytest.raises(PrebuiltFallback, match = "no sandbox"):
-        validate_server(
-            server_path,
-            probe_path,
-            linux_host(),
-            tmp_path,
-            runtime_line = None,
-            install_kind = None,
-        )
+    validate_server(
+        server_path,
+        probe_path,
+        linux_host(),
+        tmp_path,
+        runtime_line = None,
+        install_kind = None,
+    )
 
 
 def test_validate_server_uses_windows_direct_validation_plan(monkeypatch, tmp_path):
@@ -4673,7 +4712,13 @@ def test_runtime_inference_path_stays_outside_installer_sandbox_owner():
     assert "build_validation_sandbox_plan" not in backend_source
 
 
-def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
+def _run_validate_prebuilt_choice(
+    monkeypatch,
+    tmp_path,
+    *,
+    expected_sha256,
+    validation_action = "run",
+):
     """Run validate_prebuilt_choice with heavy steps stubbed; return launch metadata."""
     calls = {"quantize": 0, "server": 0}
     plans: list[str] = []
@@ -4708,11 +4753,14 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
         return ValidationLaunchPlan(
             command = command,
             env = env,
-            action = "run",
+            action = validation_action,
             purpose = purpose,
+            reason = "validation launch unavailable" if validation_action != "run" else None,
         )
 
     def fake_run_validation_capture(plan: ValidationLaunchPlan, *, timeout: int):
+        if plan.action != "run":
+            raise src.ValidationLaunchUnavailable(plan.reason or "validation launch unavailable")
         if plan.purpose == src._VALIDATION_PURPOSE_QUANTIZE:
             calls["quantize"] += 1
             quantized_path.write_bytes(b"quantized")
@@ -4744,6 +4792,8 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
             return None
 
     def fake_run_validation_popen(plan: ValidationLaunchPlan, *, stdout):
+        if plan.action != "run":
+            raise src.ValidationLaunchUnavailable(plan.reason or "validation launch unavailable")
         assert plan.purpose == src._VALIDATION_PURPOSE_SERVER
         calls["server"] += 1
         return _DummyProcess()
@@ -4819,6 +4869,18 @@ def test_validate_prebuilt_choice_hashless_build_routes_through_validation_sandb
     assert plans.index("quantize") < plans.index("server")
     assert plans[0] == "ldd"
     assert plans[-1] == "server"
+
+
+def test_validate_prebuilt_choice_hashless_build_falls_back_when_validation_launch_skips(
+    tmp_path, monkeypatch
+):
+    with pytest.raises(PrebuiltFallback, match = "llama-quantize validation unavailable"):
+        _run_validate_prebuilt_choice(
+            monkeypatch,
+            tmp_path,
+            expected_sha256 = None,
+            validation_action = "skip",
+        )
 
 
 def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp_path, monkeypatch):
