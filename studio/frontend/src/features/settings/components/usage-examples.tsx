@@ -126,6 +126,10 @@ const DEFAULT_AGENTS = [
   "hermes",
   "pi",
 ];
+// The agent selection resets to this whenever an auto-pick is no longer
+// trustworthy (leaving loopback, or the only compatible detected agent
+// stops being compatible) rather than lingering on a stale choice.
+const DEFAULT_AGENT = "claude";
 const AGENT_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
@@ -478,7 +482,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
-  const [agent, setAgent] = useState<string>("claude");
+  const [agent, setAgent] = useState<string>(DEFAULT_AGENT);
   const [availableAgents, setAvailableAgents] =
     useState<string[]>(DEFAULT_AGENTS);
   const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
@@ -515,6 +519,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     // "detected" for a command that now targets somewhere else.
     if (!isLoopbackBase) {
       setDetectedAgents([]);
+      // A previously auto-picked agent was only ever verified against the
+      // Studio backend's PATH, which is meaningless now that this panel no
+      // longer targets a loopback base -- don't leave it selected, but
+      // never touch a choice the user made by hand.
+      if (!agentPickedByUserRef.current) {
+        setAgent(DEFAULT_AGENT);
+      }
       return;
     }
 
@@ -547,8 +558,16 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     if (detectedAgents.length === 0) return;
     const isGguf = Boolean(activeGgufVariant);
     const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
-    if (preferred) setAgent(preferred);
-  }, [detectedAgents, activeGgufVariant]);
+    if (preferred) {
+      setAgent(preferred);
+    } else if (agent === "codex" && !isGguf) {
+      // codex was auto-picked while a GGUF model was active and it's the
+      // only detected agent; now that the model isn't GGUF anymore, nothing
+      // detected is actually runnable, so fall back to the default instead
+      // of leaving a codex command unsloth_cli will reject.
+      setAgent(DEFAULT_AGENT);
+    }
+  }, [agent, detectedAgents, activeGgufVariant]);
 
   useEffect(() => {
     let cancelled = false;
