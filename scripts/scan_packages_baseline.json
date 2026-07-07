@@ -68,6 +68,14 @@
   },
   {
    "package": "cffi",
+   "file": "cffi/_cffi_gen_src.py",
+   "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+   "severity": "HIGH",
+   "evidence": "Obfusc: L52:     compiled = compile(source=pysrc, filename=filename, mode='exec')\nExec: L53:     exec(compiled, globs, globs)",
+   "evidence_hash": "c429e4c977a61db6b7c717b5a552fce74eda622213e49eb5467a3782fd746fb9"
+  },
+  {
+   "package": "cffi",
    "file": "cffi/setuptools_ext.py",
    "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
    "severity": "HIGH",
@@ -159,16 +167,16 @@
    "file": "fastapi/routing.py",
    "check": "C2 polling/beaconing loop detected",
    "severity": "CRITICAL",
-   "evidence": "L586:                                 while True: sha256:bef9ea429314fad39e063895a37dc5cfe9b04561f3d1acbb3c99abb4e92e6cfe",
-   "evidence_hash": "b15773e1bc249713156a349278ea60f7c0e3dd7d537affe929ab51089e1942bb"
+   "evidence": "L586:                                 while True: sha256:251135b5ebfdd1248916449f32262575e003ef64382501c65b7e4061d67bda45",
+   "evidence_hash": "365aef4449c8089753d9398417cd76ab762cef547d75db70d87bca9c0b550ab5"
   },
   {
    "package": "fastapi",
    "file": "fastapi/routing.py",
    "check": "C2 polling/beaconing loop detected",
    "severity": "CRITICAL",
-   "evidence": "L586:                                 while True: sha256:251135b5ebfdd1248916449f32262575e003ef64382501c65b7e4061d67bda45",
-   "evidence_hash": "365aef4449c8089753d9398417cd76ab762cef547d75db70d87bca9c0b550ab5"
+   "evidence": "L586:                                 while True: sha256:bef9ea429314fad39e063895a37dc5cfe9b04561f3d1acbb3c99abb4e92e6cfe",
+   "evidence_hash": "b15773e1bc249713156a349278ea60f7c0e3dd7d537affe929ab51089e1942bb"
   },
   {
    "package": "fastmcp-slim",
@@ -185,6 +193,14 @@
    "severity": "CRITICAL",
    "evidence": "FS: L624:     history.replaceState(null, \"\", url); sha256:fd8dbfa8af4dea2ce43f4d441f3f81239de341b76a2eb0a33c446f6757ce5f43\nNetwork: L1291:     with httpx.Client(timeout=30.0) as client: | L1305:     with httpx.Client(timeout=30.0) as client: | L1335:     with httpx.Client(timeout=30.0) as client: | L1537:         client = httpx.AsyncClient(\nL1538:             timeout=httpx.Timeout(60.0, read=None), trust_env=False\nL1539:         ) | L1701:     async with httpx.AsyncClient(trust_env=False) as client: | L1769:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
    "evidence_hash": "6ada4a9111213bdee5ea24c70a72ec4acdc8ffe0de4a01fd9835bc261ccab8f8"
+  },
+  {
+   "package": "fastmcp-slim",
+   "file": "fastmcp/cli/apps_dev.py",
+   "check": "Enumerates filesystem AND makes network calls",
+   "severity": "CRITICAL",
+   "evidence": "FS: L637:     history.replaceState(null, \"\", url); sha256:17068ba5bfed62c3a3007ec8bf3e0ea41ef6529b9e6112064d9afb3be9231436\nNetwork: L1304:     with httpx.Client(timeout=30.0) as client: | L1318:     with httpx.Client(timeout=30.0) as client: | L1348:     with httpx.Client(timeout=30.0) as client: | L1549:         client = httpx.AsyncClient(\nL1550:             timeout=httpx.Timeout(60.0, read=None), trust_env=False\nL1551:         ) | L1713:     async with httpx.AsyncClient(trust_env=False) as client: | L1781:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
+   "evidence_hash": "e5325edfada6499540e6f0c24a0868979d275522e2b6a180aa9b5dd3280681b4"
   },
   {
    "package": "fastmcp-slim",
@@ -255,16 +271,16 @@
    "file": "huggingface_hub/hf_api.py",
    "check": "C2 polling/beaconing loop detected",
    "severity": "CRITICAL",
-   "evidence": "L4600:         while True: sha256:f4a851312a1832efe1b435aa1275a82184e19cc3f47e2cd244373d56c11de272",
-   "evidence_hash": "dc8fcf44788e32f42d1cc2eb0e2deb55eb2dbf2c3a55909a7d503e450f45e602"
+   "evidence": "L4613:         while True: sha256:f764b6ca3118b23c7c0e670e77178c022a6905f825d7df6e528545fa10aae8f6",
+   "evidence_hash": "9c85d50c227285fa8dc69512999cbb082258cda4b299c7d0e0f69f5aff7accd4"
   },
   {
    "package": "huggingface-hub",
    "file": "huggingface_hub/hf_api.py",
    "check": "C2 polling/beaconing loop detected",
    "severity": "CRITICAL",
-   "evidence": "L4613:         while True: sha256:f764b6ca3118b23c7c0e670e77178c022a6905f825d7df6e528545fa10aae8f6",
-   "evidence_hash": "9c85d50c227285fa8dc69512999cbb082258cda4b299c7d0e0f69f5aff7accd4"
+   "evidence": "L4600:         while True: sha256:f4a851312a1832efe1b435aa1275a82184e19cc3f47e2cd244373d56c11de272",
+   "evidence_hash": "dc8fcf44788e32f42d1cc2eb0e2deb55eb2dbf2c3a55909a7d503e450f45e602"
   },
   {
    "package": "huggingface-hub",

@@ -1505,11 +1505,8 @@ export function HubModelPicker({
   catalog?: CatalogGroup[];
 }) {
   const gpu = useGpuInfo();
-  // The currently-loaded/running model id. We read params.checkpoint from the
-  // runtime store (backend-mirrored from /api/inference/status.active_model, see
-  // chat-runtime-store) rather than the dropdown `isSelected` highlight (which is
-  // just `value === repo_id` and can reflect a staged, not-yet-loaded pick). Used
-  // to disable the cached-row update action for the model that's live in memory.
+  // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
+  // highlight which can be a staged pick. Disables the update action for it.
   const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
@@ -1849,11 +1846,8 @@ export function HubModelPicker({
     refreshLocalModelsList();
   }, [hfToken, refreshLocalModelsList]);
 
-  // Updates run as MANAGED downloads (they show in the global Downloads panel
-  // with manifest-based progress + a working Cancel), instead of a blocking
-  // call. The worker re-resolves `main` and pulls only changed blobs, so the
-  // cached copy stays usable until the new revision lands. The row's
-  // ModelUpdateAction refreshes the list when this repo+variant completes.
+  // Updates run as managed downloads (Downloads panel: progress + Cancel), not a blocking
+  // call. The worker pulls only changed blobs, so the cached copy stays usable until done.
   const startManagedUpdate = useCallback((repoId: string, variant: string, expectedBytes: number) => {
     return downloadManager
       .requestStart({
