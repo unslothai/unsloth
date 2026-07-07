@@ -1930,11 +1930,18 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
 
     # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
     def _apply_inv_freq_scaling(self, freqs: torch.Tensor):
-        # Values obtained from grid search
-        scale_factor = 8
-        low_freq_factor = 1
-        high_freq_factor = 4
-        old_context_len = 8192  # original llama3 length
+        # llama3 factors from config; Llama-3.1 defaults when built without one
+        # (legacy codegen path). Hardcoding 8 is wrong for e.g. Llama-3.2 (32).
+        # v5 renames rope_scaling -> rope_parameters; read either so the factor
+        # survives even if the rope_scaling back-compat shim is dropped.
+        config = getattr(self, "_unsloth_rope_config", None)
+        rope_scaling = _rope_scaling_as_dict(
+            getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
+        )
+        scale_factor = rope_scaling.get("factor", 8)
+        low_freq_factor = rope_scaling.get("low_freq_factor", 1)
+        high_freq_factor = rope_scaling.get("high_freq_factor", 4)
+        old_context_len = rope_scaling.get("original_max_position_embeddings", 8192)
 
         low_freq_wavelen = old_context_len / low_freq_factor
         high_freq_wavelen = old_context_len / high_freq_factor
