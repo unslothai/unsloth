@@ -874,14 +874,27 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("chunks", "expected_exit"),
+    ("chunk_kind", "expected_exit"),
     [
-        (["answer"], 0),
-        (["Error: generation failed"], 1),
+        ("answer", 0),
+        ("model_text_error", 0),
+        ("real_error", 1),
     ],
 )
-def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunks, expected_exit):
+def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunk_kind, expected_exit):
     from unsloth_cli.commands import inference as infermod
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    from core.inference.orchestrator import GenStreamError
+
+    if chunk_kind == "answer":
+        chunks = ["answer"]
+    elif chunk_kind == "model_text_error":
+        # Model output whose visible text starts with "Error:" must not abort.
+        chunks = ["Error: printed by the model, not a backend failure"]
+    else:
+        chunks = [GenStreamError("Error: generation failed")]
 
     loads, closed = [], []
 
@@ -911,7 +924,7 @@ def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunks, expected
 
     assert result.exit_code == expected_exit, result.output
     assert loads[0][1]["tensor_parallel"] is True
-    if expected_exit:
+    if chunk_kind == "real_error":
         assert "generation failed" in result.output
 
 
@@ -1009,8 +1022,16 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("stream_error", ["exception", "chunk"])
-def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_error):
+@pytest.mark.parametrize(
+    ("stream_error", "expected_exit"),
+    [("exception", 1), ("chunk", 1), ("model_text", 0)],
+)
+def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_error, expected_exit):
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    from core.inference.orchestrator import GenStreamError
+
     closed = []
 
     class _FakeChatBackend:
@@ -1025,7 +1046,10 @@ def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_err
         def stream(self, messages, **kwargs):
             if stream_error == "exception":
                 raise RuntimeError("generation failed")
-            return iter(["Error: generation failed"])
+            if stream_error == "model_text":
+                # Plain model text starting with "Error:" must not abort the run.
+                return iter(["Error: printed by the model"])
+            return iter([GenStreamError("Error: generation failed")])
 
         def close(self):
             closed.append(True)
@@ -1042,8 +1066,9 @@ def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_err
 
     result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
 
-    assert result.exit_code == 1
-    assert "generation failed" in result.output
+    assert result.exit_code == expected_exit
+    if expected_exit:
+        assert "generation failed" in result.output
     assert closed == [True]
 
 

@@ -233,9 +233,17 @@ def collect_stream(stream, show_thinking: bool) -> str:
 
 
 def raise_on_streamed_error(stream):
+    # Match real backend errors by type, not the "Error:" text prefix, so a
+    # completion whose visible text opens with "Error:" is not misread as a
+    # failure and used to abort a distributed run.
+    try:
+        ensure_studio_backend_path()
+        from core.inference.orchestrator import GenStreamError
+    except Exception:
+        GenStreamError = None
     for chunk in stream:
-        if isinstance(chunk, str) and chunk.startswith(_STREAMED_ERROR_PREFIX):
-            raise RuntimeError(chunk[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error")
+        if GenStreamError is not None and isinstance(chunk, GenStreamError):
+            raise RuntimeError(str(chunk)[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error")
         yield chunk
 
 

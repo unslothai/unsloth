@@ -50,6 +50,17 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
+class GenStreamError(str):
+    """A stream chunk carrying a real backend/generation error, not model text.
+
+    Subclasses str so existing display/logging consumers are unaffected, while
+    callers that must abort a distributed run on error (raise_on_streamed_error)
+    can distinguish a real error from model output whose visible text starts with
+    "Error:" by checking isinstance(chunk, GenStreamError).
+    """
+    __slots__ = ()
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -484,13 +495,13 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
                 return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                    yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
                     return
                 continue
 
@@ -500,7 +511,7 @@ class InferenceOrchestrator:
             # Subprocess-level error (no request_id); request-scoped failures
             # arrive as gen_error below.
             if rtype == "error" and not resp.get("request_id"):
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
             if rtype == "token":
@@ -515,7 +526,7 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
     # ------------------------------------------------------------------
@@ -642,11 +653,11 @@ class InferenceOrchestrator:
         GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running")
             return
 
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model")
             return
         # Latch the target model so the recheck below can detect a switch that completed
         # between _start_dispatcher and mailbox registration (mirrors the locked path's
@@ -657,7 +668,7 @@ class InferenceOrchestrator:
         # so without this early-out a compare request would enqueue a generate on the
         # outgoing model and delay the switch.
         if self._unload_pending:
-            yield "Error: model is being unloaded"
+            yield GenStreamError("Error: model is being unloaded")
             return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
@@ -729,7 +740,7 @@ class InferenceOrchestrator:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            yield "Error: model is being unloaded"
+            yield GenStreamError("Error: model is being unloaded")
             return
 
         try:
@@ -737,7 +748,7 @@ class InferenceOrchestrator:
         except RuntimeError as exc:
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
-            yield f"Error: {exc}"
+            yield GenStreamError(f"Error: {exc}")
             return
 
         def read_mailbox(timeout):
@@ -1400,11 +1411,11 @@ class InferenceOrchestrator:
         readers don't consume each other's tokens off the shared resp_queue.
         """
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running")
             return
 
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model")
             return
         expected_model = self.active_model_name
 
@@ -1421,7 +1432,7 @@ class InferenceOrchestrator:
             # so we never generate on the wrong one.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield "Error: model is being unloaded"
+                yield GenStreamError("Error: model is being unloaded")
                 return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
@@ -1447,7 +1458,7 @@ class InferenceOrchestrator:
             try:
                 self._send_cmd(cmd)
             except RuntimeError as exc:
-                yield f"Error: {exc}"
+                yield GenStreamError(f"Error: {exc}")
                 return
 
             yield from self._consume_token_stream(
@@ -1606,10 +1617,10 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running")
             return
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model")
             return
         expected_model = self.active_model_name
 
@@ -1618,7 +1629,7 @@ class InferenceOrchestrator:
             # cleared or swapped the model while we waited.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield "Error: model is being unloaded"
+                yield GenStreamError("Error: model is being unloaded")
                 return
             request_id = str(uuid.uuid4())
 
@@ -1645,7 +1656,7 @@ class InferenceOrchestrator:
             try:
                 self._send_cmd(cmd)
             except RuntimeError as exc:
-                yield f"Error: {exc}"
+                yield GenStreamError(f"Error: {exc}")
                 return
 
             yield from self._consume_token_stream(
