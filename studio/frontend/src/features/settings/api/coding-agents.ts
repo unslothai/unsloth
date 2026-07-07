@@ -16,7 +16,11 @@ type ApiCodingAgentsInfo = {
   detected: string[];
 };
 
-let cachedInfo: CodingAgentsInfo | null = null;
+// Which CLIs are on PATH is environment state, not a persisted setting -- it
+// can change any time the user installs something new, so this only
+// de-duplicates concurrent in-flight calls (e.g. React strict-mode's double
+// mount) rather than caching the result across the module's lifetime. Every
+// fresh call (each time a settings panel mounts) re-checks PATH for real.
 let inFlightInfo: Promise<CodingAgentsInfo> | null = null;
 
 function fromApi(info: ApiCodingAgentsInfo): CodingAgentsInfo {
@@ -34,16 +38,8 @@ async function fetchCodingAgents(): Promise<CodingAgentsInfo> {
 }
 
 export async function loadCodingAgents(): Promise<CodingAgentsInfo> {
-  if (cachedInfo) {
-    return cachedInfo;
-  }
-  inFlightInfo ??= fetchCodingAgents()
-    .then((info) => {
-      cachedInfo = info;
-      return info;
-    })
-    .finally(() => {
-      inFlightInfo = null;
-    });
+  inFlightInfo ??= fetchCodingAgents().finally(() => {
+    inFlightInfo = null;
+  });
   return inFlightInfo;
 }

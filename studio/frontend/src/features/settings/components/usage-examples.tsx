@@ -501,19 +501,24 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   }, []);
 
   useEffect(() => {
+    // shutil.which runs on the Studio backend, so "detected" only means
+    // something for the browser's own machine when the base this panel
+    // targets is loopback; for a LAN/tunnel/remote base the server's
+    // installed CLIs describe a different machine. Skip the request
+    // entirely and clear out any stale result from a previous loopback
+    // base (e.g. the Cloudflare URL arriving after mount, or the user
+    // flipping Secure HTTPS/tunnel) instead of leaving old agents marked
+    // "detected" for a command that now targets somewhere else.
+    if (!isLoopbackBase) {
+      setDetectedAgents([]);
+      return;
+    }
+
     let cancelled = false;
     void loadCodingAgents()
       .then((info) => {
         if (cancelled) return;
         setAvailableAgents(info.agents);
-
-        // shutil.which runs on the Studio backend, so "detected" only means
-        // something for the browser's own machine when the base this panel
-        // targets is loopback; for a LAN/tunnel/remote base the server's
-        // installed CLIs describe a different machine, so don't mark
-        // anything as detected or let it drive the default.
-        if (!isLoopbackBase) return;
-
         setDetectedAgents(info.detected);
         // Prefer an agent that's actually installed over the hardcoded
         // "claude" starting point, but never override a choice the user
@@ -537,6 +542,20 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       cancelled = true;
     };
   }, [isLoopbackBase]);
+
+  // The effect above only re-evaluates codex's GGUF requirement at the
+  // moment detection resolves; if the user swaps to a non-GGUF model while
+  // this panel stays mounted, steer the auto-pick away from codex instead of
+  // leaving a command that unsloth_cli's _require_gguf_for_codex will now
+  // reject. No network call here -- it only re-derives from state already in
+  // hand, and it never overrides a choice the user made by hand.
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  useEffect(() => {
+    if (agentPickedByUserRef.current) return;
+    if (agent !== "codex" || activeGgufVariant) return;
+    const fallback = detectedAgents.find((id) => id !== "codex");
+    if (fallback) setAgent(fallback);
+  }, [agent, activeGgufVariant, detectedAgents]);
 
   useEffect(() => {
     let cancelled = false;
