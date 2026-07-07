@@ -3748,8 +3748,7 @@ def _prewarm_base_model_hub_cache(
         if not model_name or is_local_path:
             return
         # Mirror the merge: an FP8 base with a 16bit sibling merges onto the sibling, so
-        # pre-warm the sibling (what the merge downloads), not the FP8 repo, else the
-        # cache-copy fast path misses and #6890 stays unfixed for FP8 bases.
+        # pre-warm the sibling (what the merge downloads), not the FP8 repo (#6890).
         if base_is_quantized and quant_type == "fp8" and save_method == "merged_16bit":
             try:
                 from unsloth_zoo.saving_utils import _resolve_fp8_16bit_sibling
@@ -3767,9 +3766,8 @@ def _prewarm_base_model_hub_cache(
 
         from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
-        # Resolve the cache from the live env (as the merge does), not huggingface_hub's
-        # import-time-frozen constants: a runtime HF cache redirect (read-only default
-        # cache, Studio) would otherwise pre-warm the wrong dir and miss on merge (#6890).
+        # Resolve the cache from the live env like the merge, not huggingface_hub's frozen
+        # constants: a runtime cache redirect (read-only default, Studio) would else miss (#6890).
         try:
             from unsloth_zoo.hf_cache import _active_caches
             _hub_cache = _active_caches()[1]
@@ -3802,10 +3800,9 @@ def _prewarm_base_model_hub_cache(
         except Exception:
             pass
 
-        # Mirror the merge's index filter (only needed on the download path): some repos ship
-        # a leftover shard set the index does not reference; the merge keeps only indexed
-        # shards, so cache only those, else the disk gate over-counts (can skip) and
-        # snapshot_download fetches unused shards.
+        # Mirror the merge's index filter (download path only): some repos ship leftover shards
+        # the index omits; keep only indexed ones, else the disk gate over-counts and we fetch
+        # unused shards.
         if len(shard_names) > 1:
             try:
                 import json as _json

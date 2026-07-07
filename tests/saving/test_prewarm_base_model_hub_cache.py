@@ -331,9 +331,8 @@ def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
 
 
 def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
-    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a
-    # real root for the disk-space probe; without abspath the walk-up hits "" and
-    # the pre-warm is wrongly skipped. Run from a real dir so abspath has a base.
+    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a real
+    # root for the disk probe; without abspath the walk-up hits "" and pre-warm is skipped.
     monkeypatch.chdir(tmp_path)
     fn, stubs = _build_env(monkeypatch, tmp_path, hub_cache = "relcache/hub")
     fn(_FakePeftModel(), save_method = "merged_16bit")
