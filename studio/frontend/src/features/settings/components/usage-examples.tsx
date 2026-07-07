@@ -500,6 +500,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     void fetchDeviceType({ force: true });
   }, []);
 
+  // Fetching is the only job of this effect: populate availableAgents/
+  // detectedAgents (or clear them). Which agent gets auto-picked from that
+  // list is derived separately below, so it can react to the loaded model
+  // changing too, not just a fresh fetch.
   useEffect(() => {
     // shutil.which runs on the Studio backend, so "detected" only means
     // something for the browser's own machine when the base this panel
@@ -520,20 +524,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
         if (cancelled) return;
         setAvailableAgents(info.agents);
         setDetectedAgents(info.detected);
-        // Prefer an agent that's actually installed over the hardcoded
-        // "claude" starting point, but never override a choice the user
-        // already made -- including one made while this request was in
-        // flight, which a value comparison against "claude" alone would miss.
-        // `codex` additionally refuses to launch against a non-GGUF model
-        // (unsloth_cli's _require_gguf_for_codex exits for transformers-backed
-        // models), so skip it unless the loaded model actually qualifies.
-        if (!agentPickedByUserRef.current && info.detected.length > 0) {
-          const isGguf = Boolean(
-            useChatRuntimeStore.getState().activeGgufVariant,
-          );
-          const preferred = info.detected.find((a) => a !== "codex" || isGguf);
-          if (preferred) setAgent(preferred);
-        }
       })
       .catch(() => {
         // Best-effort: keep the default agent list and let the user pick manually.
@@ -543,19 +533,22 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     };
   }, [isLoopbackBase]);
 
-  // The effect above only re-evaluates codex's GGUF requirement at the
-  // moment detection resolves; if the user swaps to a non-GGUF model while
-  // this panel stays mounted, steer the auto-pick away from codex instead of
-  // leaving a command that unsloth_cli's _require_gguf_for_codex will now
-  // reject. No network call here -- it only re-derives from state already in
-  // hand, and it never overrides a choice the user made by hand.
+  // Single source of truth for the auto-picked agent, re-derived whenever
+  // the detected list or the loaded model's GGUF-ness changes -- in either
+  // direction. `codex` needs a GGUF model (unsloth_cli's
+  // _require_gguf_for_codex exits otherwise), so it's only preferred once
+  // the loaded model actually qualifies; loading a GGUF model *after* a
+  // non-GGUF-gated fallback picked something else re-steers back to codex
+  // just as loading a non-GGUF model steers away from it. Never overrides a
+  // choice the user made by hand.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
-    if (agent !== "codex" || activeGgufVariant) return;
-    const fallback = detectedAgents.find((id) => id !== "codex");
-    if (fallback) setAgent(fallback);
-  }, [agent, activeGgufVariant, detectedAgents]);
+    if (detectedAgents.length === 0) return;
+    const isGguf = Boolean(activeGgufVariant);
+    const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
+    if (preferred) setAgent(preferred);
+  }, [detectedAgents, activeGgufVariant]);
 
   useEffect(() => {
     let cancelled = false;
