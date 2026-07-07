@@ -220,13 +220,24 @@ _UNION_CONTROL_MODES: dict[str, int] = {
 def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     """The integer ``control_mode`` for a union ControlNet, or None.
 
-    A union model requires a concrete mode (diffusers raises on None), so a curated union
-    entry always gets an index, defaulting to 0 for types like 'passthrough' that carry
-    none. A non-union entry returns None so the caller omits the kwarg."""
+    A union model requires a concrete mode (diffusers raises on None). A known mode maps to its
+    index; ``passthrough`` (or an empty type) carries no intrinsic mode and defaults to 0 (the
+    canny head). An unknown/typo'd type (e.g. 'detph') raises ValueError so the route rejects it
+    with a 400 instead of silently running the canny head against a map meant for another mode,
+    which would produce wrong conditioning. A non-union entry returns None so the caller omits the
+    kwarg."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None or not entry.is_union:
         return None
-    return _UNION_CONTROL_MODES.get((control_type or "").strip().lower(), 0)
+    ct = (control_type or "").strip().lower()
+    if ct in _UNION_CONTROL_MODES:
+        return _UNION_CONTROL_MODES[ct]
+    if ct in ("", "passthrough"):
+        return 0  # already-preprocessed map with no intrinsic mode; canny is the default head
+    raise ValueError(
+        f"Unknown control type {control_type!r} for a union ControlNet. Use one of: "
+        f"{', '.join(sorted(_UNION_CONTROL_MODES))}, or passthrough."
+    )
 
 
 def preprocess_control(image: Any, control_type: str) -> Any:
