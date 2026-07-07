@@ -545,7 +545,19 @@ def _fp8_scale_snapshot_allow_patterns(
             f"*.safetensors.index.{variant}.json",
         ]
     else:
-        patterns = ["*.safetensors", "*.safetensors.index.json"]
+        # Restrict to the default (non-variant) transformers artifact names the scanner opens
+        # (model / pytorch_model, single-file or sharded, plus their index), NOT a bare
+        # *.safetensors: a repo that also publishes alternate variants would otherwise pull
+        # those unused shards too. These cover every file _resolve_fp8_scale_safetensors_files
+        # reads for the no-variant case, so nothing needed is skipped. #6749
+        patterns = [
+            "model.safetensors",
+            "pytorch_model.safetensors",
+            "model-*-of-*.safetensors",
+            "pytorch_model-*-of-*.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.safetensors.index.json",
+        ]
     if subfolder:
         patterns = [f"{subfolder}/{pattern}" for pattern in patterns]
     return patterns

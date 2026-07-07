@@ -389,6 +389,33 @@ def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch)
     assert all("bin" not in pattern for pattern in allow_patterns)
 
 
+def test_no_variant_snapshot_patterns_exclude_alternate_variants():
+    # The no-variant patterns must cover the default single-file/sharded/index names the scanner
+    # opens, but NOT alternate variant safetensors a repo may also publish. #6749
+    import fnmatch
+
+    loader_utils = _load_loader_utils()
+    patterns = loader_utils._fp8_scale_snapshot_allow_patterns()
+
+    def matched(name):
+        return any(fnmatch.fnmatch(name, p) for p in patterns)
+
+    for name in (
+        "model.safetensors",
+        "model-00001-of-00002.safetensors",
+        "pytorch_model-00001-of-00002.safetensors",
+        "model.safetensors.index.json",
+    ):
+        assert matched(name), name
+    for name in (
+        "model.fp8.safetensors",
+        "model.fp8-00001-of-00002.safetensors",
+        "pytorch_model.bin",
+        "model-00001-of-00002.bin",
+    ):
+        assert not matched(name), name
+
+
 def test_remote_scale_restore_snapshot_patterns_respect_variant(monkeypatch):
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
