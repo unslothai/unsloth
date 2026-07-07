@@ -269,6 +269,26 @@ def estimate_image_runtime_mib(
     return max(1024, int(8192 * max(0.25, pixel_scale) * multiplier))
 
 
+def estimate_video_runtime_mib(
+    *, width: Optional[int], height: Optional[int], num_frames: Optional[int]
+) -> int:
+    """Per-call activation / latent / decode headroom for a video generation.
+
+    The image estimator is pixel-area only and badly undershoots video: latents
+    carry a frames dimension and the VAE DECODE is the peak -- the decoded clip
+    materialises as num_frames full-resolution fp32 frames plus the decoder's
+    intermediates, typically dwarfing the denoise activations. Scale by the
+    decoded-clip footprint (frames x H x W x 3 x 4 bytes) with a 3x factor for
+    decoder intermediates + the PIL/tensor copy held during export, on top of a
+    fixed denoise-side base.
+    """
+    w = max(64, int(width or 768))
+    h = max(64, int(height or 512))
+    frames = max(1, int(num_frames or 121))
+    decoded_mib = (frames * w * h * 3 * 4) / float(1024 * 1024)
+    return max(3072, int(4096 + 3.0 * decoded_mib))
+
+
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """Free memory minus a headroom reserve, so a plan that "fits" leaves room for
     fragmentation and other tenants. None when free memory is unknown."""

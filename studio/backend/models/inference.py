@@ -2248,3 +2248,245 @@ class ImageGenerationResponse(BaseModel):
 
     created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
     data: list[ImageGenerationData] = Field(..., description = "The generated images.")
+
+
+# ── Video (local text-to-video) ──
+
+
+class VideoLoadRequest(BaseModel):
+    """Request to load a local text-to-video checkpoint."""
+
+    model_path: str = Field(..., description = "Video repo id or local path")
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
+        "model_path. Required for the gguf / single_file kinds; omit for a full pipeline.",
+    )
+    model_kind: Optional[Literal["gguf", "single_file", "pipeline"]] = Field(
+        None,
+        description = "How to load the model (null = auto-detect from gguf_filename): gguf "
+        "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
+        "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
+        "from_pretrained). Non-GGUF kinds are restricted to unsloth/* repos, the official "
+        "family base repos, or a local path.",
+    )
+    base_repo: Optional[str] = Field(
+        None,
+        description = "Companion diffusers repo for VAE/text-encoders (default: family base)",
+    )
+    family_override: Optional[str] = Field(
+        None, description = "Force a family when it can't be inferred from the repo id"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
+        None,
+        description = "Memory policy: auto (measured), fast (resident), balanced "
+        "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
+        "(offload every component, lowest VRAM, slower).",
+    )
+    speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
+        None,
+        description = "Opt-in speed optims (default off -> bit-identical output): "
+        "eager (channels_last + cudnn + attention + fused norm patches, NO torch.compile), "
+        "default (also regional torch.compile where eligible), "
+        "max (also TF32 + fused QKV). GGUF video loads default to the near-lossless "
+        "compile profile.",
+    )
+    attention_backend: Optional[
+        Literal[
+            "auto",
+            "native",
+            "sdpa",
+            "cudnn",
+            "flash",
+            "flash2",
+            "flash3",
+            "flash4",
+            "sage",
+            "xformers",
+            "aiter",
+        ]
+    ] = Field(
+        None,
+        description = "Attention kernel via the diffusers dispatcher. auto picks the best "
+        "exact backend for the device (cuDNN fused attention on NVIDIA when a speed profile "
+        "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
+        "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
+        "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "kernel falls back to the default.",
+    )
+    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+        None,
+        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
+        "reuse the transformer tail across denoise steps when the first block's residual "
+        "barely changes. Engages on many-step schedules only; incompatible models run "
+        "uncached.",
+    )
+    transformer_cache_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
+        "quality). null auto-picks the family default.",
+    )
+
+    @field_validator("attention_backend", mode = "before")
+    @classmethod
+    def _normalize_attention_backend(cls, value):
+        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the
+        # Literal above is validated before any normaliser runs, so fold a string to its
+        # canonical lower/stripped form here -- otherwise valid casing gets a 422.
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class VideoGenerateRequest(BaseModel):
+    """Request to generate one clip from the loaded video model."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text prompt")
+    negative_prompt: Optional[str] = Field(
+        None, description = "What to avoid (if the model supports it)"
+    )
+    # Width/height/num_frames/fps default per loaded family (the backend snaps them to
+    # the family's required multiples/lattice), so they are optional here.
+    width: Optional[int] = Field(
+        None, ge = 32, le = 2048, description = "Frame width in pixels (family multiple)"
+    )
+    height: Optional[int] = Field(
+        None, ge = 32, le = 2048, description = "Frame height in pixels (family multiple)"
+    )
+    num_frames: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 1024,
+        description = "Number of frames; snapped to the family's temporal lattice",
+    )
+    fps: Optional[int] = Field(
+        None, ge = 1, le = 120, description = "Playback frame rate (default per family)"
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "Number of denoising steps (default per model)"
+    )
+    guidance: Optional[float] = Field(
+        None, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale (default per model)"
+    )
+    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript
+    # rounds integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then
+    # generate a different clip. Random seeds are already masked to this range.
+    seed: Optional[int] = Field(
+        None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
+    )
+
+
+class GalleryVideo(BaseModel):
+    """A persisted clip's full generation recipe (the JSON sidecar of the MP4)."""
+
+    id: str = Field(..., description = "Stable id (the on-disk filename stem)")
+    url: str = Field(..., description = "Relative URL to fetch the MP4 bytes")
+    prompt: str = Field(..., description = "Prompt used")
+    negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
+    width: int = Field(..., description = "Frame width")
+    height: int = Field(..., description = "Frame height")
+    num_frames: int = Field(..., description = "Number of frames")
+    fps: int = Field(..., description = "Playback frame rate")
+    duration_s: float = Field(..., description = "Clip duration in seconds")
+    steps: int = Field(..., description = "Denoising steps")
+    guidance: float = Field(..., description = "Guidance scale")
+    seed: int = Field(..., description = "Seed used")
+    has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
+    model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
+
+
+class VideoGenerateResponse(BaseModel):
+    """The persisted gallery record for one generation call."""
+
+    video: GalleryVideo = Field(..., description = "Saved record for the generated clip")
+
+
+class VideoGalleryListResponse(BaseModel):
+    """A newest-first page of persisted videos, for infinite scroll."""
+
+    videos: list[GalleryVideo] = Field(default_factory = list)
+    has_more: bool = Field(False, description = "Whether older videos remain past this page")
+
+
+class VideoGenerateProgressResponse(BaseModel):
+    """Live progress for an in-flight video generation."""
+
+    active: bool = Field(False, description = "Whether a generation is running")
+    phase: Optional[str] = Field(None, description = "Current phase: denoise | export | null")
+    step: int = Field(0, description = "Denoising steps completed so far")
+    total: int = Field(0, description = "Total denoising steps for this run")
+    eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+
+
+class VideoLoadProgressResponse(BaseModel):
+    """Download/finalize progress for an in-flight video load."""
+
+    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
+        None, description = "Load phase; null when idle"
+    )
+    downloaded_bytes: int = Field(0, description = "Bytes present in the HF cache so far")
+    expected_bytes: Optional[int] = Field(
+        None, description = "Estimated total bytes to download (null = unknown)"
+    )
+    error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+
+
+class VideoGenerationDefaults(BaseModel):
+    """Per-family generation defaults + shape constraints for the loaded video model."""
+
+    steps: int = Field(..., description = "Default denoising steps")
+    guidance: float = Field(..., description = "Default guidance scale")
+    num_frames: int = Field(..., description = "Default frame count")
+    fps: int = Field(..., description = "Default playback frame rate")
+    frame_step: int = Field(
+        ..., description = "Temporal lattice: valid counts are k * frame_step + 1"
+    )
+    resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
+    resolution_presets: list[list[int]] = Field(
+        default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+
+
+class VideoStatusResponse(BaseModel):
+    """Current video backend state."""
+
+    loaded: bool = Field(False, description = "Whether a video model is loaded")
+    repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    family: Optional[str] = Field(None, description = "Detected video family")
+    base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
+    device: Optional[str] = Field(None, description = "Device the pipeline is on")
+    dtype: Optional[str] = Field(None, description = "Compute dtype")
+    model_kind: Optional[str] = Field(
+        None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    offload_policy: Optional[str] = Field(
+        None, description = "Resolved offload policy: none | group | model | sequential"
+    )
+    vae_tiling: bool = Field(False, description = "Whether VAE tiling is enabled")
+    memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
+    speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
+    speed_optims: list[str] = Field(
+        default_factory = list, description = "Speed optimisations actually engaged"
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged via the diffusers dispatcher (e.g. "
+        "_native_cudnn), or null for the default SDPA",
+    )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    has_audio: bool = Field(
+        False, description = "Whether the loaded family produces a synchronized audio track"
+    )
+    defaults: Optional[VideoGenerationDefaults] = Field(
+        None, description = "Per-family generation defaults + shape constraints; null when unloaded"
+    )
+    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Same
+    # shape as the diffusion status uses; null when nothing is loaded. The frontend renders
+    # an "Auto: X" badge next to each control whose source == "auto".
+    resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
+        None,
+        description = "Per-control resolved value + provenance (source auto|explicit + reason), "
+        "keyed by Advanced control name; null when unloaded or unavailable.",
+    )

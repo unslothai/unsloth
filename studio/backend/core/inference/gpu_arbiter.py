@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 
 CHAT = "chat"
 DIFFUSION = "diffusion"
+VIDEO = "video"
 
 _lock = threading.Lock()
 _owner: Optional[str] = None
@@ -61,8 +62,16 @@ def _evict_diffusion() -> None:
     get_active_diffusion_engine().unload()
 
 
-# Patchable in tests via monkeypatch.setitem.
-_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion}
+def _evict_video() -> None:
+    from core.inference.video import get_video_backend
+    get_video_backend().unload()
+
+
+# Patchable in tests via monkeypatch.setitem. Ownership is exclusive -- only one
+# owner holds the GPU at a time -- so acquire_for's evict-the-current-owner
+# already generalises to any number of registered owners (chat / image / video
+# all evict whichever of the others currently holds the GPU).
+_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 
 def acquire_for(owner: str) -> None:
