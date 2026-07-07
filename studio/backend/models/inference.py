@@ -775,7 +775,7 @@ class ChatCompletionRequest(BaseModel):
     )
     confirm_code_execution: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] When true, pause only before local code-execution tool calls (python/terminal) and wait for the user to allow/deny each via POST /api/inference/tool-confirm; other tools (web_search, render_html, ...) still run without a prompt. Applies to local python/terminal execution only, so it is ignored for external providers and Anthropic server tools (their code runs in the provider's sandbox, not locally). Independent of confirm_tool_calls; requires stream=true when a local code-execution tool is enabled; bypass_permissions still takes precedence.",
+        description = "[x-unsloth] When true, pause only before local code-execution tool calls (python/terminal) and wait for the user to allow/deny each via POST /api/inference/tool-confirm; other tools (web_search, render_html, ...) still run without a prompt. Supported on the OpenAI-compatible local endpoints (/v1/chat/completions, /v1/responses). It is ignored for external providers (their hosted code runs in the provider's sandbox, not locally); on Anthropic /v1/messages it is rejected when a local code-execution tool is selected, since that path does not wire the confirmation prompt. Independent of confirm_tool_calls; requires stream=true when a local code-execution tool is enabled; bypass_permissions still takes precedence.",
     )
     bypass_permissions: Optional[bool] = Field(
         False,
