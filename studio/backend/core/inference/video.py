@@ -447,14 +447,35 @@ class VideoBackend:
         # A local checkpoint that cannot exist must fail HERE, before the route evicts
         # a resident chat/image model for a load that dies at resolve time.
         if kind in ("gguf", "single_file"):
+            # Fail a kind/extension mismatch before the GPU handoff instead of deep in the
+            # background loader: a "gguf" load needs a .gguf file, a "single_file" load must not be
+            # handed a .gguf and must name an actual .safetensors checkpoint. Mirrors the image
+            # loader's kind/extension gate in diffusion.validate_load_request.
+            is_gguf_name = (gguf_filename or "").lower().endswith(".gguf")
+            if kind == "gguf" and not is_gguf_name:
+                raise ValueError("a 'gguf' load requires a .gguf checkpoint name.")
+            if kind == "single_file" and is_gguf_name:
+                raise ValueError("a .gguf checkpoint needs model_kind 'gguf', not 'single_file'.")
+            if kind == "single_file" and not (gguf_filename or "").lower().endswith(".safetensors"):
+                raise ValueError(
+                    f"'{gguf_filename}' is not a loadable single-file checkpoint "
+                    f"(expected a .safetensors name; use a .gguf name for a GGUF load)."
+                )
             root = Path(repo_id).expanduser()
+            # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and Windows .\ ..\), a Windows
+            # separator anywhere (never in a bare "org/name" id), or an absolute path on this OS
+            # (covers Windows C:\ / C:/). Mirrors the image loader so a missing Windows-shaped
+            # local pick fails before the GPU handoff instead of being treated as a Hub repo.
+            path_shaped = (
+                repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or root.is_absolute()
+            )
             if root.is_dir():
                 from .diffusion_families import resolve_local_gguf_child
                 try:
                     resolve_local_gguf_child(root, gguf_filename or "")
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
                     raise ValueError(str(exc)) from exc
-            elif repo_id.startswith(("/", "~", "./", "../")) and not root.is_file():
+            elif path_shaped and not root.is_file():
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
         # A local pipeline pick must be a real diffusers directory (model_index.json), or it
         # would only fail deep in from_pretrained AFTER the route evicted the resident model.
@@ -908,7 +929,15 @@ class VideoBackend:
             "",
             "auto",
         ):
-            transformer_quant = TQ_AUTO
+            # An explicit Speed="off" (bit-exact) load must stay dense bf16: promoting the unset
+            # precision to auto-quant here would engage int8/fp8 + regional compile and silently
+            # break the user's bit-exact request (an auto DEFAULT overriding an EXPLICIT control),
+            # and the quant path below would then also force effective_speed back to default.
+            # Suppress the auto default when speed was explicitly pinned off, mirroring the image
+            # backend (diffusion.py); otherwise auto (the dense-capable default) applies. "off"
+            # normalizes to None (no dense quant), keeping the dense bf16 path.
+            speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+            transformer_quant = "off" if speed_off else TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
         device_memory = snapshot_device_memory(target)

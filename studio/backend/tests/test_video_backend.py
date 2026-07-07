@@ -462,6 +462,54 @@ def test_validate_gates_base_repo_and_local_paths(tmp_path):
         )
 
 
+def test_validate_rejects_kind_extension_mismatch(tmp_path):
+    backend = VideoBackend()
+    # model_kind single_file with a .gguf file, or gguf with a non-.gguf file, must be rejected
+    # BEFORE the GPU handoff (mirrors the image loader), instead of failing in the wrong
+    # single-file loader after the route evicted the resident model.
+    with pytest.raises(ValueError, match = "needs model_kind 'gguf'"):
+        backend.validate_load_request(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "single_file",
+            family_override = "ltx-2",
+        )
+    with pytest.raises(ValueError, match = "requires a .gguf"):
+        backend.validate_load_request(
+            "unsloth/LTX-2.3",
+            gguf_filename = "x.safetensors",
+            model_kind = "gguf",
+            family_override = "ltx-2",
+        )
+    with pytest.raises(ValueError, match = "not a loadable single-file checkpoint"):
+        backend.validate_load_request(
+            "unsloth/LTX-2.3",
+            gguf_filename = "readme.md",
+            model_kind = "single_file",
+            family_override = "ltx-2",
+        )
+
+
+def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
+    backend = VideoBackend()
+    # A missing Windows-shaped local pick (backslash path, or a C:/ drive path) must fail HERE,
+    # not be treated as a Hub repo and only fail after the route evicts the resident GPU owner.
+    # Mirrors the image loader's is_absolute()/backslash path-shaped check.
+    with pytest.raises(ValueError, match = "does not exist"):
+        backend.validate_load_request(
+            "C:\\models\\ltx.gguf",
+            gguf_filename = "ltx.gguf",
+            family_override = "ltx-2",
+        )
+    # A bare "org/name" Hub id (no path shape) is still left for the background load to resolve.
+    fam = backend.validate_load_request(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx.gguf",
+        family_override = "ltx-2",
+    )
+    assert fam.name == "ltx-2"
+
+
 def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     backend = VideoBackend()
     d = tmp_path / "ltx-local"
@@ -936,6 +984,35 @@ def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
     )
     assert status_off["speed_mode"] == "off"
     assert status_off["resolved"]["speed_mode"]["source"] == "explicit"
+
+
+def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
+    # An explicit Speed="off" (bit-exact) pipeline load with Precision left at auto must NOT
+    # promote the unset precision to auto-quant: doing so would engage torchao quantization (and
+    # then force the speed back to default), silently breaking the bit-exact request. Mirrors the
+    # image backend. On a dense-capable GPU (stubbed) quantize_transformer must not run.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    calls: list = []
+    monkeypatch.setattr(
+        video_mod, "quantize_transformer", lambda view, target, **kw: calls.append(True) or "int8"
+    )
+
+    backend = VideoBackend()
+    # speed=off + precision auto (unset): no auto-quant, speed stays off (bit-exact).
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert calls == []  # quantize_transformer never ran
+    assert status["transformer_quant"] is None
+    assert status["speed_mode"] == "off"
+    backend.unload()
+
+    # Control: with speed NOT off, the auto precision promotion still engages the dense quant, so
+    # the suppression above is specific to speed=off (not a blanket disable).
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert calls == [True]
 
 
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
