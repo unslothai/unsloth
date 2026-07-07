@@ -1495,3 +1495,126 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
         t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
     ]
     assert remaining == [], "dispatcher must be stopped and joined"
+
+
+# ----------------------------------------------------------------------------
+# A compare request whose _start_dispatcher is queued behind an unload's
+# _stop_dispatcher must NOT spawn a fresh dispatcher. The idle-dispatcher stop
+# and the queued start both serialize on _dispatcher_lifecycle_lock; if the
+# queued start spawned a new dispatcher after the stop, it would become the
+# resp_queue reader and consume unload_model's "unloaded" reply (unroutable, so
+# dropped) before _wait_response saw it -- hanging the unload on its 300s
+# timeout. unload_model sets _unload_pending under the SAME lifecycle lock ahead
+# of the stop, so _start_dispatcher observes it and refuses.
+# ----------------------------------------------------------------------------
+
+
+def test_start_dispatcher_refuses_while_unload_pending():
+    # Direct unit guard: with an unload in progress (_unload_pending set under the
+    # lifecycle lock by unload_model), _start_dispatcher must refuse and spawn nothing,
+    # even though no dispatcher is currently running.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
+    o._dispatcher_thread = None
+    o._dispatcher_stop = threading.Event()
+    o._dispatcher_lifecycle_lock = threading.Lock()
+    o._unload_pending = True
+
+    started = o._start_dispatcher()
+
+    assert started is False, "must not start a dispatcher while an unload is pending"
+    assert o._dispatcher_thread is None, "no dispatcher thread may be created"
+    live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
+    assert live == [], "no dispatcher may exist to consume the unloaded reply"
+
+
+def test_start_dispatcher_resumes_after_unload_clears():
+    # Guard the other direction: once the unload finishes and clears _unload_pending, a
+    # later compare request must be able to start the dispatcher again (the gate must not
+    # wedge). Proves the refusal above is scoped to the unload, not permanent.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._resp_queue = _queue.Queue()
+    o._dispatcher_thread = None
+    o._dispatcher_stop = threading.Event()
+    o._dispatcher_lifecycle_lock = threading.Lock()
+    o._unload_pending = False
+
+    try:
+        assert o._start_dispatcher() is True, "a fresh dispatcher must start once no unload is pending"
+        assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
+    finally:
+        o._stop_dispatcher()
+
+    assert o._dispatcher_thread is None
+
+
+def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
+    # Codex's exact ordering, forced deterministically: an unload holds
+    # _dispatcher_lifecycle_lock across its _stop_dispatcher (the idle dispatcher's join
+    # is gated by an event), while a compare request's _start_dispatcher is queued behind
+    # it on the same lock. When the stop releases the lock the queued start must observe
+    # _unload_pending (set under the lock ahead of the stop) and refuse: no fresh
+    # dispatcher may be left running to steal the "unloaded" reply.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._dispatcher_stop = threading.Event()
+    o._dispatcher_lifecycle_lock = threading.Lock()
+    o._unload_pending = False
+
+    start_queued = threading.Event()  # release the stop's join once the start is queued behind it
+    join_may_finish = threading.Event()
+
+    class _IdleDispatcher:
+        # Stand-in for the idle compare-mode dispatcher the unload stops. Its join blocks
+        # until we confirm the compare _start_dispatcher is queued behind the stop, so the
+        # stop provably holds _dispatcher_lifecycle_lock across that window.
+        def is_alive(self):
+            return True
+
+        def join(self, timeout = None):
+            assert start_queued.wait(timeout = 5), "compare start must queue behind the stop"
+            assert join_may_finish.wait(timeout = 5)
+
+    o._dispatcher_thread = _IdleDispatcher()
+
+    def unload_side():
+        # unload_model's sequence: set _unload_pending under the lifecycle lock, then stop
+        # the idle dispatcher (also under the lock, via _wait_dispatcher_idle).
+        with o._dispatcher_lifecycle_lock:
+            o._unload_pending = True
+        o._stop_dispatcher()
+
+    started_result = {}
+
+    def compare_side():
+        started_result["v"] = o._start_dispatcher()
+
+    u = threading.Thread(target = unload_side, name = "unload-side")
+    u.start()
+    # Let the unload set _unload_pending, enter _stop_dispatcher, and block in the gated join
+    # while holding the lifecycle lock.
+    time.sleep(0.2)
+
+    c = threading.Thread(target = compare_side, name = "compare-side")
+    c.start()
+    # Let the compare _start_dispatcher block on the lifecycle lock (queued behind the stop).
+    time.sleep(0.2)
+
+    start_queued.set()  # the start is now queued behind the stop
+    join_may_finish.set()  # let the stop's join complete and release the lock
+
+    u.join(timeout = 5)
+    c.join(timeout = 5)
+
+    assert started_result.get("v") is False, "the queued start must refuse while unloading"
+    assert o._dispatcher_thread is None, "the stop cleared it and the queued start spawned nothing"
+    live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
+    assert live == [], "no fresh dispatcher may be left to consume the unloaded reply"

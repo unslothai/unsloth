@@ -533,6 +533,15 @@ class InferenceOrchestrator:
         that actually started a new thread; False if one was already alive.
         """
         with self._dispatcher_lifecycle_lock:
+            # Refuse to start while an unload is in progress. unload_model sets
+            # _unload_pending under this same lock before it stops the idle
+            # dispatcher, so a start queued behind that stop observes the unload
+            # here and bails. Without this a fresh dispatcher would be spawned
+            # after the stop, become the resp_queue reader, and consume the
+            # worker's "unloaded" reply (unroutable, so dropped) before
+            # unload_model's _wait_response sees it -- hanging the unload 300s.
+            if self._unload_pending:
+                return False
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
                 return False
 
@@ -1062,7 +1071,15 @@ class InferenceOrchestrator:
         # The subprocess runs commands sequentially, so a bare unload queues behind a
         # running generate (a 2-3 min hang). Cancel first (via the mp.Event the worker
         # polls each token), then take _gen_lock as sole resp_queue reader (like GGUF).
-        self._unload_pending = True
+        #
+        # Set _unload_pending under _dispatcher_lifecycle_lock so it is ordered ahead of
+        # the dispatcher stop that _wait_dispatcher_idle runs under the same lock: a
+        # compare request's _start_dispatcher queued behind that stop then observes the
+        # unload and refuses to spawn a fresh dispatcher that would eat the "unloaded"
+        # reply off resp_queue. This is a standalone acquisition (no _gen_lock held yet),
+        # so it keeps the _gen_lock -> _dispatcher_lifecycle_lock order and can't deadlock.
+        with self._dispatcher_lifecycle_lock:
+            self._unload_pending = True
         # Cancelling only the running generation isn't enough: the worker clears
         # cancel_event at each generate start, so a queued one would clear it and run the
         # outgoing model to completion. drain_event, never cleared, makes any generate
