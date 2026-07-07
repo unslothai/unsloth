@@ -1356,9 +1356,7 @@ def test_parameter_scale_restore_preserves_metadata_and_identity():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
-    placeholder = torch.nn.Parameter(
-        torch.tensor([2.0], dtype = torch.float16), requires_grad = False
-    )
+    placeholder = torch.nn.Parameter(torch.tensor([2.0], dtype = torch.float16), requires_grad = False)
     # Non-default block geometry the fp8 kernels read via getattr(weight_scale, "block_size", ...).
     placeholder.block_size = [64, 64]
     model.fp8.weight_scale_inv = placeholder
