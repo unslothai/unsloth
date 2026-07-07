@@ -1544,7 +1544,9 @@ def test_start_dispatcher_resumes_after_unload_clears():
     o._unload_pending = False
 
     try:
-        assert o._start_dispatcher() is True, "a fresh dispatcher must start once no unload is pending"
+        assert (
+            o._start_dispatcher() is True
+        ), "a fresh dispatcher must start once no unload is pending"
         assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
     finally:
         o._stop_dispatcher()
