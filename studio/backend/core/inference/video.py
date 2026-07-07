@@ -55,13 +55,20 @@ from .diffusion_memory import (
     snapshot_device_memory,
 )
 from .diffusion_speed import (
+    SPEED_DEFAULT,
     SPEED_OFF,
     apply_speed_optims,
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
 )
-from .diffusion_auto_policy import build_resolved_record
+from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
+from .diffusion_transformer_quant import (
+    dense_transformer_supported,
+    normalize_transformer_quant,
+    quantize_transformer,
+    select_transformer_quant_scheme,
+)
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_NOT_LOADED_MSG,
@@ -90,6 +97,10 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         "lightricks/ltx-2",
         "lightricks/ltx-2.3",
         "lightricks/ltx-2.3-fp8",
+        # Wan2.2 official diffusers base repos (Wan-AI org): safetensors-only, no
+        # remote code, so allowed as full (pipeline-kind) loads like the LTX-2 bases.
+        "wan-ai/wan2.2-ti2v-5b-diffusers",
+        "wan-ai/wan2.2-t2v-a14b-diffusers",
     }
 )
 
@@ -216,6 +227,11 @@ class _VideoLoadState:
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
     transformer_cache: Optional[str] = None
+    # Dense transformer quant actually engaged ("int8" | "fp8" | "nvfp4" | "mxfp8") or
+    # None. Mirrors the image backend's _LoadState.transformer_quant: on a pipeline-kind
+    # load the dense DiT(s) can be torchao-quantised in place onto the low-precision
+    # tensor cores; None means they run at their loaded (bf16) precision.
+    transformer_quant: Optional[str] = None
     resolved: Optional[dict] = None
 
 
@@ -229,6 +245,70 @@ class _VideoLoadingState:
 
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
     return {"phase": phase, **extra}
+
+
+# ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
+#
+# The imported optimisation helpers (apply_speed_optims / apply_attention_backend /
+# apply_step_cache) and the dense quantiser all read ``pipe.transformer`` and act on
+# that ONE denoiser -- correct for every single-DiT family (LTX-2, Wan2.2-TI2V-5B).
+# Wan2.2-A14B is a dual-expert MoE: ``transformer`` handles the high-noise steps and
+# ``transformer_2`` the low-noise steps (pipeline_wan.py routes by boundary_ratio), so
+# an optimisation applied only to ``transformer`` would leave the second expert eager /
+# unquantised / on the wrong attention kernel for half the schedule. Rather than fork
+# each helper, present the second DiT to them AS ``pipe.transformer`` via a thin proxy
+# and call the helper a second time, so the helpers stay untouched and single-DiT loads
+# are bit-identical (the proxy is only built for is_moe families).
+
+
+def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
+    """Attribute names of the denoiser(s) on ``pipe`` to optimise. Just
+    ("transformer",) for a single-DiT family; also "transformer_2" for an MoE family
+    whose second expert is actually present (a checkpoint may ship only the first)."""
+    names = ["transformer"]
+    if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
+        names.append("transformer_2")
+    return tuple(names)
+
+
+class _SecondDiTView:
+    """A thin proxy that makes ``pipe.transformer_2`` look like ``pipe.transformer`` to a
+    helper that hardcodes ``getattr(pipe, "transformer")``, while every other attribute
+    (vae, components, __call__, ...) reads through to the real pipe unchanged.
+
+    This lets the existing single-DiT helpers optimise the second expert without a fork:
+    ``apply_speed_optims(_SecondDiTView(pipe), ...)`` compiles / caches / sets attention on
+    ``transformer_2``. Only ever wrapped around an MoE pipe (guarded by fam.is_moe)."""
+
+    def __init__(self, pipe: Any) -> None:
+        # Store on the instance dict under a name __getattr__ never fires for.
+        object.__setattr__(self, "_pipe", pipe)
+
+    @property
+    def transformer(self) -> Any:
+        return self._pipe.transformer_2
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for attributes not found on the instance/class (i.e. not
+        # ``transformer`` / ``_pipe``), so everything else delegates to the real pipe.
+        return getattr(object.__getattribute__(self, "_pipe"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Writes must land on the real pipe, or a helper's side effect (for example
+        # reassigning the transformer it optimised) would vanish with the view.
+        # ``transformer`` mirrors the read property onto the second expert.
+        pipe = object.__getattribute__(self, "_pipe")
+        setattr(pipe, "transformer_2" if name == "transformer" else name, value)
+
+
+def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
+    """The pipe view(s) to pass through the ``getattr(pipe, "transformer")`` helpers so
+    they cover every denoiser: the real pipe (its ``transformer``), plus a
+    ``_SecondDiTView`` (its ``transformer_2``) for a dual-DiT MoE family. A single-DiT
+    load returns just ``(pipe,)``, so its behaviour is unchanged."""
+    if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
+        return (pipe, _SecondDiTView(pipe))
+    return (pipe,)
 
 
 class VideoBackend:
@@ -255,6 +335,7 @@ class VideoBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
+        transformer_quant: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -289,6 +370,14 @@ class VideoBackend:
             )
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
+        if kind in ("gguf", "single_file") and fam.is_moe:
+            # A single checkpoint carries only one expert; the pipeline would then pull
+            # the other expert dense bf16 from the base repo, outside the memory plan.
+            raise ValueError(
+                f"'{fam.name}' is a dual-expert model: a single {kind} file covers only "
+                f"one of its two transformers. Load the diffusers pipeline repo "
+                f"('{fam.base_repo}') instead."
+            )
         # A local checkpoint that cannot exist must fail HERE, before the route evicts
         # a resident chat/image model for a load that dies at resolve time.
         if kind in ("gguf", "single_file"):
@@ -301,6 +390,11 @@ class VideoBackend:
                     raise ValueError(str(exc)) from exc
             elif repo_id.startswith(("/", "~", "./", "../")) and not root.is_file():
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
+        # Reject a malformed transformer_quant scheme cheaply, before the GPU handoff
+        # (normalize_transformer_quant raises ValueError on an unknown scheme). It applies
+        # only on pipeline-kind loads (the dense DiT from the base repo); an ignored value
+        # on a gguf/single_file load is left to the loader, matching the image backend.
+        normalize_transformer_quant(transformer_quant)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -319,6 +413,7 @@ class VideoBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        transformer_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -329,6 +424,7 @@ class VideoBackend:
             base_repo = base_repo,
             family_override = family_override,
             model_kind = model_kind,
+            transformer_quant = transformer_quant,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -351,6 +447,7 @@ class VideoBackend:
                 attention_backend = attention_backend,
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
+                transformer_quant = transformer_quant,
                 model_kind = model_kind,
                 _load_token = token,
             ),
@@ -662,6 +759,7 @@ class VideoBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        transformer_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -675,6 +773,7 @@ class VideoBackend:
             base_repo = base_repo,
             family_override = family_override,
             model_kind = model_kind,
+            transformer_quant = transformer_quant,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
@@ -760,10 +859,57 @@ class VideoBackend:
             companion_dense_mib = companion_mib,
             requested_mode = normalize_memory_mode(memory_mode),
         )
+        # Parity with the image dense-quant path: the bf16-table plan can force offload
+        # a quantised DiT would not need (offload also disables quant entirely). Re-plan
+        # with the scheme's steady factor and keep the resident placement when it fits;
+        # if quantisation later fails, the load falls back to this bf16 plan.
+        bf16_plan = plan
+        quant_replanned = False
+        if (
+            kind == "pipeline"
+            and plan.offload_policy != "none"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and dense_transformer_supported(target)
+            and components is not None
+        ):
+            scheme_preview = select_transformer_quant_scheme(
+                target, transformer_quant, family = fam.name
+            )
+            factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
+            if factor is not None:
+                quant_mib = int(
+                    (components[0] * factor + components[1] + components[2]) * mib_per_gb
+                )
+                replanned = plan_diffusion_memory(
+                    target = target,
+                    device_memory = device_memory,
+                    model_dense_mib = quant_mib,
+                    runtime_headroom_mib = runtime_mib,
+                    companion_dense_mib = None,
+                    requested_mode = normalize_memory_mode(memory_mode),
+                )
+                if replanned.offload_policy == "none":
+                    logger.info(
+                        "video.transformer_quant: %s fits resident (%d MiB steady); "
+                        "dropping the bf16 plan's '%s' offload",
+                        scheme_preview,
+                        quant_mib,
+                        plan.offload_policy,
+                    )
+                    plan = replanned
+                    quant_replanned = True
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        if getattr(fam, "vae_force_fp32", False):
+            # Wan's VAE must decode in float32, but a scalar torch_dtype casts EVERY component
+            # (VAE included) to the pipe dtype during load -- AutoencoderKLWan has no
+            # _keep_in_fp32_modules, so from_pretrained truncates its fp32 weights to bf16 and a
+            # later .to(float32) only widens the already-lossy values (banding / black frames).
+            # diffusers >= 0.39 takes a per-component dtype dict, so load the VAE at fp32 directly;
+            # "default" MUST be set or unlisted components fall back to fp32 (over-widening the DiT).
+            pipe_kwargs["torch_dtype"] = {"vae": torch.float32, "default": dtype}
         if hf_token:
             pipe_kwargs["token"] = hf_token
         if kind == "pipeline":
@@ -804,10 +950,71 @@ class VideoBackend:
                     _base_local_dir or base, transformer = transformer, **pipe_kwargs
                 )
 
+        # The per-component torch_dtype above already loads the Wan VAE at float32 (bf16_components_gb
+        # budgets it at that fp32 size, so the memory plan stays consistent). Belt-and-suspenders for
+        # any path that bypassed the dict (e.g. a passed-in vae=): re-pin an fp32-force VAE that came
+        # back at a lower precision. This is a no-op on the primary path (the load already fp32'd it).
+        if getattr(fam, "vae_force_fp32", False):
+            vae = getattr(pipe, "vae", None)
+            if vae is not None and getattr(vae, "dtype", None) is not torch.float32:
+                vae.to(torch.float32)
+
         if _load_token is not None and _load_token != self._load_token:
             del pipe
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
+
+        # For a dual-DiT MoE family (Wan2.2-A14B), every optimisation site below must
+        # cover BOTH experts: ``views`` is (pipe, _SecondDiTView(pipe)) so a helper that
+        # reads ``pipe.transformer`` runs once per denoiser. A single-DiT load resolves to
+        # (pipe,), so it behaves exactly as before.
+        views = _views_for(pipe, fam)
+
+        # ── dense transformer quant (opt-in, pipeline-kind only): load the dense bf16
+        # DiT from the base repo and torchao-quantise it in place onto the low-precision
+        # tensor cores, mirroring the image backend's transformer_quant fast path. Only
+        # the pipeline kind materialises the dense weights (gguf/single_file already carry
+        # their own precision), and only on CUDA + bf16. Best-effort: any failure leaves
+        # the DiT dense. Quant must precede compile (dynamic quant is ~30x slower eager),
+        # so it runs before apply_speed_optims below -- same order as diffusion.py.
+        transformer_quant_engaged: Optional[str] = None
+        if (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and dense_transformer_supported(target)
+        ):
+            engaged = []
+            for view in views:
+                # quantize_transformer reads ``pipe.transformer`` and returns the scheme it
+                # engaged (or None); pass each expert's view so both DiTs are quantised with
+                # the same arch-chosen scheme. The family name drives the per-family deny
+                # table (_FAMILY_SCHEME_DENY) exactly as on the image side.
+                scheme = quantize_transformer(
+                    view,
+                    target,
+                    mode = transformer_quant,
+                    family = fam.name,
+                    logger = logger,
+                )
+                if scheme is not None:
+                    engaged.append(scheme)
+            # Quant must engage on every DiT or none: the first expert is mutated in
+            # place, so a second-expert failure cannot fall back to dense (the schedule
+            # would run at mismatched precision with quant reported off). Fail the load
+            # cleanly instead; a full miss (nothing engaged) stays best-effort dense.
+            if engaged and len(engaged) < len(views):
+                del pipe
+                clear_gpu_cache()
+                raise RuntimeError(
+                    f"transformer_quant={engaged[0]} engaged on only "
+                    f"{len(engaged)}/{len(views)} experts; retry without quant."
+                )
+            if engaged:
+                transformer_quant_engaged = engaged[0]
+        # The quant-sized plan is only valid when quant actually engaged; a dense
+        # fallback must keep the conservative bf16 placement.
+        if quant_replanned and transformer_quant_engaged is None:
+            plan = bf16_plan
 
         # ── optimisation layers, in the image backend's order: step cache FIRST
         # (compile keys its fullgraph decision off an active cache: FBCache hooks
@@ -815,34 +1022,66 @@ class VideoBackend:
         # the first cached generation), then attention, the speed profile, and
         # placement/offload last.
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
+        # A torchao-quantised DiT must be compiled (eager dynamic quant is ~30x slower and
+        # would lose to the bf16 it replaced), so force at least the regional-compile
+        # profile when quant engaged and the effective speed was off, matching diffusion.py.
+        if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+            logger.info(
+                "video.transformer_quant: forcing speed_mode=default "
+                "(quantized transformer must be compiled; eager is ~30x slower)"
+            )
+            effective_speed = SPEED_DEFAULT
         backend_flags = snapshot_backend_flags()
         # Until the state commit below transfers ownership to _teardown_state, a
         # failure or cancellation must restore these process-wide globals itself
         # (_run_load's error handler calls _rollback_precommit_globals with this
         # token). Registered BEFORE the first mutating call.
         self._precommit_globals = (_load_token, backend_flags)
-        cache_engaged = apply_step_cache(
-            pipe,
-            mode = normalize_transformer_cache(transformer_cache),
-            threshold = transformer_cache_threshold,
-            logger = logger,
-        )
-        attention_engaged = apply_attention_backend(
-            pipe,
-            select_attention_backend(
-                target, attention_backend, speed_active = effective_speed != SPEED_OFF
-            ),
-            logger = logger,
-        )
-        speed_optims = apply_speed_optims(
-            pipe,
-            target,
-            is_gguf = kind == "gguf",
-            family = fam,
-            speed_mode = effective_speed,
-            cache_active = cache_engaged is not None,
-            offload_active = plan.offload_policy != "none",
-        )
+        # Run the step cache per expert so both denoisers cache; the engaged mode is
+        # identical across experts.
+        cache_engaged = None
+        for view in views:
+            engaged = apply_step_cache(
+                view,
+                mode = normalize_transformer_cache(transformer_cache),
+                threshold = transformer_cache_threshold,
+                # A quantized transformer's block residuals are larger, so it needs the
+                # higher FBCache trigger threshold to cache at all. Mirror the image path
+                # (diffusion.py): both an engaged transformer_quant AND a GGUF checkpoint
+                # (quantized weights) count as quant-active here.
+                quant_active = transformer_quant_engaged is not None or kind == "gguf",
+                logger = logger,
+            )
+            if view is pipe:
+                cache_engaged = engaged
+        attention_engaged = None
+        speed_optims: tuple = ()
+        for view in views:
+            # apply_attention_backend / apply_speed_optims both act on ``view.transformer``;
+            # calling them once per view sets the kernel and compiles each expert. The
+            # engaged values match across experts (same device/family/mode), so record the
+            # first pass; a dense torchao transformer on the pipeline path is not a GGUF one,
+            # so is_gguf keys off the load kind (gguf) AND no quant having engaged.
+            gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+            engaged = apply_attention_backend(
+                view,
+                select_attention_backend(
+                    target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                ),
+                logger = logger,
+            )
+            applied = apply_speed_optims(
+                view,
+                target,
+                is_gguf = gguf_transformer,
+                family = fam,
+                speed_mode = effective_speed,
+                cache_active = cache_engaged is not None,
+                offload_active = plan.offload_policy != "none",
+            )
+            if view is pipe:
+                attention_engaged = engaged
+                speed_optims = tuple(k for k, v in applied.items() if v)
         # A cancelled/superseded load must not place weights on the GPU the arbiter
         # may already have handed to another backend; recheck right before placement
         # (the commit below still does the final locked check).
@@ -851,6 +1090,12 @@ class VideoBackend:
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
         offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
+        # A dual-DiT MoE pipe (Wan2.2-A14B) needs no extra per-expert offload pass here:
+        # apply_memory_plan's group tier (_apply_group_offload) already block-streams every
+        # DiT it finds on the pipe -- transformer AND transformer_2 -- and model/sequential
+        # offload hook every top-level module, so the second expert is covered under all tiers.
+        # A second _apply_group_offload on transformer_2 would re-register the group-offload
+        # hooks it already carries, which diffusers rejects with a duplicate-hook ValueError.
         if not vae_tiling:
             # Decode of a whole clip is the video memory peak; tiling is near-free
             # in quality and keeps the decode bounded, so it is always on.
@@ -870,7 +1115,9 @@ class VideoBackend:
                 "speed_mode": (
                     speed_mode,
                     effective_speed,
-                    "GGUF video loads default to the near-lossless compile profile",
+                    "quantized transformer requires compile"
+                    if transformer_quant_engaged is not None
+                    else "GGUF video loads default to the near-lossless compile profile",
                 ),
                 "attention_backend": (
                     attention_backend,
@@ -881,6 +1128,13 @@ class VideoBackend:
                     transformer_cache,
                     cache_engaged or "off",
                     "step cache engages on many-step schedules only",
+                ),
+                "transformer_quant": (
+                    transformer_quant,
+                    transformer_quant_engaged or "off",
+                    "dense DiT(s) torchao-quantised onto the low-precision tensor cores"
+                    if transformer_quant_engaged is not None
+                    else "not engaged (dense bf16 DiT loaded)",
                 ),
             }
         )
@@ -903,24 +1157,26 @@ class VideoBackend:
                 vae_tiling = vae_tiling,
                 memory_mode = plan.requested_mode,
                 speed_mode = effective_speed,
-                # Only the optimisations that actually engaged: apply_speed_optims
-                # returns every flag with True/False, and iterating the dict raw
-                # would report disabled ones as active in /video/status.
-                speed_optims = tuple(k for k, v in (speed_optims or {}).items() if v),
+                # Already filtered above to only the optimisations that engaged;
+                # apply_speed_optims returns every flag True/False and the view
+                # loop keeps just the True names.
+                speed_optims = speed_optims,
                 backend_flags = backend_flags,
                 attention_backend = attention_engaged,
                 transformer_cache = cache_engaged,
+                transformer_quant = transformer_quant_engaged,
                 resolved = resolved,
             )
             # Ownership of the globals transferred to _state / _teardown_state.
             self._precommit_globals = None
         logger.info(
-            "video.loaded: %s (%s, %s, offload=%s, speed=%s)",
+            "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
             fam.name,
             kind,
             offload_policy,
             effective_speed,
+            transformer_quant_engaged or "off",
         )
         return self.status()
 
@@ -974,6 +1230,7 @@ class VideoBackend:
         fps: Optional[int] = None,
         steps: Optional[int] = None,
         guidance: Optional[float] = None,
+        guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> dict[str, Any]:
         import torch
@@ -994,7 +1251,10 @@ class VideoBackend:
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
                 out_fps = int(fps or fam.default_fps)
                 default_steps, default_guidance = default_video_generation_params(
-                    state.gguf_filename, state.repo_id, state.base_repo
+                    state.gguf_filename,
+                    state.repo_id,
+                    state.base_repo,
+                    fallback = (fam.default_steps, fam.default_guidance),
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
@@ -1021,6 +1281,17 @@ class VideoBackend:
                 # pipelines fix their own rate and fps only matters at export.
                 if "frame_rate" in call_params:
                     kwargs["frame_rate"] = float(out_fps)
+                # Dual-DiT MoE (Wan2.2-A14B): the low-noise expert (transformer_2) has its
+                # own guidance kwarg (cfg2_kwarg = "guidance_scale_2"). Thread it only when
+                # the loaded family declares one AND the pipeline signature accepts it (the
+                # same inspect.signature gate frame_rate uses), so a single-DiT pipeline is
+                # never handed a kwarg its check_inputs would reject. WanPipeline raises if
+                # guidance_scale_2 is passed to a pipeline with boundary_ratio=None
+                # (pipeline_wan.py:322), so the gate is BOTH the family flag and the
+                # signature: TI2V-5B has no cfg2_kwarg, so it never reaches here. A None
+                # request lets the pipeline default it (to guidance_scale) itself.
+                if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
+                    kwargs[fam.cfg2_kwarg] = float(guidance_2)
 
                 started = time.monotonic()
                 self._gen = {
@@ -1181,13 +1452,17 @@ class VideoBackend:
                 "speed_optims": [],
                 "attention_backend": None,
                 "transformer_cache": None,
+                "transformer_quant": None,
                 "has_audio": False,
                 "defaults": None,
                 "resolved": None,
             }
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
-            state.gguf_filename, state.repo_id, state.base_repo
+            state.gguf_filename,
+            state.repo_id,
+            state.base_repo,
+            fallback = (fam.default_steps, fam.default_guidance),
         )
         return {
             "loaded": True,
@@ -1204,6 +1479,7 @@ class VideoBackend:
             "speed_optims": list(state.speed_optims),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            "transformer_quant": state.transformer_quant,
             "has_audio": fam.has_audio,
             "defaults": {
                 "steps": default_steps,

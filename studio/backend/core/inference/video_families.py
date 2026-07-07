@@ -74,6 +74,12 @@ class VideoFamily:
     # float32. Video DiTs are bf16-native, so this defaults True (fp16 is never
     # the right resolution for them; bf16 or float32 only).
     fp16_incompatible: bool = True
+    # Wan's VAE decodes in float32: diffusers loads AutoencoderKLWan at torch.float32 while the
+    # pipe runs bf16 (WanPipeline docstring). Loading the VAE bf16 like the other components
+    # degrades every clip (banding / black frames), so when True the loader pins the VAE back to
+    # fp32 after building the pipe. The bf16_components_gb VAE term is already its fp32 size, so
+    # the memory plan stays consistent.
+    vae_force_fp32: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
 
@@ -107,6 +113,98 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # removed -- the repo ships the TE twice under two shard namings).
         bf16_components_gb = (37.8, 50.4, 5.5),
         gguf_repo = "unsloth/LTX-2.3-GGUF",
+    ),
+    # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): a ~5B single-stream
+    # video DiT (WanPipeline + WanTransformer3DModel + AutoencoderKLWan + a UMT5
+    # text encoder). No audio, no second expert -- its model_index.json ships
+    # ``boundary_ratio: null`` and ``transformer_2: [null, null]``, so it is a
+    # plain single-DiT family (is_moe left False). The Wan VAE has a temporal
+    # compression of 4, so valid frame counts are 4k+1 (frame_step = 4), which
+    # matches the pipeline's own ``num_frames % vae_scale_factor_temporal == 1``
+    # check (pipeline_wan.py:493). The pipeline defaults to 50 steps / CFG 5, but
+    # the 5B TI2V card ships the 720p-class few-step recipe, so the picker default
+    # (see _VIDEO_GENERATION_DEFAULTS) uses the pipeline's 50/5 while the UI presets
+    # target 720p at 24 fps (the model card's playback rate).
+    VideoFamily(
+        name = "wan2.2-ti2v-5b",
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        # "wan2.2-5b" and "wan-ti2v" are the short ids the picker / GGUF filenames
+        # use; "wan2.2-ti2v" catches the diffusers repo stem without the "-5b".
+        aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
+        has_audio = False,
+        default_steps = 50,
+        default_guidance = 5.0,
+        # 121 frames at 24 fps is ~5s, the model card's headline clip length; on the
+        # 4k+1 lattice (121 = 4*30 + 1) it needs no snapping.
+        default_num_frames = 121,
+        default_fps = 24,
+        # Wan VAE temporal factor is 4 (autoencoder_kl_wan.py scale_factor_temporal),
+        # so valid counts are 4k+1, unlike LTX-2's 8k+1.
+        frame_step = 4,
+        # TI2V-5B's VAE is 16x spatial (vae/config.json scale_factor_spatial=16), and the
+        # transformer patch is 2, so WanPipeline floors H/W to 16*2 = 32 (pipeline_wan.py:505,
+        # silently, with a warning). Snap to 32 so the recorded size matches the generated clip;
+        # a /16-but-not-/32 request (e.g. 720) would otherwise be recorded but rendered at 704.
+        resolution_multiple = 32,
+        # 720p-class presets (all /32): 1280x704 landscape (the card's target), its vertical
+        # variant, and a square. The first preset is the default the loader plans memory against.
+        resolution_presets = ((1280, 704), (704, 1280), (960, 960), (832, 480)),
+        # bf16-RESIDENT sizes. The transformer + VAE ship FP32 on disk (safetensors headers are
+        # F32; transformer index = 20.0 GB = 5B params x 4), so bf16-resident transformer is half
+        # (~10.0); the UMT5 text encoder ships bf16 (11.4). The VAE runs fp32 (vae_force_fp32), so
+        # its term is the fp32 size (2.8).
+        bf16_components_gb = (10.0, 11.4, 2.8),
+        vae_force_fp32 = True,
+        gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
+    ),
+    # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE.
+    # Its model_index.json lists BOTH ``transformer`` and ``transformer_2`` as
+    # WanTransformer3DModel and sets ``boundary_ratio: 0.875``; the pipeline routes
+    # the high-noise steps (timestep >= boundary) through ``transformer`` at
+    # guidance_scale and the low-noise steps through ``transformer_2`` at
+    # guidance_scale_2 (pipeline_wan.py:584-603). ``guidance_scale_2`` exists in
+    # 0.39 (pipeline_wan.py:392) and is only accepted when boundary_ratio is set
+    # (its check_inputs raises otherwise, pipeline_wan.py:322), so cfg2_kwarg is
+    # threaded ONLY for this family. boundary_ratio itself lives in the pipeline
+    # config (loaded from model_index.json), so no per-generation plumbing is needed.
+    VideoFamily(
+        name = "wan2.2-t2v-a14b",
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
+        has_audio = False,
+        # The second expert is the same class; is_moe drives the dual-DiT optimisation
+        # layers (speed / attention / cache / quant apply to BOTH transformers), and
+        # cfg2_kwarg names the pipeline kwarg carrying transformer_2's guidance.
+        transformer2_class = "WanTransformer3DModel",
+        is_moe = True,
+        cfg2_kwarg = "guidance_scale_2",
+        default_steps = 50,
+        default_guidance = 5.0,
+        # 81 frames at 16 fps is ~5s (81 = 4*20 + 1), the A14B card's default clip.
+        default_num_frames = 81,
+        # The A14B card runs at 16 fps (vs the 5B TI2V's 24), per its model_index /
+        # model card; export uses this rate.
+        default_fps = 16,
+        frame_step = 4,
+        resolution_multiple = 16,
+        # 480p and 720p presets (landscape + vertical), the two resolutions the A14B card
+        # documents. 832x480 is the native 480p; 1280x720 the native 720p (true 16:9). A14B's
+        # VAE is 8x so resolution_multiple is 16 and 720 (= 45*16) renders exactly -- the 704
+        # value belongs to TI2V-5B, whose 16x VAE floors 720 to 704 (multiple 32).
+        resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
+        # bf16-RESIDENT sizes. Each expert ships FP32 on disk (safetensors headers are F32;
+        # transformer index = 57.15 GB = 14.3B params x 4), so bf16-resident is ~28.6 each ->
+        # ~57.2 for BOTH experts (the memory headline before offload), NOT the 114.3 fp32
+        # on-disk sum. UMT5 text encoder ships bf16 (11.4); the VAE runs fp32 (vae_force_fp32),
+        # so its term is the fp32 size (0.5).
+        bf16_components_gb = (57.2, 11.4, 0.5),
+        vae_force_fp32 = True,
+        # No gguf_repo: community GGUFs ship the two experts as separate files, and a
+        # single-file load covers only one (validate_load_request refuses it).
     ),
 )
 
@@ -174,16 +272,31 @@ def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
     ("ltx", 40, 4.0),
+    # Wan2.2 pipelines default to 50 steps at CFG 5.0 (WanPipeline.__call__:
+    # num_inference_steps = 50, guidance_scale = 5.0, verified in diffusers 0.39).
+    # Both TI2V-5B and A14B share these; the substring "wan" catches the picked id
+    # and the base repo. A future distilled Wan GGUF is caught by the "distilled"
+    # row above (listed first), exactly as the LTX-2.3 distilled checkpoints are.
+    ("wan", 50, 5.0),
 )
 
 
-def default_video_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
+def default_video_generation_params(
+    *identifiers: Optional[str], fallback: tuple[int, float] = (40, 4.0)
+) -> tuple[int, float]:
     """Default ``(steps, guidance)`` for a loaded video model; the first identifier
     naming a known variant wins, so a GGUF filename ('...distilled...Q4_K_M.gguf')
-    beats the family base repo."""
+    beats the family base repo. ``fallback`` is used when no identifier names a variant --
+    callers pass the resolved family's own default so a Wan model loaded from an opaque local
+    path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
-            if key in needle:
+            # Match the key as a name segment, not a raw substring: reject a
+            # preceding ASCII letter so an opaque path/repo like "user/swan-video"
+            # or "taiwan-clips" does not false-match "wan" and silently apply Wan's
+            # 50-step/CFG-5 schedule to a non-Wan model. Trailing chars stay free so
+            # "wan2.2-ti2v", "ltxv-2.3" and "...-distilled-..." still match.
+            if re.search(r"(?<![a-z])" + re.escape(key), needle):
                 return steps, guidance
-    return 40, 4.0
+    return fallback

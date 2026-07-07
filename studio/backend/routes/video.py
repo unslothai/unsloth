@@ -94,6 +94,7 @@ async def load_video_model(
             base_repo = request.base_repo,
             family_override = request.family_override,
             model_kind = request.model_kind,
+            transformer_quant = request.transformer_quant,
         )
         # Refuse while training is running: a multi-GB video pipeline would compete
         # with the training subprocess for VRAM. Mirrors the image-load guard.
@@ -121,6 +122,7 @@ async def load_video_model(
             attention_backend = request.attention_backend,
             transformer_cache = request.transformer_cache,
             transformer_cache_threshold = request.transformer_cache_threshold,
+            transformer_quant = request.transformer_quant,
             model_kind = request.model_kind,
         )
         return VideoStatusResponse(**status_dict)
@@ -157,6 +159,7 @@ async def generate_video(
             fps = request.fps,
             steps = request.steps,
             guidance = request.guidance,
+            guidance_2 = request.guidance_2,
             seed = request.seed,
         )
     except ValueError as exc:
@@ -192,6 +195,7 @@ async def generate_video(
                 "duration_s": result["duration_s"],
                 "steps": result["steps"],
                 "guidance": result["guidance"],
+                "guidance_2": request.guidance_2,
                 "seed": result["seed"],
                 "has_audio": result["has_audio"],
                 "model": result["repo_id"],
