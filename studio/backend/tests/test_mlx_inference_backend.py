@@ -213,6 +213,28 @@ def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
         MLXInferenceBackend().load_model(config, parallel_mode = "tensor", distributed_group = group)
 
 
+@pytest.mark.parametrize("accepts_backend", (True, False))
+def test_mlx_distributed_init_selects_jaccl_backend(monkeypatch, accepts_backend):
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import _init_mlx_distributed
+
+    group = SimpleNamespace(rank = lambda: 1, size = lambda: 2)
+    calls = []
+
+    def _init(**kwargs):
+        calls.append(kwargs)
+        if kwargs and not accepts_backend:
+            raise TypeError("backend keyword unsupported")
+        return group
+
+    sys.modules["mlx.core"].distributed = SimpleNamespace(init = _init)
+    monkeypatch.setenv("MLX_JACCL_COORDINATOR", "127.0.0.1:12345")
+    monkeypatch.setenv("MLX_IBV_DEVICES", "/tmp/devices.json")
+
+    assert _init_mlx_distributed() == (group, 1, 2)
+    assert calls == ([{"backend": "jaccl"}] if accepts_backend else [{"backend": "jaccl"}, {}])
+
+
 def test_worker_share_object_receives_distributed_payload(monkeypatch):
     from core.inference import worker
 

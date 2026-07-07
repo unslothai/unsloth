@@ -5,6 +5,7 @@ Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
 instead of torch/transformers for model loading and generation.
 """
 
+import os
 import threading
 from typing import Optional, Generator
 from core.inference.runtime_context import runtime_context_length
@@ -54,6 +55,12 @@ def _mlx_distributed_rank_size(group = None):
     return rank, world_size
 
 
+def _mlx_distributed_backend_from_env():
+    if os.environ.get("MLX_JACCL_COORDINATOR") and os.environ.get("MLX_IBV_DEVICES"):
+        return "jaccl"
+    return None
+
+
 def _init_mlx_distributed():
     """Initialize MLX distributed state, falling back to singleton metadata."""
     import mlx.core as mx
@@ -64,7 +71,14 @@ def _init_mlx_distributed():
     distributed = getattr(mx, "distributed", None)
     init = getattr(distributed, "init", None) if distributed is not None else None
     if callable(init):
-        group = init()
+        backend = _mlx_distributed_backend_from_env()
+        if backend is None:
+            group = init()
+        else:
+            try:
+                group = init(backend = backend)
+            except TypeError:
+                group = init()
         if group is not None:
             rank, world_size = _mlx_distributed_rank_size(group)
     return group, rank, world_size
