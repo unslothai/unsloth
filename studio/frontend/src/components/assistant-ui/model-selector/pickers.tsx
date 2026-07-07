@@ -576,7 +576,7 @@ function ModelRow({
 
   if (tooltipBody) {
     return (
-      <Tooltip>
+      <Tooltip delayDuration={700}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
         <TooltipContent
           side="left"
