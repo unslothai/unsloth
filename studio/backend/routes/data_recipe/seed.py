@@ -586,7 +586,9 @@ async def remove_unstructured_block(block_id: str):
     """Delete a block's upload directory; files on disk still count toward its quota."""
     _validate_safe_id(block_id, "block_id")
 
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    block_dir = (UNSTRUCTURED_UPLOAD_ROOT / block_id).resolve()
+    if not block_dir.is_relative_to(UNSTRUCTURED_UPLOAD_ROOT.resolve()):
+        raise HTTPException(400, "Invalid block_id: outside upload root")
     if not block_dir.exists():
         return {"status": "ok", "deleted": False}
 

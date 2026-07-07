@@ -600,16 +600,16 @@ export function SeedDialog({
 
   // config.id collides across recipes (ids reset to n1 on import); use a
   // stable per-block uid instead, falling back to config.id for legacy blocks.
-  const uploadBlockId = config.unstructured_upload_uid?.trim()
-    ? config.unstructured_upload_uid
-    : config.id;
+  const uploadUid = config.unstructured_upload_uid?.trim() ?? "";
+  const uploadBlockId = uploadUid || config.id;
+  const unstructuredFileCount = config.unstructured_file_ids?.length ?? 0;
 
   useEffect(() => {
     if (mode !== "unstructured") return;
-    if (config.unstructured_upload_uid?.trim()) return;
-    if (config.unstructured_file_ids?.length) return;
+    if (uploadUid) return;
+    if (unstructuredFileCount > 0) return;
     onUpdate({ unstructured_upload_uid: crypto.randomUUID().replace(/-/g, "") });
-  }, [mode, config.unstructured_upload_uid, config.unstructured_file_ids, onUpdate]);
+  }, [mode, uploadUid, unstructuredFileCount, onUpdate]);
 
   const prevModeRef = useRef(mode);
   useEffect(() => {
@@ -734,8 +734,10 @@ export function SeedDialog({
             subset: config.hf_subset?.trim() || undefined,
             preview_size: 10,
           });
-          if (config.unstructured_file_ids?.length) {
-            void removeUnstructuredBlock(uploadBlockId).catch((error) => {
+          // Only uid-namespaced directories are safe to bulk-delete: legacy
+          // node-id directories (n1, ...) can be shared by other recipes.
+          if (uploadUid && unstructuredFileCount > 0) {
+            void removeUnstructuredBlock(uploadUid).catch((error) => {
               console.warn("Failed to clean up uploaded documents:", error);
             });
           }
@@ -774,8 +776,10 @@ export function SeedDialog({
             content_base64: payload,
             preview_size: 10,
           });
-          if (config.unstructured_file_ids?.length) {
-            void removeUnstructuredBlock(uploadBlockId).catch((error) => {
+          // Only uid-namespaced directories are safe to bulk-delete: legacy
+          // node-id directories (n1, ...) can be shared by other recipes.
+          if (uploadUid && unstructuredFileCount > 0) {
+            void removeUnstructuredBlock(uploadUid).catch((error) => {
               console.warn("Failed to clean up uploaded documents:", error);
             });
           }
@@ -860,7 +864,9 @@ export function SeedDialog({
       mode,
       onUpdate,
       unstructuredFiles,
+      unstructuredFileCount,
       uploadBlockId,
+      uploadUid,
     ],
   );
 

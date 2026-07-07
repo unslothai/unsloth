@@ -413,6 +413,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_token: "",
         hf_endpoint: "https://huggingface.co",
         local_file_name: "",
+        unstructured_upload_uid: "",
         unstructured_file_ids: [],
         unstructured_file_names: [],
         unstructured_file_sizes: [],

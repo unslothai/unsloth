@@ -142,18 +142,20 @@ export function UnstructuredDropZone({
       if (!needsServerRemove) return;
       deletedIdsRef.current.add(entry.id);
       removeUnstructuredFile(blockId, entry.id).catch(() => {
-        // Still exists server-side (counts toward quota); restore it.
+        // Still exists server-side (counts toward quota); restore it at its
+        // original position.
         deletedIdsRef.current.delete(entry.id);
-        onFilesChange((prev) => [
-          ...prev,
-          {
+        onFilesChange((prev) => {
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, {
             id: entry.id,
             name: entry.name,
             size: entry.size,
             status: "ok",
             error: "Remove failed — try again",
-          },
-        ]);
+          });
+          return next;
+        });
       });
     },
     [blockId, onFilesChange],

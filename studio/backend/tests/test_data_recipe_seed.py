@@ -154,6 +154,22 @@ def test_remove_unstructured_block_rejects_unsafe_ids(monkeypatch, tmp_path):
     assert exc.value.status_code == 400
 
 
+def test_remove_unstructured_block_rejects_symlink_escape(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim.txt").write_text("keep me")
+    root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
+    root.mkdir(parents = True)
+    (root / "link").symlink_to(outside)
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.remove_unstructured_block("link"))
+
+    assert exc.value.status_code == 400
+    assert (outside / "victim.txt").exists()
+
+
 def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 10)
