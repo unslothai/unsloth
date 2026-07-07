@@ -1082,6 +1082,32 @@ def test_binary_env_drops_explicit_credential_file_pointers(
         assert var not in env
 
 
+def test_binary_env_macos_strips_inherited_dyld_loader_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    runtime_lib = tmp_path / "runtime" / "lib"
+    runtime_lib.mkdir(parents = True)
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", str(runtime_lib))
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", str(tmp_path / "inject.dylib"))
+    monkeypatch.setenv("DYLD_FRAMEWORK_PATH", str(tmp_path / "Frameworks"))
+    monkeypatch.setenv("DYLD_FALLBACK_LIBRARY_PATH", str(tmp_path / "fallback"))
+
+    env = binary_env(binary_path, install_dir, macos_host())
+
+    assert "DYLD_INSERT_LIBRARIES" not in env
+    assert "DYLD_FRAMEWORK_PATH" not in env
+    assert "DYLD_FALLBACK_LIBRARY_PATH" not in env
+    assert str(bin_dir) in env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(install_dir) in env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(runtime_lib) in env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+
+
 def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
@@ -3939,7 +3965,17 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
         host = macos_host(),
         purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
         runtime_line = None,
-        env = {"DYLD_LIBRARY_PATH": os.pathsep.join(["/", "/Users/alice", "/opt/dyld"])},
+        env = {
+            "DYLD_LIBRARY_PATH": os.pathsep.join(
+                [
+                    "/",
+                    "/Users/alice",
+                    "/Library/Application Support",
+                    "/private/var",
+                    "/opt/dyld/lib",
+                ]
+            )
+        },
     )
     assert mac_run.is_runnable
     assert mac_run.command[:2] == ["/usr/bin/sandbox-exec", "-p"]
@@ -3961,9 +3997,9 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     )
     assert any(
         f'(subpath "{literal}")' in profile
-        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/opt/dyld")
+        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/opt/dyld/lib")
     )
-    for broad_path in ("/", "/Users/alice"):
+    for broad_path in ("/", "/Users/alice", "/Library/Application Support", "/private/var"):
         for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals(broad_path):
             assert f'(literal "{literal}")' not in profile
             assert f'(subpath "{literal}")' not in profile
