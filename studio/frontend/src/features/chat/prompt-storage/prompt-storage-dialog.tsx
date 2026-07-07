@@ -741,8 +741,27 @@ function textToContentParts(value: string, role: string): Record<string, unknown
     for (let k = 0; k < classified.length; k += 1) {
       const { i, piece, toolCall } = classified[k];
       if (toolCall) {
+        // A tool-call segment is only ever the bare JSON blob -- it never
+        // carries whitespace of its own -- so any leading/trailing
+        // whitespace still attached to `piece` here is a stray newline the
+        // "\r?\n\r?\n" split above couldn't absorb (e.g. a text block
+        // that ends with its own trailing "\n" right before this blob,
+        // making three newlines in a row instead of the encoder's usual
+        // two). Fold it back into the neighboring text instead of
+        // dropping it, so re-exporting reproduces the exact original byte
+        // count.
+        const leadWs = piece.slice(0, piece.length - piece.trimStart().length);
+        if (leadWs) {
+          textBuffer += leadWs;
+          havePendingText = true;
+        }
         flushText();
         parts.push(toolCall);
+        const trailWs = piece.slice(piece.trimEnd().length);
+        if (trailWs) {
+          textBuffer += trailWs;
+          havePendingText = true;
+        }
         continue;
       }
       // Keep the segment's own whitespace intact (don't trim) so ordinary
