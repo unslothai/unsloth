@@ -1388,20 +1388,45 @@ _DIFFUSION_DATASET_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
 
 
+def _resolve_dataset_caption(
+    folder: Path, image_path: Path, meta_captions: dict[str, str]
+) -> Optional[str]:
+    """Resolve an image's caption using the same sidecar > metadata precedence the trainer
+    applies in ``discover_image_caption_pairs``. A per-image .txt/.caption sidecar wins and
+    is stripped, so an empty (tombstone) sidecar shadows metadata and yields "" -- the
+    trainer then skips that image (``if caption:``), so it must not count as captioned."""
+    caption: Optional[str] = None
+    for ext in (".txt", ".caption"):
+        sidecar = image_path.with_suffix(ext)
+        if sidecar.is_file():
+            try:
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+            except OSError:
+                caption = None
+            break
+    if caption is None:
+        try:
+            rel = image_path.relative_to(folder).as_posix()
+        except ValueError:
+            rel = None
+        caption = meta_captions.get(image_path.name) or (
+            meta_captions.get(rel) if rel is not None else None
+        )
+    return caption
+
+
 def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
-    # Count an image as captioned when a metadata/captions.jsonl row or a per-image
-    # sidecar (.txt / .caption) resolves a caption for it -- the same sources the
-    # trainer reads. Counting metadata-only captions here keeps a metadata-captioned
-    # dataset from reporting caption_count=0 and being treated as uncaptioned.
+    # Count an image as captioned only when it resolves to a NON-EMPTY caption via the same
+    # sidecar > metadata precedence the trainer uses -- an empty tombstone sidecar shadows a
+    # metadata row and makes the trainer skip the image, so counting it here would over-report
+    # caption_count and mislabel an effectively-uncaptioned dataset as captioned.
     meta_captions = _load_metadata_captions(folder)
     images = captions = 0
     for f in folder.iterdir():
         if not f.is_file() or f.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS:
             continue
         images += 1
-        if f.name in meta_captions or any(
-            f.with_suffix(ext).is_file() for ext in (".txt", ".caption")
-        ):
+        if _resolve_dataset_caption(folder, f, meta_captions):
             captions += 1
     return DiffusionDatasetSummary(
         name = folder.name, path = str(folder), image_count = images, caption_count = captions
@@ -1475,6 +1500,9 @@ async def upload_diffusion_dataset(
     named folder under the Studio datasets root, creating it if needed. Repeat uploads
     into the same name accumulate, so large datasets can arrive in batches. The returned
     name can be passed directly as ``data_dir`` to /diffusion/start."""
+    import os
+    import tempfile
+
     from utils.paths import datasets_root
     from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 
@@ -1496,9 +1524,15 @@ async def upload_diffusion_dataset(
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
         dest = folder / filename
+        # Stream into a sibling temp file and only atomically promote it once the whole file
+        # is written and within the limit. A mid-stream 413 (or any abort) then removes the
+        # TEMP file, never dest, so re-uploading a batch that trips the limit can no longer
+        # truncate/delete an example that was already stored under the same name.
+        fd, tmp_name = tempfile.mkstemp(dir = folder, prefix = ".upload-", suffix = ext)
+        tmp = Path(tmp_name)
         complete = False
         try:
-            with open(dest, "wb") as out:
+            with os.fdopen(fd, "wb") as out:
                 while chunk := await f.read(1024 * 1024):
                     total_bytes += len(chunk)
                     if total_bytes > limit_bytes:
@@ -1511,11 +1545,12 @@ async def upload_diffusion_dataset(
                             ),
                         )
                     out.write(chunk)
+            os.replace(tmp, dest)
             complete = True
         finally:
             if not complete:
                 try:
-                    dest.unlink(missing_ok = True)
+                    tmp.unlink(missing_ok = True)
                 except OSError:
                     pass
         uploaded += 1

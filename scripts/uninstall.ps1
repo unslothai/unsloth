@@ -366,7 +366,7 @@ function Uninstall-UnslothStudio {
     _StopStudioProcesses -KnownRoots $knownRoots
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultSdCpp, $defaultCache, $defaultNode))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -380,6 +380,16 @@ function Uninstall-UnslothStudio {
             continue
         }
         _RemovePath $r
+        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
+        # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
+        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
+        # build behind. Derive and remove the sibling, guarding the parent path the same way.
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if (_IsUnsafeRoot $customSdCpp) {
+            _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
+        } else {
+            _RemovePath $customSdCpp
+        }
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }

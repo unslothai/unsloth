@@ -698,6 +698,62 @@ def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
     assert r.json()["image_count"] == 3
 
 
+def test_diffusion_dataset_upload_over_cap_keeps_existing_example(
+    client, dataset_roots, monkeypatch
+):
+    # A re-upload that trips the size cap mid-write must not destroy an example already
+    # stored under the same name: the write goes to a sibling temp file and only atomically
+    # replaces the original on success, so the 413 leaves the prior good bytes intact.
+    import utils.upload_limits as ul
+
+    ds_root, _ = dataset_roots
+    folder = ds_root / "my style"
+    folder.mkdir()
+    (folder / "cat.png").write_bytes(b"ORIGINAL-CAT-BYTES")
+
+    monkeypatch.setattr(ul, "get_upload_limit_bytes", lambda: 8)
+    monkeypatch.setattr(ul, "get_upload_limit_label", lambda: "8B")
+
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "my style"},
+        files = [("files", ("cat.png", b"x" * 64, "image/png"))],
+    )
+    assert r.status_code == 413, r.text
+    # The pre-existing example survives untouched, and no temp file is left behind.
+    assert (folder / "cat.png").read_bytes() == b"ORIGINAL-CAT-BYTES"
+    assert sorted(p.name for p in folder.iterdir()) == ["cat.png"]
+
+
+def test_diffusion_info_empty_sidecar_shadows_metadata_caption(client, dataset_roots):
+    # An empty (tombstone) .txt sidecar shadows a metadata row -- the trainer strips it and
+    # skips the image -- so the summary must not count it as captioned (which would report a
+    # dataset as captioned that the trainer would reject as having no captioned images).
+    ds_root, _ = dataset_roots
+    folder = ds_root / "tombstoned"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "b.png").write_bytes(b"x")
+    (folder / "c.png").write_bytes(b"x")
+    (folder / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "a.png", "text": "cap a"})
+        + "\n"
+        + json.dumps({"file_name": "c.png", "text": "cap c"})
+        + "\n",
+        encoding = "utf-8",
+    )
+    # a.png: metadata caption but an empty sidecar tombstone -> uncaptioned.
+    (folder / "a.txt").write_text("   ", encoding = "utf-8")
+    # b.png: real sidecar caption. c.png: metadata only. Both captioned.
+    (folder / "b.txt").write_text("cap b", encoding = "utf-8")
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "tombstoned")
+    assert summary["image_count"] == 3
+    assert summary["caption_count"] == 2
+
+
 def test_diffusion_dataset_upload_rejects_traversal_names(client, dataset_roots):
     for bad in ("../evil", "a/b", ".hidden", " "):
         r = client.post(

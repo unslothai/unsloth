@@ -210,6 +210,16 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
         continue
     fi
     _remove_path "$_custom_root"
+    # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
+    # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
+    # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
+    # build behind. Derive and remove the sibling, guarding the parent path the same way.
+    _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
+    if _is_unsafe_root "$_custom_sd_cpp"; then
+        echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
+    else
+        _remove_path "$_custom_sd_cpp"
+    fi
 done
 _remove_path "$HOME/.unsloth/studio"
 # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
