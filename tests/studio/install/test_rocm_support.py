@@ -1015,9 +1015,9 @@ class TestEnsureRocmTorch:
                         stack_mod._ensure_cpu_torch()
             return mock_pip.called
 
-        assert _run(True) is True    # marker records a different /cpu index -> reinstall
+        assert _run(True) is True  # marker records a different /cpu index -> reinstall
         assert _run(False) is False  # marker matches the pin -> no reinstall (no loop)
-        assert _run(None) is False   # no usable marker -> no blind reinstall
+        assert _run(None) is False  # no usable marker -> no blind reinstall
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
