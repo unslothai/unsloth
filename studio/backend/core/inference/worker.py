@@ -406,6 +406,32 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
+def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:
+    """Skip a generate queued behind a cancelled one during an unload.
+
+    The parent sets ``drain_event`` for the whole unload. Because the parent's
+    per-token ``cancel_event`` is cleared at the start of every generate, a cancel
+    set while this generate was still queued would otherwise be lost when it is
+    dequeued. If the drain is in effect, emit an immediate (empty) ``gen_done`` so
+    the parent's stream/mailbox drains fast and the switch stays fast, and report
+    the generate was skipped so the caller does not clear the cancel or run it.
+    """
+    if drain_event is None or not drain_event.is_set():
+        return False
+    request_id = cmd.get("request_id", "")
+    logger.info("Skipping generate for request %s: unload draining", request_id)
+    _send_response(
+        resp_queue,
+        {
+            "type": "gen_done",
+            "request_id": request_id,
+            "cancelled": True,
+            "stats": None,
+        },
+    )
+    return True
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -632,7 +658,14 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, config: dict) -> None:
+def run_inference_process(
+    *,
+    cmd_queue: Any,
+    resp_queue: Any,
+    cancel_event,
+    config: dict,
+    drain_event = None,
+) -> None:
     """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
     Args:
@@ -640,6 +673,10 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         resp_queue: mp.Queue for sending responses to parent.
         cancel_event: mp.Event the parent sets to cancel generation.
         config: Initial configuration dict with model info.
+        drain_event: mp.Event the parent sets for the duration of an unload. Unlike
+            cancel_event (cleared at the start of every generate), it is never cleared
+            here, so a generate still queued behind a cancelled one is skipped rather
+            than run — the cancel survives the queue handoff.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -715,7 +752,16 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             cmd_type = cmd.get("type", "")
             try:
                 if cmd_type == "generate":
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     cancel_event.clear()
+                    # Re-check the drain after clearing: the parent sets drain_event
+                    # then cancel_event for an unload, so if that pair landed between
+                    # the check above and this clear, the clear just erased the unload's
+                    # cancel. Skip here so the outgoing model is not run to completion,
+                    # which would stall the switch until the dispatcher idle-timeout.
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
                 elif cmd_type == "load":
                     if backend.active_model_name:
@@ -918,7 +964,16 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
         try:
             if cmd_type == "generate":
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 cancel_event.clear()
+                # Re-check the drain after clearing: the parent sets drain_event then
+                # cancel_event for an unload, so if that pair landed between the check
+                # above and this clear, the clear just erased the unload's cancel. Skip
+                # here so the outgoing model is not run to completion, which would stall
+                # the switch until the dispatcher idle-timeout tears the subprocess down.
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "load":
