@@ -26,7 +26,9 @@ latents are likewise precomputed into a small CPU cache (``cache_latents``) and 
 freed. The cache stores the posterior's affine pair (mean/std, scale folded in), so every
 step still draws a fresh VAE sample -- distribution-identical to encoding in the loop,
 without keeping the VAE resident or paying a per-step encode. TF32 matmuls + cudnn
-autotuning are enabled for the run under ``cfg.enable_tf32``.
+autotuning are enabled for the run under ``cfg.enable_tf32``, and the U-Net's repeated
+transformer blocks are regionally torch.compiled (``cfg.compile_transformer``, never
+fatal -- any failure falls back to eager with a warning event).
 """
 
 from __future__ import annotations
@@ -384,6 +386,16 @@ def run_diffusion_lora_training(
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
+        # Regionally torch.compile the U-Net's repeated BasicTransformerBlocks through the
+        # DiT trainer's never-fatal wrapper (a wrap/compile failure falls back to eager
+        # with a warning event). The U-Net is a dense bf16 base here, the combination that
+        # wrapper compiles under "auto".
+        from core.training.diffusion_dit_trainer import _maybe_compile_transformer
+
+        compiled = _maybe_compile_transformer(
+            unet, cfg, False, device, on_event, base_precision = "bf16"
+        )
+
         lora_params = [p for p in unet.parameters() if p.requires_grad]
         optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
         # The scheduler advances once per optimizer update: lr_sched.step() runs a single
@@ -465,7 +477,7 @@ def run_diffusion_lora_training(
         # seed-deterministic sequence whether or not the cache is enabled.
         variant_rng = random.Random(cfg.seed + 1)
 
-        _emit(on_event, "model_load_completed")
+        _emit(on_event, "model_load_completed", compiled = compiled)
 
         # Permutation-cycle index sampler (shared with the DiT trainer): each dataset image is
         # visited once per cycle before any repeat, so a short run does not leave part of a
@@ -484,6 +496,7 @@ def run_diffusion_lora_training(
         running_loss = 0.0
         peak_gb = 0.0
         t_start = time.time()
+        t_steady = None
         done = 0
         for opt_step in range(cfg.train_steps):
             optimizer.zero_grad(set_to_none = True)
@@ -567,17 +580,23 @@ def run_diffusion_lora_training(
 
             running_loss += step_loss
             done = opt_step + 1
+            now = time.time()
+            if done == 1:
+                # Step 1 pays the one-time costs (cudnn autotune, torch.compile warmup), so
+                # the reported rate starts after it and reflects the steady state (the DiT
+                # trainer does the same).
+                t_steady = now
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Studio training pump reads, so
                 # these progress events are directly consumable by the existing training
                 # status/SSE machinery when the diffusion trainer is wired into the worker.
                 if device == "cuda":
                     peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
-                samples_per_second = round(
-                    (done * cfg.train_batch_size * cfg.gradient_accumulation_steps)
-                    / max(time.time() - t_start, 1e-6),
-                    3,
-                )
+                per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps
+                if t_steady is not None and done > 1:
+                    samples_per_second = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)
+                else:
+                    samples_per_second = round(done * per_step / max(now - t_start, 1e-6), 3)
                 _emit(
                     on_event,
                     "progress",

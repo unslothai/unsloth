@@ -393,6 +393,20 @@ def test_request_model_num_epochs_bounds():
             DiffusionTrainingStartRequest(**base, num_epochs = bad)
 
 
+def test_request_model_base_precision_accepts_mxfp8():
+    # The base_precision Literal now includes mxfp8 (the DiT dense speed mode); a bogus
+    # mode is still rejected.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
+    assert DiffusionTrainingStartRequest(**base).base_precision == "nf4"  # default
+    assert DiffusionTrainingStartRequest(**base, base_precision = "mxfp8").base_precision == "mxfp8"
+    with pytest.raises(ValidationError):
+        DiffusionTrainingStartRequest(**base, base_precision = "bogus")
+
+
 def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
     # The generic Studio epoch-mode payload sends max_steps: 0 as the "use epochs" sentinel.
     # The max_steps -> train_steps alias would copy that 0 and normalized() would reject

@@ -115,6 +115,48 @@ def test_config_normalized_validation(kw):
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw).normalized()
 
 
+def test_config_normalized_accepts_mxfp8_dense_base():
+    # mxfp8 is a dense speed mode: a dense base + bf16 compute normalises through.
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = "d",
+        output_dir = "o",
+        base_precision = "mxfp8",
+    ).normalized()
+    assert cfg.base_precision == "mxfp8"
+
+
+def test_config_normalized_mxfp8_rejects_prequant_base():
+    # A prequant (bnb-4bit) base cannot serve the dense mxfp8 base precision.
+    with pytest.raises(ValueError, match = "mxfp8"):
+        DiffusionLoraConfig(
+            base_model = "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
+            data_dir = "d",
+            output_dir = "o",
+            base_precision = "mxfp8",
+        ).normalized()
+
+
+def test_config_normalized_mxfp8_requires_bf16_compute():
+    # Like the other dense modes, mxfp8 trains in bf16 compute; fp16 is refused.
+    with pytest.raises(ValueError, match = "mxfp8"):
+        DiffusionLoraConfig(
+            base_model = "black-forest-labs/FLUX.1-dev",
+            data_dir = "d",
+            output_dir = "o",
+            base_precision = "mxfp8",
+            mixed_precision = "fp16",
+        ).normalized()
+
+
+def test_config_normalized_lists_mxfp8_in_invalid_mode_error():
+    # The invalid-base_precision message enumerates the allowed modes, including mxfp8.
+    with pytest.raises(ValueError, match = "mxfp8"):
+        DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", base_precision = "bogus"
+        ).normalized()
+
+
 def _cfg(**kw):
     return DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw)
 

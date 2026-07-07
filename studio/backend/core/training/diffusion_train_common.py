@@ -128,7 +128,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
 def repo_is_prequantized(base_model: str) -> bool:
     """Heuristic: a repo whose name marks a bitsandbytes 4-bit build already ships a
     quantized transformer, so it loads as-is for nf4 and cannot serve the dense
-    (bf16/int8/fp8) base precisions."""
+    (bf16/int8/fp8/mxfp8) base precisions."""
     name = str(base_model or "").lower()
     return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
 
@@ -175,13 +175,14 @@ def has_functional_torchao() -> bool:
 
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4
-    always works; bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/fp8 additionally
+    always works; bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/fp8/mxfp8 additionally
     need a FUNCTIONAL torchao (their explicit paths import torchao with no fallback, and the
-    Windows-ROCm stub only looks installed). fp8 also needs an fp8-capable GPU (sm89+). The
-    dense modes all train in bf16 compute, which the DiT trainer requires, so a non-bf16 CUDA
-    GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise /info would advertise a start that
-    evicts resident models and then fails the trainer's bf16 guard. Used by the /info endpoint
-    so the UI can gate the precision selector. Never raises."""
+    Windows-ROCm stub only looks installed). fp8 also needs an fp8-capable GPU (sm89+); mxfp8
+    (block-scaled fp8 compute) needs the Blackwell tensor cores (sm100+) its cuBLAS kernels
+    target. The dense modes all train in bf16 compute, which the DiT trainer requires, so a
+    non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise /info would advertise
+    a start that evicts resident models and then fails the trainer's bf16 guard. Used by the
+    /info endpoint so the UI can gate the precision selector. Never raises."""
     modes = ["nf4"]
     recommended = "nf4"
     try:
@@ -194,6 +195,8 @@ def train_precision_modes() -> tuple[list[str], str]:
             major, minor = torch.cuda.get_device_capability()
             if torchao_ok and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
+            if torchao_ok and (major, minor) >= (10, 0):
+                modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> nf4 only
@@ -332,8 +335,9 @@ def family_train_infos() -> list[dict[str, Any]]:
         if fam is None:
             continue
         repos = list(fam.train_base_repos) or [fam.base_repo]
-        # base_precision / compile apply to the DiT trainer only; SDXL keeps its
-        # mixed_precision lever, so the UI hides the selector for it.
+        # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision
+        # lever, so the UI hides the precision selector for it. compile applies everywhere:
+        # the SDXL trainer regionally compiles the U-Net's transformer blocks too.
         is_dit = name in _DIT_TRAIN_FAMILIES
         # On a non-bf16 CUDA GPU the start route's preflight rejects EVERY DiT family (even nf4,
         # since the DiT trainer requires bf16 unconditionally on CUDA), so advertise no precision
@@ -356,7 +360,9 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "vram_note": dit_block or _FAMILY_VRAM_NOTES.get(name, ""),
                 "precision_modes": fam_modes,
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
-                "supports_compile": bool(is_dit and not dit_block),
+                # compile is offered everywhere (SDXL regional U-Net + DiT), except a DiT family
+                # the GPU can't train in bf16 (dit_block), where training is refused outright.
+                "supports_compile": bool(not dit_block),
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere.
                 "deploy_base": fam.deploy_base_repo,
             }
@@ -455,13 +461,13 @@ class DiffusionLoraConfig:
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
         base_precision = str(self.base_precision or "nf4").strip().lower()
-        if base_precision not in ("nf4", "bf16", "int8", "fp8", "auto"):
-            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / auto")
-        # base_precision is a DiT-only lever (nf4/bf16/int8/fp8/auto for the transformer
-        # load); SDXL uses its own mixed_precision path and ignores base_precision entirely,
-        # so the dense-mode gates (prequant base / non-bf16 compute) apply only to the DiT
-        # families. The mode-name validity check above still runs for every family.
-        if resolved_family != "sdxl" and base_precision in ("bf16", "int8", "fp8"):
+        if base_precision not in ("nf4", "bf16", "int8", "fp8", "mxfp8", "auto"):
+            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto")
+        # base_precision is a DiT-only lever (the transformer load precision); SDXL uses its
+        # own mixed_precision path and ignores base_precision entirely, so the dense-mode
+        # gates (prequant base / non-bf16 compute) apply only to the DiT families. The
+        # mode-name validity check above still runs for every family.
+        if resolved_family != "sdxl" and base_precision in ("bf16", "int8", "fp8", "mxfp8"):
             if repo_is_prequantized(self.base_model):
                 raise ValueError(
                     f"base_precision={base_precision!r} needs a dense base repo, but "

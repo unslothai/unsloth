@@ -94,7 +94,7 @@ const CUSTOM_BASE = "__custom__";
 const UPLOAD_DATASET = "__upload__";
 // The dense DiT base precisions: they load a dense (bf16) base and quantise/cast it, so the
 // backend rejects them for an already-quantised bnb-4bit repo. "nf4"/"auto" stay valid.
-const DENSE_PRECISIONS = new Set(["bf16", "int8", "fp8"]);
+const DENSE_PRECISIONS = new Set(["bf16", "int8", "fp8", "mxfp8"]);
 // Mirror the backend's repo_is_prequantized heuristic: a repo whose name marks a
 // bitsandbytes 4-bit build already ships a quantised transformer and cannot serve the dense
 // base precisions. Kept in sync with diffusion_train_common.repo_is_prequantized.
@@ -197,17 +197,22 @@ export function DiffusionTrainPanel({
   const isDiT = familyName !== "sdxl";
   // The quantised base precisions this family can train in, with a stable fallback when the
   // backend does not report them (older backend, or a preset-only family).
-  const precisionModes = useMemo<Array<"nf4" | "bf16" | "int8" | "fp8" | "auto">>(() => {
+  const precisionModes = useMemo<
+    Array<"nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto">
+  >(() => {
     const reported = reportedFamily?.precision_modes?.filter(
-      (m): m is "nf4" | "bf16" | "int8" | "fp8" =>
-        m === "nf4" || m === "bf16" || m === "int8" || m === "fp8",
+      (m): m is "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" =>
+        m === "nf4" || m === "bf16" || m === "int8" || m === "fp8" || m === "mxfp8",
     );
     if (reported && reported.length > 0) return ["auto", ...reported];
+    // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a
+    // Blackwell probe, so it is offered strictly when the backend advertises it).
     return ["auto", "nf4", "bf16", "int8", "fp8"];
   }, [reportedFamily?.precision_modes]);
-  // Whether to show the torch.compile control. Default on for DiT families when the backend
-  // does not say otherwise; sdxl's U-Net path does not expose it here.
-  const supportsCompile = isDiT && (reportedFamily?.supports_compile ?? true);
+  // Whether to show the torch.compile control. The backend advertises this per family
+  // (the SDXL U-Net path compiles regionally too now); default on for DiT families when
+  // an older backend does not report it.
+  const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
 
   const [baseChoice, setBaseChoice] = useState<string>(family?.base_repos[0] ?? "");
   const [customBase, setCustomBase] = useState("");
@@ -250,7 +255,7 @@ export function DiffusionTrainPanel({
   // lets the backend pick the family's recommended mode. Re-seeded to the family's
   // recommendation on family change (unless the user picked one).
   const [basePrecision, setBasePrecision] = useState<
-    "nf4" | "bf16" | "int8" | "fp8" | "auto"
+    "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto"
   >("auto");
   // Whether to torch.compile the DiT transformer. "auto" defers to the backend.
   const [compileTransformer, setCompileTransformer] = useState<"off" | "on" | "auto">(
@@ -816,11 +821,14 @@ export function DiffusionTrainPanel({
     </div>
   );
 
-  const precisionLabel = (m: "nf4" | "bf16" | "int8" | "fp8" | "auto"): string => {
+  const precisionLabel = (
+    m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
+  ): string => {
     if (m === "auto") return "Auto (recommended)";
     if (m === "nf4") return "nf4 (4-bit QLoRA, lowest VRAM)";
     if (m === "bf16") return "bf16 (fastest, most VRAM)";
     if (m === "int8") return "int8 (8-bit)";
+    if (m === "mxfp8") return "mxfp8 (Blackwell, best at high res/batch)";
     return "fp8 (experimental)";
   };
 
@@ -883,63 +891,40 @@ export function DiffusionTrainPanel({
         </div>
 
         {isDiT ? (
-          <>
-            <div className="grid gap-1.5">
-              <Label className="text-xs">Base precision</Label>
-              <select
-                value={basePrecision}
-                onChange={(e) => {
-                  precisionDirty.current = true;
-                  setBasePrecision(e.target.value as typeof basePrecision);
-                }}
-                className={selectClass}
-                aria-label="Base precision"
-              >
-                {precisionModes.map((m) => (
-                  <option
-                    key={m}
-                    value={m}
-                    disabled={basePrequantized && DENSE_PRECISIONS.has(m)}
-                  >
-                    {precisionLabel(m)}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
-                bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
-                mode.
-                {basePrequantized && (
-                  <>
-                    {" "}
-                    This base is already 4-bit quantised, so only nf4/auto apply; pick a dense
-                    (bf16) base repo for the other modes.
-                  </>
-                )}
-              </p>
-            </div>
-            {supportsCompile && (
-              <div className="grid gap-1.5">
-                <Label className="text-xs">Compile transformer</Label>
-                <select
-                  value={compileTransformer}
-                  onChange={(e) =>
-                    setCompileTransformer(e.target.value as typeof compileTransformer)
-                  }
-                  className={selectClass}
-                  aria-label="Compile transformer"
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Base precision</Label>
+            <select
+              value={basePrecision}
+              onChange={(e) => {
+                precisionDirty.current = true;
+                setBasePrecision(e.target.value as typeof basePrecision);
+              }}
+              className={selectClass}
+              aria-label="Base precision"
+            >
+              {precisionModes.map((m) => (
+                <option
+                  key={m}
+                  value={m}
+                  disabled={basePrequantized && DENSE_PRECISIONS.has(m)}
                 >
-                  <option value="auto">Auto</option>
-                  <option value="on">On (faster after warmup)</option>
-                  <option value="off">Off</option>
-                </select>
-                <p className="text-[11px] leading-snug text-muted-foreground">
-                  torch.compile the transformer. Adds a one-time warmup, then speeds up each
-                  step.
-                </p>
-              </div>
-            )}
-          </>
+                  {precisionLabel(m)}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
+              bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
+              mode.
+              {basePrequantized && (
+                <>
+                  {" "}
+                  This base is already 4-bit quantised, so only nf4/auto apply; pick a dense
+                  (bf16) base repo for the other modes.
+                </>
+              )}
+            </p>
+          </div>
         ) : (
           <div className="grid gap-1.5">
             <Label className="text-xs">Precision</Label>
@@ -955,6 +940,27 @@ export function DiffusionTrainPanel({
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
               Mixed-precision autocast for the U-Net. bf16 suits modern GPUs.
+            </p>
+          </div>
+        )}
+        {supportsCompile && (
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Compile transformer</Label>
+            <select
+              value={compileTransformer}
+              onChange={(e) =>
+                setCompileTransformer(e.target.value as typeof compileTransformer)
+              }
+              className={selectClass}
+              aria-label="Compile transformer"
+            >
+              <option value="auto">Auto</option>
+              <option value="on">On (faster after warmup)</option>
+              <option value="off">Off</option>
+            </select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              torch.compile the transformer blocks. Adds a one-time warmup, then speeds up
+              each step.
             </p>
           </div>
         )}

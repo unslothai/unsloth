@@ -9,6 +9,9 @@ exercised by the live GPU smokes, not here."""
 
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 from core.training.diffusion_dit_trainer import (
@@ -17,15 +20,20 @@ from core.training.diffusion_dit_trainer import (
     _QWEN_TARGETS,
     _SPECS,
     _ZIMAGE_TARGETS,
+    _apply_mxfp8_training,
     _assert_gated_access,
+    _mx_module_filter,
     _repo_is_prequantized,
+    _resolve_base_precision,
     _select_lora_targets,
+    _should_compile,
     run_dit_lora_training,
 )
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     family_train_infos,
+    train_precision_modes,
 )
 
 
@@ -117,3 +125,176 @@ def test_family_train_infos_lists_dit_families():
     assert "gated" in infos["flux.1"]["vram_note"].lower()
     # Z-Image defaults to the prequant nf4 repo for QLoRA.
     assert "4bit" in infos["z-image"]["default_base"].lower()
+
+
+def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkeypatch):
+    # Regional compile now applies to every family (the SDXL trainer compiles its U-Net
+    # blocks too), but base_precision stays DiT-only, so SDXL advertises no precision modes
+    # while a DiT family (z-image) keeps its own. Pin the precision list so the assertion
+    # holds regardless of the test host's GPU capability.
+    import core.training.diffusion_train_common as dtc
+
+    monkeypatch.setattr(dtc, "train_precision_modes", lambda: (["nf4", "bf16", "auto"], "auto"))
+    infos = {i["name"]: i for i in family_train_infos()}
+    assert infos["sdxl"]["supports_compile"] is True
+    assert infos["sdxl"]["precision_modes"] == []
+    assert infos["z-image"]["supports_compile"] is True
+    assert infos["z-image"]["precision_modes"] == ["nf4", "bf16", "auto"]
+
+
+# ── mxfp8 base precision (DiT dense speed mode) ───────────────────────────────
+def _linear(
+    in_features,
+    out_features,
+    bias = False,
+):
+    import torch.nn as nn
+    return nn.Linear(in_features, out_features, bias = bias)
+
+
+def test_mx_module_filter_accepts_dense_block_linear():
+    # A bias-free 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
+    assert _mx_module_filter(_linear(3072, 3072), "blocks.0.ff.up") is True
+
+
+def test_mx_module_filter_skips_biased_linear():
+    # The torchao 0.17 MX training path drops the bias term (its linear override computes
+    # input @ weight_t only), so an mxfp8'd biased FROZEN linear would silently lose its bias and
+    # corrupt the base output the LoRA regresses against. Biased linears must stay bf16.
+    assert _mx_module_filter(_linear(3072, 3072, bias = True), "blocks.0.ff.up") is False
+
+
+def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
+    # An explicit mxfp8 request on a non-Blackwell CUDA GPU must fail fast: its MX GEMM has no
+    # kernel below sm100 and would otherwise crash at the first training step, after a full dense
+    # transformer load. /info only advertises mxfp8 on sm100+, so this mirrors that gate.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
+    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
+    with pytest.raises(ValueError, match = "Blackwell"):
+        _resolve_base_precision(cfg, None, "cuda")
+
+
+def test_resolve_base_precision_explicit_mxfp8_ok_on_blackwell(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (10, 0))
+    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
+    assert _resolve_base_precision(cfg, None, "cuda") == "mxfp8"
+
+
+def test_mx_module_filter_skips_lora_and_proj_out():
+    # LoRA-owned modules (adapters stay high precision) and the output projection are
+    # excluded, mirroring the fp8 filter's guards.
+    lin = _linear(3072, 3072)
+    assert _mx_module_filter(lin, "blocks.0.attn.to_q.lora_A.default") is False
+    assert _mx_module_filter(lin, "proj_out") is False
+    assert _mx_module_filter(lin, "x.proj_out.y") is False
+
+
+def test_mx_module_filter_rejects_non_block_aligned_dims():
+    # MX block scaling tiles 32-wide, so a dim not divisible by 32 (3000) is rejected.
+    assert _mx_module_filter(_linear(3000, 3072), "blocks.0.ff.up") is False
+
+
+def test_mx_module_filter_rejects_non_linear():
+    import torch.nn as nn
+
+    # A non-Linear module is never a target even if it exposes matching feature counts.
+    assert _mx_module_filter(nn.LayerNorm(3072), "blocks.0.norm") is False
+
+
+def test_should_compile_auto_mxfp8_on_cuda():
+    # auto compiles the dense speed modes on cuda; int8 stays eager (torchao subclass);
+    # an explicit "off" wins over the mode.
+    cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o")
+    assert _should_compile(cfg, False, "cuda", base_precision = "mxfp8") is True
+    assert _should_compile(cfg, False, "cuda", base_precision = "int8") is False
+    off = DiffusionLoraConfig(
+        base_model = "b", data_dir = "d", output_dir = "o", compile_transformer = "off"
+    )
+    assert _should_compile(off, False, "cuda", base_precision = "mxfp8") is False
+
+
+def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
+    # An unavailable torchao MX path must never be fatal: force both API revisions'
+    # imports to raise, then assert the helper returns False and emits exactly one
+    # warning naming mxfp8.
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
+    monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", None)
+    events = []
+    ok = _apply_mxfp8_training(object(), lambda e: events.append(e))
+    assert ok is False
+    warnings = [e for e in events if e["type"] == "warning"]
+    assert len(warnings) == 1
+    assert "mxfp8" in warnings[0]["message"]
+
+
+def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
+    # torchao 0.17 removed prototype.mx_formats.MXLinearConfig in favour of the
+    # MXFP8TrainingOpConfig recipe API; the config helper must fall back to it so the
+    # advertised mxfp8 mode keeps engaging on those installs instead of silently
+    # training dense bf16.
+    from types import SimpleNamespace
+
+    from core.training.diffusion_dit_trainer import _mxfp8_training_config
+
+    calls = {}
+
+    class _Recipe:
+        MXFP8_RCEIL = "mxfp8_rceil"
+
+    class _OpConfig:
+        @staticmethod
+        def from_recipe(recipe):
+            calls["recipe"] = recipe
+            return "cfg-0.17"
+
+    fake_config = SimpleNamespace(MXFP8TrainingOpConfig = _OpConfig, MXFP8TrainingRecipe = _Recipe)
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
+    monkeypatch.setitem(
+        sys.modules, "torchao.prototype.moe_training", SimpleNamespace(config = fake_config)
+    )
+    monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", fake_config)
+    assert _mxfp8_training_config() == "cfg-0.17"
+    assert calls["recipe"] == _Recipe.MXFP8_RCEIL
+
+
+def _patch_capability(monkeypatch, capability):
+    # Drive train_precision_modes' GPU probe: pretend CUDA is present at the given tensor
+    # core capability (fp8 needs sm89+, mxfp8 needs sm100+). The torchao probe is stubbed
+    # functional so these tests exercise the CAPABILITY gate on hosts without torchao
+    # (the CPU-only CI runner does not install it).
+    import torch
+
+    import core.training.diffusion_train_common as dtc
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    monkeypatch.setattr(dtc, "has_functional_torchao", lambda: True)
+
+
+def test_train_precision_modes_blackwell_lists_mxfp8(monkeypatch):
+    # sm100 (Blackwell) exposes both fp8 and mxfp8, ordered before the "auto" pick.
+    _patch_capability(monkeypatch, (10, 0))
+    modes, recommended = train_precision_modes()
+    assert "mxfp8" in modes and "fp8" in modes
+    assert modes.index("mxfp8") < modes.index("auto")
+    assert modes.index("fp8") < modes.index("auto")
+    assert recommended == "auto"
+
+
+def test_train_precision_modes_ada_has_fp8_without_mxfp8(monkeypatch):
+    # sm89 (Ada) is fp8-capable but not block-scaled mxfp8-capable.
+    _patch_capability(monkeypatch, (8, 9))
+    modes, _ = train_precision_modes()
+    assert "fp8" in modes
+    assert "mxfp8" not in modes
+
+
+def test_train_precision_modes_newer_blackwell_has_mxfp8(monkeypatch):
+    # Any capability >= sm100 keeps mxfp8 (sm120 here).
+    _patch_capability(monkeypatch, (12, 0))
+    modes, _ = train_precision_modes()
+    assert "mxfp8" in modes
