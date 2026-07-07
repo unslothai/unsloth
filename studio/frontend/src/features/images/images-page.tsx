@@ -1030,6 +1030,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
+  // Repo id whose defaults we've already seeded from a discovered resident model, so
+  // we seed the sliders once per resident model and never clobber a later manual edit.
+  const seededResident = useRef<string | null>(null);
 
   const [busy, setBusy] = useState<Busy>(null);
   // {done, total} while a multi-run generation is in flight (for the button).
@@ -1469,6 +1472,33 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       dismissLoadToast();
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
+
+  // Seed the generation sliders to a resident model's recipe when the page discovers
+  // one it did not load itself -- a model left loaded by a prior session or another
+  // route. refreshStatus() only sets `status`; without this the sliders keep the
+  // unrecognised-model fallback (few-step / no-CFG), so a resident full model (e.g.
+  // flux.1-dev) would generate at 9 steps / guidance 0 and produce garbage until the
+  // user re-picked it. Guarded by lastLoad.current === null (a user-initiated load
+  // already seeds its own defaults via handleModelSelect) and a per-repo ref, so a
+  // manual slider edit after the one-shot seed is never clobbered.
+  useEffect(() => {
+    const repoId = status?.loaded ? status.repo_id : null;
+    if (!repoId) return;
+    if (lastLoad.current) return;
+    if (seededResident.current === repoId) return;
+    seededResident.current = repoId;
+    const d = defaultsFor(repoId);
+    setSteps(d.steps);
+    setGuidance(d.guidance);
+    // Wire "Reapply" to the resident model too, so an advanced-option reload works
+    // without re-picking it from the dropdown. A resident GGUF carries no filename in
+    // status, so leave lastLoad null for it (Reapply stays a no-op) rather than
+    // reload it without the filename it needs.
+    const kind = status?.model_kind;
+    if (kind === "single_file" || kind === "pipeline") {
+      lastLoad.current = { repoId, kind };
+    }
+  }, [status?.loaded, status?.repo_id, status?.model_kind]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert
