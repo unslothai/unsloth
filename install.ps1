@@ -598,7 +598,7 @@ function Install-UnslothStudio {
                 ((Get-Item -LiteralPath $_studioIdFile).Length -gt 0)) {
                 $_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
             }
-            if ($_studioRootId -notmatch '^[0-9a-f]{64}$') {
+            if ($_studioRootId -cnotmatch '^[0-9a-f]{64}$') {
                 $_idBytes = New-Object byte[] 32
                 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
                 $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })
@@ -651,7 +651,7 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 
 function Repair-StudioInstallId {
     if (-not `$_ExpectedStudioRootId) { return }
-    if (`$_ExpectedStudioRootId.Length -ne 64 -or `$_ExpectedStudioRootId -notmatch '^[0-9a-f]{64}$') { return }
+    if (`$_ExpectedStudioRootId.Length -ne 64 -or `$_ExpectedStudioRootId -cnotmatch '^[0-9a-f]{64}$') { return }
 
     try {
         `$idTmp = `$null
@@ -663,7 +663,7 @@ function Repair-StudioInstallId {
             `$current = ([System.IO.File]::ReadAllText(`$idFile)).Trim()
         }
         if (`$current -eq `$_ExpectedStudioRootId) { return }
-        if (`$current -match '^[0-9a-f]{64}$') { return }
+        if (`$current -cmatch '^[0-9a-f]{64}$') { return }
 
         [System.IO.Directory]::CreateDirectory(`$idDir) | Out-Null
         `$idTmp = "`$idFile.`$PID.tmp"

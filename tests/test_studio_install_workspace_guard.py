@@ -515,7 +515,7 @@ def test_install_ps1_bakes_studio_root_id_into_launcher():
         "$_ExpectedStudioRootId" in src
     ), "install.ps1 must bake $_ExpectedStudioRootId into the launcher"
     assert (
-        "$_studioRootId -notmatch '^[0-9a-f]{64}$'" in src
+        "$_studioRootId -cnotmatch '^[0-9a-f]{64}$'" in src
     ), "install.ps1 must regenerate invalid existing studio_install_id values before baking"
 
 
@@ -536,10 +536,13 @@ def test_install_ps1_launcher_repairs_missing_studio_install_id():
         "`$_ExpectedStudioRootId.Length -ne 64" in launcher
     ), "repair helper must reject malformed baked ids"
     assert (
+        "`$_ExpectedStudioRootId -cnotmatch '^[0-9a-f]{64}$'" in launcher
+    ), "repair helper must validate the baked id case-sensitively"
+    assert (
         "`$idTmp = `$null" in launcher
     ), "repair helper must initialize `$idTmp before catch cleanup"
     assert (
-        "`$current -match '^[0-9a-f]{64}$'" in launcher
+        "`$current -cmatch '^[0-9a-f]{64}$'" in launcher
     ), "repair helper must preserve a different valid install id"
     assert (
         "Move-Item -LiteralPath `$idTmp -Destination `$idFile -Force" in launcher
@@ -673,10 +676,11 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     assert (
         urandom_idx < py_fallback_idx
     ), "/dev/urandom must be tried before the python3 secrets fallback"
-    # Non-empty id file check before generation is what makes re-runs idempotent.
+    # Valid id check before generation is what makes re-runs idempotent without
+    # preserving malformed ids.
     assert (
-        'if [ ! -s "$_css_id_file" ]; then' in block
-    ), "install.sh must skip id generation when the file already has content"
+        'if [ "$_css_existing_id_valid" != "true" ]; then' in block
+    ), "install.sh must skip id generation when the file already has a valid id"
 
     # Behavioral check: run the generation block twice to confirm idempotence.
     studio_home = tmp_path / "studio"
@@ -687,7 +691,16 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
         '_css_id_file="$_css_id_dir/studio_install_id"\n'
         # Replicate the generation block narrowly so it fails loud on contract drift.
         "gen() {\n"
-        '    if [ ! -s "$_css_id_file" ]; then\n'
+        '    _css_existing_id=""\n'
+        '    [ -f "$_css_id_file" ] && _css_existing_id=$(cat "$_css_id_file" 2>/dev/null || true)\n'
+        "    _css_existing_id_valid=false\n"
+        '    if [ "${#_css_existing_id}" -eq 64 ]; then\n'
+        '        case "$_css_existing_id" in\n'
+        "            *[!0-9a-f]*) ;;\n"
+        "            *) _css_existing_id_valid=true ;;\n"
+        "        esac\n"
+        "    fi\n"
+        '    if [ "$_css_existing_id_valid" != "true" ]; then\n'
         '        _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d " \\n")\n'
         '        printf "%s" "$_css_new_id" > "$_css_id_file.$$.tmp"\n'
         '        mv "$_css_id_file.$$.tmp" "$_css_id_file"\n'
