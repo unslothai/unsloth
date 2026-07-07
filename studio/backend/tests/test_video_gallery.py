@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import core.inference.video_gallery as gallery
 
@@ -127,18 +128,20 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
     mp4 = directory / f"{record['id']}.mp4"
     sidecar = directory / f"{record['id']}.json"
 
-    real_unlink = os.unlink
+    real_unlink = Path.unlink
 
-    def _fail_on_mp4(path, *a, **k):
-        if str(path).endswith(".mp4"):
+    def _fail_on_mp4(self, *a, **k):
+        if self.suffix == ".mp4":
             raise PermissionError("mp4 locked")
-        return real_unlink(path, *a, **k)
+        return real_unlink(self, *a, **k)
 
-    # Scope the os.unlink patch to its own context so undoing it does NOT also revert the autouse
-    # fixture's studio_root redirect (both share the function-scoped monkeypatch); otherwise
-    # list_videos below would read the real home dir instead of the tmp gallery.
+    # Patch Path.unlink (what delete() actually calls) rather than os.unlink: on Python 3.10
+    # Path.unlink dispatches through a cached _accessor bound to os.unlink at import, so patching
+    # os.unlink there has no effect and the mp4 delete would wrongly succeed. Scope it to its own
+    # context so undoing it does NOT also revert the autouse fixture's studio_root redirect (both
+    # share the function-scoped monkeypatch); otherwise list_videos below would read the real home.
     with pytest.MonkeyPatch.context() as m:
-        m.setattr(os, "unlink", _fail_on_mp4)
+        m.setattr(Path, "unlink", _fail_on_mp4)
         assert gallery.delete(record["id"]) is False  # mp4 unlink failed
     # The sidecar was NOT dropped, so the record is still listable and the user can retry.
     assert sidecar.exists() and mp4.exists()
