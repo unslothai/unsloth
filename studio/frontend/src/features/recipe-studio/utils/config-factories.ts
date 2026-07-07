@@ -22,12 +22,42 @@ import { nextName } from "./naming";
 
 export function makeUnstructuredUploadUid(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID().replace(/-/g, "");
+    return globalThis.crypto.randomUUID().replace(/-/g, "").toLowerCase();
   }
-  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(
-    0,
-    32,
-  );
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+  }
+  let uid = "";
+  while (uid.length < 32) {
+    uid += Math.floor(Math.random() * 0x100000000)
+      .toString(16)
+      .padStart(8, "0");
+  }
+  return uid.slice(0, 32);
+}
+
+export function resolveUnstructuredUploadBlockId({
+  configId,
+  uploadUid,
+  generatedUploadUid,
+  unstructuredFileCount,
+}: {
+  configId: string;
+  uploadUid: string;
+  generatedUploadUid: string | null;
+  unstructuredFileCount: number;
+}): string {
+  if (uploadUid) {
+    return uploadUid;
+  }
+  if (generatedUploadUid) {
+    return generatedUploadUid;
+  }
+  return unstructuredFileCount > 0 ? configId : "";
 }
 
 export function makeSamplerConfig(

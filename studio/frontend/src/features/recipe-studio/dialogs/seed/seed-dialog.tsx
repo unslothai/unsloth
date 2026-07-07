@@ -54,7 +54,10 @@ import {
   inspectSeedUpload,
 } from "../../api";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
-import { makeUnstructuredUploadUid } from "../../utils/config-factories";
+import {
+  makeUnstructuredUploadUid,
+  resolveUnstructuredUploadBlockId,
+} from "../../utils/config-factories";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   GithubItemType,
@@ -617,13 +620,19 @@ export function SeedDialog({
   ) {
     generatedUploadUidRef.current = makeUnstructuredUploadUid();
   }
-  const uploadBlockId = uploadUid || generatedUploadUidRef.current || "";
+  const uploadBlockId = resolveUnstructuredUploadBlockId({
+    configId: config.id,
+    uploadUid,
+    generatedUploadUid: generatedUploadUidRef.current,
+    unstructuredFileCount,
+  });
 
   useEffect(() => {
     if (mode !== "unstructured") return;
     if (uploadUid) return;
     if (unstructuredFileCount > 0) return;
-    const nextUid = generatedUploadUidRef.current ?? makeUnstructuredUploadUid();
+    const nextUid =
+      generatedUploadUidRef.current ?? makeUnstructuredUploadUid();
     generatedUploadUidRef.current = nextUid;
     onUpdate({ unstructured_upload_uid: nextUid });
   }, [mode, uploadUid, unstructuredFileCount, onUpdate]);

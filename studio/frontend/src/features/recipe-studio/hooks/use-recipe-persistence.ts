@@ -74,7 +74,10 @@ function stripApiKeys(value: unknown): unknown {
     !Array.isArray(output.env)
   ) {
     output.env = Object.fromEntries(
-      Object.keys(output.env as Record<string, unknown>).map((envKey) => [envKey, ""]),
+      Object.keys(output.env as Record<string, unknown>).map((envKey) => [
+        envKey,
+        "",
+      ]),
     );
   }
   return output;
@@ -84,10 +87,7 @@ function inferHfRepoIdFromPath(pathValue: unknown): string {
   if (typeof pathValue !== "string") {
     return "";
   }
-  const parts = pathValue
-    .trim()
-    .split("/")
-    .filter(Boolean);
+  const parts = pathValue.trim().split("/").filter(Boolean);
   if (parts.length >= 3 && parts[0] === "datasets") {
     return `${parts[1]}/${parts[2]}`;
   }
@@ -128,8 +128,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
     typeof ui?.seed_source_type === "string" ? ui.seed_source_type : null;
   const sourceType =
     typeof source?.seed_type === "string" ? source.seed_type : null;
-  const shouldResetHfState =
-    sourceType === "hf" || uiSourceType === "hf";
+  const shouldResetHfState = sourceType === "hf" || uiSourceType === "hf";
   const shouldResetLocalState =
     sourceType === "local" ||
     sourceType === "unstructured" ||
@@ -243,8 +242,10 @@ export function useRecipePersistence({
     () => buildSignature(normalizedWorkflowName, currentPayload),
     [currentPayload, normalizedWorkflowName],
   );
-  const isDirty = savedSignature.length > 0 && currentSignature !== savedSignature;
-  const saveTone: SaveTone = !isDirty && Boolean(lastSavedAt) ? "success" : "error";
+  const isDirty =
+    savedSignature.length > 0 && currentSignature !== savedSignature;
+  const saveTone: SaveTone =
+    !isDirty && Boolean(lastSavedAt) ? "success" : "error";
   const savedAtLabel = formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
@@ -255,7 +256,9 @@ export function useRecipePersistence({
     setLastSavedAt(initialSavedAt);
     setCopied(false);
 
-    const parsed = importRecipePayload(JSON.stringify(initialPayload));
+    const parsed = importRecipePayload(JSON.stringify(initialPayload), {
+      preserveUnstructuredUploads: true,
+    });
     if (parsed.snapshot) {
       loadRecipe(parsed.snapshot);
     } else {
@@ -315,8 +318,12 @@ export function useRecipePersistence({
   const copyRecipe = useCallback(async (): Promise<void> => {
     setCopied(false);
     try {
-      const safePayload = sanitizeSeedForShare(stripApiKeys(payloadResult.payload));
-      const ok = await copyTextToClipboard(JSON.stringify(safePayload, null, 2));
+      const safePayload = sanitizeSeedForShare(
+        stripApiKeys(payloadResult.payload),
+      );
+      const ok = await copyTextToClipboard(
+        JSON.stringify(safePayload, null, 2),
+      );
       if (!ok) {
         throw new Error("Clipboard not available.");
       }
