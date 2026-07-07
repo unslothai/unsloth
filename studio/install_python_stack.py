@@ -181,6 +181,40 @@ def _probe_installed_torch_version() -> str | None:
     return lines[-1] if lines else None
 
 
+def _installed_torch_is_windows_rocm() -> bool:
+    """Return True when the target venv currently has a Windows ROCm torch build.
+
+    This is a belt-and-suspenders guard for the torchao override step: if the
+    earlier ROCm install path failed to set _rocm_windows_torch_installed but the
+    venv already contains a ROCm torch wheel, still skip torchao because it
+    crashes on import on Windows ROCm.
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, torch; "
+                    "hip = getattr(getattr(torch, 'version', None), 'hip', None) or ''; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "sys.stdout.write('yes' if (hip or 'rocm' in ver or 'rocmsdk' in ver) else '')"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 90,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+    return probe.returncode == 0 and bool(lines and lines[-1] == "yes")
+
+
 # constraints.txt caps new anyio resolutions at <4.14 (#6483), but an install
 # from before the cap existed can already be stuck at 4.14+, which later
 # constrained installs won't touch since it already satisfies mcp/fastmcp.
@@ -1498,6 +1532,10 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 )
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
+# mlx-lm 0.31.3 broke gemma4 / qwen3_5 loading (strict load_weights rejects the
+# QK-norm q_norm/k_norm tensors); exclude just that release. See mlx-lm #1242.
+MLX_LM_BAD_VERSION_EXCLUSION = "!=0.31.3"
+
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
 # _uv_safe_path: uv truncates UV_OVERRIDE at the first space too (issue #6503).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
@@ -2058,6 +2096,8 @@ def install_python_stack() -> int:
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
+    # Exclude mlx-lm 0.31.3 (see MLX_LM_BAD_VERSION_EXCLUSION); it broke
+    # gemma4 / qwen3_5 QK-norm loading. mlx-lm #1242.
     if IS_MAC_ARM and not skip_base:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
@@ -2066,7 +2106,7 @@ def install_python_stack() -> int:
             "--upgrade",
             "mlx",
             "mlx-metal",
-            "mlx-lm",
+            f"mlx-lm{MLX_LM_BAD_VERSION_EXCLUSION}",
             "mlx-vlm",
         )
 
@@ -2256,7 +2296,7 @@ def install_python_stack() -> int:
     #    (no working build; see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
-    elif _rocm_windows_torch_installed:
+    elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
         # No working Windows ROCm torchao build: it imports an absent c10d backend
         # and crashes transformers.quantizers. Studio stubs it at runtime, so
         # installing it only ships a package that crashes on import -- skip it.

@@ -31,6 +31,7 @@ requires_cuda = pytest.mark.skipif(
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LLAMA_PY = REPO_ROOT / "unsloth" / "models" / "llama.py"
+LOADER_PY = REPO_ROOT / "unsloth" / "models" / "loader.py"
 
 CLASS_NAME = "LlamaRotaryEmbedding"
 
@@ -78,42 +79,88 @@ def _config_branch(init_fn):
     return None
 
 
+def _iter_names_and_calls(node):
+    """(attribute/string names, bare-name calls, method-call attrs) under node."""
+    names, calls, call_attrs = set(), set(), set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute):
+            names.add(sub.attr)
+        elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            names.add(sub.value)
+        elif isinstance(sub, ast.Call):
+            if isinstance(sub.func, ast.Name):
+                calls.add(sub.func.id)
+            elif isinstance(sub.func, ast.Attribute):
+                call_attrs.add(sub.func.attr)
+    return names, calls, call_attrs
+
+
+def _find_method(source_path, class_name, method_name):
+    for node in ast.walk(ast.parse(source_path.read_text())):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for sub in node.body:
+                if isinstance(sub, ast.FunctionDef) and sub.name == method_name:
+                    return sub
+    return None
+
+
+def _find_function(source_path, function_name):
+    for node in ast.walk(ast.parse(source_path.read_text())):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return node
+    return None
+
+
 def test_config_path_inspects_rope_scaling():
     init_fn = _load_class_init()
-    branch = _config_branch(init_fn)
-    assert branch is not None, (
-        f"{CLASS_NAME}.__init__ no longer has an `if config is not None:` "
-        "branch; the config constructor path must read config.rope_scaling so "
-        "scaled models (llama3/linear/longrope) are not silently unscaled "
-        "(issue #2405)"
-    )
+    # inv_freq is derived through the shared _unsloth_recompute_inv_freq helper
+    # (or still inlined in the config branch on older layouts); whichever scope
+    # holds the scaling must read config.rope_scaling and call
+    # _compute_config_rope_inv_freq, else scaled models run unscaled (#2405).
+    _, _, init_call_attrs = _iter_names_and_calls(init_fn)
+    scope = _find_method(LLAMA_PY, CLASS_NAME, "_unsloth_recompute_inv_freq")
+    if scope is not None:
+        assert "_unsloth_recompute_inv_freq" in init_call_attrs, (
+            f"{CLASS_NAME}.__init__ no longer derives inv_freq via "
+            "_unsloth_recompute_inv_freq; keep the constructor wired to the "
+            "shared scaling helper or scaled configs silently lose RoPE scaling "
+            "(issue #2405)."
+        )
+    else:
+        scope = _config_branch(init_fn)
+        assert scope is not None, (
+            f"{CLASS_NAME}.__init__ has neither a _unsloth_recompute_inv_freq "
+            "helper nor an `if config is not None:` branch; the config path must "
+            "apply llama3/linear/longrope scaling (issue #2405)."
+        )
 
-    names = set()
-    for stmt in branch.body:
-        for sub in ast.walk(stmt):
-            if isinstance(sub, ast.Attribute):
-                names.add(sub.attr)
-            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                names.add(sub.value)
+    names, called, _ = _iter_names_and_calls(scope)
     assert "rope_scaling" in names, (
-        f"{CLASS_NAME}.__init__ config path does not reference `rope_scaling`. "
-        "When a rotary class is built straight from a config (the path modern "
-        "transformers takes, since rotary moved to LlamaModel), the llama3 / "
-        "linear / longrope scaling must still be applied; otherwise long inputs "
-        "produce repeated-pattern gibberish (issue #2405)."
+        f"{CLASS_NAME} inv_freq computation does not reference `rope_scaling`; "
+        "scaled models (llama3/linear/longrope) would run unscaled and produce "
+        "repeated-pattern gibberish past the original context (issue #2405)."
+    )
+    assert "_compute_config_rope_inv_freq" in called, (
+        f"{CLASS_NAME} inv_freq computation no longer calls "
+        "_compute_config_rope_inv_freq; keep it wired or scaled configs silently "
+        "lose RoPE scaling again (issue #2405)."
     )
 
-    called = {
-        sub.func.id
-        for stmt in branch.body
-        for sub in ast.walk(stmt)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-    }
-    assert "_compute_config_rope_inv_freq" in called, (
-        f"{CLASS_NAME}.__init__ config path no longer calls "
-        "_compute_config_rope_inv_freq; the CPU behavioral tests below cover "
-        "that helper directly, so the constructor must stay wired to it or "
-        "scaled configs silently lose RoPE scaling again (issue #2405)."
+
+def test_v5_repair_reuses_recompute():
+    # transformers v5 blanks non-persistent buffers on load, so
+    # loader._fix_rope_inv_freq rebuilds inv_freq; it must reuse the scaled
+    # recompute, since an unscaled rebuild re-drops llama3 scaling (#2405).
+    fix_fn = _find_function(LOADER_PY, "_fix_rope_inv_freq")
+    assert fix_fn is not None, (
+        "loader._fix_rope_inv_freq not found; if it was renamed, update this "
+        "guard so the v5 rope repair keeps applying config scaling (issue #2405)."
+    )
+    _, _, call_attrs = _iter_names_and_calls(fix_fn)
+    assert "_unsloth_recompute_inv_freq" in call_attrs, (
+        "loader._fix_rope_inv_freq no longer rebuilds inv_freq via "
+        "_unsloth_recompute_inv_freq; transformers v5 blanks the buffer on load "
+        "and an unscaled rebuild re-drops llama3 scaling (issue #2405)."
     )
 
 
@@ -187,6 +234,27 @@ def test_default_rope_type_matches_vanilla_inv_freq():
         "default rope_type must equal the vanilla inv_freq; "
         f"got[:6]={got[:6].tolist()} vanilla[:6]={vanilla[:6].tolist()}"
     )
+
+
+def test_recompute_helper_scales_on_cpu():
+    # Exercise the exact method loader._fix_rope_inv_freq calls, without CUDA.
+    from unsloth.models.llama import LlamaRotaryEmbedding, _get_rope_theta
+
+    def recompute(config):
+        rot = object.__new__(LlamaRotaryEmbedding)
+        rot.attention_scaling = 1.0
+        rot.base = _get_rope_theta(config, 10000.0)
+        rot.dim = config.head_dim
+        rot._unsloth_rope_config = config
+        return rot._unsloth_recompute_inv_freq().float().cpu()
+
+    config = _make_config(LLAMA3_ROPE_SCALING)
+    assert torch.allclose(
+        recompute(config), _reference_inv_freq(config, "llama3"), rtol = 1e-4, atol = 1e-6
+    ), "_unsloth_recompute_inv_freq dropped llama3 scaling (issue #2405)."
+    assert torch.allclose(
+        recompute(_make_config(None)), _vanilla_inv_freq(), rtol = 1e-4, atol = 1e-6
+    ), "_unsloth_recompute_inv_freq must return vanilla inv_freq when unscaled."
 
 
 def _cos_at_position(rot, position):
