@@ -1743,12 +1743,13 @@ class DiffusionLoadRequest(BaseModel):
         "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_quant: Optional[Literal["fp8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
         None,
-        description = "Quantise the companion text encoder(s): fp8 (~2x smaller, "
-        "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
-        "memory-vs-quality tradeoff (shifts fine detail), not free; "
-        "pairs well with balanced mode.",
+        description = "Quantise the companion text encoder(s): fp8 (layerwise cast, ~2x smaller, "
+        "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
+        "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
+        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2341,6 +2342,16 @@ class VideoLoadRequest(BaseModel):
             "backend's transformer_quant field.",
         )
     )
+    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+        None,
+        description = "Quantise the dense companion text encoder (Gemma3 / UMT5 / Qwen2.5-VL), "
+        "which loads bf16 from the base repo regardless of how the DiT was sourced and is often "
+        "the largest resident component. fp8 = diffusers layerwise casting (memory only, cc >= "
+        "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
+        "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
+        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
+        "sm_100+). null keeps the encoder dense. Mirrors the image backend's field.",
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -2505,6 +2516,12 @@ class VideoStatusResponse(BaseModel):
         description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "
         "mxfp8 | null (null = the DiT(s) run at their loaded bf16 precision). For a dual-expert "
         "MoE family both experts share the reported scheme.",
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None,
+        description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
+        "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
+        "keep-bf16 schedule is reported as the fp8 it fell back to.",
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"

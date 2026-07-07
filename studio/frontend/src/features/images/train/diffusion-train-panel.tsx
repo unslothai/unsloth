@@ -64,7 +64,7 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     label: "FLUX.1-dev (12B)",
     base_repos: ["black-forest-labs/FLUX.1-dev"],
     defaults: { rank: 16, lr: 0.0001, resolution: 512 },
-    vram_note: "Gated repo - accept the license on Hugging Face and add your HF token. QLoRA (4-bit).",
+    vram_note: "Needs a free Hugging Face license: accept it on the model page, then add your token.",
     gated: true,
   },
   {
@@ -72,21 +72,21 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     label: "Qwen-Image (20B)",
     base_repos: ["unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"],
     defaults: { rank: 16, lr: 0.00005, resolution: 512 },
-    vram_note: "Largest model - QLoRA (4-bit) on a big GPU. Start at 512px, batch 1.",
+    vram_note: "The biggest model: needs a large GPU. Start at 512px.",
   },
   {
     name: "z-image",
     label: "Z-Image-Turbo (6B)",
     base_repos: ["unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 768 },
-    vram_note: "Lightest and fastest to train. bf16 only (fp16 is unstable for this family).",
+    vram_note: "The smallest and fastest to train. A great first pick.",
   },
   {
     name: "sdxl",
     label: "SDXL (U-Net)",
     base_repos: ["stabilityai/stable-diffusion-xl-base-1.0", "stabilityai/sdxl-turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 1024 },
-    vram_note: "The classic text-to-image base. Trains comfortably at 1024px.",
+    vram_note: "The classic. Trains comfortably at 1024px.",
   },
 ];
 
@@ -850,7 +850,7 @@ export function DiffusionTrainPanel({
             <option value="linear">Linear decay</option>
           </select>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            How the learning rate evolves over the run (shown live in the LR chart).
+            How fast the model learns over time. Constant is fine for most runs.
           </p>
         </div>
         {lrScheduler !== "constant" &&
@@ -870,8 +870,7 @@ export function DiffusionTrainPanel({
             <option value="off">Off (faster steps)</option>
           </select>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            Recomputes activations in the backward pass: a large VRAM saving for a modest
-            per-step slowdown.
+            Saves a lot of GPU memory in exchange for slightly slower steps.
           </p>
         </div>
 
@@ -898,15 +897,10 @@ export function DiffusionTrainPanel({
               ))}
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              How the frozen base weights are quantised. nf4 (4-bit) uses the least VRAM;
-              bf16 is fastest but needs the most. Auto picks this family&apos;s recommended
-              mode.
+              How the base model is stored while training. Auto picks the best fit for
+              your GPU.
               {basePrequantized && (
-                <>
-                  {" "}
-                  This base is already 4-bit quantised, so only nf4/auto apply; pick a dense
-                  (bf16) base repo for the other modes.
-                </>
+                <> This base is already 4-bit, so only nf4/auto apply.</>
               )}
             </p>
           </div>
@@ -924,7 +918,7 @@ export function DiffusionTrainPanel({
               <option value="no">fp32 (no mixed)</option>
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              Mixed-precision autocast for the U-Net. bf16 suits modern GPUs.
+              How the math runs during training. bf16 is right for modern GPUs.
             </p>
           </div>
         )}
@@ -944,8 +938,7 @@ export function DiffusionTrainPanel({
               <option value="off">Off</option>
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              torch.compile the transformer blocks. Adds a one-time warmup, then speeds up
-              each step.
+              Warms up once at the start, then every training step runs faster.
             </p>
           </div>
         )}
@@ -1084,8 +1077,8 @@ export function DiffusionTrainPanel({
                 </Button>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                10-50 images work well. Optional captions: a .txt per image or a
-                metadata.jsonl; without them the trigger prompt below captions every image.
+                10-50 images are plenty. Captions are optional: without them, the trigger
+                prompt below describes every image.
               </p>
             </div>
           ) : (
@@ -1113,8 +1106,8 @@ export function DiffusionTrainPanel({
                 )}
                 {selectedDataset.caption_count === 0 && !gridOpen && (
                   <p className="text-[11px] text-muted-foreground">
-                    No caption files - the trigger prompt below captions every image, or
-                    open Review captions to label them.
+                    No captions yet: the trigger prompt below will describe every image,
+                    or open Review captions to write your own.
                   </p>
                 )}
               </>

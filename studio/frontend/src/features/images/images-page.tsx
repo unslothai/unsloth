@@ -10,11 +10,19 @@ import {
   ImageAdd02Icon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
+  PencilEdit02Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -36,6 +44,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import { IMAGE_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
+import {
+  IMAGE_CATALOG,
+  catalogToModelOptions,
+  loadSpecFor,
+} from "@/components/assistant-ui/model-selector/model-catalog";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -69,100 +82,12 @@ import {
 } from "./api";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 
-// Curated diffusion GGUFs the picker recommends. The backend resolves each one's
-// pipeline + base diffusers repo from its repo id, so the rail just lists them;
-// the chat ModelSelector also surfaces any other on-device image GGUF.
-const txt2img = (id: string, name: string): ModelOption => ({
-  id,
-  name,
-  description: "Text-to-image · GGUF",
-  isGguf: true,
-});
-
-// Instruction-editing GGUF (Qwen-Image-Edit). Same single-file GGUF flow as txt2img
-// (the picker expands quant variants); the backend resolves it to the edit family, which
-// exposes only the "edit" workflow.
-const editGguf = (id: string, name: string): ModelOption => ({
-  id,
-  name,
-  description: "Image editing · GGUF",
-  isGguf: true,
-});
-
-// How to load a curated non-GGUF (safetensors) model. "pipeline" = a full diffusers
-// repo (from_pretrained, embedded bnb-4bit quant auto-applied); "single_file" = a
-// single safetensors transformer (e.g. fp8) assembled onto its base repo. The backend
-// gates these to unsloth/* repos plus a short allowlist of official base repos (SDXL).
-// Keyed by repo id so the load handler knows the kind (and, for single_file, the exact
-// filename).
-type SafetensorsSpec = { kind: "pipeline" | "single_file"; filename?: string };
-const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
-  "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
-  // Krea 2 Turbo: official vendor repo (bf16 pipeline), on the backend allowlist.
-  "krea/Krea-2-Turbo": { kind: "pipeline" },
-  // Ideogram 4: official vendor pipelines, on the backend allowlist. No bf16 repo
-  // exists: -fp8 stores its two DiTs as raw float8 (highest precision; ~46 GB
-  // resident after the bf16 cast); -nf4-diffusers is the bnb-4bit export (~11 GB).
-  "ideogram-ai/ideogram-4-fp8": { kind: "pipeline" },
-  "ideogram-ai/ideogram-4-nf4-diffusers": { kind: "pipeline" },
-  "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
-  "unsloth/Qwen-Image-2512-FP8": {
-    kind: "single_file",
-    filename: "qwen-image-2512-fp8.safetensors",
-  },
-  // SDXL is a U-Net family loaded as a whole pipeline (from_pretrained). These
-  // official base repos are on the backend's non-GGUF allowlist.
-  "stabilityai/sdxl-turbo": { kind: "pipeline" },
-  "stabilityai/stable-diffusion-xl-base-1.0": { kind: "pipeline" },
-};
-// Curated non-GGUF picker entries (isGguf:false -> no quant expander, direct load).
-const safetensors = (id: string, name: string, label: string): ModelOption => ({
-  id,
-  name,
-  description: `Text-to-image · ${label}`,
-  isGguf: false,
-});
-
-const MODELS: ModelOption[] = [
-  txt2img("unsloth/Z-Image-Turbo-GGUF", "Z-Image-Turbo"),
-  txt2img("unsloth/Z-Image-GGUF", "Z-Image"),
-  txt2img("unsloth/Qwen-Image-2512-GGUF", "Qwen-Image 2512"),
-  txt2img("unsloth/Qwen-Image-GGUF", "Qwen-Image"),
-  txt2img("unsloth/FLUX.1-schnell-GGUF", "FLUX.1 schnell"),
-  txt2img("unsloth/FLUX.1-dev-GGUF", "FLUX.1 dev"),
-  txt2img("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2 klein 4B"),
-  txt2img("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2 klein 9B"),
-  editGguf("unsloth/Qwen-Image-Edit-2511-GGUF", "Qwen-Image-Edit 2511"),
-  editGguf("unsloth/FLUX.1-Kontext-dev-GGUF", "FLUX.1 Kontext dev"),
-  safetensors(
-    "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
-    "Z-Image-Turbo (bnb-4bit)",
-    "Safetensors · bnb-4bit",
-  ),
-  safetensors("krea/Krea-2-Turbo", "Krea 2 Turbo", "Safetensors · bf16"),
-  safetensors("ideogram-ai/ideogram-4-fp8", "Ideogram 4 (FP8)", "Safetensors · fp8"),
-  safetensors(
-    "ideogram-ai/ideogram-4-nf4-diffusers",
-    "Ideogram 4 (bnb-4bit)",
-    "Safetensors · bnb-4bit",
-  ),
-  safetensors(
-    "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
-    "Qwen-Image 2512 (bnb-4bit)",
-    "Safetensors · bnb-4bit",
-  ),
-  safetensors(
-    "unsloth/Qwen-Image-2512-FP8",
-    "Qwen-Image 2512 (FP8)",
-    "Safetensors · fp8",
-  ),
-  safetensors("stabilityai/sdxl-turbo", "SDXL Turbo", "Safetensors · SDXL"),
-  safetensors(
-    "stabilityai/stable-diffusion-xl-base-1.0",
-    "SDXL Base 1.0",
-    "Safetensors · SDXL",
-  ),
-];
+// Curated models come from the shared catalog: one canonical group per model,
+// its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per
+// artifact via loadSpecFor (replacing the old SAFETENSORS_MODELS table). The
+// picker renders groups with a format second level and routes bare clicks to
+// the best artifact for the device.
+const MODELS: ModelOption[] = catalogToModelOptions(IMAGE_CATALOG);
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) that must
 // be supported by the loaded model for the tab to enable; null = always available.
@@ -321,21 +246,68 @@ const PAGE_SIZE = 50;
 
 // Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share
 // the seed + timestamp, so they get a "_<n>" suffix past the first one.
-function exportFilename(image: GalleryImage): string {
+type ImageExportFormat = "png" | "jpeg" | "webp";
+
+function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
   const d = new Date(image.created_at * 1000);
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp =
     `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
     `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   const suffix = image.batch_index > 0 ? `_${image.batch_index}` : "";
-  return `Unsloth_${stamp}_${image.seed}${suffix}.png`;
+  const ext = format === "jpeg" ? "jpg" : format;
+  return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-function downloadImage(src: string, image: GalleryImage) {
+function saveBlobUrl(href: string, filename: string) {
   const link = document.createElement("a");
-  link.href = src;
-  link.download = exportFilename(image);
+  link.href = href;
+  link.download = filename;
   link.click();
+}
+
+// PNG saves the stored bytes verbatim (keeps the embedded recipe metadata);
+// JPEG / WebP re-encode client-side from the already-fetched object URL. JPEG
+// has no alpha, so it is flattened onto white first.
+async function downloadImage(
+  src: string,
+  image: GalleryImage,
+  format: ImageExportFormat = "png",
+) {
+  if (format === "png") {
+    saveBlobUrl(src, exportFilename(image, format));
+    return;
+  }
+  try {
+    const el = new Image();
+    el.decoding = "async";
+    el.src = src;
+    await el.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = el.naturalWidth;
+    canvas.height = el.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas 2d context unavailable");
+    if (format === "jpeg") {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.drawImage(el, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, `image/${format}`, 0.95),
+    );
+    if (!blob) throw new Error(`could not encode ${format}`);
+    const url = URL.createObjectURL(blob);
+    try {
+      saveBlobUrl(url, exportFilename(image, format));
+    } finally {
+      // Give the click a tick to start before revoking.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    }
+  } catch {
+    // Conversion failed (decode/encode); fall back to the original PNG bytes.
+    saveBlobUrl(src, exportFilename(image, "png"));
+  }
 }
 
 function formatTimestamp(epochSeconds: number): string {
@@ -489,6 +461,9 @@ function formatResolvedValue(key: string, value: string | boolean | null): strin
   if (value === null || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
+  // Deferred speed auto: the dense pipe stays exact/eager and compiles on the
+  // 3rd image of the session (the tooltip carries the full reason).
+  if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
 }
 
@@ -1044,7 +1019,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "auto",
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [transformerCache, setTransformerCache] = useState<"off" | "fbcache">("off");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced
   // options without the user re-picking it from the dropdown.
@@ -1527,7 +1502,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-          transformer_cache: transformerCache === "off" ? undefined : transformerCache,
+          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         });
       } catch (err) {
         dismissLoadToast();
@@ -1576,8 +1551,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // busy, while the backend rejects the second load with a 409.
       if (busy !== null) return;
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
-      const spec = SAFETENSORS_MODELS[id];
-      if (spec) {
+      const spec = loadSpecFor(id, IMAGE_CATALOG);
+      if (spec && spec.kind !== "gguf") {
         setQuant(null);
         const d = defaultsFor(id);
         setSteps(d.steps);
@@ -1913,7 +1888,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     <>
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model (GGUF compiles, dense stays eager). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -1930,8 +1905,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
-          label="Dtype"
-          hint="Transformer compute dtype. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
+          label="Precision"
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
@@ -1947,14 +1922,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) : (
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-            Dtype
+            Precision
           </span>
           <span className="text-xs text-muted-foreground/60">GGUF models only</span>
         </div>
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (small quality cost)."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -1981,11 +1956,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Leave off for few-step distilled models."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
         options={[
+          ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
         ]}
@@ -2029,6 +2005,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             variant="ghost"
             className="!h-[34px]"
             task={IMAGE_GEN_TASKS}
+            catalog={IMAGE_CATALOG}
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />
@@ -2037,11 +2014,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               Create is the generation workspace; Train is the LoRA training workspace. */}
           <Tabs value={pageMode} onValueChange={(v) => setPageMode(v as "create" | "train")}>
             <TabsList className="h-[34px]">
-              <TabsTrigger value="create" className="w-[64px]">
-                Create
+              {/* Same icons as the sidebar's New Chat / Train entries, so the
+                  two workspaces read as the same actions everywhere. */}
+              {/* TabsTrigger renders children inside a plain inline span (and preflight
+                  makes svg display:block), so the icon and label need their own flex
+                  row to stay on one line. */}
+              <TabsTrigger value="create" className="w-[84px]">
+                <span className="flex items-center gap-1.5">
+                  <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
+                  Create
+                </span>
               </TabsTrigger>
-              <TabsTrigger value="train" className="w-[64px]">
-                Train
+              <TabsTrigger value="train" className="w-[84px]">
+                <span className="flex items-center gap-1.5">
+                  <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" />
+                  Train
+                </span>
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -2629,15 +2617,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     Size/seed live in the Recipe popover, so no separate chip here. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="gap-1.5"
-                    onClick={() => downloadImage(selectedSrc, selected)}
-                  >
-                    <HugeiconsIcon icon={Download01Icon} className="size-4" />
-                    Download
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild={true}>
+                      <Button size="sm" variant="ghost" className="gap-1.5">
+                        <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                        Download
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => void downloadImage(selectedSrc, selected, "png")}
+                      >
+                        PNG (original, keeps recipe)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void downloadImage(selectedSrc, selected, "jpeg")}
+                      >
+                        JPEG (smaller)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void downloadImage(selectedSrc, selected, "webp")}
+                      >
+                        WebP
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button
                     size="sm"
                     variant="ghost"

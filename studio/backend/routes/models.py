@@ -32,6 +32,10 @@ class CachedModelRepo(BaseModel):
     # drop the value the handler sets, letting image-only repos pass the chat picker's
     # task gate.
     task: Optional[str] = None
+    # True when the snapshot is incomplete (a cancelled/partial download left only some
+    # weights). The picker must not treat a partial base repo as a usable download, or an
+    # On Device click routes to a fresh multi-GB re-download instead of the complete GGUF.
+    partial: Optional[bool] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -3363,6 +3367,44 @@ def _repo_is_diffusers(repo_info) -> bool:
     return False
 
 
+def _cached_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:
+    """Whether the cached model snapshot is incomplete (cancelled/partial download).
+    Reuses the hub inventory scan's snapshot-partial detector (cancel marker, legacy
+    .incomplete blob, manifest walk -- cheapest first). ``repo_cache_dir`` scopes all three
+    signals to the specific snapshot being listed: without it the scan spans every HF cache
+    root, so a stale .incomplete copy in one root would flag a complete copy in another as
+    partial and hide it from the picker (the sibling inventory paths all scope the same way).
+    Best-effort: a detection error reports not-partial so a scan glitch never hides a
+    genuinely usable repo."""
+    try:
+        from hub.utils.inventory_scan import is_snapshot_partial
+        return bool(is_snapshot_partial("model", repo_id, repo_cache_dir))
+    except Exception:  # noqa: BLE001 -- never fail the listing over a partial probe
+        return False
+
+
+def _cached_repo_task(repo_info) -> Optional[str]:
+    """Pipeline task for a cached non-GGUF repo: 'text-to-video' for repos the
+    video backend can load as full pipelines (its trust list / family detector),
+    else 'text-to-image' for diffusers image repos, else None (chat). Without the
+    video tag, cached Lightricks / Wan / Hunyuan pipelines never surfaced in the
+    Video picker's On Device list -- everything diffusers was blanket-tagged
+    text-to-image."""
+    repo_id = getattr(repo_info, "repo_id", "") or ""
+    try:
+        from core.inference.video import _is_trusted_video_repo
+        from core.inference.video_families import detect_video_family
+
+        # Both gates: a detected video family (so unsloth image repos don't
+        # match) AND the load path's own trust rule (so an untrusted video repo
+        # isn't advertised as loadable).
+        if detect_video_family(repo_id) is not None and _is_trusted_video_repo(repo_id):
+            return _VIDEO_GEN_TASK
+    except Exception:
+        pass
+    return "text-to-image" if _repo_is_diffusers(repo_info) else None
+
+
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
@@ -3405,12 +3447,22 @@ async def list_cached_models(
                     )
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
-                    if existing is None or total_size > existing["size_bytes"]:
+                    is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path))
+                    # Prefer the most COMPLETE snapshot, then the largest. The picker drops partial
+                    # rows, so a partial copy in one cache root must not shadow a smaller COMPLETE
+                    # copy in another (that would make a usable model vanish from On Device).
+                    # Completeness wins outright; size only breaks ties among equal completeness.
+                    if existing is None or (not is_partial, total_size) > (
+                        not bool(existing.get("partial")),
+                        existing["size_bytes"],
+                    ):
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
-                            "task": "text-to-image" if _repo_is_diffusers(repo_info) else None,
+                            "task": _cached_repo_task(repo_info),
                         }
+                        if is_partial:
+                            row["partial"] = True
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
@@ -3510,6 +3562,34 @@ async def delete_cached_model(
                 raise HTTPException(
                     status_code = 400,
                     detail = "An Images model load is using this repo; wait for it to finish",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # And refuse if the Video backend has this repo loaded or is downloading it: cached non-GGUF
+    # video repos now surface in the Video On-Device picker with the normal delete action, but the
+    # guards above only cover chat + the Images engine, so without this a loaded/loading Wan / LTX /
+    # Hunyuan pipeline could have its HF snapshot removed from under it. Mirror the Images guard.
+    try:
+        from core.inference.video import get_video_backend
+
+        video_backend = get_video_backend()
+        video_status = video_backend.status()
+        if video_status.get("loaded") and video_status.get("repo_id"):
+            loaded_id = str(video_status["repo_id"]).lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+        for lid in getattr(video_backend, "loading_repo_ids", tuple)():
+            lid = str(lid).lower()
+            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "A Video model load is using this repo; wait for it to finish",
                 )
     except HTTPException:
         raise
