@@ -10,8 +10,6 @@ orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, 
 exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
-from __future__ import annotations
-
 import json as _json
 import math
 import multiprocessing as mp
@@ -28,7 +26,7 @@ from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional, Tuple, Any, Callable, TYPE_CHECKING
+from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -114,7 +112,7 @@ def is_mlx_training_device(device: Any) -> bool:
     )
 
 
-def should_use_mlx_training_backend(*, device: Any | None = None) -> bool:
+def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
     if device is not None:
         return is_mlx_training_device(device)
     return is_apple_silicon_training_platform()
@@ -238,7 +236,7 @@ def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
     return f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
 
 
-def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+def _cleanup_cancelled_checkpoints(output_dir: Union[str, os.PathLike]) -> None:
     """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
 
     Completed ``checkpoint-<int>/`` dirs survive. Symlinked output_dir / children
@@ -334,9 +332,9 @@ class _MLXTrainerAdapter:
         self._model_config: dict[str, Any] = {}
         self._peft_config: dict[str, Any] = {}
         self._dataset_config: dict[str, Any] = {}
-        self._event_queue: queue.Queue | None = None
-        self._stop_queue: queue.Queue | None = None
-        self._pump_thread: threading.Thread | None = None
+        self._event_queue: Optional[queue.Queue] = None
+        self._stop_queue: Optional[queue.Queue] = None
+        self._pump_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
     def _activate_transformers_for_model(self, model_name: str, hf_token: Optional[str]) -> None:
@@ -426,11 +424,11 @@ class _MLXTrainerAdapter:
         finetune_language_layers: bool = True,
         finetune_attention_modules: bool = True,
         finetune_mlp_modules: bool = True,
-        target_modules: list | str | None = None,
+        target_modules: Optional[Union[list, str]] = None,
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
-        use_gradient_checkpointing: str | bool = "unsloth",
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
         use_rslora: bool = False,
         use_loftq: bool = False,
     ) -> bool:
@@ -632,7 +630,7 @@ class _MLXTrainerAdapter:
                     self._stop_queue = None
                 return
 
-    def _drain_events(self, event_queue: queue.Queue | None = None):
+    def _drain_events(self, event_queue: Optional[queue.Queue] = None):
         event_queue = event_queue or self._event_queue
         if event_queue is None:
             return

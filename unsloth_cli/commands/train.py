@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from __future__ import annotations
-
 import time
 from pathlib import Path
 from typing import Optional
@@ -20,7 +18,7 @@ def _should_use_mlx_backend_for_cli() -> bool:
     return should_use_mlx_training_backend()
 
 
-def _activate_mlx_transformers(model_name: str, hf_token: str | None) -> None:
+def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
     # Activate before any code path that may import transformers. Model-type
     # detection in the adapter imports utils.models, which builds registry sets.
     ensure_studio_backend_path()
@@ -31,9 +29,14 @@ def _activate_mlx_transformers(model_name: str, hf_token: str | None) -> None:
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
-def _create_cli_trainer(model_name: str, hf_token: str | None):
+def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
+        # MLX runs torch-free; route to the lightweight adapter without
+        # importing trainer.py (which pulls in torch/unsloth/trl at module load).
+        ensure_studio_backend_path()
+        from studio.backend.core.training.training import create_mlx_trainer_adapter
+        return create_mlx_trainer_adapter()
 
     ensure_studio_backend_path()
     from studio.backend.core.training.trainer import UnslothTrainer
