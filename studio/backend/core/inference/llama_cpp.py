@@ -901,6 +901,39 @@ def _resolve_repo_id_casing(hf_repo: str) -> str:
         return hf_repo
 
 
+def _cached_colocated_split_main(
+    repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
+) -> Optional[str]:
+    """Main-shard path from a cache snapshot that also holds every sibling shard.
+
+    A newer snapshot may hold only the first shard while an older snapshot has the
+    complete split set. ``_cached_hf_snapshot_file`` would return that newer partial
+    main and the co-location check would then force a refetch, so scan snapshots for
+    one where the whole set is present and return that main path instead. None when
+    no snapshot holds the full set.
+    """
+    main_parts = [part for part in main_filename.replace("\\", "/").split("/") if part]
+    if not main_parts or any(part in (".", "..") for part in main_parts):
+        return None
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        for snap in _iter_hf_cache_snapshots(repo_id):
+            main_path = snap.joinpath(*main_parts)
+            if not main_path.is_file():
+                continue
+            expected_main = expected_sizes.get(main_filename)
+            try:
+                if expected_main and main_path.stat().st_size < expected_main:
+                    continue
+            except OSError:
+                continue
+            if _snapshot_has_all_shards(str(main_path), main_filename, shards, expected_sizes):
+                return str(main_path)
+    except Exception as e:
+        logger.debug("Co-located split snapshot lookup failed for %s: %s", repo_id, e)
+    return None
+
+
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     m = _SHARD_FULL_RE.match(first_shard)
     if not m:
@@ -4176,10 +4209,6 @@ class LlamaCppBackend:
                             f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                         )
                         gguf_filename = fallback_file
-                        # Record the fallback's size so the later cache-reuse
-                        # probe can size-verify it; without this the fallback
-                        # main shard is only checked for existence.
-                        expected_sizes[fallback_file] = fallback_size
                         _m = _SHARD_RE.match(gguf_filename)
                         _prefix = _m.group(1) if _m else None
                         if _prefix:
@@ -4193,6 +4222,13 @@ class LlamaCppBackend:
                             )
                         else:
                             gguf_extra_shards = []
+                        # Record the fallback's size so the later cache-reuse probe can
+                        # size-verify it; only for a single-file fallback, since
+                        # _find_smallest_fitting_variant returns the whole-variant size
+                        # and using that as the first shard's expected size would reject
+                        # a valid cached first shard of a split fallback.
+                        if not gguf_extra_shards:
+                            expected_sizes[fallback_file] = fallback_size
                     else:
                         raise RuntimeError(
                             f"Not enough disk space to download any variant. "
@@ -4214,21 +4250,19 @@ class LlamaCppBackend:
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
             local_path = None
             if not force:
-                local_path = _cached_hf_snapshot_file(
-                    hf_repo,
-                    gguf_filename,
-                    expected_size = expected_sizes.get(gguf_filename),
-                )
-                if (
-                    local_path is not None
-                    and gguf_extra_shards
-                    and not _snapshot_has_all_shards(
-                        local_path, gguf_filename, gguf_extra_shards, expected_sizes
+                if gguf_extra_shards:
+                    # A split GGUF must load every shard from one snapshot; reuse only a
+                    # snapshot that holds the whole set co-located, scanning past a newer
+                    # snapshot that has just the first shard while an older one is complete.
+                    local_path = _cached_colocated_split_main(
+                        hf_repo, gguf_filename, gguf_extra_shards, expected_sizes
                     )
-                ):
-                    # The cached main shard's siblings are missing or split across
-                    # snapshots; fetch the whole set together so they stay co-located.
-                    local_path = None
+                else:
+                    local_path = _cached_hf_snapshot_file(
+                        hf_repo,
+                        gguf_filename,
+                        expected_size = expected_sizes.get(gguf_filename),
+                    )
             if local_path is None:
                 local_path = hf_hub_download_with_xet_fallback(
                     hf_repo,

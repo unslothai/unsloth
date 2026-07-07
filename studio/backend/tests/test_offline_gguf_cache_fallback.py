@@ -79,6 +79,7 @@ from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _cached_colocated_split_main,
     _gguf_files_for_variant,
     _hf_offline_if_dns_dead,
     _probe_dns_dead,
@@ -503,6 +504,34 @@ class TestListGgufVariantsFromCache:
 
     def test_returns_none_when_not_cached(self, hf_cache):
         assert _list_gguf_variants_from_hf_cache("unsloth/absent") is None
+
+
+class TestCachedColocatedSplitMain:
+    def test_prefers_older_complete_snapshot_over_newer_partial(self, hf_cache):
+        # Newer snapshot has only shard 1; older snapshot has the complete set. The
+        # complete older snapshot must win so the split GGUF can load co-located.
+        shard1 = "m-00001-of-00002.gguf"
+        shard2 = "m-00002-of-00002.gguf"
+        old = _build_cache(
+            hf_cache, "unsloth/split-GGUF", {shard1: 100, shard2: 100}, snapshot_sha = "a" * 40
+        )
+        new = _build_cache(hf_cache, "unsloth/split-GGUF", {shard1: 100}, snapshot_sha = "b" * 40)
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        main = _cached_colocated_split_main("unsloth/split-GGUF", shard1, [shard2], {})
+        assert main is not None
+        assert main.startswith(str(old))
+
+    def test_returns_none_when_shards_span_snapshots(self, hf_cache):
+        shard1 = "m-00001-of-00002.gguf"
+        shard2 = "m-00002-of-00002.gguf"
+        a = _build_cache(hf_cache, "unsloth/split-GGUF", {shard1: 100}, snapshot_sha = "a" * 40)
+        b = _build_cache(hf_cache, "unsloth/split-GGUF", {shard2: 100}, snapshot_sha = "b" * 40)
+        os.utime(a, (1000, 1000))
+        os.utime(b, (2000, 2000))
+
+        assert _cached_colocated_split_main("unsloth/split-GGUF", shard1, [shard2], {}) is None
 
 
 class TestResolveRepoIdCasing:
