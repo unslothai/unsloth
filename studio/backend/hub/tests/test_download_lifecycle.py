@@ -927,13 +927,17 @@ def test_active_download_refs_include_waiting_http_retry(monkeypatch, tmp_path):
         # The Q4_K_M retry is released from the repo guard while it waits for the
         # slot; deletion stays blocked, so the listing must still surface it.
         assert registry.begin_delete("Org/Model", "Q4_K_M") is False
-        refs = download_lifecycle.active_download_refs(
-            registry, "Org/Model", with_variant = True
-        )
+        refs = download_lifecycle.active_download_refs(registry, "Org/Model", with_variant = True)
         waiting_variants.append(sorted(ref.variant for ref in refs))
         registry.set_job(key_b, "complete")
 
-    def fake_spawn_worker(args, hf_token, *, use_xet, protected_blob_hashes = None):
+    def fake_spawn_worker(
+        args,
+        hf_token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
         assert use_xet is False
         return _make_proc(0, b"http retry")
 
