@@ -14,7 +14,10 @@ import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
-import { useTrainingConfigStore } from "../stores/training-config-store";
+import {
+  forceTrainOnCompletionsOffPatch,
+  useTrainingConfigStore,
+} from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
@@ -101,9 +104,7 @@ export function useTrainingActions() {
             // Streaming is unsupported for image/audio datasets; clear the flag
             // so buildTrainingStartPayload never ships dataset_streaming=true.
             ...(modalityChanged && (isImage || isAudio) ? { datasetStreaming: false } : {}),
-            ...(modalityForcesCompletionsOff
-              ? { trainOnCompletions: false, trainOnCompletionsManuallySet: false }
-              : {}),
+            ...(modalityForcesCompletionsOff ? forceTrainOnCompletionsOffPatch() : {}),
           });
         }
 
