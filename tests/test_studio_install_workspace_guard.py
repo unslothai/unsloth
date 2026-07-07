@@ -514,6 +514,9 @@ def test_install_ps1_bakes_studio_root_id_into_launcher():
     assert (
         "$_ExpectedStudioRootId" in src
     ), "install.ps1 must bake $_ExpectedStudioRootId into the launcher"
+    assert (
+        "$_studioRootId -notmatch '^[0-9a-f]{64}$'" in src
+    ), "install.ps1 must regenerate invalid existing studio_install_id values before baking"
 
 
 def test_install_ps1_launcher_repairs_missing_studio_install_id():
@@ -578,6 +581,9 @@ def test_install_sh_bakes_studio_root_id_into_launcher():
     assert (
         "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" in src
     ), "install.sh must sed-substitute @@STUDIO_ROOT_ID@@ unconditionally (not just env-mode)"
+    assert (
+        "_css_existing_id_valid" in src
+    ), "install.sh must validate existing studio_install_id values before baking"
 
 
 def test_install_sh_launcher_repairs_missing_studio_install_id(tmp_path):

@@ -598,7 +598,7 @@ function Install-UnslothStudio {
                 ((Get-Item -LiteralPath $_studioIdFile).Length -gt 0)) {
                 $_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
             }
-            if (-not $_studioRootId) {
+            if ($_studioRootId -notmatch '^[0-9a-f]{64}$') {
                 $_idBytes = New-Object byte[] 32
                 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
                 $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })

@@ -598,7 +598,16 @@ create_studio_shortcuts() {
     _css_id_dir="$STUDIO_HOME/share"
     mkdir -p "$_css_id_dir"
     _css_id_file="$_css_id_dir/studio_install_id"
-    if [ ! -s "$_css_id_file" ]; then
+    _css_existing_id=""
+    [ -f "$_css_id_file" ] && _css_existing_id=$(cat "$_css_id_file" 2>/dev/null || true)
+    _css_existing_id_valid=false
+    if [ "${#_css_existing_id}" -eq 64 ]; then
+        case "$_css_existing_id" in
+            *[!0-9a-f]*) ;;
+            *) _css_existing_id_valid=true ;;
+        esac
+    fi
+    if [ "$_css_existing_id_valid" != "true" ]; then
         if [ -r /dev/urandom ]; then
             _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         fi
@@ -616,6 +625,7 @@ create_studio_shortcuts() {
         chmod 600 "$_css_id_file" 2>/dev/null || true
         unset _css_new_id _css_id_tmp
     fi
+    unset _css_existing_id _css_existing_id_valid
     _css_studio_root_id=$(cat "$_css_id_file" 2>/dev/null)
     if [ -z "$_css_studio_root_id" ]; then
         echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2
