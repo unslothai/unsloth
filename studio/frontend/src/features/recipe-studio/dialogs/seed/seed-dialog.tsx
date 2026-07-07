@@ -54,6 +54,7 @@ import {
   inspectSeedUpload,
 } from "../../api";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { makeUnstructuredUploadUid } from "../../utils/config-factories";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   GithubItemType,
@@ -603,16 +604,28 @@ export function SeedDialog({
   );
 
   // config.id collides across recipes (ids reset to n1 on import); use a
-  // stable per-block uid instead, falling back to config.id for legacy blocks.
+  // stable per-block uid instead. Generate one synchronously so the first
+  // rendered drop zone cannot upload under a legacy node id.
   const uploadUid = config.unstructured_upload_uid?.trim() ?? "";
-  const uploadBlockId = uploadUid || config.id;
   const unstructuredFileCount = config.unstructured_file_ids?.length ?? 0;
+  const generatedUploadUidRef = useRef<string | null>(null);
+  if (
+    mode === "unstructured" &&
+    !uploadUid &&
+    unstructuredFileCount === 0 &&
+    generatedUploadUidRef.current === null
+  ) {
+    generatedUploadUidRef.current = makeUnstructuredUploadUid();
+  }
+  const uploadBlockId = uploadUid || generatedUploadUidRef.current || "";
 
   useEffect(() => {
     if (mode !== "unstructured") return;
     if (uploadUid) return;
     if (unstructuredFileCount > 0) return;
-    onUpdate({ unstructured_upload_uid: crypto.randomUUID().replace(/-/g, "") });
+    const nextUid = generatedUploadUidRef.current ?? makeUnstructuredUploadUid();
+    generatedUploadUidRef.current = nextUid;
+    onUpdate({ unstructured_upload_uid: nextUid });
   }, [mode, uploadUid, unstructuredFileCount, onUpdate]);
 
   const prevModeRef = useRef(mode);

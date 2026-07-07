@@ -200,15 +200,18 @@ function drainQueuedUploadCleanups(
   if (ready.length === 0) {
     return;
   }
-  useRecipeStudioStore.setState((state) => ({
-    pendingUploadCleanups: state.pendingUploadCleanups.filter(
-      (uid) => !ready.includes(uid),
-    ),
-  }));
   for (const uid of ready) {
-    void removeUnstructuredBlock(uid).catch((error) => {
-      console.warn("Failed to clean up uploaded documents:", error);
-    });
+    void removeUnstructuredBlock(uid)
+      .then(() => {
+        useRecipeStudioStore.setState((state) => ({
+          pendingUploadCleanups: state.pendingUploadCleanups.filter(
+            (pendingUid) => pendingUid !== uid,
+          ),
+        }));
+      })
+      .catch((error) => {
+        console.warn("Failed to clean up uploaded documents:", error);
+      });
   }
 }
 

@@ -602,7 +602,18 @@ async def remove_unstructured_block(block_id: str):
     if not block_dir.exists():
         return {"status": "ok", "deleted": False}
 
-    shutil.rmtree(block_dir, ignore_errors = True)
+    try:
+        shutil.rmtree(block_dir)
+    except OSError as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "failed to delete uploaded files",
+            event = "data_recipe.seed.unstructured_block_delete_failed",
+            log = logger,
+        ) from exc
+    if block_dir.exists():
+        raise HTTPException(500, "failed to delete uploaded files")
     return {"status": "ok", "deleted": True}
 
 

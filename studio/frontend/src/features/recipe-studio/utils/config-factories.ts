@@ -20,6 +20,16 @@ import type {
 } from "../types";
 import { nextName } from "./naming";
 
+export function makeUnstructuredUploadUid(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID().replace(/-/g, "");
+  }
+  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(
+    0,
+    32,
+  );
+}
+
 export function makeSamplerConfig(
   id: string,
   samplerType: SamplerType,
@@ -368,6 +378,9 @@ export function makeSeedConfig(
     hf_token: "",
     hf_endpoint: "https://huggingface.co",
     local_file_name: "",
+    ...(seedSourceType === "unstructured"
+      ? { unstructured_upload_uid: makeUnstructuredUploadUid() }
+      : {}),
     unstructured_file_ids: [],
     unstructured_file_names: [],
     unstructured_file_sizes: [],

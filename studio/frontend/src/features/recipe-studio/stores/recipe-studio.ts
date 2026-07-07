@@ -36,6 +36,7 @@ import {
 } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
+import { makeUnstructuredUploadUid } from "../utils/config-factories";
 import {
   centerModelInfraNodes,
   optimizeModelInfraEdgeHandles,
@@ -452,7 +453,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_token: "",
         hf_endpoint: "https://huggingface.co",
         local_file_name: "",
-        unstructured_upload_uid: "",
+        unstructured_upload_uid:
+          nextSourceType === "unstructured" ? makeUnstructuredUploadUid() : "",
         unstructured_file_ids: [],
         unstructured_file_names: [],
         unstructured_file_sizes: [],

@@ -185,6 +185,28 @@ def test_remove_unstructured_block_rejects_symlink_escape(monkeypatch, tmp_path)
     assert (outside / "victim.txt").exists()
 
 
+def test_remove_unstructured_block_fails_if_directory_remains(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
+    block_dir = root / _TEST_UPLOAD_UID
+    block_dir.mkdir(parents = True)
+    (block_dir / "victim.txt").write_text("keep me")
+
+    calls = []
+
+    def noop_rmtree(path, *args, **kwargs):
+        calls.append((path, args, kwargs))
+
+    monkeypatch.setattr(seed_route.shutil, "rmtree", noop_rmtree)
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
+
+    assert calls
+    assert exc.value.status_code == 500
+    assert block_dir.exists()
+
+
 def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 10)
