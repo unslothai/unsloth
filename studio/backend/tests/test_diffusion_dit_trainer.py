@@ -265,12 +265,16 @@ def _patch_capability(monkeypatch, capability):
     # Drive train_precision_modes' GPU probe: pretend CUDA is present at the given tensor
     # core capability (fp8 needs sm89+, mxfp8 needs sm100+). The torchao probe is stubbed
     # functional so these tests exercise the CAPABILITY gate on hosts without torchao
-    # (the CPU-only CI runner does not install it).
+    # (the CPU-only CI runner does not install it). is_bf16_supported must be stubbed True
+    # too: the dense modes gate on it, and an Ada/Blackwell GPU is by definition bf16-capable,
+    # so without this the modes collapse to nf4 on a CPU runner where the real probe is False
+    # (the test otherwise only passes on a bf16 GPU host).
     import torch
 
     import core.training.diffusion_train_common as dtc
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     monkeypatch.setattr(dtc, "has_functional_torchao", lambda: True)
 
