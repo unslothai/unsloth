@@ -1414,7 +1414,11 @@ def openclaw(
         serve = serve,
         launch = launch,
     )
-    command = ["openclaw", *ctx.args]
+    # Bare `openclaw` now opens Crestodian/setup on current OpenClaw builds.
+    # Launch the normal local TUI by default while still honoring explicit
+    # subcommands such as `crestodian`, `agent`, or a custom `tui ...`.
+    openclaw_args = list(ctx.args) or ["tui", "--local"]
+    command = ["openclaw", *openclaw_args]
     install_hint = (
         "iwr -useb https://openclaw.ai/install.ps1 | iex"
         if os.name == "nt"

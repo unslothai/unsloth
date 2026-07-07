@@ -1365,8 +1365,15 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "crestodian"])
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["openclaw", "crestodian"]
 
 
 # ── OpenCode (OpenAI /v1/chat/completions) ───────────────────────────
