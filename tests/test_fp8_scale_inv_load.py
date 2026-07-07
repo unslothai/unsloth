@@ -800,7 +800,11 @@ def test_offline_fp8_cache_regenerates_bin_only_cache(monkeypatch):
         architectures = ["DummyForCausalLM"]
 
     class DummyModel:
-        def save_pretrained(self, path, safe_serialization = False):
+        def save_pretrained(
+            self,
+            path,
+            safe_serialization = False,
+        ):
             assert safe_serialization is True
             os.makedirs(path, exist_ok = True)
             Path(path, "model.safetensors").write_text("safe")
@@ -821,7 +825,9 @@ def test_offline_fp8_cache_regenerates_bin_only_cache(monkeypatch):
 
     import transformers
 
-    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: DummyConfig())
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: DummyConfig()
+    )
     monkeypatch.setattr(transformers, "AutoModelForCausalLM", DummyAutoModel)
     monkeypatch.setattr(transformers, "AutoModelForImageTextToText", DummyAutoModel)
     monkeypatch.setattr(transformers, "AutoTokenizer", DummyTokenizerLoader)
