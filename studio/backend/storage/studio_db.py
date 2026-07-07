@@ -248,12 +248,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
+        # Floor at created_at: forked threads copy older ancestor messages,
+        # so the fork's creation time must win over the branch message times.
         conn.execute(
             """
-            UPDATE chat_threads SET updated_at = COALESCE(
-                (
-                    SELECT MAX(m.created_at) FROM chat_messages m
-                    WHERE m.thread_id = chat_threads.id
+            UPDATE chat_threads SET updated_at = MAX(
+                COALESCE(
+                    (
+                        SELECT MAX(m.created_at) FROM chat_messages m
+                        WHERE m.thread_id = chat_threads.id
+                    ),
+                    created_at
                 ),
                 created_at
             )
@@ -1408,6 +1413,33 @@ def _bump_chat_thread_updated_at(
     )
 
 
+def _recompute_chat_thread_updated_at(
+    conn: sqlite3.Connection, thread_id: str
+) -> None:
+    """Set updated_at from the remaining messages, floored at created_at.
+
+    Unlike the ratchet-only bump, this can lower updated_at -- needed after
+    pruning, which may delete the thread's newest message.
+    """
+    conn.execute(
+        """
+        UPDATE chat_threads
+        SET updated_at = MAX(
+            COALESCE(
+                (
+                    SELECT MAX(m.created_at) FROM chat_messages m
+                    WHERE m.thread_id = chat_threads.id
+                ),
+                created_at
+            ),
+            created_at
+        )
+        WHERE id = ?
+        """,
+        (thread_id,),
+    )
+
+
 def upsert_chat_message(message: dict) -> dict:
     conn = get_connection()
     try:
@@ -1501,7 +1533,9 @@ def sync_chat_messages(
                 for m in messages
             ],
         )
-        if messages:
+        if prune_missing:
+            _recompute_chat_thread_updated_at(conn, thread_id)
+        elif messages:
             _bump_chat_thread_updated_at(
                 conn, thread_id, max(int(m["createdAt"]) for m in messages)
             )

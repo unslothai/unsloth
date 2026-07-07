@@ -128,6 +128,32 @@ def test_chat_thread_updated_at_bumps_on_message_writes(tmp_path, monkeypatch):
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
 
 
+def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = studio_db.upsert_chat_thread(_thread())
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [
+            _message("msg-1", 1_700_000_000_500, "older"),
+            _message("msg-2", 1_700_000_001_000, "newest"),
+        ],
+        prune_missing = True,
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
+
+    # Pruning the newest message must lower updated_at to the remaining one.
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [_message("msg-1", 1_700_000_000_500, "older")],
+        prune_missing = True,
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    # Pruning every message falls back to created_at.
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == thread["createdAt"]
+
+
 def test_chat_thread_updated_at_survives_thread_resave(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
@@ -202,11 +228,17 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(
             "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
             ("thread-empty", "Empty", "base", 1_700_000_050_000),
         )
+        # Fork-like thread: copied ancestor messages predate the thread itself.
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-fork", "Fork", "base", 1_700_000_100_000),
+        )
         conn.executemany(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, created_at) VALUES (?, ?, ?, ?, ?)",
             [
                 ("m1", "thread-with-msgs", "user", "[]", 1_700_000_001_000),
                 ("m2", "thread-with-msgs", "assistant", "[]", 1_700_000_002_000),
+                ("m3", "thread-fork", "user", "[]", 1_700_000_001_000),
             ],
         )
         conn.commit()
@@ -219,6 +251,9 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(
     )
     assert (
         studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
+    )
+    assert (
+        studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
     )
 
 
