@@ -3426,8 +3426,9 @@ class TestInstallShDropinPersistence:
     def test_gate5_early_return_persists_dropin(self):
         """The rocminfo-already-works early return must call the persist helper before returning."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The persist call must precede `return 0` at the rocminfo gfx1151 gate.
-        gate = source.find("Name:[[:space:]]*gfx1151")
+        # The persist call must precede `return 0` at the rocminfo GPU-agent gate
+        # (uniquely identified by the `!/generic/` clause the other probes lack).
+        gate = source.find("Name:[[:space:]]*gfx[1-9]/ && !/generic/")
         assert gate != -1
         window = source[gate : gate + 900]
         assert "_persist_rocm_wsl_dropin" in window
@@ -3439,6 +3440,49 @@ class TestInstallShDropinPersistence:
         body = source[body_start : body_start + 1200]
         assert "librocdxg.so" in body
         assert "profile.d/unsloth-rocm-wsl.sh" in body
+
+
+_STRIXHALO_WSL_PATH = PACKAGE_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh"
+
+
+class TestWslRerouteNvidiaGuard:
+    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute on hybrid AMD+NVIDIA hosts by
+    reusing _has_usable_nvidia_gpu (CUDA_VISIBLE_DEVICES-aware + /proc/driver/nvidia fallback),
+    which must be defined before the reroute's call site so it is actually available."""
+
+    def test_reroute_calls_nvidia_helper_before_amd_signal(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_reroute_strixhalo_to_2404()")
+        assert start != -1
+        body = source[start : start + 1200]
+        nv = body.find("_has_usable_nvidia_gpu")
+        wmi = body.find("_wsl_amd_gpu_name")
+        assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
+        assert wmi != -1
+        # The NVIDIA guard must precede the AMD/WMI signal and return early.
+        assert nv < wmi
+        assert body.find("return 0", nv) < wmi
+
+    def test_nvidia_helper_and_deps_defined_before_reroute_callsite(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        call = source.find("\n_maybe_reroute_strixhalo_to_2404 || true")
+        assert call != -1
+        for fn in ("_run_bounded() {", "_cvd_hides_nvidia() {", "_has_usable_nvidia_gpu() {"):
+            idx = source.find(fn)
+            assert idx != -1 and idx < call, f"{fn} must be defined before the reroute call"
+
+
+class TestStrixhaloGfxOverridePipefail:
+    """The UNSLOTH_WSL_GFX override check must use a consuming grep, not grep -q: under
+    `set -o pipefail` an early -q exit SIGPIPEs printf and misreports the arch on large output."""
+
+    def test_gfx_override_uses_consuming_grep(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        idx = source.find('grep -E "Name:[[:space:]]*${GFX}')
+        assert idx != -1, "GFX override must use a consuming grep -E (not grep -q)"
+        line = source[idx : source.find("\n", idx)]
+        assert ">/dev/null" in line
+        assert 'grep -qE "Name:[[:space:]]*${GFX}' not in source
 
 
 class TestLlamaCppRuntimeWslOrdering:
