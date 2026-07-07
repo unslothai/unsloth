@@ -2728,11 +2728,18 @@ export function createOpenAIStreamAdapter(
                             params.checkpoint,
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
+
+                          ...(ragAutoInject === "off"
+                            ? { whole_doc: false }
+                            : {}),
+                          context_length:
+                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
                         },
                       }
                     : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
+                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
                   max_tool_calls_per_message:
                     useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {

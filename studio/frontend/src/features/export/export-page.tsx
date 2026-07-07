@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Combobox,
   ComboboxContent,
@@ -23,6 +24,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -61,9 +75,15 @@ import {
   EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
+  MERGED_FORMATS,
+  type MergedFormatOption,
+  mergedFormatPayload,
+  QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
+import { useHardwareInfo } from "@/hooks/use-hardware-info";
+import { usePlatformStore } from "@/config/env";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
@@ -73,6 +93,10 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+
+// GGUF LoRA output float types (Q8_0 first / default). Q8_0 falls back to F16 per tensor for dims
+// not divisible by the block size (32); no "auto" - the choice is explicit.
+const LORA_GGUF_OUTTYPES = ["q8_0", "f16", "bf16", "f32"] as const;
 
 type SourceTab = "local" | "checkpoint" | "hf";
 type SourceMode = "checkpoint" | "model";
@@ -105,7 +129,16 @@ function buildRelativeSaveDirectory(
         : sourceBaseModelName;
     return `${safePathSegment(rawName)}-GGUF`;
   }
-  return `${selectedModelIdx ?? "model"}/${checkpoint}`;
+  // Merged / LoRA: a checkpoint keeps the "<run>/<checkpoint>" layout under outputs.
+  if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
+    return `${selectedModelIdx}/${checkpoint}`;
+  }
+  // Local / HF source (no checkpoint): name from the model id to avoid "model/null".
+  const rawName =
+    sourceMode === "checkpoint"
+      ? checkpoint ?? selectedModelIdx ?? sourceBaseModelName
+      : sourceBaseModelName;
+  return `${safePathSegment(rawName)}-${exportMethod === "lora" ? "adapter" : "merged"}`;
 }
 
 function siblingGgufDirectory(sourcePath: string): string | null {
@@ -171,6 +204,64 @@ export function ExportPage() {
       ? s.summary.quantLevels
       : [];
   });
+  // GGUF importance matrix (required for the IQ quants) and merged-export precision.
+  const [useImatrix, setUseImatrix] = useState(false);
+  // Merged precision: one or more MERGED_FORMATS values, exported in one run. Seed from a live run
+  // so navigating away and back (which remounts this page) keeps the selection, like exportMethod.
+  const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
+    const s = useExportRuntimeStore.getState();
+    return isExportPanelActive(s) &&
+      s.summary?.method === "merged" &&
+      s.summary.mergedFormats.length > 0
+      ? s.summary.mergedFormats
+      : ["16-bit"];
+  });
+  // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
+  const [loraAsGguf, setLoraAsGguf] = useState(false);
+  const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("q8_0");
+  // GGUF method: export the full model as GGUF quants, or (for an adapter checkpoint) a GGUF LoRA.
+  const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
+
+  const hardware = useHardwareInfo();
+  // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
+  const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
+  const hasNvidia = hardware.cuda != null && hardware.rocm == null;
+  // Only gray out on an authoritative unsupported response; while unloaded the backend route guard
+  // stays authoritative. The backend supplies the precise reason; the fallback below is a backstop.
+  const exportUnsupported =
+    hardware.loaded && hardware.exportSupported === false;
+  const exportUnsupportedMessage =
+    hardware.exportUnsupportedMessage ??
+    "Export requires a supported accelerator (NVIDIA, AMD, or Intel GPU, or Apple Silicon) with PyTorch or MLX installed.";
+  const availableFormats = useMemo<MergedFormatOption[]>(
+    () =>
+      MERGED_FORMATS.filter((f) => {
+        // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
+        if (f.backend === "compressed") return hasNvidia;
+        // Portable torchao is the fallback for hosts without the NVIDIA compressed path, i.e. a
+        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors) and on macOS/MLX (the
+        // backend rejects quantized export there).
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // Plain 16-bit is available everywhere.
+        return true;
+      }),
+    [hasNvidia, isMacHost],
+  );
+  const toggleFormat = useCallback((value: string) => {
+    setSelectedFormats((prev) =>
+      prev.includes(value)
+        ? prev.filter((v) => v !== value)
+        : [...prev, value],
+    );
+  }, []);
+  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
+  const requiresImatrix = quantLevels.some(
+    (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
+  );
+  const effectiveImatrix = useImatrix || requiresImatrix;
+
   // Whether the inline export panel is expanded. The panel also shows itself
   // whenever a run is active/terminal (see `panelActive`), so it survives
   // navigation even though this local flag resets on remount.
@@ -290,6 +381,11 @@ export function ExportPage() {
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
   const isQuantized = !!selectedModelData?.is_quantized;
+  // isAdapter / isQuantized come from the checkpoint's metadata and are stale in "model" source
+  // mode (a direct base export), so treat both as false outside checkpoint mode to avoid wrongly
+  // gating the methods.
+  const effectiveIsAdapter = sourceMode === "checkpoint" && isAdapter;
+  const effectiveIsQuantized = sourceMode === "checkpoint" && isQuantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
   const trainingMethodLabel = selectedModelData?.peft_type
     ? "LoRA / QLoRA"
@@ -402,25 +498,30 @@ export function ExportPage() {
     setCheckpoint(null);
   }, [selectedModelIdx]);
 
-  // For a ?run= deep link, default to the run's main checkpoint. Declared after
-  // the reset effect above so it runs last and isn't clobbered back to null.
+  // Default to the newest checkpoint when none is chosen (checkpoints are sorted newest-first).
+  // Declared after the reset effect above so it runs last and isn't clobbered back to null. Covers
+  // both a ?run= deep link and a plain finetune opened without an explicit checkpoint pick.
   useEffect(() => {
-    if (appliedRunRef.current == null) return;
-    if (appliedRunRef.current !== selectedModelIdx) return;
+    if (sourceMode !== "checkpoint") return;
     if (checkpoint != null || checkpointsForModel.length === 0) return;
     setCheckpoint(checkpointsForModel[0].display_name);
-  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
+  }, [sourceMode, selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
-    if (!isAdapter && (exportMethod === "merged" || exportMethod === "lora")) {
+    // Only LoRA needs a real adapter; Merged and GGUF work for non-PEFT base models too.
+    if (!effectiveIsAdapter && exportMethod === "lora") {
       setExportMethod(null);
     }
     // Quantized non-PEFT models can't export to any format
-    if (!isAdapter && isQuantized && exportMethod !== null) {
+    if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
-  }, [isAdapter, isQuantized, exportMethod]);
+    // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
+    if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
+      setGgufTarget("model");
+    }
+  }, [effectiveIsAdapter, effectiveIsQuantized, exportMethod, isMacHost, ggufTarget]);
 
   const handleSourceTabChange = useCallback((next: string) => {
     if (next === "checkpoint") {
@@ -428,7 +529,7 @@ export function ExportPage() {
     } else if (next === "hf" || next === "local") {
       setSourceMode("model");
       setModelSource(next);
-      setExportMethod("gguf");
+      // Don't force GGUF: Local / HF sources can export Merged too; a stale LoRA pick auto-resets.
     } else {
       return;
     }
@@ -494,10 +595,26 @@ export function ExportPage() {
     sourceMode,
   ]);
   const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
+  // Each merged format uploads a full model to the repo root, so several to one repo would collide.
+  // GGUF method exporting an adapter checkpoint as a GGUF LoRA (vs full-model quants). Reuses the
+  // LoRA-adapter export path; no quant list needed.
+  const ggufAsLora =
+    exportMethod === "gguf" &&
+    ggufTarget === "lora" &&
+    effectiveIsAdapter &&
+    !isMacHost;
+
+  // Restrict a Hub merged export to a single format; multi-format stays available for local export.
+  const hubMultiFormat =
+    destination === "hub" && exportMethod === "merged" && selectedFormats.length > 1;
+
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
-    (exportMethod !== "gguf" || quantLevels.length > 0)
+    !exportUnsupported &&
+    !hubMultiFormat &&
+    (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
+    (exportMethod !== "merged" || selectedFormats.length > 0)
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -562,9 +679,14 @@ export function ExportPage() {
   const handleStart = useCallback(async () => {
     const source = sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
-    // A GGUF export with no quant selected runs zero exports yet would still
-    // settle as success with no file; require at least one (mirrors canExport).
-    if (exportMethod === "gguf" && quantLevels.length === 0) return;
+    // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
+    if (exportUnsupported) return;
+    // GGUF with no quant, or merged with no format, would run an unintended/empty export; require
+    // at least one (mirrors canExport, in case the panel's Start button bypasses the outer one).
+    if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0) return;
+    if (exportMethod === "merged" && selectedFormats.length === 0) return;
+    // A Hub merged push writes each format to the repo root; several would collide (mirrors canExport).
+    if (hubMultiFormat) return;
 
     const selectedCp = sourceMode === "checkpoint"
       ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)
@@ -577,8 +699,13 @@ export function ExportPage() {
       ? `${hfUsername}/${modelName}`
       : undefined;
     const token = pushToHub && hfToken ? hfToken : undefined;
-    const methodLabel =
-      EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? exportMethod;
+    // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
+    const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
+    const emitLoraGguf =
+      ggufAsLora || (effectiveMethod === "lora" && loraAsGguf && !isMacHost);
+    const methodLabel = ggufAsLora
+      ? "GGUF LoRA adapter"
+      : (EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? exportMethod);
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
     // Consent gate for an HF source's custom (auto_map) code, run before we hand
@@ -610,9 +737,16 @@ export function ExportPage() {
       trustRemoteCode,
       approvedRemoteCodeFingerprint,
       loadToken: hfToken || null,
-      exportMethod,
+      exportMethod: effectiveMethod,
       isAdapter: adapterExport,
       quantLevels,
+      useImatrix: effectiveImatrix,
+      mergedSelections: selectedFormats.map((v) => ({
+        ...mergedFormatPayload(v),
+        label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
+      })),
+      loraGguf: emitLoraGguf,
+      loraGgufOuttype,
       saveDirectory,
       destination,
       repoId,
@@ -623,8 +757,9 @@ export function ExportPage() {
         baseModelName: sourceBaseModelName,
         checkpointLabel: selectedExportSource,
         methodLabel,
-        method: exportMethod,
+        method: effectiveMethod,
         quantLevels,
+        mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
       },
     });
@@ -639,6 +774,14 @@ export function ExportPage() {
     exportMethod,
     isAdapter,
     quantLevels,
+    effectiveImatrix,
+    selectedFormats,
+    hubMultiFormat,
+    ggufAsLora,
+    loraAsGguf,
+    isMacHost,
+    loraGgufOuttype,
+    exportUnsupported,
     destination,
     saveDirectory,
     hfUsername,
@@ -1145,33 +1288,303 @@ export function ExportPage() {
                 </div>
               </div>
 
+              {exportUnsupported && (
+                <Alert variant="destructive">
+                  <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
+                  <AlertTitle>Export unavailable</AlertTitle>
+                  <AlertDescription>{exportUnsupportedMessage}</AlertDescription>
+                </Alert>
+              )}
+
               <MethodPicker
                 value={exportMethod}
                 onChange={handleMethodChange}
                 disabledMethods={
-                  !isAdapter && isQuantized
+                  exportUnsupported
                     ? ["merged", "lora", "gguf"]
-                    : !isAdapter || sourceMode === "model"
-                      ? ["merged", "lora"]
-                      : []
+                    : !effectiveIsAdapter && effectiveIsQuantized
+                      ? ["merged", "lora", "gguf"]
+                      : !effectiveIsAdapter
+                        ? ["lora"]
+                        : []
                 }
                 disabledReason={
-                  !isAdapter && isQuantized
-                    ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                    : sourceMode === "model"
-                      ? "Only GGUF export is available for direct model export"
-                      : !isAdapter
-                        ? "Not available for full fine-tune checkpoints (no LoRA adapters)"
+                  exportUnsupported
+                    ? exportUnsupportedMessage
+                    : !effectiveIsAdapter && effectiveIsQuantized
+                      ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                      : !effectiveIsAdapter
+                        ? "LoRA-only export needs a LoRA adapter checkpoint"
                         : undefined
                 }
               />
 
-              {exportMethod === "gguf" && (
-                <QuantPicker
-                  value={quantLevels}
-                  onChange={setQuantLevels}
-                  sizes={quantSizeLabels}
-                />
+              {exportMethod === "merged" && !exportUnsupported && (
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">Precision</div>
+                      <span className="text-[11px] text-muted-foreground/70">
+                        — select one or more
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {availableFormats
+                        .filter((f) => f.common)
+                        .map((f) => {
+                          const active = selectedFormats.includes(f.value);
+                          return (
+                            <Button
+                              key={f.value}
+                              type="button"
+                              variant={active ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => toggleFormat(f.value)}
+                              title={f.hint}
+                            >
+                              {f.label}
+                              {f.needsCalibration ? " *" : ""}
+                            </Button>
+                          );
+                        })}
+
+                      {availableFormats.some((f) => !f.common) && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild={true}>
+                            <Button type="button" variant="outline" size="sm">
+                              More formats
+                              {selectedFormats.some((v) =>
+                                availableFormats.find(
+                                  (f) => f.value === v && !f.common,
+                                ),
+                              )
+                                ? " ✓"
+                                : "…"}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-64">
+                            <DropdownMenuLabel>
+                              Additional formats
+                            </DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            {availableFormats
+                              .filter((f) => !f.common)
+                              .map((f) => (
+                                <DropdownMenuCheckboxItem
+                                  key={f.value}
+                                  checked={selectedFormats.includes(f.value)}
+                                  onCheckedChange={() => toggleFormat(f.value)}
+                                  onSelect={(e) => e.preventDefault()}
+                                >
+                                  <span className="flex flex-col">
+                                    <span>
+                                      {f.label}
+                                      {f.needsCalibration ? " *" : ""}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {f.hint}
+                                    </span>
+                                  </span>
+                                </DropdownMenuCheckboxItem>
+                              ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </div>
+
+                    {selectedFormats.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="text-[11px] text-muted-foreground">
+                          {selectedFormats.length} selected:{" "}
+                          {selectedFormats
+                            .map(
+                              (v) =>
+                                MERGED_FORMATS.find((f) => f.value === v)
+                                  ?.label ?? v,
+                            )
+                            .join(", ")}
+                        </span>
+                        {selectedFormats.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedFormats(["16-bit"])}
+                            className="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
+                          >
+                            Reset to 16-bit
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {hubMultiFormat && (
+                      <div className="text-[11px] text-amber-600 dark:text-amber-500">
+                        Hub export supports one format at a time (each writes to
+                        the repository root). Select a single format, or export
+                        locally to produce several at once.
+                      </div>
+                    )}
+
+                    {selectedFormats.some(
+                      (v) =>
+                        MERGED_FORMATS.find((f) => f.value === v)
+                          ?.needsCalibration,
+                    ) && (
+                      <div className="text-[11px] text-muted-foreground">
+                        * calibrates on data (uses a small calibration set).
+                      </div>
+                    )}
+
+                    {!hasNvidia && (
+                      <div className="text-[11px] text-muted-foreground">
+                        No NVIDIA GPU detected: compressed-tensors formats are
+                        hidden. 16-bit and portable FP8/INT8 (torchao) still
+                        work here and load in vLLM.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {exportMethod === "lora" && effectiveIsAdapter && !exportUnsupported && (
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Adapter format</div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant={!loraAsGguf ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setLoraAsGguf(false)}
+                        title="Standard PEFT adapter (adapter_model.safetensors)."
+                      >
+                        Adapter (safetensors)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={loraAsGguf ? "default" : "outline"}
+                        size="sm"
+                        disabled={isMacHost}
+                        onClick={() => setLoraAsGguf(true)}
+                        title={
+                          isMacHost
+                            ? "GGUF LoRA export is not available on macOS/MLX. Use the safetensors adapter."
+                            : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                        }
+                      >
+                        GGUF adapter
+                      </Button>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {isMacHost
+                        ? "GGUF LoRA is not available on macOS/MLX; exporting the safetensors adapter."
+                        : loraAsGguf
+                          ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                          : "Standard PEFT adapter files. Pair with the base model at inference."}
+                    </div>
+                  </div>
+
+                  {loraAsGguf && (
+                    <div className="space-y-1.5">
+                      <div className="text-sm font-medium">Output type</div>
+                      <Select
+                        value={loraGgufOuttype}
+                        onValueChange={(v) => setLoraGgufOuttype(v)}
+                      >
+                        <SelectTrigger className="w-full sm:w-56">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {LORA_GGUF_OUTTYPES.map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {t.toUpperCase()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {exportMethod === "gguf" && !exportUnsupported && (
+                <div className="space-y-3">
+                  {effectiveIsAdapter && !isMacHost && (
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">Export target</div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant={ggufTarget === "model" ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setGgufTarget("model")}
+                          title="Merge the adapter into the base model, then quantize the full model to GGUF."
+                        >
+                          Full model
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={ggufTarget === "lora" ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setGgufTarget("lora")}
+                          title="Export just the adapter as a GGUF LoRA (llama.cpp `--lora`); the base model stays separate."
+                        >
+                          LoRA adapter
+                        </Button>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {ggufTarget === "lora"
+                          ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                          : "Merges the adapter into the base model, then quantizes the full model to GGUF."}
+                      </div>
+                    </div>
+                  )}
+
+                  {ggufAsLora ? (
+                    <div className="space-y-1.5">
+                      <div className="text-sm font-medium">Output type</div>
+                      <Select
+                        value={loraGgufOuttype}
+                        onValueChange={(v) => setLoraGgufOuttype(v)}
+                      >
+                        <SelectTrigger className="w-full sm:w-56">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {LORA_GGUF_OUTTYPES.map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {t.toUpperCase()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : (
+                    <>
+                      <QuantPicker
+                        value={quantLevels}
+                        onChange={setQuantLevels}
+                        sizes={quantSizeLabels}
+                      />
+                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                        <div className="space-y-0.5">
+                          <div className="text-sm font-medium">
+                            Importance matrix (imatrix)
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {requiresImatrix
+                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
+                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                          </div>
+                        </div>
+                        <Switch
+                          checked={effectiveImatrix}
+                          onCheckedChange={setUseImatrix}
+                          disabled={requiresImatrix}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

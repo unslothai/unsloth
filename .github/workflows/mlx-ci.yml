@@ -163,7 +163,7 @@ jobs:
             'pytest==9.0.3' \
             'pytest-asyncio==1.3.0' \
             'httpx==0.28.1'
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch==2.10.0'
           # github.com occasionally 500s on the git fetch; retry the
           # zoo install so a single upstream blip does not fail CI.

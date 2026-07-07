@@ -68,15 +68,16 @@ jobs:
           pip install -r studio/backend/requirements/studio.txt
           # Extras that studio.txt does not list but the import chain needs
           # (python-multipart for FastAPI form/file uploads, sqlalchemy/cryptography
-          #  for the auth DB, yaml/jinja2 for utils.models.model_config, etc.):
+          #  for the auth DB, yaml/jinja2 for utils.models.model_config, psutil for
+          #  the orphan-cleanup process scan, etc.):
           pip install \
-            python-multipart aiofiles sqlalchemy cryptography \
+            python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
             'numpy<3' pytest pytest-asyncio httpx
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.
-          pip install --index-url https://download.pytorch.org/whl/cpu 'torch>=2.4,<2.11'
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
           pip install 'transformers>=4.51,<5.5'
 
       - name: Backend tests
@@ -133,11 +134,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r studio/backend/requirements/studio.txt
           pip install \
-            python-multipart aiofiles sqlalchemy cryptography \
+            python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' pytest pytest-asyncio httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install 'transformers>=4.51,<5.5'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
@@ -229,7 +230,9 @@ jobs:
               tests/sh/test_resolve_cuda_archs.sh \
               tests/sh/test_tauri_install_exit_order.sh \
               tests/sh/test_torch_constraint.sh \
-              tests/sh/test_torch_flavor.sh; do
+              tests/sh/test_torch_flavor.sh \
+              tests/sh/test_with_llama_cpp_dir_flag.sh \
+              tests/sh/test_with_llama_cpp_dir_link_behavior.sh; do
               echo "::group::$s"
               bash "$s"
               echo "::endgroup::"
