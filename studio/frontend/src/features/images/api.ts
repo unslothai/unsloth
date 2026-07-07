@@ -57,7 +57,7 @@ export interface DiffusionLoadRequest {
   cpu_offload?: boolean;
   // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";
-  transformer_quant?: "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8";
+  transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
   attention_backend?:
     | "auto"
     | "native"

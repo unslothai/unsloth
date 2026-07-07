@@ -1820,21 +1820,70 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
     return calls
 
 
-def test_default_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch):
-    # With no transformer_quant flag the GGUF path is taken and the dense gate is
-    # never even consulted (short-circuit), so the default cannot regress.
+def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, monkeypatch):
+    # UNSET Dtype defaults to the hardware ladder: the dense gate IS consulted, and a
+    # device without dense support (this fake runtime) falls back to the GGUF build.
+    from core.inference import diffusion as dmod
+
+    consulted = {"n": 0}
+
+    def _supported(*a, **k):
+        consulted["n"] += 1
+        return False
+
+    monkeypatch.setattr(dmod, "dense_transformer_supported", _supported)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert consulted["n"] >= 1
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
+
+
+def test_explicit_off_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch):
+    # An EXPLICIT "none" pins running the GGUF as-is: the dense gate is never even
+    # consulted (short-circuit), so the pinned-off contract cannot regress.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
         dmod,
         "dense_transformer_supported",
-        lambda *a, **k: pytest.fail("dense path must not run without the flag"),
+        lambda *a, **k: pytest.fail("dense path must not run with an explicit off"),
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
-    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "none",
+    )
     assert status["transformer_quant"] is None
     assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
+
+
+def test_speed_off_load_suppresses_auto_dtype_quant(fake_runtime, tmp_path, monkeypatch):
+    # An explicit Speed="off" (bit-exact) load with an UNSET dtype must stay GGUF-as-is: the auto
+    # dtype default must NOT promote it to a quantized + compiled build, which would silently break
+    # the user's bit-exact request. The dense gate must never be consulted.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(
+        dmod,
+        "dense_transformer_supported",
+        lambda *a, **k: pytest.fail("dense path must not run under an explicit Speed=off"),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        speed_mode = "off",
+    )
+    assert status["transformer_quant"] is None
+    assert status["speed_mode"] == "off"
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file was used, not a dense build
 
 
 def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatch):
@@ -2044,38 +2093,113 @@ def test_base_file_downloaded_include_transformer_flag():
 
 
 def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
-    # The transformer/ prefetch only widens when the dense quant path can really
-    # run: quant requested + device supported + scheme resolvable + no prequant
-    # checkpoint shortcutting the dense build.
+    # The transformer/ prefetch widens exactly when load_pipeline would take the dense-quant path:
+    # it defers to resolve_dense_quant_candidate (quant requested + device supported + scheme
+    # resolvable + no prequant checkpoint + the cache volume has disk for the extra bf16 shards).
+    # An explicit Speed="off" (bit-exact) load never widens.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
-    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
-    )
-    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
+    seen: list = []
+
+    def fake_candidate(
+        *,
+        fam,
+        target,
+        requested,
+        base_repo = None,
+        prequant_path = None,
+        logger = None,
+    ):
+        seen.append(requested)
+        # A real (non-prequant) dense-quant candidate: scheme resolves AND disk fits, so the
+        # loader takes the dense build that needs the base repo's bf16 transformer/ shards.
+        return types.SimpleNamespace(prequant = False)
+
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", fake_candidate)
+
+    # Explicit fp8 -> widens; the resolved mode is threaded through to the candidate resolver.
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is True
-    # No quant requested -> never widen.
-    assert backend._dense_quant_prefetch_needed(fam, {}) is False
-    # A resolvable pre-quantized checkpoint shortcuts the dense download.
-    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
-    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
-    # Unsupported scheme bails before the dense path (and so must the prefetch).
-    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+    assert seen[-1] == "fp8"
+    # UNSET defaults to the hardware ladder (Dtype default-auto) -> widens, threading auto.
+    assert backend._dense_quant_prefetch_needed(fam, {}) is True
+    assert seen[-1] == "auto"
+    # A definite-offload memory policy forces load_pipeline onto offload regardless of the dense
+    # candidate's smaller footprint, so the dense build never runs and the widened prefetch would
+    # download base transformer/ shards the offloaded GGUF path never uses (and a disk-full there
+    # has no GGUF fallback). balanced / low_vram (and the legacy cpu_offload flag when no
+    # memory_mode overrides it) must NOT widen, even though the candidate itself is dense-viable.
+    before = len(seen)
+    assert (
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "balanced"}
+        )
+        is False
+    )
+    assert (
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "low_vram"}
+        )
+        is False
+    )
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "cpu_offload": True})
+        is False
+    )
+    # The gate short-circuits BEFORE resolving the candidate (no wasted resolve).
+    assert len(seen) == before
+    # An explicit memory_mode still consulting the candidate: fast/auto can flip resident, so they
+    # widen when the candidate is dense-viable (memory_mode="fast" does not force offload).
+    assert (
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "fast"}
+        )
+        is True
+    )
+    # A cpu_offload flag is overridden by an explicit resident memory_mode, so it still widens.
+    assert (
+        backend._dense_quant_prefetch_needed(
+            fam, {"transformer_quant": "fp8", "memory_mode": "fast", "cpu_offload": True}
+        )
+        is True
+    )
+    # An explicit off pins running the GGUF as-is -> never widen (mode resolves to None first).
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "none"}) is False
+    # An explicit Speed="off" (bit-exact) load suppresses the dense path -> never widen.
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "speed_mode": "off"})
+        is False
+    )
+    # A PREQUANT candidate loads the small pre-quantized checkpoint (+ config / companions),
+    # NOT the base repo's dense transformer/ shards, so the widened prefetch must NOT fire --
+    # otherwise it defeats the prequant download savings and can hard-fail begin_load (no GGUF
+    # fallback there) on a disk-full.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        dmod, "resolve_dense_quant_candidate", lambda **kw: types.SimpleNamespace(prequant = True)
     )
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
-    # Device without dense support (e.g. non-CUDA) never widens.
-    monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
-    )
-    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
+    # No viable candidate at all (unsupported scheme / no disk room) -> never widen. The disk
+    # guard here is exactly what averts filling the cache volume and hard-failing the load
+    # instead of falling back to the GGUF.
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+
+
+def test_diffusion_status_response_carries_resolved():
+    # The backend records per-control auto-policy provenance (build_resolved_record) on
+    # state.resolved; the response model must DECLARE the field or Pydantic's default
+    # extra='ignore' silently drops it, leaving that plumbing dead (never reaching a client).
+    from models.inference import DiffusionStatusResponse
+
+    rec = {"transformer_quant": {"value": "fp8", "source": "auto", "reason": "blackwell"}}
+    resp = DiffusionStatusResponse(loaded = True, resolved = rec)
+    assert resp.resolved == rec
+    assert resp.model_dump()["resolved"] == rec
+    # Absent by default (nothing resolved / native engine).
+    assert DiffusionStatusResponse(loaded = False).resolved is None
 
 
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
@@ -2091,6 +2215,51 @@ def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
     (tmp_path / "model_index.json").write_bytes(b"{}")  # non-weight file, ignored
     total = DiffusionBackend._companion_cache_bytes(str(tmp_path))
     assert total == 150  # vae + text_encoder only; transformer/ and json excluded
+
+
+def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(monkeypatch):
+    # Re-planning the dense transformer-quant candidate: the dense path prefetches the
+    # base repo's transformer/ shards into the SAME blob cache _companion_cache_bytes
+    # sums. If the re-plan read that cache it would count the transformer TWICE (once as
+    # transformer_resident_override_mib, once as a "companion") and force offload even
+    # when the quantised artifact fits resident. The re-plan must use the auto-policy's
+    # companion estimate instead. Here the cache is stubbed to the transformer-inflated
+    # value; the plan must still stay resident.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
+
+    backend = DiffusionBackend()
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
+    # 40 GiB discrete card, 40000 MiB free: comfortably fits transformer + real
+    # companions + headroom, but NOT a second copy of the bf16 transformer.
+    monkeypatch.setattr(
+        dmod,
+        "snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
+    # The cache is inflated by the prefetched bf16 transformer (~24000) on top of the
+    # ~8000 real companions; if the re-plan consulted it the plan would offload.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_companion_cache_bytes",
+        staticmethod(lambda base: (8000 + 24000) * 1024 * 1024),
+    )
+    fam = types.SimpleNamespace(name = "z-image")
+    plan = backend._plan_memory(
+        target,
+        None,
+        "org/base",
+        fam,
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 12000,  # int8 candidate transient (~half bf16)
+        companion_override_mib = 8000,  # auto-policy text-encoder + VAE estimate
+    )
+    # 12000 + 8000 + 4000 + 2048 overhead = 26048 MiB, fits the ~36 GiB budget.
+    # A double-count (12000 + [8000+24000] + ...) would have exceeded it and offloaded.
+    assert plan.offload_policy == OFFLOAD_NONE
 
 
 def test_reset_step_cache_helper_is_best_effort():

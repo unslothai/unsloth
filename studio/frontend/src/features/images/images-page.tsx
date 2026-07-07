@@ -991,7 +991,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
-  >("none");
+  >("auto");
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
@@ -1476,7 +1476,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: cpuOffload,
           speed_mode: speedMode === "auto" ? undefined : speedMode,
-          transformer_quant: transformerQuant === "none" ? undefined : transformerQuant,
+          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
           transformer_cache: transformerCache === "off" ? undefined : transformerCache,
@@ -1882,12 +1882,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
           label="Dtype"
-          hint="Optional speed-up for GGUF models. Off runs the GGUF as-is. FP8/INT8/FP4 instead load the FULL base model and quantise its transformer onto low-precision tensor cores: faster per step, but a larger download and more VRAM, and it falls back to the GGUF if it can't fit. Needs CUDA."
+          hint="Transformer compute dtype. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
-            ["none", "Off (run the GGUF)"],
             ["auto", "Auto (fastest for GPU)"],
+            ["none", "Off (run the GGUF)"],
             ["fp8", "FP8"],
             ["int8", "INT8"],
             ["nvfp4", "NVFP4 (Blackwell)"],

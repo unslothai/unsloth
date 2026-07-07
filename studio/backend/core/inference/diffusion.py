@@ -44,12 +44,15 @@ from .diffusion_device import (
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
+    MEMORY_MODE_BALANCED,
+    MEMORY_MODE_LOW_VRAM,
     OFFLOAD_NONE,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    normalize_memory_mode,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
@@ -77,7 +80,9 @@ from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
 )
+from .diffusion_auto_policy import build_resolved_record, resolve_dense_quant_candidate
 from .diffusion_transformer_quant import (
+    TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     normalize_transformer_quant,
@@ -285,6 +290,10 @@ class _LoadState:
     compile_cache_ctx: Any = None
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
+    # Per-control provenance from the auto-policy: {control: {value, source, reason}}.
+    # source is "auto" when the backend decided (request left unset / "auto") and
+    # "explicit" when the caller pinned the value. Surfaced via status for the UI badges.
+    resolved: Optional[dict] = None
 
 
 @dataclass
@@ -420,22 +429,56 @@ class DiffusionBackend:
         unload/cancellation cannot preempt the download. Mirrors the dense-path
         gates in ``load_pipeline``: quant requested and supported for this device,
         and no pre-quantized checkpoint that would shortcut the dense build."""
-        mode = normalize_transformer_quant(kwargs.get("transformer_quant"))
+        raw = kwargs.get("transformer_quant")
+        # Unset defaults to the hardware ladder (mirrors load_pipeline's tri-state).
+        if raw is None or str(raw).strip().lower() in ("", "auto"):
+            mode = TQ_AUTO
+        else:
+            mode = normalize_transformer_quant(raw)
         if mode is None:
             return False
+        # An explicit Speed="off" (bit-exact) load suppresses the auto-dtype default in
+        # load_pipeline and stays GGUF-as-is, so the dense path never runs -- don't widen the
+        # prefetch for it either.
+        speed = kwargs.get("speed_mode")
+        if speed is not None and str(speed).strip().lower() == SPEED_OFF:
+            return False
         try:
+            # A definite-offload memory policy forces load_pipeline onto offload regardless of the
+            # dense candidate's smaller footprint, so its re-plan never flips to OFFLOAD_NONE and
+            # the dense build never runs. balanced -> OFFLOAD_GROUP and low_vram -> OFFLOAD_MODEL are
+            # set unconditionally in plan_diffusion_memory; the legacy cpu_offload flag forces
+            # OFFLOAD_MODEL when no memory_mode overrides it. In those cases the GGUF path runs
+            # offloaded and never touches the base transformer/ shards, so widening the prefetch only
+            # wastes a multi-GB download -- and a disk-full on that begin_load pull has NO GGUF
+            # fallback (unlike the in-load_pipeline dense failure). Mirror those offload gates here.
+            mm = normalize_memory_mode(kwargs.get("memory_mode"))
+            if mm in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
+                return False
+            if mm is None and kwargs.get("cpu_offload"):
+                return False
             target = self._resolve_device_target(fam)
-            if not dense_transformer_supported(target):
-                return False
-            scheme = select_transformer_quant_scheme(
-                target, mode, family = getattr(fam, "name", None)
+            # Only widen the prefetch when the loader would actually take the dense path: resolve
+            # the SAME dense-quant candidate load_pipeline re-plans against, which also checks the
+            # cache volume has room for the extra bf16 transformer/ shards. When disk (or scheme /
+            # support / a prequant checkpoint) rules the dense build out, do NOT eagerly pull those
+            # shards -- otherwise the widened prefetch fills the disk and hard-fails the load in a
+            # spot unload/cancel cannot preempt, instead of the disk guard falling back to the GGUF.
+            candidate = resolve_dense_quant_candidate(
+                fam = fam,
+                target = target,
+                requested = mode,
+                base_repo = kwargs.get("base_repo"),
+                prequant_path = kwargs.get("transformer_prequant_path"),
+                logger = None,
             )
-            if scheme is None:
-                return False
-            source = resolve_prequant_source(
-                fam, scheme, path_override = kwargs.get("transformer_prequant_path")
-            )
-            return source is None
+            # A prequant candidate loads from the small pre-quantized checkpoint (+ config /
+            # companions), NOT the base repo's full dense transformer/ shards, so widening the
+            # prefetch to pull those shards both defeats the prequant download savings and can
+            # hard-fail the load: the widened pull runs in begin_load, where a disk-full has no
+            # GGUF fallback (unlike the in-load_pipeline dense failure). Only widen for a real
+            # dense build.
+            return candidate is not None and not candidate.prequant
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
@@ -927,8 +970,9 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise NOW, before this load evicts the
         # previous pipeline below: their first in-line uses all sit past _unload_locked,
-        # where a bad request would cost the user their working model.
-        transformer_quant = normalize_transformer_quant(transformer_quant)
+        # where a bad request would cost the user their working model. Validate-only for
+        # transformer_quant: the raw value keeps the unset/auto vs explicit-off tri-state.
+        normalize_transformer_quant(transformer_quant)
         normalize_speed_mode(speed_mode)
         normalize_attention_backend(attention_backend)
         normalize_transformer_cache(transformer_cache)
@@ -993,7 +1037,28 @@ class DiffusionBackend:
                     repo_id = repo_id,
                 )
 
-                # Opt-in fast path: load the DENSE bf16 transformer and torchao-quantise it
+                # Dtype tri-state: an UNSET request (or "auto") hands the decision to
+                # the hardware ladder -- on a dense-capable GPU the quantised build
+                # (int8 minimum, fp8 on data-center silicon) beats running the GGUF
+                # as-is, so auto is the DEFAULT. An explicit "none"/"off" pins
+                # GGUF-as-is and an explicit scheme pins that scheme. The overwritten
+                # "auto" still records source=auto in the resolved provenance.
+                if transformer_quant is None or str(transformer_quant).strip().lower() in (
+                    "",
+                    "auto",
+                ):
+                    # An explicit Speed="off" (bit-exact) load must stay GGUF-as-is: promoting the
+                    # unset dtype to auto-quant here would engage int8/fp8 + compile and silently
+                    # break the user's bit-exact request (an auto DEFAULT overriding an EXPLICIT
+                    # control). Suppress the auto default when speed was explicitly pinned off;
+                    # otherwise auto (the dense-capable default) applies.
+                    speed_off = (
+                        speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+                    )
+                    # "off" normalizes to None (no dense quant), keeping the GGUF-as-is path.
+                    transformer_quant = "off" if speed_off else TQ_AUTO
+
+                # Default-on fast path: load the DENSE bf16 transformer and torchao-quantise it
                 # (int8 / fp8 / fp4 tensor cores), which beats GGUF's bf16-rate per-matmul
                 # dequant on both speed and quality, at the cost of a higher-memory dense
                 # load. Gated on CUDA + bf16 + a resident fit; ANY failure (unsupported arch
@@ -1003,11 +1068,50 @@ class DiffusionBackend:
                 # pipeline) do not have.
                 pipe = None
                 transformer_quant_engaged = None
+                quant_plan = None
                 if (
                     kind == "gguf"
-                    and transformer_quant is not None  # normalized above, pre-eviction
+                    and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
-                    and plan.offload_policy == OFFLOAD_NONE
+                    and plan.offload_policy != OFFLOAD_NONE
+                ):
+                    # The GGUF-size plan picked offload, but the dense-quant artifact has
+                    # a DIFFERENT footprint: int8/fp8 weights are ~half the bf16 bytes, and
+                    # a pre-quantized checkpoint never materialises dense bf16 at all. Ask
+                    # the auto-policy for the candidate's estimate and re-plan against it:
+                    # a resident quantised build beats an offloaded GGUF on speed AND
+                    # quality, so it must be attempted before settling for offload.
+                    candidate = resolve_dense_quant_candidate(
+                        fam = fam,
+                        target = target,
+                        requested = transformer_quant,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
+                        logger = logger,
+                    )
+                    if candidate is not None:
+                        replanned = self._plan_memory(
+                            target,
+                            single_file_path,
+                            base,
+                            fam,
+                            memory_mode,
+                            cpu_offload,
+                            kind = kind,
+                            repo_id = repo_id,
+                            transformer_resident_override_mib = (candidate.transient_transformer_mib),
+                            # The dense path prefetches the base transformer/ shards into the
+                            # cache _companion_cache_bytes reads; pass the auto-policy's own
+                            # companion estimate so the re-plan does not double-count them.
+                            companion_override_mib = candidate.companions_mib,
+                        )
+                        if replanned.offload_policy == OFFLOAD_NONE:
+                            quant_plan = replanned
+                if (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and dense_transformer_supported(target)
+                    and (plan.offload_policy == OFFLOAD_NONE or quant_plan is not None)
                 ):
                     try:
                         pipe, transformer_quant_engaged = self._load_dense_quant_pipeline(
@@ -1042,6 +1146,10 @@ class DiffusionBackend:
                             clear_gpu_cache()
                         except Exception:  # noqa: BLE001
                             pass
+                if transformer_quant_engaged is not None and quant_plan is not None:
+                    # The re-planned resident placement is the one the engaged dense build
+                    # actually uses; the GGUF-size plan stays in force for the fallback.
+                    plan = quant_plan
 
                 if pipe is None:
                     if kind == "pipeline":
@@ -1273,6 +1381,57 @@ class DiffusionBackend:
                         pipe, plan, device = device, logger = logger
                     )
 
+                    # Per-control provenance for status: what engaged and who decided it
+                    # (the caller, or this backend's auto resolution). cpu_offload=False is
+                    # the unset default, so only True counts as an explicit request.
+                    resolved = build_resolved_record(
+                        {
+                            "speed_mode": (
+                                speed_mode,
+                                effective_speed,
+                                "quantized transformer requires compile"
+                                if transformer_quant_engaged is not None
+                                and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
+                                else "per-kind default"
+                                if speed_mode is None
+                                else "requested",
+                            ),
+                            "transformer_quant": (
+                                transformer_quant,
+                                transformer_quant_engaged or "off",
+                                "not engaged (GGUF transformer loaded)"
+                                if transformer_quant_engaged is None
+                                else "re-planned resident for the quantised artifact"
+                                if quant_plan is not None
+                                else "engaged on the dense fast path",
+                            ),
+                            "attention_backend": (
+                                attention_backend,
+                                attention_engaged or "native",
+                                "cuDNN fused attention upgrade"
+                                if attention_engaged and attention_backend is None
+                                else "diffusers default"
+                                if attention_engaged is None
+                                else "requested",
+                            ),
+                            "memory_mode": (
+                                memory_mode,
+                                effective_policy,
+                                "planned from measured free VRAM vs estimated footprint",
+                            ),
+                            "transformer_cache": (
+                                transformer_cache,
+                                cache_engaged or "off",
+                                "off by default" if transformer_cache is None else "requested",
+                            ),
+                            "cpu_offload": (
+                                True if cpu_offload else None,
+                                effective_policy != OFFLOAD_NONE,
+                                "legacy flag" if cpu_offload else "from the memory plan",
+                            ),
+                        }
+                    )
+
                     self._state = _LoadState(
                         pipe = pipe,
                         family = fam,
@@ -1295,6 +1454,7 @@ class DiffusionBackend:
                         eager_patched = eager_patched,
                         compile_cache_ctx = compile_ctx,
                         hf_token = hf_token,
+                        resolved = resolved,
                     )
                     state_committed = True
                 finally:
@@ -1439,6 +1599,8 @@ class DiffusionBackend:
         *,
         kind: str = "gguf",
         repo_id: Optional[str] = None,
+        transformer_resident_override_mib: Optional[int] = None,
+        companion_override_mib: Optional[int] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
@@ -1448,7 +1610,14 @@ class DiffusionBackend:
         The size estimate is per-kind: diffusers keeps GGUF weights packed (per-matmul
         transient dequant), so a GGUF loads near its on-disk size; a safetensors
         single-file loads near its on-disk size (it carries its dtype); and a full
-        pipeline is one cached download (transformer + companions), already compressed."""
+        pipeline is one cached download (transformer + companions), already compressed.
+        ``transformer_resident_override_mib`` replaces the file-size transformer estimate
+        when the loader is planning for a DIFFERENT artifact than the file on disk (the
+        dense transformer-quant candidate, whose footprint the auto-policy estimates);
+        ``companion_override_mib`` likewise replaces the cached companion total on that
+        re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
+        same blob cache _companion_cache_bytes sums -- are not counted as companions on
+        top of transformer_resident_override_mib (a double-count of the transformer)."""
         device_memory = snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo (transformer + companions) is one cached download; the
@@ -1464,7 +1633,12 @@ class DiffusionBackend:
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             companion_mib = None
         else:
-            if kind == "single_file":
+            if transformer_resident_override_mib is not None:
+                # Planning for a different artifact than the file on disk (the dense
+                # transformer-quant candidate): the auto-policy's estimate replaces the
+                # file-size derivation; companions below stay measured from the cache.
+                transformer_resident = transformer_resident_override_mib
+            elif kind == "single_file":
                 # Safetensors single-file: no dequant expansion (it carries its dtype).
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path)
@@ -1476,8 +1650,17 @@ class DiffusionBackend:
             # LOCAL diffusers base -- the on-disk component weights (the blob cache is
             # empty for a local path, which would otherwise fold multi-GB companions to 0
             # and let auto planning pick a resident placement that OOMs).
-            companion = self._companion_cache_bytes(base)
-            companion_mib = int(companion // (1024 * 1024)) if companion else None
+            if companion_override_mib is not None:
+                # Re-planning the dense transformer-quant candidate: the dense path
+                # prefetches the base repo's transformer/ shards into the SAME blob cache
+                # _companion_cache_bytes sums, so reading it here would count the
+                # transformer AGAIN on top of transformer_resident_override_mib and make
+                # the resident quant plan look far too large. Use the auto-policy's own
+                # companion (text-encoder + VAE) estimate for this artifact instead.
+                companion_mib = companion_override_mib
+            else:
+                companion = self._companion_cache_bytes(base)
+                companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
@@ -2214,6 +2397,7 @@ class DiffusionBackend:
                 "workflows": [],
                 "supports_lora": False,
                 "supports_controlnet": False,
+                "resolved": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
 
@@ -2235,6 +2419,7 @@ class DiffusionBackend:
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            "resolved": state.resolved,
             # Image-conditioned workflows the loaded family supports, so the UI can gate
             # its tabs. txt2img is always available on the diffusers engine.
             "workflows": _family_workflows(state.family),
