@@ -1327,21 +1327,28 @@ async def start_diffusion_training(
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
-    # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
-    # loads its own pipeline. Offload the blocking teardown (engine unload waits on the
-    # generation locks; the export subprocess join can take seconds) to a worker thread so
-    # the event loop stays free for concurrent status/progress/cancel requests, as the
-    # inference routes do for their blocking load/unload calls.
-    await asyncio.to_thread(_free_gpu_for_diffusion_training)
-
     service = get_diffusion_training_service()
+    # Reserve the training slot BEFORE freeing residents: is_active() otherwise flips true only
+    # at service.start(), after the free below, so a concurrent /images/load or /video/load would
+    # pass its training guard during the free-then-spawn window, acquire the GPU, and double-
+    # allocate VRAM against the trainer. Released in the finally so a failed start never leaves
+    # training stuck "active".
+    service.reserve()
     try:
+        # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
+        # loads its own pipeline. Offload the blocking teardown (engine unload waits on the
+        # generation locks; the export subprocess join can take seconds) to a worker thread so
+        # the event loop stays free for concurrent status/progress/cancel requests, as the
+        # inference routes do for their blocking load/unload calls.
+        await asyncio.to_thread(_free_gpu_for_diffusion_training)
         job_id = service.start(config)
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except RuntimeError as e:
         # A job is already running.
         raise HTTPException(status_code = 409, detail = str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,
@@ -1350,6 +1357,10 @@ async def start_diffusion_training(
             event = "diffusion_training.start_failed",
             log = logger,
         )
+    finally:
+        # On success the now-live proc keeps is_active() true; on any failure this clears the
+        # reservation so training is not left permanently "active".
+        service.unreserve()
     return DiffusionTrainingStartResponse(job_id = job_id, status = "running")
 
 

@@ -222,6 +222,11 @@ class DiffusionTrainingService:
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
         self._lock = threading.Lock()
+        # Set True by reserve() while a start is in flight, BEFORE the route frees resident GPU
+        # models, so the image/video load guards (which read is_active) refuse a concurrent load
+        # during the free-then-spawn window rather than double-allocate the GPU. Cleared by
+        # unreserve() once the proc is live (or the start failed).
+        self._reserved = False
         self._proc: Any = None
         self._stop_queue: Any = None
         self._pump: Optional[threading.Thread] = None
@@ -232,7 +237,24 @@ class DiffusionTrainingService:
     # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
         with self._lock:
+            if self._reserved:
+                return True
             return self._proc is not None and self._proc.is_alive()
+
+    def reserve(self) -> None:
+        """Mark a diffusion-training start as in flight so the image/video load guards (which
+        read is_active) refuse a concurrent load BEFORE the route frees resident GPU models.
+        Without this the training becomes active only at start(), after the free, so an
+        overlapping load passes its guard, acquires the GPU, and both workloads allocate VRAM.
+        Paired with unreserve() in a finally, so a failed start never leaves training 'active'."""
+        with self._lock:
+            self._reserved = True
+
+    def unreserve(self) -> None:
+        """Clear the reservation set by reserve(). Only touches the reservation flag, never
+        _proc, so a live job stays active on success and a failed start is fully rolled back."""
+        with self._lock:
+            self._reserved = False
 
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.

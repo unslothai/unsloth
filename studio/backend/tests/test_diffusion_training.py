@@ -264,14 +264,29 @@ def test_terminal_events_clear_model_load_flag():
 class _FakeService:
     def __init__(self):
         self._running = False
+        self._reserved = False
         self.started_with = None
         self.stopped_with_save = None
+        # Ordered log of lifecycle calls so a test can assert reserve precedes the GPU free.
+        self.calls: list = []
         # Extra keys merged into status() so a test can inject metric history / perf fields.
         self.status_extra: dict = {}
+
+    def reserve(self):
+        self._reserved = True
+        self.calls.append("reserve")
+
+    def unreserve(self):
+        self._reserved = False
+        self.calls.append("unreserve")
+
+    def is_active(self):
+        return self._reserved or self._running
 
     def start(self, config):
         self.started_with = config
         self._running = True
+        self.calls.append("start")
         return "job-123"
 
     def stop(self, save = True):
@@ -389,6 +404,45 @@ def test_route_start_frees_gpu_off_the_coroutine_thread(client, monkeypatch):
     r = client.post("/api/train/diffusion/start", json = _BODY)
     assert r.status_code == 200, r.text
     assert threads["cleanup"] is not threads["inline"]  # offloaded to a worker, not run inline
+
+
+def test_route_start_reserves_before_freeing_gpu(client, monkeypatch):
+    # The training slot must be reserved (is_active -> true) BEFORE the route frees resident GPU
+    # models, so a concurrent /images/load or /video/load guard refuses during the free-then-spawn
+    # window instead of double-allocating the GPU. Assert the ordering: reserve is logged before
+    # the GPU free runs, and the service reports active while the free is in flight.
+    import routes.training as tr
+
+    order: list = []
+
+    def _record_free():
+        order.append("free")
+        # During the free window the service must already look active to a concurrent load guard.
+        order.append(f"active={client._fake.is_active()}")
+
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", _record_free)
+
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+    # reserve fires before the free, the free sees an active service, then start, then unreserve.
+    assert client._fake.calls[0] == "reserve"
+    assert client._fake.calls.index("reserve") < client._fake.calls.index("start")
+    assert order == ["free", "active=True"]
+    assert "unreserve" in client._fake.calls
+
+
+def test_service_reserve_marks_active_and_rolls_back():
+    # The real service: reserve() flips is_active true before any proc exists (so a load guard
+    # refuses during the free window), and unreserve() clears it without a live proc, so a failed
+    # start is not left permanently "active".
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    svc = DiffusionTrainingService()
+    assert svc.is_active() is False
+    svc.reserve()
+    assert svc.is_active() is True  # active with no proc, purely from the reservation
+    svc.unreserve()
+    assert svc.is_active() is False
 
 
 def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monkeypatch):
