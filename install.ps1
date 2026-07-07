@@ -1436,6 +1436,7 @@ exit 0
     }
 
     $VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"
+    $VenvPathExistedBeforeCreate = Test-Path -LiteralPath $VenvDir
     $VenvDirExistedBeforeCreate = Test-Path -LiteralPath $VenvDir -PathType Container
     $VenvDirOwnedBeforeCreate = $VenvDirExistedBeforeCreate -and (
         (Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf) -or
@@ -1558,7 +1559,7 @@ exit 0
         if ($needsVenvFallback) {
             if (
                 $StudioRedirectMode -eq 'env' -and
-                $VenvDirExistedBeforeCreate -and
+                $VenvPathExistedBeforeCreate -and
                 -not $VenvDirOwnedBeforeCreate
             ) {
                 Write-Host "[ERROR] $VenvDir was not previously marked as an Unsloth Studio environment." -ForegroundColor Red

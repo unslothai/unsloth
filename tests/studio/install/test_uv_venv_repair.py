@@ -133,11 +133,16 @@ def _run_bootstrap(
     source_text: str,
     python_mode: str = "real",
     extra_env: dict[str, str] | None = None,
+    preexisting_venv_file: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     if PWSH is None:
         pytest.skip("pwsh not available")
 
     venv_dir = tmp_path / "space path" / "unsloth_studio"
+    if preexisting_venv_file:
+        venv_dir.parent.mkdir(parents = True)
+        venv_dir.write_text("user-owned", encoding = "utf-8")
+
     stub_dir = tmp_path / "stub bin"
     log_file = tmp_path / "uv.log"
     _write_uv_stub(stub_dir, mode)
@@ -202,7 +207,17 @@ def _run_bootstrap(
                 Path = $DetectedPythonPath
                 Version = "3.13"
             }
+            $StudioRedirectMode = "env"
+            $StudioHome = Split-Path -Parent $VenvDir
             $VenvPython = Join-Path $VenvDir "Scripts\\python.exe"
+            $VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"
+            $VenvPathExistedBeforeCreate = Test-Path -LiteralPath $VenvDir
+            $VenvDirExistedBeforeCreate = Test-Path -LiteralPath $VenvDir -PathType Container
+            $VenvDirOwnedBeforeCreate = $VenvDirExistedBeforeCreate -and (
+                (Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $StudioHome "share\\studio.conf") -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $StudioHome "bin\\unsloth.exe") -PathType Leaf)
+            )
             if (-not (Test-Path -LiteralPath $VenvPython)) {
             __SOURCE_BODY__
             }
@@ -335,6 +350,21 @@ def test_uv_venv_nonzero_failure_falls_back(tmp_path):
     proc, venv_dir, log_file, _ = _run_bootstrap(tmp_path, "fail", _source())
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+def test_uv_venv_nonzero_preserves_preexisting_file_path(tmp_path):
+    proc, venv_dir, log_file, _ = _run_bootstrap(
+        tmp_path,
+        "fail",
+        _source(),
+        preexisting_venv_file = True,
+    )
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert venv_dir.is_file()
+    assert venv_dir.read_text(encoding = "utf-8") == "user-owned"
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
