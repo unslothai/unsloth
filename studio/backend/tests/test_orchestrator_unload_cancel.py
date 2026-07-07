@@ -25,6 +25,8 @@ def _bare_orchestrator():
     o._cmd_queue = object()
     o._resp_queue = object()
     o._dispatcher_thread = None
+    o._dispatcher_stop = threading.Event()
+    o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
     o.active_model_name = "m"
     o.models = {"m": {}}
@@ -1253,6 +1255,7 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     def fake_start():
         started["v"] = True
         o._dispatcher_thread = _AliveDispatcher()
+        return True  # _start_dispatcher returns True for the caller that spawned it
 
     def fake_stop():
         stopped["v"] = True
@@ -1428,3 +1431,69 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     assert o.active_model_name is None, "must not publish a cancelled model's active name"
     assert o.models == {}, "must not publish a cancelled model's mirror"
     assert "m" not in o.loading_models
+
+
+# ----------------------------------------------------------------------------
+# Concurrent compare-mode requests must not each spawn a dispatcher. Compare mode
+# (_generate_dispatched) deliberately bypasses _gen_lock, so two requests can reach
+# _start_dispatcher at once. Without _dispatcher_lifecycle_lock the check-then-spawn
+# races: both observe no live dispatcher and each start one. The extra dispatcher is
+# orphaned (self._dispatcher_thread tracks only the last) and later consumes the
+# "unloaded" reply off the shared resp_queue before unload_model's _wait_response,
+# hanging the unload on its 300s timeout. The lifecycle lock must serialize the
+# check-then-spawn so exactly one dispatcher thread is ever created.
+# ----------------------------------------------------------------------------
+
+
+def test_concurrent_start_dispatcher_spawns_exactly_one():
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._resp_queue = _queue.Queue()  # real queue so the dispatcher loop blocks and stays alive
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._dispatcher_thread = None
+    o._dispatcher_stop = threading.Event()
+    o._dispatcher_lifecycle_lock = threading.Lock()
+
+    n = 32
+    # A barrier aligns every thread on the check-then-spawn window: without the lifecycle
+    # lock several would clear the "is a dispatcher alive?" check together and each spawn one.
+    barrier = threading.Barrier(n)
+    results: list = []
+    results_lock = threading.Lock()
+
+    def racer():
+        barrier.wait()
+        started = o._start_dispatcher()
+        with results_lock:
+            results.append(started)
+
+    threads = [threading.Thread(target = racer, name = f"racer-{i}") for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 5)
+
+    try:
+        # _start_dispatcher returns True only for the caller that actually spawned a thread.
+        # Exactly one caller may win; every other must observe the dispatcher alive and bail.
+        assert results.count(True) == 1, f"expected exactly one spawn, got {results.count(True)}"
+        assert results.count(False) == n - 1
+        # And exactly one live dispatcher thread exists -- no orphan racing resp_queue.
+        live = [
+            t
+            for t in threading.enumerate()
+            if t.name == "inference-dispatcher" and t.is_alive()
+        ]
+        assert len(live) == 1, f"expected one live dispatcher, found {len(live)}"
+        assert o._dispatcher_thread is live[0]
+    finally:
+        o._stop_dispatcher()
+
+    # Stop joins and clears it; no dispatcher thread must survive.
+    assert o._dispatcher_thread is None
+    remaining = [
+        t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
+    ]
+    assert remaining == [], "dispatcher must be stopped and joined"

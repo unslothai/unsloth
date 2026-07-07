@@ -79,6 +79,12 @@ class InferenceOrchestrator:
         self._mailbox_lock = threading.Lock()
         self._dispatcher_thread: Optional[threading.Thread] = None
         self._dispatcher_stop = threading.Event()
+        # Serializes dispatcher start/stop. _generate_dispatched (compare mode) bypasses
+        # _gen_lock, so two concurrent compare requests can both reach _start_dispatcher;
+        # without this lock both could observe no live dispatcher and each spawn one,
+        # orphaning the extra thread (self._dispatcher_thread tracks only the last). The
+        # orphan later steals the "unloaded" reply off resp_queue and hangs unload_model.
+        self._dispatcher_lifecycle_lock = threading.Lock()
 
         # Local state mirrors (updated from subprocess responses)
         self.active_model_name: Optional[str] = None
@@ -514,33 +520,47 @@ class InferenceOrchestrator:
     # Dispatcher — per-request mailbox routing for compare mode
     # ------------------------------------------------------------------
 
-    def _start_dispatcher(self) -> None:
+    def _start_dispatcher(self) -> bool:
         """Start the dispatcher thread if not already running.
 
         The dispatcher reads the shared resp_queue and routes responses to
         per-request mailbox queues, letting multiple adapter-controlled
         (compare) requests be in-flight without holding _gen_lock.
-        """
-        if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
-            return
 
-        self._dispatcher_stop.clear()
-        self._dispatcher_thread = threading.Thread(
-            target = self._dispatcher_loop,
-            daemon = True,
-            name = "inference-dispatcher",
-        )
-        self._dispatcher_thread.start()
-        logger.debug("Dispatcher thread started")
+        The whole check-then-spawn runs under _dispatcher_lifecycle_lock so
+        concurrent compare requests (which bypass _gen_lock) can't both observe
+        no live dispatcher and each spawn one. Returns True only for the caller
+        that actually started a new thread; False if one was already alive.
+        """
+        with self._dispatcher_lifecycle_lock:
+            if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
+                return False
+
+            self._dispatcher_stop.clear()
+            self._dispatcher_thread = threading.Thread(
+                target = self._dispatcher_loop,
+                daemon = True,
+                name = "inference-dispatcher",
+            )
+            self._dispatcher_thread.start()
+            logger.debug("Dispatcher thread started")
+            return True
 
     def _stop_dispatcher(self) -> None:
-        """Signal the dispatcher to stop and wait for it."""
-        if self._dispatcher_thread is None:
-            return
-        self._dispatcher_stop.set()
-        self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
-        self._dispatcher_thread = None
-        logger.debug("Dispatcher thread stopped")
+        """Signal the dispatcher to stop and wait for it.
+
+        Runs under _dispatcher_lifecycle_lock (paired with _start_dispatcher) so
+        a stop can't interleave with a concurrent start. Callers must NOT hold
+        _mailbox_lock here: this joins the dispatcher, and the dispatcher loop
+        takes _mailbox_lock, so holding it would deadlock the join.
+        """
+        with self._dispatcher_lifecycle_lock:
+            if self._dispatcher_thread is None:
+                return
+            self._dispatcher_stop.set()
+            self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
+            self._dispatcher_thread = None
+            logger.debug("Dispatcher thread stopped")
 
     def _dispatcher_loop(self) -> None:
         """Background loop: read resp_queue → route to mailboxes by request_id."""
@@ -628,13 +648,14 @@ class InferenceOrchestrator:
             yield "Error: model is being unloaded"
             return
 
-        # Ensure the dispatcher runs. Track whether it was already running: if this call
-        # starts it and then bails on a racing unload, it must stop it again (see the
-        # unloading bail below).
-        dispatcher_preexisting = (
-            self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
-        )
-        self._start_dispatcher()
+        # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
+        # _dispatcher_lifecycle_lock and returns True only for the caller that actually spawned
+        # the thread, so at most one dispatcher ever exists even when two compare requests race
+        # here. Derive dispatcher_preexisting from that atomic result (not a separate unlocked
+        # is_alive() read): if THIS call started the dispatcher and then bails on a racing
+        # unload, it must stop it again (see the unloading bail below).
+        started = self._start_dispatcher()
+        dispatcher_preexisting = not started
 
         request_id = str(uuid.uuid4())
 
