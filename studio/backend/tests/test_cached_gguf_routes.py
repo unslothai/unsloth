@@ -919,6 +919,75 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
         assert "Unload the model before deleting" in e.detail
 
 
+def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
+    # A loaded Images repo must not block deleting a DIFFERENT cached repo that merely shares a
+    # name prefix. Qwen/Qwen-Image and Qwen/Qwen-Image-2512 are both real catalog artifacts, so
+    # with Qwen-Image-2512 loaded, deleting the sibling Qwen-Image is a supported operation. The
+    # guard is `/`-boundary aware, so it refuses only the loaded repo (or a file within it), not
+    # a prefix sibling.
+    from fastapi import HTTPException
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+    import routes.inference as routes_inference
+
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": True, "repo_id": "Qwen/Qwen-Image-2512"},
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "get_video_backend",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    # Nothing cached, so a delete that clears the guards reaches the not-found path.
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [])
+
+    # The sibling repo clears every guard and reaches the cache lookup, which 404s -- it is NOT
+    # refused with the 400 "Unload" the un-delimited prefix match would have produced.
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "Qwen/Qwen-Image",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException (404 not-found) after clearing the guard"
+    except HTTPException as e:
+        assert e.status_code == 404, f"sibling delete wrongly blocked: {e.status_code} {e.detail}"
+
+    # The loaded repo itself is still refused (exact match).
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "Qwen/Qwen-Image-2512",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException refusing delete of the loaded repo"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail
+
+
 def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
     # The partial probe must be scoped to the snapshot row being listed. Unscoped, the scan
     # spans every HF cache root, so a stale .incomplete copy in one root would flag a complete

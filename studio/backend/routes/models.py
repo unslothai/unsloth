@@ -3528,6 +3528,14 @@ async def list_cached_models(
         return {"cached": []}
 
 
+def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
+    """True when *loaded_id* is *repo_id* or a file within it; ``/``-boundary aware so a
+    loaded ``org/model-2512`` does not block deleting the sibling cached ``org/model``."""
+    rid = repo_id.lower()
+    lid = loaded_id.lower()
+    return lid == rid or lid.startswith(f"{rid}/")
+
+
 @router.delete("/delete-cached")
 async def delete_cached_model(
     repo_id: str = Body(...),
@@ -3549,7 +3557,7 @@ async def delete_cached_model(
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded_id = llama_backend.model_identifier.lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(loaded_id, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
@@ -3563,7 +3571,7 @@ async def delete_cached_model(
         inference_backend = get_inference_backend()
         if inference_backend.active_model_name:
             active = inference_backend.active_model_name.lower()
-            if active == repo_id.lower() or active.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(active, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
@@ -3586,7 +3594,7 @@ async def delete_cached_model(
         diffusion_status = engine.status()
         if diffusion_status.get("loaded") and diffusion_status.get("repo_id"):
             loaded_id = str(diffusion_status["repo_id"]).lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(loaded_id, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
@@ -3597,7 +3605,7 @@ async def delete_cached_model(
         loading_ids = getattr(engine, "loading_repo_ids", tuple)()
         for lid in loading_ids:
             lid = str(lid).lower()
-            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(lid, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "An Images model load is using this repo; wait for it to finish",
@@ -3618,7 +3626,7 @@ async def delete_cached_model(
         video_status = video_backend.status()
         if video_status.get("loaded") and video_status.get("repo_id"):
             loaded_id = str(video_status["repo_id"]).lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(loaded_id, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Unload the model before deleting",
@@ -3628,7 +3636,7 @@ async def delete_cached_model(
         # from under the in-flight download/assembly -- same as the Images guard above.
         for lid in getattr(video_backend, "loading_repo_ids", tuple)():
             lid = str(lid).lower()
-            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+            if _loaded_id_matches_repo(lid, repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "A Video model load is using this repo; wait for it to finish",
