@@ -647,7 +647,7 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
     return null;
   }
   if (typeof parsed.tool_call !== "string") return null;
-  const args = parsed.args ?? {};
+  const args = parsed.args !== null && typeof parsed.args === "object" ? parsed.args : {};
   return {
     type: "tool-call",
     toolCallId: crypto.randomUUID(),
@@ -658,9 +658,19 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
   };
 }
 
-function textToContentParts(value: string): Record<string, unknown>[] {
+// `contentBlocksToText` only ever emits `[thinking]`/tool-call markers for
+// assistant turns, and non-assistant replay only re-serializes text/image
+// parts, so decoding is limited to `role === "assistant"`. Otherwise a user
+// or system message that happens to *contain* one of these markers literally
+// (e.g. a prompt showing example output) would be silently reinterpreted and
+// dropped from the context on the next send.
+function textToContentParts(value: string, role: string): Record<string, unknown>[] {
+  if (role !== "assistant") {
+    return value.trim() ? [{ type: "text", text: value }] : [];
+  }
+
   const parts: Record<string, unknown>[] = [];
-  const thinkingRegex = /\[thinking\]\n([\s\S]*?)\n\[\/thinking\]/g;
+  const thinkingRegex = /\[thinking\]\r?\n([\s\S]*?)\r?\n\[\/thinking\]/g;
 
   // Segments between (or around) thinking blocks may still contain a
   // tool-call blob alongside plain text, both joined with blank lines. Keep
@@ -668,6 +678,14 @@ function textToContentParts(value: string): Record<string, unknown>[] {
   // the ones that parse as a tool call, so an ordinary multi-paragraph
   // message doesn't get fragmented into several text parts.
   const pushChunk = (chunk: string) => {
+    const segments = chunk.split(/\r?\n\r?\n/);
+    // Cosmetic leading/trailing blank segments (e.g. a chunk that starts or
+    // ends exactly at a thinking-block boundary) are dropped, but interior
+    // blank paragraphs are kept so text with multiple blank lines still
+    // round-trips exactly.
+    while (segments.length > 0 && segments[0].trim() === "") segments.shift();
+    while (segments.length > 0 && segments[segments.length - 1].trim() === "") segments.pop();
+
     let textBuffer: string[] = [];
     const flushText = () => {
       if (textBuffer.length > 0) {
@@ -675,15 +693,16 @@ function textToContentParts(value: string): Record<string, unknown>[] {
         textBuffer = [];
       }
     };
-    for (const segment of chunk.split("\n\n")) {
+    for (const segment of segments) {
       const trimmed = segment.trim();
-      if (!trimmed) continue;
-      const toolCall = parseToolCallSegment(trimmed);
+      const toolCall = trimmed ? parseToolCallSegment(trimmed) : null;
       if (toolCall) {
         flushText();
         parts.push(toolCall);
       } else {
-        textBuffer.push(trimmed);
+        // Keep the segment's own whitespace intact (don't trim) so ordinary
+        // text isn't mutated just for having passed through this parser.
+        textBuffer.push(segment);
       }
     }
     flushText();
@@ -721,7 +740,7 @@ function sharegptToRecords(
       threadId,
       parentId: prevId,
       role,
-      content: textToContentParts(value) as MessageRecord["content"],
+      content: textToContentParts(value, role) as MessageRecord["content"],
       createdAt: baseTs + idx,
     });
     prevId = id;
@@ -749,7 +768,7 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
       threadId,
       parentId: prevId,
       role: validRole as MessageRecord["role"],
-      content: textToContentParts(content) as MessageRecord["content"],
+      content: textToContentParts(content, validRole) as MessageRecord["content"],
       createdAt: baseTs + idx,
     });
     prevId = id;
