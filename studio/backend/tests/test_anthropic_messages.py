@@ -889,6 +889,24 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["name"] == "render_html"
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
 
+    def test_display_strip_gates_on_declared_tools(self):
+        # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
+        # ``foo`` markup is prose and survives, the declared web_search rehearsal strips.
+        def _run_gen():
+            yield {
+                "type": "content",
+                "text": 'Try foo[ARGS]{"x": 1} but not web_search[ARGS]{"q": "hi"} here.',
+            }
+
+        tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
+        )
+        body = json.loads(response.body)
+        text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
+        assert 'foo[ARGS]{"x": 1}' in text  # inactive name preserved as prose
+        assert "web_search[ARGS]" not in text  # active name stripped from display
+
 
 # =====================================================================
 # Pass-through emitter tests (client-side tool execution path)

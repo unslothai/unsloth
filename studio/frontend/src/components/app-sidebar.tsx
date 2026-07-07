@@ -359,7 +359,11 @@ export function AppSidebar() {
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
-  const { items: allChatItems } = useChatSidebarItems({
+  const {
+    items: allChatItems,
+    archivedItems: archivedChatItems,
+    loaded: chatItemsLoaded,
+  } = useChatSidebarItems({
     enabled: !isStudioRoute,
     requireMessages: false,
   });
@@ -1306,6 +1310,16 @@ export function AppSidebar() {
                       renderChatSidebarItem(item, "recent"),
                     )}
                   </SidebarMenu>
+                  {/* "No chats yet" only when there is truly no history:
+                      project-scoped and archived threads leave Recents empty
+                      but still count as existing chats. */}
+                  {chatItemsLoaded &&
+                    allChatItems.length === 0 &&
+                    archivedChatItems.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-muted-foreground">
+                        {t("shell.navigation.noChatsYet")}
+                      </p>
+                    )}
                 </SidebarGroupContent>
               </CollapsibleContent>
             </SidebarGroup>

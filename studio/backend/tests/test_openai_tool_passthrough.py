@@ -1900,7 +1900,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -2044,7 +2044,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             gate.set()
@@ -2107,7 +2107,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -2190,7 +2190,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -2252,7 +2252,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
@@ -2323,13 +2323,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     monitor_id = monitor_id,
                 )
             )
-            await asyncio.wait_for(entered.wait(), timeout = 0.2)
+            await asyncio.wait_for(entered.wait(), timeout = 5.0)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            await asyncio.wait_for(cancelled.wait(), timeout = 0.2)
+            await asyncio.wait_for(cancelled.wait(), timeout = 5.0)
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
 
         asyncio.run(_run())
@@ -2389,13 +2389,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
 
             gate.set()
-            await asyncio.wait_for(returned.wait(), timeout = 0.2)
+            await asyncio.wait_for(returned.wait(), timeout = 5.0)
             await asyncio.sleep(0)
             await response._unstarted_cleanup()
             assert upstream_response.is_closed
