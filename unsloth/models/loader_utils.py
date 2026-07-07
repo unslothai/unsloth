@@ -523,6 +523,22 @@ def _resolve_fp8_scale_safetensors_files(
     return []
 
 
+def _fp8_scale_snapshot_allow_patterns(subfolder = None, variant = None, use_safetensors = None):
+    """Glob patterns limiting the scale-restore snapshot to the same safetensors artifact
+    from_pretrained selected. Without this, snapshot_download would pull the FULL repo
+    (.bin shards, alternate variants, large extras) after the model already loaded, which
+    exhausts disk/network and defeats the safetensors-only selection. #6749"""
+    if use_safetensors is False:
+        return []
+    if variant:
+        patterns = [f"*.{variant}.safetensors", f"*.safetensors.index.{variant}.json"]
+    else:
+        patterns = ["*.safetensors", "*.safetensors.index.json"]
+    if subfolder:
+        patterns = [f"{subfolder}/{pattern}" for pattern in patterns]
+    return patterns
+
+
 def _find_fp8_scale_inv_tensors(
     model_dir,
     model_name,
@@ -541,6 +557,16 @@ def _find_fp8_scale_inv_tensors(
         except Exception:
             return []
 
+        # Only the index + selected safetensor shards are needed; never the whole repo.
+        allow_patterns = _fp8_scale_snapshot_allow_patterns(
+            subfolder = subfolder,
+            variant = variant,
+            use_safetensors = use_safetensors,
+        )
+        if not allow_patterns:
+            # use_safetensors is False -> nothing to restore, so skip the download entirely.
+            return []
+
         try:
             model_dir = snapshot_download(
                 model_name,
@@ -549,6 +575,7 @@ def _find_fp8_scale_inv_tensors(
                 local_files_only = local_files_only,
                 cache_dir = cache_dir,
                 force_download = force_download,
+                allow_patterns = allow_patterns,
             )
         except Exception:
             return []

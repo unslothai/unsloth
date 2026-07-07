@@ -351,6 +351,74 @@ def test_safetensors_index_opens_only_scale_shards(monkeypatch):
     assert opened == ["scale.safetensors"]
 
 
+def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch):
+    # A remote FP8 scale restore must not re-pull the whole repo after the model already
+    # loaded: constrain snapshot_download to the index + selected safetensors, never .bin. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+    recorded = {}
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+            filename = "scale.safetensors",
+        )
+        import huggingface_hub
+
+        def fake_snapshot_download(repo_id, **kwargs):
+            recorded["allow_patterns"] = kwargs.get("allow_patterns")
+            return checkpoint_dir
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = "unsloth/does-not-exist-fp8",
+            local_files_only = False,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    allow_patterns = recorded["allow_patterns"]
+    assert allow_patterns is not None
+    assert any(pattern.endswith(".safetensors") for pattern in allow_patterns)
+    assert all("bin" not in pattern for pattern in allow_patterns)
+
+
+def test_remote_scale_restore_snapshot_patterns_respect_variant(monkeypatch):
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+    recorded = {}
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([2.0], dtype = torch.float32)},
+            filename = "model.fp8.safetensors",
+        )
+        import huggingface_hub
+
+        def fake_snapshot_download(repo_id, **kwargs):
+            recorded["allow_patterns"] = kwargs.get("allow_patterns")
+            return checkpoint_dir
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = "unsloth/does-not-exist-fp8",
+            local_files_only = False,
+            variant = "fp8",
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    allow_patterns = recorded["allow_patterns"]
+    assert allow_patterns is not None
+    assert all(".fp8.safetensors" in p or ".index.fp8.json" in p for p in allow_patterns)
+
+
 def test_variant_safetensors_index_uses_transformers_name(monkeypatch):
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
