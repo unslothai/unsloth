@@ -1491,11 +1491,14 @@ class FastModel(FastBaseModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
+                old_model_name = model_name
                 model_name = get_model_name(
                     model_name,
                     load_in_4bit = load_in_4bit,
                     load_in_fp8 = load_in_fp8,
                 )
+                if load_in_fp8 != False and model_name != old_model_name:
+                    load_in_fp8 = False
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

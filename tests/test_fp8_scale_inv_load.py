@@ -555,6 +555,12 @@ class _Fp8Expert(torch.nn.Module):
         self.down_proj_scale = torch.ones(2, dtype = torch.float16)
 
 
+class _WeightlessFp8Expert(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.quant_method = "fp8"
+
+
 def test_restores_fp8_expert_scale_tensors():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
@@ -607,6 +613,33 @@ def test_restores_fbgemm_expert_scale_tensors():
     assert torch.equal(model.expert.down_proj_scale, torch.full((2,), 5.0, dtype = torch.float16))
 
 
+def test_restores_missing_weightless_fp8_expert_scale_tensors():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.expert = _WeightlessFp8Expert()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {
+                "expert.gate_up_proj_scale_inv": torch.full((2,), 9.0, dtype = torch.float32),
+                "expert.down_proj_scale_inv": torch.full((2,), 10.0, dtype = torch.float32),
+            },
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 2
+    assert skipped == 0
+    assert torch.equal(
+        model.expert.gate_up_proj_scale_inv, torch.full((2,), 9.0, dtype = torch.float32)
+    )
+    assert torch.equal(model.expert.down_proj_scale_inv, torch.full((2,), 10.0, dtype = torch.float32))
+
+
 def test_restores_fp8_scale_alias_tensors():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
@@ -630,7 +663,7 @@ def test_restores_fp8_scale_alias_tensors():
 
     assert restored == 3
     assert skipped == 0
-    assert torch.equal(model.fp8.weight_scale, torch.full((2, 1), 6.0, dtype = torch.float16))
+    assert torch.equal(model.fp8.weight_scale_inv, torch.full((2, 1), 6.0, dtype = torch.float16))
     assert torch.equal(model.expert.up_proj_scale, torch.full((2,), 7.0, dtype = torch.float16))
     assert torch.equal(model.expert.up_proj_scale_inv, torch.full((2,), 8.0, dtype = torch.float16))
 
@@ -775,6 +808,34 @@ def test_fastmodel_peft_base_mapping_forwards_load_in_fp8():
                 return
 
     pytest.fail("FastModel PEFT base mapping must forward load_in_fp8 to get_model_name.")
+
+
+def test_fastmodel_peft_base_mapping_clears_fp8_after_remap():
+    tree = ast.parse(LOADER.read_text())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if not isinstance(node.test, ast.Name) or node.test.id != "is_peft":
+            continue
+        has_old_model_name = False
+        has_clear = False
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assign):
+                if any(
+                    isinstance(target, ast.Name) and target.id == "old_model_name"
+                    for target in child.targets
+                ):
+                    has_old_model_name = True
+                if any(
+                    isinstance(target, ast.Name) and target.id == "load_in_fp8"
+                    for target in child.targets
+                ) and isinstance(child.value, ast.Constant) and child.value.value is False:
+                    has_clear = True
+        if has_old_model_name and has_clear:
+            return
+
+    pytest.fail("FastModel PEFT FP8 base remap must clear load_in_fp8 after selecting an FP8 sibling.")
 
 
 def test_offline_fp8_cache_uses_safe_serialization():

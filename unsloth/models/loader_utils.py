@@ -380,12 +380,7 @@ def _has_float8_dtype(dtype):
 def _is_real_fp8_owner(module):
     if not isinstance(module, torch.nn.Module):
         return False
-    weight = getattr(module, "weight", None)
-    if not isinstance(weight, torch.Tensor):
-        return False
     if getattr(module, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
-        return True
-    if getattr(weight, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
         return True
 
     config = getattr(module, "quantization_config", None)
@@ -394,8 +389,24 @@ def _is_real_fp8_owner(module):
     if getattr(config, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
         return True
 
-    if _has_float8_dtype(getattr(weight, "dtype", None)):
+    if getattr(module, "quant_method", None) is None and "fp8" in type(module).__name__.lower():
         return True
+
+    weight = getattr(module, "weight", None)
+    if isinstance(weight, torch.Tensor):
+        if getattr(weight, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
+            return True
+        if _has_float8_dtype(getattr(weight, "dtype", None)):
+            return True
+
+    for attr_name in ("gate_up_proj", "gate_proj", "up_proj", "down_proj"):
+        tensor = getattr(module, attr_name, None)
+        if not isinstance(tensor, torch.Tensor):
+            continue
+        if getattr(tensor, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
+            return True
+        if _has_float8_dtype(getattr(tensor, "dtype", None)):
+            return True
 
     try:
         from unsloth.kernels.fp8 import FbgemmFp8Linear, FP8Linear
@@ -420,7 +431,7 @@ def _model_has_real_fp8_modules(model):
 
 
 _FP8_SCALE_SUFFIXES = (
-    ("weight_scale", ".scale"),
+    ("weight_scale_inv", ".scale"),
     ("weight_scale", ".weight_scale"),
     ("weight_scale_inv", ".weight_scale_inv"),
     ("gate_proj_scale", ".gate_proj_scale"),
@@ -630,10 +641,20 @@ def _restore_missing_fp8_weight_scale_inv(
         reference = getattr(module, attr_name, None)
         if not isinstance(reference, torch.Tensor) and attr_name == "weight_scale_inv":
             reference = getattr(module, "weight_scale", None)
-        if not isinstance(weight, torch.Tensor) and not isinstance(reference, torch.Tensor):
+        if (
+            not _is_real_fp8_owner(module)
+            and not isinstance(weight, torch.Tensor)
+            and not isinstance(reference, torch.Tensor)
+        ):
             skipped += 1
             continue
-        target_device = reference.device if isinstance(reference, torch.Tensor) else weight.device
+        target_device = (
+            reference.device
+            if isinstance(reference, torch.Tensor)
+            else weight.device
+            if isinstance(weight, torch.Tensor)
+            else scale_tensor.device
+        )
         if target_device.type == "meta":
             skipped += 1
             continue
