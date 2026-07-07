@@ -77,7 +77,7 @@ def _make_mlx_presence_penalty_processor(penalty: float):
         # Scatter-assign a scalar penalty into a (vocab + 1)-wide mask: duplicate
         # ids are idempotent, so presence applies once per distinct token; the
         # scratch column is discarded and the full-width subtract stays on-device.
-        mask = mx.zeros((vocab + 1,), dtype=logits.dtype)
+        mask = mx.zeros((vocab + 1,), dtype = logits.dtype)
         mask[safe] = penalty
         logits = logits - mask[:vocab]
         return logits
