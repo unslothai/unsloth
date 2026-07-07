@@ -412,11 +412,27 @@
   },
   {
    "package": "multiprocess",
+   "file": "multiprocess/forkserver.py",
+   "check": "Reverse shell / bind shell pattern",
+   "severity": "CRITICAL",
+   "evidence": "L6: import socket sha256:6c707119169286c9a798e2c8d13a48614e481d8a503950916fd4ffb4c94d3182",
+   "evidence_hash": "50fec0f0522a8e4e636bf348b752002d7935d8455af31fb78c6f11e2eba19f6d"
+  },
+  {
+   "package": "multiprocess",
    "file": "multiprocess/tests/__init__.py",
    "check": "Anti-analysis/sandbox evasion + suspicious behavior",
    "severity": "HIGH",
    "evidence": "Anti: L440:         time.sleep(300)\nNetwork: L3651:         client = socket.socket() | L4933:         s = socket.socket() | L5205:             return socket.socket().detach() | L5209:             fd = socket.socket().detach() | L5220:             socket.socket(socket.AF_INET, socket.SOCK_STREAM, fileno=fd).close()\nSubprocess: L4394:         with subprocess.Popen([sys.executable, '-E', '-c', cmd],\nL4395:                               stdout=subprocess.PIPE,\nL4396:                               stderr=subprocess.PIPE) as p: | L5107:         data = subprocess.check_output(\nL5108:             [sys.executable, '-E', '-S', '-O', '-c', prog]) | L5504:                 p = subprocess.Popen([sys.executable,\nL5505:                                      '-E', '-c', cmd.format(w=w, rtype=rtype)],\nL5506:                                      pass_fds=[w],\nL5507:                                      stderr=subprocess.PIPE)",
    "evidence_hash": "1c12c77946a84106759fb683e1fe21f97ecb39493c584ef2c7945eaa9ec2d095"
+  },
+  {
+   "package": "multiprocess",
+   "file": "multiprocess/tests/__init__.py",
+   "check": "Reverse shell / bind shell pattern",
+   "severity": "CRITICAL",
+   "evidence": "L3569:                     os.dup2(conn.fileno(), i) | L3601:                          \"test needs os.dup2()\") | L3619:             os.dup2(fd, newfd) | L20: import socket sha256:c824dc0f409f242420c3fbb324790c53cb3078d2c8b07ee8f2a05694b01c2946",
+   "evidence_hash": "3878a2b430c175dbc5877a95195bfe52f9588ff73fb74e2261ed5e33087915ad"
   },
   {
    "package": "multiprocess",

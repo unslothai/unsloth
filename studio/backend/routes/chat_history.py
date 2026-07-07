@@ -177,6 +177,7 @@ class ChatSettingsPayload(BaseModel):
     collapseHtmlArtifacts: Optional[bool] = None
     allowArtifactNetworkAccess: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
+    nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
