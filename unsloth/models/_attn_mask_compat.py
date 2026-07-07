@@ -30,7 +30,27 @@ from typing import Union
 
 import torch
 
-from transformers.utils.import_utils import is_torchdynamo_compiling, is_tracing
+from transformers.utils.import_utils import is_torchdynamo_compiling
+
+try:
+    # `is_tracing` was added to `transformers.utils.import_utils` in 4.52
+    # (commit that introduced `_prepare_4d_attention_mask_for_sdpa` rewrites).
+    # Unsloth's declared lower bound is `transformers>=4.51.3`, so import
+    # defensively and fall back to a conservative local implementation when
+    # the symbol is not exported — matching what upstream Transformers did
+    # before `is_tracing` existed (only `is_torchdynamo_compiling`).
+    from transformers.utils.import_utils import is_tracing  # type: ignore[attr-defined]
+except ImportError:
+    def is_tracing(tensor=None) -> bool:  # type: ignore[no-redef]
+        """Local fallback for transformers < 4.52.
+
+        Returns True only when Dynamo is actively compiling. Other tracing
+        backends (JIT, CUDA stream capture, FakeTensor, JAX) are not
+        detectable via `import_utils` in these older releases; we conservatively
+        treat them as "not tracing", matching the pre-`is_tracing` upstream
+        behavior where these checks were guarded by `is_torchdynamo_compiling`.
+        """
+        return is_torchdynamo_compiling()
 
 
 @dataclass
