@@ -48,6 +48,8 @@ class _CallableTokenizerProxy:
         return getattr(self._tokenizer, name)
 
     def __call__(self, text, *args, **kwargs):
+        # MLX/torch-free: never request torch tensors; keep plain python ids.
+        kwargs.pop("return_tensors", None)
         wrapped = getattr(self._tokenizer, "_tokenizer", None)
         if callable(wrapped):
             return wrapped(text, *args, **kwargs)
