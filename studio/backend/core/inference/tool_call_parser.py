@@ -41,6 +41,9 @@ TOOL_XML_SIGNALS = (
     "<|python_tag|>",
     "[TOOL_CALLS]",
     "<|tool_call>",
+    # Bare reasoning-rehearsal marker (``name[ARGS]{...}``, no leading [TOOL_CALLS]);
+    # keeps a rehearsed call held in the stream so it is promoted, not leaked as prose.
+    "[ARGS]",
     # DeepSeek R1 / V3 / V3.1 -- 5 opener variants llama.cpp keeps.
     "<｜tool▁calls▁begin｜>",
     "<｜tool▁call▁begin｜>",
@@ -90,7 +93,7 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     # follows; a prose mention (``See [TOOL_CALLS] docs...``) keeps its tail. Bare marker at EOF drops.
     re.compile(r"<\|tool_call>(?=\s*call\s*:|\s*$).*$", re.DOTALL),
     re.compile(
-        r"\[TOOL_CALLS\](?=\s*(?:[\[{]|[A-Za-z_][\w.\-]*[\[{])|\s*$).*$",
+        r"\[TOOL_CALLS\](?=\s*(?:[\[{]|[A-Za-z_][\w.\-]*(?:[\[{]|\s*$))|\s*$).*$",
         re.DOTALL,
     ),
     re.compile(
@@ -572,26 +575,51 @@ def strip_tool_markup(
     enabled_tool_names: Optional[set] = None,
 ) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
-    ``final=True`` also drops trailing unclosed runs and trims. ``enabled_tool_names``
-    gates the markerless Gemma ``call:NAME{...}`` strip so a disabled/example name in
-    prose is kept (mirrors the parser gate); ``None`` strips every closed call."""
+    ``final=True`` also drops trailing unclosed runs and trims.
+
+    ``enabled_tool_names`` gates the name-conditioned forms so a disabled/example name in
+    prose is kept (mirrors the parser gate): the bare reasoning-rehearsal ``name[ARGS]{...}``
+    and the markerless Gemma ``call:NAME{...}`` strip. ``None`` strips every closed call.
+    """
     if final:
         # Drop a leading Magistral ``[THINK]...[/THINK]`` at end-of-turn; its bracket
         # form is not the ``<think>`` the reasoning channel renders.
         text = _strip_mistral_reasoning(text)
-    text = _strip_mistral_closed_calls(text)
-    if final:
-        text = _strip_gemma_wrapperless_calls(text, enabled_tool_names)
-    # Scan-strip the function-XML form (a literal ``<function=...>`` inside a value is
-    # data). The regex arms below cover the other formats but no-op on function calls here.
-    text = _strip_function_xml_calls(text, final = final)
-    # GLM 4.x: scan to the call's real </tool_call> so a literal one inside a value is data,
-    # not a leak. Qwen <tool_call>{json} is left to the regex arms.
-    text = _strip_glm_calls(text, final = final)
-    pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    for pat in pats:
-        text = pat.sub("", text)
-    return text.strip() if final else text
+
+    def _strip_segment(segment: str, is_last: bool) -> str:
+        seg_final = final and is_last
+        seg = _strip_mistral_closed_calls(segment)
+        # Bare reasoning-rehearsal ``name[ARGS]{json}`` and the Mistral name form promote through
+        # the shared balanced scan, so strip them the same way (any nesting depth removed whole).
+        # The rehearsal arm is name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
+        seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+        if seg_final:
+            # Markerless Gemma ``call:NAME{...}`` (name-gated, mirrors the parse gate); end-of-turn only.
+            seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
+        # Scan-strip the function-XML form (parser-accurate: a literal ``<function=...>`` in a
+        # value is data, not a call); the regex arms below cover the other formats.
+        seg = _strip_function_xml_calls(seg, final = seg_final)
+        # GLM 4.x: scan to the call's real </tool_call> so a literal one inside a value is data,
+        # not a leak. Qwen <tool_call>{json} is left to the regex arms.
+        seg = _strip_glm_calls(seg, final = seg_final)
+        pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
+        for pat in pats:
+            seg = pat.sub("", seg)
+        if seg_final:
+            # Drop a trailing partial bare rehearsal (``name[ARGS]`` with a truncated or absent
+            # body) the balanced scan cannot close; gated so prose ``foo[ARGS] ...`` survives.
+            seg = _tool_healing.apply_tool_strip_patterns(
+                seg,
+                [_tool_healing._REHEARSAL_TAIL_STRIP_RE],
+                enabled_tool_names = enabled_tool_names,
+            )
+        return seg
+
+    # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is
+    # not executed, so it must not be stripped from display either); a literal think marker
+    # inside a real call's arguments is that call's data and is stripped with the call.
+    result = _tool_healing.strip_outside_think(text, _strip_segment)
+    return result.strip() if final else result
 
 
 def has_tool_signal(text: str) -> bool:
@@ -709,6 +737,41 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     # wrapperless-Gemma guard). Prose that merely mentions the marker has no
     # parseable region and keeps the normal order.
     return _mistral_region_end(content, trig) is not None
+
+
+def _parse_bare_rehearsals(
+    content: str,
+    *,
+    id_offset: int = 0,
+    enabled_tool_names: Optional[set] = None,
+) -> list[dict]:
+    """Promote bare reasoning-rehearsal ``name[ARGS]{json}`` calls that a leading [TOOL_CALLS]
+    owns-the-turn parse would miss. Only the ``rehearsal`` kind is taken (a Mistral
+    ``[TOOL_CALLS]name[ARGS]{..}`` yields ``name`` and is not double-counted), and a rehearsal
+    inside a ``<think>`` / ``[THINK]`` block is reasoning, so it is skipped."""
+    out: list[dict] = []
+    think_spans = _tool_healing._think_spans_outside_tool_markup(content)
+    for start, end, kind, m in _tool_healing._iter_bracket_spans(
+        content, enabled_tool_names = enabled_tool_names
+    ):
+        if kind != "rehearsal":
+            continue
+        if any(s <= start < e for s, e in think_spans):
+            continue
+        try:
+            payload = json.loads(content[m.end() : end])
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": m.group(1), "arguments": json.dumps(payload)},
+            }
+        )
+    return out
 
 
 _ATTR_FUNC_OPEN_RE = re.compile(r'<function\s+name="')
@@ -919,6 +982,16 @@ def parse_tool_calls_from_text(
             content, id_offset = id_offset, allow_incomplete = allow_incomplete
         )
         if calls:
+            # A bare rehearsal ``name[ARGS]{..}`` after the Mistral call is a peer tool call,
+            # not foreign XML the owns-the-turn guard protects against: promote it too so a
+            # Mistral call and a rehearsal in one message both parse.
+            calls.extend(
+                _parse_bare_rehearsals(
+                    content,
+                    id_offset = id_offset + len(calls),
+                    enabled_tool_names = enabled_tool_names,
+                )
+            )
             return calls
 
     # DeepSeek/Kimi markers are unique, so try them first -- unless an outer envelope
@@ -984,13 +1057,16 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
-    # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
-    # ``<|"|>`` quoted-string handling the GGUF path relies on).
+    # Qwen/Hermes, Qwen3.5 XML, Gemma 4, plus Mistral [TOOL_CALLS] / bare rehearsal
+    # ``name[ARGS]{json}`` use the shared tool_healing parser (strict/Auto-Heal contract +
+    # nested-marker, trailing-prose, and ``<|"|>`` quoted-string handling the GGUF path
+    # relies on). ``enabled_tool_names`` gates the ambiguous bare-rehearsal form so an
+    # inactive ``foo[ARGS]{..}`` stays prose.
     calls = _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
     )
     if calls:
         return calls
