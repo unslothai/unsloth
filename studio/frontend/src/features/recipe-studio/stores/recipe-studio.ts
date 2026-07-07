@@ -27,6 +27,7 @@ import type {
   SamplerType,
   SeedSourceType,
 } from "../types";
+import { removeUnstructuredBlock } from "../api";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
@@ -269,6 +270,22 @@ function isModelSemanticEdge(
   );
 }
 
+// Best-effort server-side cleanup of a seed block's uid-namespaced upload
+// directory. Only uid directories are deletable (single owner); the server
+// rejects legacy node ids.
+function cleanupSeedUploads(config: NodeConfig | undefined): void {
+  if (!config || config.kind !== "seed") {
+    return;
+  }
+  const uid = config.unstructured_upload_uid?.trim();
+  if (!uid || !config.unstructured_file_ids?.length) {
+    return;
+  }
+  void removeUnstructuredBlock(uid).catch((error) => {
+    console.warn("Failed to clean up uploaded documents:", error);
+  });
+}
+
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
   setSheetOpen: (open) => set({ sheetOpen: open }),
@@ -383,7 +400,15 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       }
       return buildAddedNodeState(state, "sampler", type, position, openDialog);
     }),
-  addSeedNode: (type, position, openDialog = true) =>
+  addSeedNode: (type, position, openDialog = true) => {
+    const current = get();
+    if (!current.executionLocked) {
+      // The reset below clears the block's upload uid and file list, so
+      // reclaim its server-side upload directory now.
+      cleanupSeedUploads(
+        Object.values(current.configs).find((config) => config.kind === "seed"),
+      );
+    }
     set((state) => {
       if (state.executionLocked) {
         return state;
@@ -447,7 +472,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         activeConfigId: existing.id,
         dialogOpen: openDialog,
       };
-    }),
+    });
+  },
   addLlmNode: (type, position, openDialog = true) =>
     set((state) => {
       if (state.executionLocked) {
@@ -787,6 +813,14 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     set(applyUpdate);
   },
   onNodesChange: (changes) => {
+    const current = get();
+    if (!current.executionLocked) {
+      for (const change of changes) {
+        if (change.type === "remove") {
+          cleanupSeedUploads(current.configs[change.id]);
+        }
+      }
+    }
     const applyNodesChange = (state: RecipeStudioState) => {
       if (state.executionLocked) {
         return state;
