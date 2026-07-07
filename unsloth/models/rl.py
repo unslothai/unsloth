@@ -1669,6 +1669,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
             )
 
+            # Unsloth's optimized GRPO forward cannot compute the MoE router aux loss, so reject
+            # explicit opt-in (router_aux_loss_coef > 0) at init rather than silently ignoring it.
+            RLTrainer_source = RLTrainer_source.replace(
+                "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
+                "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
+                "        if self.aux_loss_enabled: raise NotImplementedError(\"Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).\")",
+            )
+
         elif trl_version >= Version("0.27.0"):
             peft_pattern = (
                 r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"

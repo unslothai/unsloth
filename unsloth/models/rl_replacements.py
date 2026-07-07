@@ -1924,10 +1924,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-            # aux loss defaults off (router_aux_loss_coef set to 0 in models/rl.py), so
-            # compute_aux_loss is normally False -> None. On explicit opt-in the optimized forward
-            # cannot compute it, so return a zero placeholder (never None) for TRL's 3-tuple contract.
-            aux_loss = logprobs.new_zeros(()) if compute_aux_loss else None
+            # aux loss is unused: it is off by default (router_aux_loss_coef set to 0 in models/rl.py)
+            # and explicit opt-in is rejected at trainer init, so this is always None (kept in the
+            # return for TRL >= 1.7.0's 3-tuple contract).
+            aux_loss = None
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
