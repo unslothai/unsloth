@@ -249,10 +249,11 @@ say "Verifying rocminfo enumerates the GPU over DXG"
 # rocminfo on first match, which under `set -o pipefail` turns a successful match
 # into a pipeline failure.
 _rocminfo_out="$(rocminfo 2>/dev/null || true)"
-# GPU agents advertise an ISA "Name: gfxNNNN[a]" (the CPU agent's Name is the CPU
-# model, no gfx). Grab the first real GPU arch -- covers Strix (gfx1150/1151),
-# discrete RDNA (gfx110X / gfx120X) and CDNA (gfx9xx).
-_detected_gfx="$(printf '%s\n' "$_rocminfo_out" | grep -E 'Name:[[:space:]]*gfx[0-9]' | grep -v 'generic' | grep -oE 'gfx[0-9a-z]+' | head -1 || true)"
+# GPU agents advertise an ISA "Name: gfxNNNN[a]" with a nonzero arch. Match
+# gfx[1-9] so gfx000 (the CPU agent) is excluded, drop the "gfx*-generic" fallback
+# ISA, and grab the first real GPU arch -- covers Strix (gfx1150/1151), discrete
+# RDNA (gfx110X / gfx120X) and CDNA (gfx9xx).
+_detected_gfx="$(printf '%s\n' "$_rocminfo_out" | grep -E 'Name:[[:space:]]*gfx[1-9]' | grep -v 'generic' | grep -oE 'gfx[1-9][0-9a-z]*' | head -1 || true)"
 if [ -z "$_detected_gfx" ]; then
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
     die "rocminfo did not enumerate any GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
