@@ -365,7 +365,6 @@ def _blank_nonpersistent_buffers(module):
 
 def _build_llama3_rotary():
     from unsloth.models import llama as llama_mod
-
     config = _make_config(LLAMA3_ROPE_SCALING)
     return llama_mod.LlamaRotaryEmbedding(config = config), config
 
