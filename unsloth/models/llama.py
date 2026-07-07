@@ -2575,7 +2575,7 @@ class FastLlamaModel:
                     fast_inference = fast_inference,
                 )
             elif not fast_inference:
-                auto_model_class = kwargs.pop("auto_model", AutoModelForCausalLM)
+                auto_model_class = kwargs.pop("auto_model", None) or AutoModelForCausalLM
                 if user_config is not None:
                     # Transformers 5.x @strict model init rejects extra kwargs next
                     # to config=; set the override on the config and pass the single
