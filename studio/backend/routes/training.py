@@ -1301,7 +1301,12 @@ async def start_diffusion_training(
     # Preflight access to a gated base repo with the user's token BEFORE freeing GPU
     # residents, so a missing/insufficient token fails fast (400) without tearing down the
     # user's loaded chat/Images model, and never surfaces as a confusing mid-load 401.
-    _preflight_gated_base(config.get("base_model", ""), config.get("hf_token"))
+    # Offloaded to a worker thread: it does a blocking urlopen HEAD (up to a 5s timeout) to
+    # Hugging Face, which would otherwise stall the event loop and every concurrent
+    # status/progress/cancel request, as the filesystem preflight just below already does.
+    await asyncio.to_thread(
+        _preflight_gated_base, config.get("base_model", ""), config.get("hf_token")
+    )
 
     # Preflight the dataset too: a missing/empty/uncaptionable data_dir otherwise
     # fails inside the spawned trainer AFTER the user's chat/Images model was

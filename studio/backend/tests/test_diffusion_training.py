@@ -391,6 +391,36 @@ def test_route_start_frees_gpu_off_the_coroutine_thread(client, monkeypatch):
     assert threads["cleanup"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
+def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monkeypatch):
+    # _preflight_gated_base does a blocking urlopen HEAD (up to a 5s timeout) to Hugging Face, so
+    # the async start route must offload it via asyncio.to_thread rather than run it inline and
+    # freeze the event loop for concurrent status/progress/cancel requests. Assert it runs on a
+    # DIFFERENT thread than the inline coroutine body (service.start), which an inline call could
+    # not.
+    import threading
+
+    import routes.training as tr
+
+    threads: dict = {}
+
+    def _record_preflight(base_model, hf_token):
+        threads["preflight"] = threading.current_thread()
+
+    monkeypatch.setattr(tr, "_preflight_gated_base", _record_preflight)
+
+    orig_start = client._fake.start
+
+    def _record_start(config):
+        threads["inline"] = threading.current_thread()
+        return orig_start(config)
+
+    monkeypatch.setattr(client._fake, "start", _record_start)
+
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+    assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
