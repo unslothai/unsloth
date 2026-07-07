@@ -1990,8 +1990,8 @@ class TestTranslatedMessagesValidate:
             ChatMessage(**m.model_dump(exclude_none = True))
 
 
-# reasoning_prefilled mode: Qwen3/GLM enable_thinking templates prefill an unclosed <think>, so
-# generation begins inside the think block and emits only the closing </think>; the extractor starts in reasoning.
+# reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
+# generation begins inside the block; the extractor must start in reasoning.
 class TestReasoningPrefilledExtractor:
     def test_prefilled_single_feed_splits_lone_close(self):
         # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
@@ -2077,9 +2077,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "hi"
 
     def test_not_prefilled_lone_close_preserves_current_behavior(self):
-        # T9: GGUF-parity guard -- WITHOUT prefilled, a lone </think> keeps the
-        # pre-fix behavior (reasoning stays visible, tag dropped). Ensures GGUF and
-        # every existing caller are byte-identical.
+        # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
         reasoning, visible = _extract_responses_reasoning(
             "reasoning</think>ans",
             parse_think_markers = True,
@@ -2099,8 +2097,7 @@ class TestReasoningPrefilledExtractor:
         assert visible == "v"
 
     def test_prefilled_ignored_when_markers_not_parsed(self):
-        # T11: a non-reasoning model (parse_think_markers False) still passes text
-        # straight through even if reasoning_prefilled were mistakenly set False.
+        # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
         reasoning, visible = _extract_responses_reasoning(
             "just an answer",
             parse_think_markers = False,
