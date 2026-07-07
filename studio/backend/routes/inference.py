@@ -7009,11 +7009,7 @@ async def openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
-        if (
-            payload.confirm_code_execution
-            and not payload.bypass_permissions
-            and not payload.stream
-        ):
+        if payload.confirm_code_execution and not payload.bypass_permissions and not payload.stream:
             raise _reject(
                 400,
                 openai_error_body(
