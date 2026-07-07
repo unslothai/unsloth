@@ -1477,11 +1477,9 @@ elif [ "$OS" = "macos" ]; then
 fi
 tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
 
-# Name of an AMD GPU visible to the Windows host, or empty. In WSL a discrete
-# card's arch is unknowable until ROCm is up and /proc/cpuinfo only names the CPU,
-# so ask Windows (WMI). Cached ("-" caches a negative). Requires WSL interop.
-# Self-contained + bounded to 10s (an unstable interop / busy host must not hang
-# the installer); defined here so the reroute below can use it before _run_bounded exists.
+# AMD GPU name from the Windows host via WMI, or empty. Discrete cards aren't in
+# /proc/cpuinfo, so ask Windows. Cached ("-" = negative), self-contained, bounded
+# to 10s. Defined here so the reroute below can use it before _run_bounded exists.
 _WSL_AMD_GPU_NAME_CACHE=""
 _wsl_amd_gpu_name() {
     if [ -n "$_WSL_AMD_GPU_NAME_CACHE" ]; then
@@ -1509,8 +1507,7 @@ _maybe_reroute_strixhalo_to_2404() {
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
     [ -e /dev/dxg ] || return 0
-    # Strix APUs appear in /proc/cpuinfo; discrete Radeon cards don't, so fall back
-    # to the Windows host (WMI). Either signal reroutes to Ubuntu 24.04 the same way.
+    # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
     if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
         return 0
@@ -2348,19 +2345,16 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
-# (_wsl_amd_gpu_name is defined earlier, before _maybe_reroute_strixhalo_to_2404,
-# so both the reroute and this bootstrap can use it.)
+# _wsl_amd_gpu_name is defined earlier so both the reroute and this bootstrap can use it.
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    # "Usable ROCm" here = rocminfo enumerates a real GPU agent ("Name: gfxNNNN"
-    # with a nonzero arch -- gfx[1-9] so gfx000, the CPU agent, is excluded -- and
-    # not the "gfx11-generic" fallback ISA). Covers Strix (gfx1150/1151), discrete
-    # RDNA (gfx110X/gfx120X) and CDNA (gfx9xx). awk consumes all input, so rocminfo
-    # isn't SIGPIPE'd like `grep -q` would under pipefail.
+    # Usable ROCm = rocminfo enumerates a real GPU agent: gfx[1-9] (excludes gfx000,
+    # the CPU agent) and not the "gfx11-generic" fallback. awk consumes all input so
+    # rocminfo isn't SIGPIPE'd like `grep -q` under pipefail.
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
@@ -2373,10 +2367,8 @@ _maybe_bootstrap_rocm_wsl() {
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
     [ -e /dev/dxg ] || return 0
-    # Which AMD GPU? Strix APUs show up in /proc/cpuinfo (WSL exposes the CPU model,
-    # e.g. "AMD Ryzen AI Max+ ... Radeon 8060S"); discrete Radeon cards do not, so
-    # fall back to asking the Windows host. Either signal is enough to proceed --
-    # the bootstrap auto-detects the actual arch from rocminfo once ROCm is up.
+    # Strix APUs show in /proc/cpuinfo (the CPU model); discrete cards don't, so also
+    # ask the Windows host. Either signal suffices; the bootstrap detects arch from rocminfo.
     if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
        && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
         return 0

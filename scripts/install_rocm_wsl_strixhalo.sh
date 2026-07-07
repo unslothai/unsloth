@@ -6,13 +6,11 @@
 # Enable ROCm-on-WSL for AMD GPUs (Strix Halo/Point APUs AND discrete Radeon RX
 # 7000/9000). Verified on gfx1151 (Radeon 8060S) and gfx1200 (Radeon RX 9060 XT).
 # ──────────────────────────────────────────────────────────────────────────────
-# install.sh already routes the detected arch to the right ROCm wheels once a ROCm
-# runtime is present; what it does NOT do is install AMD's ROCm userspace + the WSL
-# DXG bridge (librocdxg). This helper automates that Linux-side prerequisite on
-# Ubuntu 24.04 WSL2 and is invoked by install.sh when it sees an AMD GPU in WSL (via
-# /dev/dxg) but no ROCm runtime yet. The ROCm + librocdxg setup is arch-agnostic;
-# the GPU arch is auto-detected from rocminfo (override: UNSLOTH_WSL_GFX=gfx1200).
-# Fully idempotent (re-run just re-verifies).
+# install.sh routes the detected arch to the right ROCm wheels once a runtime exists;
+# what it does NOT do is install AMD's ROCm userspace + the WSL DXG bridge (librocdxg).
+# This helper does that Linux-side prerequisite on Ubuntu 24.04 WSL2, invoked by
+# install.sh when it sees an AMD GPU via /dev/dxg but no ROCm yet. Arch-agnostic: the
+# arch is auto-detected from rocminfo (override UNSLOTH_WSL_GFX=gfx1200). Idempotent.
 #
 # Manual, admin-gated Windows prerequisite: an AMD Adrenalin driver with
 # production ROCDXG/WSL support (26.2.2+). install.ps1 offers to update it. Once
@@ -37,10 +35,8 @@ set -euo pipefail
 
 # ── Tunables (override via env) ──────────────────────────────────────────────
 ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
-# GPU arch: empty = auto-detect from rocminfo after ROCm installs. Override with
-# UNSLOTH_WSL_GFX=gfx1200 etc. Works for any ROCDXG-capable RDNA arch (Strix Halo/
-# Point AND discrete Radeon RX 7000/9000), not just Strix -- the ROCm + librocdxg
-# setup below is arch-agnostic; only the verify + optional smoke test need the arch.
+# GPU arch: empty = auto-detect from rocminfo after install (override UNSLOTH_WSL_GFX=gfx1200).
+# The ROCm + librocdxg setup is arch-agnostic; only verify + the smoke test need the arch.
 GFX="${UNSLOTH_WSL_GFX:-}"
 LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-develop}"    # ROCm/librocdxg git ref to build
 # AMD's wheel index for the (optional) smoke test; resolved after arch detection.
@@ -249,10 +245,8 @@ say "Verifying rocminfo enumerates the GPU over DXG"
 # rocminfo on first match, which under `set -o pipefail` turns a successful match
 # into a pipeline failure.
 _rocminfo_out="$(rocminfo 2>/dev/null || true)"
-# GPU agents advertise an ISA "Name: gfxNNNN[a]" with a nonzero arch. Match
-# gfx[1-9] so gfx000 (the CPU agent) is excluded, drop the "gfx*-generic" fallback
-# ISA, and grab the first real GPU arch -- covers Strix (gfx1150/1151), discrete
-# RDNA (gfx110X / gfx120X) and CDNA (gfx9xx).
+# GPU agents advertise an ISA "Name: gfxNNNN". Match gfx[1-9] (excludes gfx000, the CPU
+# agent), drop the "gfx*-generic" fallback ISA, and take the first real GPU arch.
 _detected_gfx="$(printf '%s\n' "$_rocminfo_out" | grep -E 'Name:[[:space:]]*gfx[1-9]' | grep -v 'generic' | grep -oE 'gfx[1-9][0-9a-z]*' | head -1 || true)"
 if [ -z "$_detected_gfx" ]; then
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
