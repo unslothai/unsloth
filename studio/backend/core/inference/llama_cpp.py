@@ -614,7 +614,7 @@ def detect_reasoning_flags(
             a == "deepseek" and b == "v4" for a, b in zip(segments, segments[1:])
         )
         if is_dsv4 and "high" not in effort_levels:
-            effort_levels = sorted(set(effort_levels) | {"high"}, key=_REASONING_EFFORT_SCALE.index)
+            effort_levels = sorted(set(effort_levels) | {"high"}, key = _REASONING_EFFORT_SCALE.index)
         # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
         # level among a discrete set (e.g. 'high' | 'max'). Distinct from
         # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
