@@ -132,6 +132,7 @@ def _run_bootstrap(
     mode: str,
     source_text: str,
     python_mode: str = "real",
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     if PWSH is None:
         pytest.skip("pwsh not available")
@@ -147,6 +148,8 @@ def _run_bootstrap(
     env = os.environ.copy()
     env["PATH"] = str(stub_dir) + os.pathsep + env.get("PATH", "")
     env["UV_LOG"] = str(log_file)
+    if extra_env:
+        env.update(extra_env)
 
     source_body = _extract_venv_bootstrap_body(source_text)
     harness = tmp_path / "bootstrap.ps1"
@@ -275,6 +278,28 @@ def test_uv_venv_base_python_without_config_falls_back(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()
     assert (venv_dir / "pyvenv.cfg").is_file()
+    assert not partial_marker.exists()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+def test_uv_venv_probe_allows_python_startup_stderr(tmp_path):
+    sitecustomize_dir = tmp_path / "sitecustomize"
+    sitecustomize_dir.mkdir()
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        "import sys; sys.stderr.write('startup warning\\n')\n",
+        encoding = "utf-8",
+    )
+
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(
+        tmp_path,
+        "healthy",
+        _source(),
+        extra_env = {"PYTHONPATH": str(sitecustomize_dir)},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (venv_dir / "Scripts" / "python.exe").is_file()
     assert not partial_marker.exists()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
