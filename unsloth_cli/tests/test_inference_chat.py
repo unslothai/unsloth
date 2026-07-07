@@ -873,14 +873,21 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
     assert set(closed) == {"tuned", "base"}
 
 
-def test_inference_under_mlx_launch_forwards_tensor_parallel(monkeypatch):
+@pytest.mark.parametrize(
+    ("chunks", "expected_exit"),
+    [
+        (["answer"], 0),
+        (["Error: generation failed"], 1),
+    ],
+)
+def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunks, expected_exit):
     from unsloth_cli.commands import inference as infermod
 
     loads, closed = [], []
 
     class _FakeBackend:
         def stream(self, messages, **kwargs):
-            return iter(["answer"])
+            return iter(chunks)
 
         def close(self):
             closed.append(True)
@@ -902,8 +909,10 @@ def test_inference_under_mlx_launch_forwards_tensor_parallel(monkeypatch):
         ["fake-model", "hello", "--tensor-parallel"],
     )
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == expected_exit, result.output
     assert loads[0][1]["tensor_parallel"] is True
+    if expected_exit:
+        assert "generation failed" in result.output
 
 
 def test_chat_under_mlx_launch_nonzero_rank_drains_stdin(monkeypatch):
@@ -998,6 +1007,44 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
         ({"type": "turn", "text": "hi"}, None),
         ({"type": "turn", "text": "/exit"}, None),
     ]
+
+
+@pytest.mark.parametrize("stream_error", ["exception", "chunk"])
+def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_error):
+    closed = []
+
+    class _FakeChatBackend:
+        def share_distributed_object(
+            self,
+            obj,
+            *,
+            timeout = 300.0,
+        ):
+            return obj
+
+        def stream(self, messages, **kwargs):
+            if stream_error == "exception":
+                raise RuntimeError("generation failed")
+            return iter(["Error: generation failed"])
+
+        def close(self):
+            closed.append(True)
+
+    _set_mlx_nccl_env(monkeypatch, rank = "0")
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(
+        chatmod,
+        "connect_studio_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server disabled")),
+    )
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
+
+    assert result.exit_code == 1
+    assert "generation failed" in result.output
+    assert closed == [True]
 
 
 def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):

@@ -12,6 +12,7 @@ from unsloth_cli._inference import (
     load_chat_backend,
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
+    raise_on_streamed_error,
     stream_to_stdout,
 )
 
@@ -110,10 +111,23 @@ def inference(
             repetition_penalty = repetition_penalty,
             enable_thinking = think,
         )
+        if is_mlx_distributed:
+            stream = raise_on_streamed_error(stream)
         if rank == 0:
             typer.echo("Assistant:")
-            stream_to_stdout(stream, show_thinking = think)
+            try:
+                stream_to_stdout(stream, show_thinking = think)
+            except RuntimeError as exc:
+                if not is_mlx_distributed:
+                    raise
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(code = 1)
         else:
-            collect_stream(stream, show_thinking = think)
+            try:
+                collect_stream(stream, show_thinking = think)
+            except RuntimeError:
+                if not is_mlx_distributed:
+                    raise
+                raise typer.Exit(code = 1)
     finally:
         chat_backend.close()

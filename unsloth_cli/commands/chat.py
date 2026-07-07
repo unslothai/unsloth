@@ -16,6 +16,7 @@ from unsloth_cli._inference import (
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
     quiet_if_nonzero_mlx_rank,
+    raise_on_streamed_error,
     render_columns,
     resolve_model_config,
     stream_markdown,
@@ -319,7 +320,7 @@ def chat(
 
     def generate(backend = None, use_adapter = None):
         # Reads messages and show_thinking live, so /reset and /think apply.
-        return (backend or chat_backend).stream(
+        stream = (backend or chat_backend).stream(
             messages,
             system_prompt = system_prompt,
             temperature = temperature,
@@ -330,6 +331,7 @@ def chat(
             enable_thinking = show_thinking,
             use_adapter = use_adapter,
         )
+        return raise_on_streamed_error(stream) if is_mlx_distributed else stream
 
     if should_print:
         console.print()
@@ -439,6 +441,8 @@ def chat(
                 if should_print:
                     err.print(f"\n(error: {exc})", style = "red", markup = False)
                 messages.pop()
+                if is_mlx_distributed:
+                    raise typer.Exit(code = 1)
                 continue
 
             messages.append(

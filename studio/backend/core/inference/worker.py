@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
+_SHARE_OBJECT_ERROR_SIZE = -1
 
 # studio/backend root, prepended to sys.path so the spawned subprocess can
 # import the utils/core packages.
@@ -557,12 +558,23 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
                     mx.eval(mx.distributed.all_sum(mx.array(0), group = group))
                     shared = None
                 else:
-                    data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                    try:
+                        data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                    except Exception:
+                        mx.eval(
+                            mx.distributed.all_sum(
+                                mx.array(_SHARE_OBJECT_ERROR_SIZE),
+                                group = group,
+                            )
+                        )
+                        raise
                     mx.eval(mx.distributed.all_sum(mx.array(data.size), group = group))
                     mx.eval(mx.distributed.all_sum(data, group = group))
                     shared = obj
             else:
                 size = int(mx.distributed.all_sum(mx.array(0), group = group).item())
+                if size == _SHARE_OBJECT_ERROR_SIZE:
+                    raise RuntimeError("Failed to share distributed object")
                 if size == 0:
                     shared = None
                 else:

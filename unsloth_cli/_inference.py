@@ -16,6 +16,7 @@ import typer
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
+_STREAMED_ERROR_PREFIX = "Error: "
 
 # Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
@@ -229,6 +230,13 @@ def collect_stream(stream, show_thinking: bool) -> str:
         if isinstance(chunk, str):
             raw = chunk
     return visible_text(raw, show_thinking)
+
+
+def raise_on_streamed_error(stream):
+    for chunk in stream:
+        if isinstance(chunk, str) and chunk.startswith(_STREAMED_ERROR_PREFIX):
+            raise RuntimeError(chunk[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error")
+        yield chunk
 
 
 def render_columns(

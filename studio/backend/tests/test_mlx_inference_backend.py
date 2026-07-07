@@ -278,6 +278,38 @@ def test_worker_share_object_receives_distributed_payload(monkeypatch):
     assert response["object"] == shared_obj
 
 
+def test_worker_share_object_oversize_notifies_peers(monkeypatch):
+    from core.inference import worker
+
+    calls = []
+
+    mlx_pkg = types.ModuleType("mlx")
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.array = lambda value, **_kwargs: SimpleNamespace(item = lambda: value)
+    mlx_core.eval = lambda value: value
+    mlx_core.distributed = SimpleNamespace(
+        all_sum = lambda value, group = None: calls.append(value.item()) or value
+    )
+    mlx_pkg.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    monkeypatch.setattr(worker, "_SHARE_OBJECT_MAX_BYTES", 8)
+
+    responses = []
+    worker._handle_share_object(
+        SimpleNamespace(
+            _distributed_group = object(),
+            _distributed_rank = 0,
+            _distributed_world_size = 2,
+        ),
+        {"type": "share_object", "request_id": "rid", "object": {"text": "too long"}},
+        SimpleNamespace(put = responses.append),
+    )
+
+    assert calls == [worker._SHARE_OBJECT_ERROR_SIZE]
+    assert responses[0]["type"] == "share_error"
+
+
 # Regression: generate_chat_response must accept the four template kwargs
 # (tools / enable_thinking / reasoning_effort / preserve_thinking) so the route
 # layer can forward UI toggles. The old signature raised
