@@ -35,7 +35,13 @@ from core.inference.diffusion_families import (
 # set overrides this in its own defaults; kept here so DiffusionLoraConfig has a sane fallback.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")
 
-# diffusers' SchedulerType names (diffusers.optimization.get_scheduler).
+# diffusers' SchedulerType names (diffusers.optimization.get_scheduler). piecewise_constant is
+# intentionally excluded: it is the only scheduler that needs a `step_rules` string, which the
+# trainers never pass (get_scheduler is called with only warmup/training steps, and there is no
+# config field for it). Accepting it would pass normalized(), free the resident GPU workloads,
+# then crash in the trainer subprocess (get_piecewise_constant_schedule does step_rules.split(",")
+# on None) -- the exact evict-then-fail the up-front validation exists to prevent. The remaining
+# six all run with only warmup/training steps.
 _LR_SCHEDULERS: frozenset[str] = frozenset(
     {
         "linear",
@@ -44,7 +50,6 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
         "polynomial",
         "constant",
         "constant_with_warmup",
-        "piecewise_constant",
     }
 )
 

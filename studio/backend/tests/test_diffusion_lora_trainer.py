@@ -114,6 +114,32 @@ def test_config_normalized_validation(kw):
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw).normalized()
 
 
+def test_normalized_rejects_piecewise_constant():
+    # piecewise_constant needs a step_rules string the trainers never supply, so get_scheduler()
+    # would crash in the trainer subprocess AFTER the resident GPU workloads are freed. It must be
+    # rejected up front (a clean ValueError -> 400), not accepted like the other schedulers.
+    with pytest.raises(ValueError, match = "lr_scheduler"):
+        DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "piecewise_constant"
+        ).normalized()
+
+
+def test_normalized_accepts_supported_schedulers():
+    # Every scheduler in the allow-list runs with only warmup/training steps (no extra required arg).
+    for sched in (
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ):
+        cfg = DiffusionLoraConfig(
+            base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = sched
+        ).normalized()
+        assert cfg.lr_scheduler == sched
+
+
 def test_compute_sdxl_add_time_ids():
     assert compute_sdxl_add_time_ids(1024) == (1024, 1024, 0, 0, 1024, 1024)
 
