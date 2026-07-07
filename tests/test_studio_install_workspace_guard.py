@@ -332,7 +332,7 @@ def test_install_ps1_writes_venv_marker_after_uv_venv():
     src = INSTALL_PS1.read_text()
     assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
     venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 2600]
+    tail = src[venv_create : venv_create + 3600]
     assert (
         'WriteAllText($VenvOwnershipMarker, "")' in tail
     ), "install.ps1 must write .unsloth-studio-owned after uv venv create"

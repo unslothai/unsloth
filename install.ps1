@@ -1527,11 +1527,11 @@ exit 0
             )
             if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
             $prevEap = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
+            $ErrorActionPreference = "Stop"
             try {
                 $global:LASTEXITCODE = 0
-                & $PythonExe -c "import sys; print(sys.executable)" 2>$null | Out-Null
-                return $LASTEXITCODE -eq 0
+                $null = & $PythonExe -c "import sys; print(sys.executable)" 2>$null
+                return ($? -and $LASTEXITCODE -eq 0)
             } catch {
                 return $false
             } finally {
@@ -1553,6 +1553,7 @@ exit 0
             $venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvDir }
             if ($venvExit -ne 0) {
                 Write-Host "[ERROR] Failed to rebuild virtual environment (exit code $venvExit)" -ForegroundColor Red
+                Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
                 return (Exit-InstallFailure "Failed to rebuild virtual environment (exit code $venvExit)" $venvExit)
             }
             if (-not (Test-VenvPythonReady $VenvPython)) {
