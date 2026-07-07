@@ -179,3 +179,54 @@ def test_confirm_tool_calls_still_gates_every_tool():
     starts = _starts(events)
     assert starts[0]["awaiting_confirmation"] is True
     assert calls == [("web_search", {"query": "cats"})]
+
+
+# ── scoping predicates used by the route streaming requirement ───────────────
+
+
+def _spec(name):
+    return {"type": "function", "function": {"name": name}}
+
+
+def test_enables_code_execution_tool_predicate():
+    from routes.inference import _enables_code_execution_tool
+
+    assert _enables_code_execution_tool([_spec("python")]) is True
+    assert _enables_code_execution_tool([_spec("terminal")]) is True
+    assert _enables_code_execution_tool([_spec("web_search"), _spec("python")]) is True
+    # A non-code tool list must not trip the streaming requirement.
+    assert _enables_code_execution_tool([_spec("web_search"), _spec("render_html")]) is False
+    assert _enables_code_execution_tool([]) is False
+    assert _enables_code_execution_tool(None) is False
+
+
+def test_payload_may_enable_code_execution_predicate(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
+
+    class _P:
+        def __init__(self, enable_tools = None, enabled_tools = None):
+            self.enable_tools = enable_tools
+            self.enabled_tools = enabled_tools
+
+    # Built-ins off -> never code execution, even if enabled_tools lists python.
+    assert inf._payload_may_enable_code_execution(_P(enable_tools = None)) is False
+    assert (
+        inf._payload_may_enable_code_execution(_P(enable_tools = False, enabled_tools = ["python"]))
+        is False
+    )
+    # Built-ins on, explicit filter without a code tool -> not code execution (the fix).
+    assert (
+        inf._payload_may_enable_code_execution(
+            _P(enable_tools = True, enabled_tools = ["web_search"])
+        )
+        is False
+    )
+    # Built-ins on, code tool in the filter -> code execution.
+    assert (
+        inf._payload_may_enable_code_execution(_P(enable_tools = True, enabled_tools = ["terminal"]))
+        is True
+    )
+    # Built-ins on, no filter -> all built-ins including python/terminal.
+    assert inf._payload_may_enable_code_execution(_P(enable_tools = True)) is True
