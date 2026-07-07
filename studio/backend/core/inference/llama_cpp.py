@@ -8617,8 +8617,7 @@ class LlamaCppBackend:
         def _close_streamed_think() -> bool:
             """Close a live-streamed <think> before a tool call drains, so
             consumers without a reasoning extractor (Anthropic) get a balanced
-            block ahead of tool_start. Returns True when the closed block should
-            be yielded (it grew and output isn't suppressed)."""
+            block. Returns True when the caller should yield the result."""
             nonlocal cumulative_display, in_thinking, _last_emitted
             if not in_thinking:
                 return False
@@ -8905,14 +8904,11 @@ class LlamaCppBackend:
                                     continue
 
                                 # ── Reasoning tokens ──
-                                # Stream reasoning live in BUFFERING and
-                                # STREAMING; stay silent only while DRAINING a
-                                # detected tool call. Reasoning is orthogonal to
-                                # tool detection (which inspects content_buffer
+                                # Stream live except while DRAINING: reasoning is
+                                # orthogonal to tool detection (content_buffer
                                 # only), and the route resets prev_text on
-                                # tool_start, so the live <think> block stays a
-                                # clean monotonic prefix -- matching the no-tool
-                                # generate_chat_completion path.
+                                # tool_start, so the <think> block stays a
+                                # monotonic prefix like the no-tool path.
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
                                     if _reasoning_started_at is None:
@@ -9047,9 +9043,8 @@ class LlamaCppBackend:
 
                                         if _drain_silently:
                                             # The buffered content IS the call; drain it
-                                            # without yielding. A live-streamed <think>
-                                            # prefix is separate from content_buffer, so
-                                            # close it (never the drained call text).
+                                            # without yielding. A live <think> prefix is
+                                            # separate from it -- close that.
                                             detect_state = _S_DRAINING
                                             if _close_streamed_think():
                                                 yield {
@@ -9148,12 +9143,9 @@ class LlamaCppBackend:
                                     ),
                                 }
                         elif reasoning_accum and not has_content_tokens:
-                            # Reasoning-only reply (whole answer in reasoning_content,
-                            # e.g. Qwen3 always-think): show it as the main response,
-                            # not a thinking block -- matching the no-tool path (:8344)
-                            # and the final-answer pass (:9644). The live-streamed
-                            # <think> prefix is closed by the route's reasoning
-                            # extractor on stream end.
+                            # Reasoning-only reply: show it as the main response,
+                            # not a thinking block (mirrors the no-tool path; the
+                            # route's extractor closes the streamed <think>).
                             if _reasoning_started_at is not None and not _reasoning_summary_emitted:
                                 _reasoning_summary_emitted = True
                                 yield _reasoning_summary_event(_reasoning_started_at)
