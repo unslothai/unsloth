@@ -17,11 +17,14 @@ runs a scripted target on a thread.
 
 from __future__ import annotations
 
+import json
 import math
 import multiprocessing as mp
+import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 # Spawn (not fork): a fresh interpreter, matching the LLM training worker, so CUDA/torch
@@ -72,6 +75,60 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
 _METRIC_CAP = 4000
 
 
+# ── persisted run history ──────────────────────────────────────────────────────
+# Every terminal run (completed / stopped / error) is recorded as one JSON file --
+# summary + scrubbed config + the full bounded metric logs -- so the Train tab can show
+# previous runs like the LLM trainer's history. JSON files (not the LLM sqlite tables)
+# keep diffusion runs out of the LLM Runs page, whose resume/inspect actions assume an
+# LLM-shaped run.
+def _runs_dir() -> Path:
+    from utils.paths.storage_roots import studio_root
+
+    d = studio_root() / "runs" / "diffusion"
+    d.mkdir(parents = True, exist_ok = True)
+    return d
+
+
+def list_diffusion_runs(limit: int = 20) -> list[dict]:
+    """Summaries of persisted diffusion runs, newest first. The heavy per-run payload
+    (metric logs, config) stays in the file; fetch it via ``get_diffusion_run``."""
+    try:
+        files = sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+    except Exception:  # noqa: BLE001 -- unreadable dir -> no history
+        return []
+    out: list[dict] = []
+    for p in files[: max(0, int(limit))]:
+        try:
+            rec = json.loads(p.read_text(encoding = "utf-8"))
+        except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
+            continue
+        # A valid-JSON file with the wrong shape (an old or hand-edited record that is not a
+        # dict, or is missing the required string job_id / status) would later blow up the
+        # route's DiffusionTrainingRunSummary(**r); skip it here so one bad record can never
+        # take down the whole Previous runs panel.
+        if not isinstance(rec, dict):
+            continue
+        if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
+            continue
+        rec.pop("metric_history", None)
+        rec.pop("config", None)
+        out.append(rec)
+    return out
+
+
+def get_diffusion_run(job_id: str) -> Optional[dict]:
+    """The full persisted record for one run (summary + config + metric logs)."""
+    # Records are keyed by the uuid4 hex job id; reject anything else so a crafted id
+    # can never traverse out of the runs directory.
+    if not re.fullmatch(r"[0-9a-f]{32}", str(job_id or "")):
+        return None
+    p = _runs_dir() / f"{job_id}.json"
+    try:
+        return json.loads(p.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 -- missing/corrupt record
+        return None
+
+
 def _idle_state() -> dict[str, Any]:
     return {
         "active": False,
@@ -116,8 +173,8 @@ def _append_metric(
     Only records finite, positive-step points (mirrors the LLM trainer, which logs history
     only for step > 0 with a real loss). When the arrays hit ``_METRIC_CAP`` they are
     decimated in place (keep every other point) so appends stay bounded without losing the
-    curve's shape. lr / grad_norm may be None (kept as None so those series can be
-    sparse while staying index-aligned with ``steps``)."""
+    curve's shape. lr / grad_norm may be None (kept as None so those series can be sparse
+    while staying index-aligned with ``steps``)."""
     try:
         istep = int(step)
     except (TypeError, ValueError):
@@ -127,8 +184,9 @@ def _append_metric(
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite (NaN/Inf): skip, keep the curve JSON-safe
         return
-    # lr / grad_norm may be None (sparse series) or non-finite; a non-finite value is
-    # nulled, not dropped, so a bad point never taints the (loss-driven) history.
+    # lr / grad_norm may be None (sparse series) or non-finite; non-finite values are
+    # nulled, not dropped, so a bad point never taints the (loss-driven) history while the
+    # arrays stay index-aligned with steps.
     flr = _finite_or_none(lr)
     fgn = _finite_or_none(grad_norm)
     steps = state["metric_steps"]
@@ -168,6 +226,8 @@ class DiffusionTrainingService:
         self._stop_queue: Any = None
         self._pump: Optional[threading.Thread] = None
         self._state: dict[str, Any] = _idle_state()
+        # The active job's start config, scrubbed of secrets, kept for the run record.
+        self._config: dict[str, Any] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
@@ -230,6 +290,8 @@ class DiffusionTrainingService:
                 started_at = now,
                 updated_at = now,
             )
+            # Keep the config (minus secrets) for the persisted run record.
+            self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
             self._pump = threading.Thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True
             )
@@ -291,11 +353,59 @@ class DiffusionTrainingService:
                                 updated_at = time.time(),
                             )
                     _ = drained
+                    self._persist_run_record()
                     return
                 continue
             self._apply_event(ev, proc = proc)
             if ev.get("type") in _TERMINAL:
+                self._persist_run_record()
                 return
+
+    def _persist_run_record(self) -> None:
+        """Best-effort JSON record of the finished run (summary + scrubbed config + the
+        bounded metric logs) into the studio runs directory. Never fatal: history is a
+        convenience, not part of the training contract."""
+        try:
+            with self._lock:
+                s = dict(self._state)
+                cfg = dict(self._config)
+            if not s.get("job_id") or s.get("status") not in ("completed", "stopped", "error"):
+                return
+            adapter = s.get("output_dir") or cfg.get("output_dir")
+            record = {
+                "job_id": s.get("job_id"),
+                "status": s.get("status"),
+                "message": s.get("message") or "",
+                "family": s.get("family") or cfg.get("model_family"),
+                "base_model": s.get("base_model") or cfg.get("base_model"),
+                "adapter": Path(str(adapter)).name if adapter else None,
+                "instance_prompt": cfg.get("instance_prompt"),
+                "step": s.get("step") or 0,
+                "total_steps": s.get("total_steps") or 0,
+                "loss": s.get("loss"),
+                "avg_loss": s.get("avg_loss"),
+                "learning_rate": s.get("learning_rate"),
+                "grad_norm": s.get("grad_norm"),
+                "samples_per_second": s.get("samples_per_second"),
+                "peak_memory_gb": s.get("peak_memory_gb"),
+                "num_images": s.get("num_images"),
+                "started_at": s.get("started_at"),
+                "ended_at": s.get("updated_at"),
+                "lora_path": s.get("lora_path"),
+                "catalog_path": s.get("catalog_path"),
+                "saved": bool(s.get("lora_path")),
+                "config": cfg,
+                "metric_history": {
+                    "steps": s.get("metric_steps") or [],
+                    "loss": s.get("metric_loss") or [],
+                    "lr": s.get("metric_lr") or [],
+                    "grad_norm": s.get("metric_grad_norm") or [],
+                },
+            }
+            path = _runs_dir() / f"{s['job_id']}.json"
+            path.write_text(json.dumps(record), encoding = "utf-8")
+        except Exception:  # noqa: BLE001 -- persisting history must never break the run
+            pass
 
     def _apply_event(
         self,

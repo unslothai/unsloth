@@ -36,6 +36,7 @@ import gc
 import os
 import random
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -61,6 +62,8 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _restore_perf_flags,
     discover_image_caption_pairs,
     get_trainer,
+    PermutationBatchSampler,
+    resolve_train_steps,
 )
 
 
@@ -331,6 +334,10 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
+        # Resolve num_epochs -> a concrete train_steps now that the dataset size is known, and
+        # rebind cfg so every downstream read (scheduler length, the loop range, progress
+        # total_steps, steps_run) sees the same resolved value.
+        cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
         _emit(on_event, "model_load_started", num_images = len(pairs))
 
         # Honour a stop requested before the (potentially large / slow) base model loads, the
@@ -460,8 +467,14 @@ def run_diffusion_lora_training(
 
         _emit(on_event, "model_load_completed")
 
+        # Permutation-cycle index sampler (shared with the DiT trainer): each dataset image is
+        # visited once per cycle before any repeat, so a short run does not leave part of a
+        # small dataset unseen. Draws from the loop's own rng so the sequence stays
+        # seed-deterministic.
+        index_sampler = PermutationBatchSampler(len(pairs), rng)
+
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            idx = rng.sample(range(len(pairs)), k = min(cfg.train_batch_size, len(pairs)))
+            idx = index_sampler.next_batch(min(cfg.train_batch_size, len(pairs)))
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 
@@ -545,9 +558,9 @@ def run_diffusion_lora_training(
 
             # max_grad_norm <= 0 means "disable clipping" (the Studio payload sends 0.0 for that);
             # passing 0.0 to clip_grad_norm_ would scale every gradient to zero (no learning).
-            grad_norm: Optional[float] = None
+            grad_norm = None
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-                # clip_grad_norm_ returns the PRE-clip total norm (the grad-norm chart signal).
+                # The returned value is the total PRE-clip norm, reported to the UI chart.
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
             optimizer.step()
             lr_sched.step()

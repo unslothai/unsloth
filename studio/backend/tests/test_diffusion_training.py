@@ -66,6 +66,18 @@ class _FakeCtx:
         return _FakeProc(target, kwargs, daemon)
 
 
+@pytest.fixture(autouse = True)
+def _isolated_runs_dir(monkeypatch, tmp_path):
+    """Terminal service events persist a run record; point the runs dir at tmp so tests
+    never write into a real studio home. Yields the dir for the history tests."""
+    import core.training.diffusion_training_service as dts
+
+    d = tmp_path / "runs" / "diffusion"
+    d.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(dts, "_runs_dir", lambda: d)
+    yield d
+
+
 def _happy_target(*, event_queue, stop_queue, config):
     event_queue.put({"type": "model_load_started", "num_images": 3})
     event_queue.put({"type": "model_load_completed"})
@@ -206,12 +218,15 @@ def test_progress_nulls_non_finite_floats_for_strict_json():
             "loss": float("nan"),
             "avg_loss": float("inf"),
             "learning_rate": float("-inf"),
+            "grad_norm": float("inf"),
         }
     )
     snap = svc.status()
     assert snap["loss"] is None
     assert snap["avg_loss"] is None
     assert snap["learning_rate"] is None
+    # The reviewer's exact case: an inf pre-clip grad norm must not reach the status JSON.
+    assert snap["grad_norm"] is None
     # The non-finite point is skipped in the history, so the loss series stays clean.
     assert snap["metric_loss"] == []
     assert snap["metric_steps"] == []
@@ -353,6 +368,106 @@ def test_route_start_forwards_extra_training_knobs(client):
     assert r.status_code == 200, r.text
     assert client._fake.started_with["max_grad_norm"] == 0.5
     assert client._fake.started_with["lora_target_modules"] == ["to_q", "to_v"]
+
+
+def test_route_start_forwards_num_epochs(client):
+    # Epochs mode: the frontend omits train_steps and sends num_epochs; it must reach the
+    # service so the trainer can resolve it against the dataset size.
+    body = {k: v for k, v in _BODY.items() if k != "train_steps"}
+    r = client.post("/api/train/diffusion/start", json = {**body, "num_epochs": 8})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["num_epochs"] == 8
+
+
+def test_request_model_num_epochs_bounds():
+    # The request schema mirrors DiffusionLoraConfig's 0..1000 num_epochs range.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
+    assert DiffusionTrainingStartRequest(**base).num_epochs == 0  # default = use train_steps
+    assert DiffusionTrainingStartRequest(**base, num_epochs = 1000).num_epochs == 1000
+    for bad in (-1, 1001):
+        with pytest.raises(ValidationError):
+            DiffusionTrainingStartRequest(**base, num_epochs = bad)
+
+
+def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
+    # The generic Studio epoch-mode payload sends max_steps: 0 as the "use epochs" sentinel.
+    # The max_steps -> train_steps alias would copy that 0 and normalized() would reject
+    # train_steps < 1 before epochs are resolved; _config_from_dict must drop the falsy
+    # value so the default train_steps stands in until resolve_train_steps applies num_epochs.
+    from core.training.diffusion_train_common import DiffusionLoraConfig, _config_from_dict
+
+    cfg = _config_from_dict(
+        {
+            "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "data_dir": "d",
+            "output_dir": "o",
+            "max_steps": 0,
+            "num_epochs": 2,
+        }
+    )
+    # 0 was dropped: the dataclass default train_steps stands in and num_epochs carries over.
+    assert cfg.train_steps == DiffusionLoraConfig.train_steps
+    assert cfg.num_epochs == 2
+    # normalized() no longer raises on the epoch-mode payload.
+    norm = cfg.normalized()
+    assert norm.num_epochs == 2
+
+    # An explicit non-zero max_steps in epochs mode is still honored (only the 0 sentinel is
+    # dropped), and a plain steps payload (no num_epochs) keeps max_steps: 0 -> train_steps 0
+    # so normalized() surfaces the invalid value as before.
+    cfg_explicit = _config_from_dict(
+        {
+            "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "data_dir": "d",
+            "output_dir": "o",
+            "max_steps": 25,
+            "num_epochs": 2,
+        }
+    )
+    assert cfg_explicit.train_steps == 25
+
+
+def test_permutation_sampler_covers_dataset_once_per_cycle():
+    # Every index must appear exactly once per cycle before any repeat (epoch-style pass),
+    # so a short run over a small dataset never leaves images unseen the way the old
+    # with-replacement draw did. Consecutive cycles must be reshuffled (differ).
+    import random
+
+    from core.training.diffusion_train_common import PermutationBatchSampler
+
+    n = 100
+    sampler = PermutationBatchSampler(n, random.Random(0))
+
+    # Draw exactly one cycle in batches of 3 (n not divisible by the batch, so a batch spans
+    # the cycle boundary); the first n indices must be a permutation of range(n).
+    drawn: list[int] = []
+    while len(drawn) < n:
+        drawn.extend(sampler.next_batch(3))
+    first_cycle = drawn[:n]
+    assert sorted(first_cycle) == list(range(n))  # each index once, none missing
+
+    # The next full cycle is also a permutation, and it is reshuffled (order differs).
+    fresh = PermutationBatchSampler(n, random.Random(0))
+    cycle_a = fresh.next_batch(n)
+    cycle_b = fresh.next_batch(n)
+    assert sorted(cycle_a) == list(range(n))
+    assert sorted(cycle_b) == list(range(n))
+    assert cycle_a != cycle_b  # cycles are reshuffled, not repeated in the same order
+
+    # A seed replays the exact index stream (determinism for reproducible runs).
+    replay = PermutationBatchSampler(n, random.Random(0))
+    assert replay.next_batch(n) == cycle_a
+
+    # A batch larger than the dataset refills across cycles so it never shrinks (batch shape
+    # preserved), even though it must then repeat indices within the batch.
+    big = PermutationBatchSampler(4, random.Random(1))
+    batch = big.next_batch(10)
+    assert len(batch) == 10
+    assert set(batch) == {0, 1, 2, 3}
 
 
 def test_route_start_accepts_zero_max_grad_norm(client):
@@ -780,3 +895,164 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert client._fake.started_with["base_model"] == "black-forest-labs/FLUX.1-dev"
+
+
+# ── persisted run history ──────────────────────────────────────────────────────
+def test_run_record_persisted_on_complete(_isolated_runs_dir):
+    # A completed run writes one JSON record: summary + scrubbed config + metric logs.
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    job_id = svc.start({**_CFG, "model_family": "z-image", "hf_token": "SECRET"})
+    _wait_status(svc, "completed")
+    # The pump persists right after the terminal event; give the thread a beat.
+    time.sleep(0.1)
+
+    import json
+
+    rec = json.loads((_isolated_runs_dir / f"{job_id}.json").read_text())
+    assert rec["job_id"] == job_id
+    assert rec["status"] == "completed"
+    assert rec["saved"] is True
+    assert rec["adapter"] == "out"  # basename of /tmp/out
+    assert rec["family"] == "z-image"  # falls back to the config's model_family
+    assert rec["step"] == 2 and rec["total_steps"] == 2
+    assert rec["avg_loss"] == 0.45
+    assert rec["metric_history"]["steps"] == [1, 2]
+    assert rec["metric_history"]["loss"] == [0.5, 0.4]
+    # Secrets never land on disk.
+    assert "hf_token" not in rec["config"]
+    assert rec["config"]["model_family"] == "z-image"
+
+
+def test_run_record_no_save_stop_marks_unsaved(_isolated_runs_dir):
+    # A cancel (stop without save) persists too, flagged as not saved.
+    def _cancel_target(*, event_queue, stop_queue, config):
+        event_queue.put({"type": "model_load_completed"})
+        stop_queue.get(timeout = 5.0)
+        event_queue.put(
+            {"type": "complete", "output_dir": None, "lora_path": None, "stopped": True}
+        )
+
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _cancel_target)
+    job_id = svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    svc.stop(save = False)
+    _wait_status(svc, "stopped")
+    time.sleep(0.1)
+
+    import json
+
+    rec = json.loads((_isolated_runs_dir / f"{job_id}.json").read_text())
+    assert rec["status"] == "stopped"
+    assert rec["saved"] is False and rec["lora_path"] is None
+
+
+def test_runs_endpoints_list_and_detail(client, _isolated_runs_dir):
+    # Seed two records directly (the endpoints read the persisted files, not the service).
+    import json
+    import os
+
+    a = {
+        "job_id": "a" * 32,
+        "status": "completed",
+        "adapter": "first",
+        "saved": True,
+        "step": 10,
+        "total_steps": 10,
+        "avg_loss": 0.4,
+        "config": {"train_steps": 10},
+        "metric_history": {"steps": [1], "loss": [0.4], "lr": [1e-4], "grad_norm": [0.2]},
+    }
+    b = {
+        "job_id": "b" * 32,
+        "status": "stopped",
+        "adapter": "second",
+        "saved": False,
+        "step": 3,
+        "total_steps": 10,
+        "avg_loss": 0.6,
+        "config": {"train_steps": 10},
+        "metric_history": {"steps": [1], "loss": [0.6], "lr": [1e-4], "grad_norm": [0.3]},
+    }
+    pa = _isolated_runs_dir / f"{a['job_id']}.json"
+    pb = _isolated_runs_dir / f"{b['job_id']}.json"
+    pa.write_text(json.dumps(a))
+    pb.write_text(json.dumps(b))
+    os.utime(pa, (1000, 1000))
+    os.utime(pb, (2000, 2000))  # b is newer -> listed first
+
+    r = client.get("/api/train/diffusion/runs")
+    assert r.status_code == 200, r.text
+    runs = r.json()["runs"]
+    assert [x["adapter"] for x in runs] == ["second", "first"]
+    # Summaries stay light: no config / metric logs.
+    assert "config" not in runs[0] and "metric_history" not in runs[0]
+
+    r = client.get(f"/api/train/diffusion/runs/{a['job_id']}")
+    assert r.status_code == 200, r.text
+    detail = r.json()
+    assert detail["adapter"] == "first"
+    assert detail["metric_history"]["grad_norm"] == [0.2]
+    assert detail["config"] == {"train_steps": 10}
+
+    # Unknown and malformed ids 404 (malformed also covers path traversal).
+    assert client.get(f"/api/train/diffusion/runs/{'c' * 32}").status_code == 404
+    assert client.get("/api/train/diffusion/runs/not-a-job-id").status_code == 404
+
+
+def test_list_diffusion_runs_skips_wrong_shape_records(_isolated_runs_dir):
+    # A valid-JSON file with the wrong shape (non-dict, or missing the required string
+    # job_id / status) must be skipped by list_diffusion_runs so it never reaches the route's
+    # DiffusionTrainingRunSummary(**r) and takes down the whole Previous runs panel.
+    import json
+
+    from core.training.diffusion_training_service import list_diffusion_runs
+
+    good = {"job_id": "a" * 32, "status": "completed", "adapter": "good", "saved": True}
+    (_isolated_runs_dir / "good.json").write_text(json.dumps(good))
+    # A JSON list (not a dict).
+    (_isolated_runs_dir / "not_a_dict.json").write_text(json.dumps([1, 2, 3]))
+    # A dict missing the required job_id / status.
+    (_isolated_runs_dir / "no_ids.json").write_text(json.dumps({"adapter": "orphan"}))
+    # A dict whose job_id / status are the wrong type.
+    (_isolated_runs_dir / "bad_types.json").write_text(
+        json.dumps({"job_id": 123, "status": None, "adapter": "typed"})
+    )
+
+    runs = list_diffusion_runs()
+    adapters = [r.get("adapter") for r in runs]
+    assert adapters == ["good"]  # only the well-shaped record survives
+
+
+def test_runs_route_tolerates_bad_field_record(client, _isolated_runs_dir):
+    # A record that passes the service's shape check but has a wrong-typed field (a
+    # non-numeric avg_loss) would raise pydantic ValidationError in the route; the route must
+    # catch it per record so one bad file never breaks the panel and the good runs still list.
+    import json
+
+    good = {"job_id": "a" * 32, "status": "completed", "adapter": "good", "saved": True}
+    bad = {
+        "job_id": "b" * 32,
+        "status": "completed",
+        "adapter": "bad",
+        "avg_loss": "not-a-number",  # str where the summary expects Optional[float]
+    }
+    (_isolated_runs_dir / f"{good['job_id']}.json").write_text(json.dumps(good))
+    (_isolated_runs_dir / f"{bad['job_id']}.json").write_text(json.dumps(bad))
+
+    r = client.get("/api/train/diffusion/runs")
+    assert r.status_code == 200, r.text
+    adapters = [x["adapter"] for x in r.json()["runs"]]
+    assert adapters == ["good"]  # the bad-field record was skipped, the good one remained
+
+
+def test_run_detail_route_non_object_record_is_404(client, _isolated_runs_dir):
+    # A valid-JSON but non-object record (a truncated / hand-edited [] file named with a real
+    # job id) makes DiffusionTrainingRunDetail(**rec) raise TypeError, not ValidationError; the
+    # detail route must shape-check like the list path and 404 instead of 500.
+    import json
+
+    job_id = "a" * 32
+    (_isolated_runs_dir / f"{job_id}.json").write_text(json.dumps([]))
+
+    r = client.get(f"/api/train/diffusion/runs/{job_id}")
+    assert r.status_code == 404, r.text

@@ -16,6 +16,7 @@ actual training loop; this module only routes a request to the right one.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
@@ -366,6 +367,9 @@ class DiffusionLoraConfig:
     instance_prompt: Optional[str] = None
     resolution: int = 1024
     train_steps: int = 500
+    # 0 = disabled (train for train_steps). > 0 overrides train_steps with a run length of
+    # num_epochs full passes over the dataset, in optimizer steps (see resolve_train_steps).
+    num_epochs: int = 0
     learning_rate: float = 1e-4
     train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
@@ -419,6 +423,8 @@ class DiffusionLoraConfig:
         resolved_family = resolve_trainable_family(self.base_model, self.model_family)
         if self.train_steps < 1:
             raise ValueError("train_steps must be >= 1")
+        if not 0 <= int(self.num_epochs) <= 1000:
+            raise ValueError("num_epochs must be between 0 and 1000 (0 uses train_steps)")
         if self.train_batch_size < 1:
             raise ValueError("train_batch_size must be >= 1")
         if self.gradient_accumulation_steps < 1:
@@ -494,11 +500,65 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
             compile_transformer = compile_transformer,
             base_precision = base_precision,
             resolved_family = resolved_family,
         )
+
+
+def resolve_train_steps(cfg: "DiffusionLoraConfig", n_images: int) -> int:
+    """The effective optimizer-step count for a run. When ``cfg.num_epochs`` is set (> 0),
+    one epoch is one full pass over the dataset in optimizer steps -- ceil(N / (batch x
+    grad_accum)) steps -- so the run is ``num_epochs`` such passes, capped at 100000. With
+    ``num_epochs == 0`` the explicit ``cfg.train_steps`` is used unchanged."""
+    if cfg.num_epochs > 0:
+        per_step = max(1, cfg.train_batch_size * cfg.gradient_accumulation_steps)
+        steps_per_epoch = max(1, math.ceil(n_images / per_step))
+        return min(100000, cfg.num_epochs * steps_per_epoch)
+    return cfg.train_steps
+
+
+class PermutationBatchSampler:
+    """Yields batch indices as consecutive slices of a reshuffled permutation of
+    ``range(n)``, so every index is visited exactly once per cycle before any repeats --
+    an epoch-style full pass instead of the with-replacement draw that leaves part of a
+    small dataset unseen at low step counts (num_epochs converts to a step budget, but the
+    per-batch index draw is what decides coverage). When a cycle is exhausted the order is
+    reshuffled from the run's own ``rng`` so the index stream stays seed-deterministic and
+    each cycle differs.
+
+    Both trainers share this so the SDXL ``_next_batch`` path and the DiT per-sample draw
+    select indices the same way. Only the index selection changes (with-replacement ->
+    permutation cycles); step count and batch shapes are unchanged.
+    """
+
+    def __init__(self, n: int, rng: random.Random) -> None:
+        if n <= 0:
+            raise ValueError("PermutationBatchSampler needs at least one item")
+        self._n = n
+        self._rng = rng
+        self._order: list[int] = []
+        self._pos = 0
+
+    def _reshuffle(self) -> None:
+        self._order = list(range(self._n))
+        self._rng.shuffle(self._order)
+        self._pos = 0
+
+    def next_batch(self, k: int) -> list[int]:
+        # k may exceed n (batch larger than the dataset): the permutation is refilled across
+        # as many cycles as needed so the caller always gets exactly k indices and the batch
+        # never shrinks, matching the old sampler's fixed batch shape.
+        out: list[int] = []
+        while len(out) < k:
+            if self._pos >= len(self._order):
+                self._reshuffle()
+            take = min(k - len(out), len(self._order) - self._pos)
+            out.extend(self._order[self._pos : self._pos + take])
+            self._pos += take
+        return out
 
 
 def discover_image_caption_pairs(
@@ -783,6 +843,10 @@ def _write_lora_sidecar(sidecar_path: Path, cfg: DiffusionLoraConfig) -> None:
 _CONFIG_ALIASES = {
     "model_name": "base_model",
     "max_steps": "train_steps",
+    # The generic payload's num_epochs already matches the diffusion field name, but list it
+    # so the epochs override is threaded through the shared-payload path as explicitly as
+    # max_steps -> train_steps is.
+    "num_epochs": "num_epochs",
     "batch_size": "train_batch_size",
     "lora_r": "lora_rank",
     "lr_scheduler_type": "lr_scheduler",
@@ -821,6 +885,17 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     for k, v in config.items():
         if k in valid:
             kwargs[k] = v
+    # Epoch-mode payloads from the generic Studio UI carry max_steps: 0 as the "use epochs"
+    # sentinel, which the max_steps -> train_steps alias copies as train_steps: 0. Since
+    # normalized() rejects train_steps < 1 before resolve_train_steps() can apply num_epochs,
+    # drop a falsy/0 train_steps when num_epochs > 0 so the dataclass default stands in until
+    # epoch resolution replaces it.
+    try:
+        _num_epochs = int(kwargs.get("num_epochs") or 0)
+    except (TypeError, ValueError):
+        _num_epochs = 0
+    if _num_epochs > 0 and not kwargs.get("train_steps"):
+        kwargs.pop("train_steps", None)
     if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
     if "gradient_checkpointing" in kwargs:

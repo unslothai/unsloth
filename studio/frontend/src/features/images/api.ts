@@ -270,6 +270,9 @@ export interface DiffusionTrainingStartRequest {
   instance_prompt?: string | null;
   resolution?: number;
   train_steps?: number;
+  // 0 or omitted uses train_steps. > 0 overrides train_steps with that many epochs
+  // (full passes over the dataset, in optimizer steps).
+  num_epochs?: number;
   learning_rate?: number;
   train_batch_size?: number;
   gradient_accumulation_steps?: number;
@@ -281,6 +284,19 @@ export interface DiffusionTrainingStartRequest {
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
   lr_scheduler?: string;
+  lr_warmup_steps?: number;
+  // DiT-family quantised base precision (nf4 QLoRA by default). Ignored for sdxl, which
+  // uses mixed_precision instead. "auto" lets the backend pick per family.
+  base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "auto";
+  // Whether to torch.compile the transformer (DiT families that support it). "auto" lets
+  // the backend decide; "off"/"on" force it.
+  compile_transformer?: "off" | "on" | "auto";
+  // Precompute + cache the VAE latents before the loop (skips re-encoding each epoch).
+  cache_latents?: boolean;
+  // How many augmentation variants to cache per image when caching latents (1..16).
+  cache_variants?: number;
+  // Allow TF32 matmuls on Ampere+ for a throughput win at negligible quality cost.
+  enable_tf32?: boolean;
   // Forwarded to the pipeline's from_pretrained for a gated/private base repo (e.g. FLUX).
   hf_token?: string | null;
 }
@@ -291,7 +307,8 @@ export interface DiffusionMetricHistory {
   steps: number[];
   loss: number[];
   lr: Array<number | null>;
-  grad_norm: Array<number | null>;
+  // Total pre-clip gradient norm per step (the training health signal the charts show).
+  grad_norm?: Array<number | null>;
 }
 
 // A snapshot of the current diffusion training job (GET /api/train/diffusion/status).
@@ -305,6 +322,7 @@ export interface DiffusionTrainingStatus {
   loss: number | null;
   avg_loss: number | null;
   learning_rate: number | null;
+  grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
   output_dir: string | null;
@@ -335,8 +353,57 @@ export async function startDiffusionTraining(
   );
 }
 
-export async function stopDiffusionTraining(): Promise<{ status: string }> {
-  return parseJson(await authFetch("/api/train/diffusion/stop", { method: "POST" }));
+// Request a stop of the running job. `save` (default true) writes the current adapter
+// before halting ("Stop and save"); false discards it ("Stop").
+export async function stopDiffusionTraining(save = true): Promise<{ status: string }> {
+  return parseJson(
+    await authFetch("/api/train/diffusion/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ save }),
+    }),
+  );
+}
+
+// One persisted (terminal) diffusion training run, as listed in the previous-runs
+// history. The detail adds the scrubbed start config + the full metric logs.
+export interface DiffusionTrainingRunSummary {
+  job_id: string;
+  status: string;
+  message?: string;
+  adapter?: string | null;
+  family?: string | null;
+  base_model?: string | null;
+  step: number;
+  total_steps: number;
+  avg_loss?: number | null;
+  saved: boolean;
+  catalog_path?: string | null;
+  instance_prompt?: string | null;
+  started_at?: number | null;
+  ended_at?: number | null;
+}
+
+export interface DiffusionTrainingRunDetail extends DiffusionTrainingRunSummary {
+  loss?: number | null;
+  samples_per_second?: number | null;
+  peak_memory_gb?: number | null;
+  num_images?: number | null;
+  lora_path?: string | null;
+  config?: Record<string, unknown> | null;
+  metric_history?: DiffusionMetricHistory | null;
+}
+
+export async function listDiffusionTrainingRuns(
+  limit = 20,
+): Promise<{ runs: DiffusionTrainingRunSummary[] }> {
+  return parseJson(await authFetch(`/api/train/diffusion/runs?limit=${limit}`));
+}
+
+export async function getDiffusionTrainingRun(
+  jobId: string,
+): Promise<DiffusionTrainingRunDetail> {
+  return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
 }
 
 export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
@@ -369,6 +436,13 @@ export interface DiffusionTrainableFamily {
   } | null;
   vram_note?: string | null;
   gated?: boolean | null;
+  // Quantised base precisions this family can train in (subset of
+  // ["nf4","bf16","int8","fp8","auto"]); empty for sdxl, which uses mixed_precision.
+  precision_modes?: string[];
+  // The precision the backend recommends for this family (marked "(recommended)").
+  recommended_precision?: string;
+  // Whether the family's transformer can be torch.compile'd (gates the Speed > Compile row).
+  supports_compile?: boolean;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.

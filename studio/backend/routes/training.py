@@ -70,6 +70,9 @@ from models.training import (
     DiffusionMetricHistory,
     DiffusionTrainableFamily,
     DiffusionTrainingInfoResponse,
+    DiffusionTrainingRunDetail,
+    DiffusionTrainingRunsResponse,
+    DiffusionTrainingRunSummary,
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
@@ -77,6 +80,7 @@ from models.training import (
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ValidationError
 
 
 class TrainingStopRequest(PydanticBaseModel):
@@ -1333,6 +1337,49 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
         grad_norm = snap.pop("metric_grad_norm", []),
     )
     return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
+
+
+@router.get("/diffusion/runs", response_model = DiffusionTrainingRunsResponse)
+async def list_diffusion_training_runs(
+    limit: int = 20, current_subject: str = Depends(get_current_subject)
+):
+    """Previous diffusion training runs (terminal), newest first, from the persisted
+    per-run records. Summaries only; fetch one run for its config + metric logs."""
+    from core.training.diffusion_training_service import list_diffusion_runs
+
+    summaries: list[DiffusionTrainingRunSummary] = []
+    for r in list_diffusion_runs(limit = limit):
+        # list_diffusion_runs already skips non-dict / missing-id records, but a record with
+        # a wrong-typed field (e.g. a non-numeric avg_loss) would still raise here; catch it
+        # per record so one bad file never breaks the whole Previous runs panel.
+        try:
+            summaries.append(DiffusionTrainingRunSummary(**r))
+        except ValidationError:
+            continue
+    return DiffusionTrainingRunsResponse(runs = summaries)
+
+
+@router.get("/diffusion/runs/{job_id}", response_model = DiffusionTrainingRunDetail)
+async def get_diffusion_training_run(
+    job_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """One persisted diffusion run's full record: summary + scrubbed start config + the
+    step/loss/grad-norm logs (for re-plotting a past run's charts)."""
+    from core.training.diffusion_training_service import get_diffusion_run
+
+    rec = get_diffusion_run(job_id)
+    # A valid-JSON file that is not an object (a truncated / hand-edited [] record) would make
+    # DiffusionTrainingRunDetail(**rec) raise TypeError -- not the ValidationError caught below
+    # -- and 500 the endpoint. Treat any non-dict record as absent, matching the list route's
+    # shape check.
+    if not isinstance(rec, dict):
+        raise HTTPException(status_code = 404, detail = "No such training run.")
+    try:
+        return DiffusionTrainingRunDetail(**rec)
+    except ValidationError:
+        # A malformed on-disk record (hand-edited / older shape) should read as absent
+        # rather than 500 the endpoint, mirroring how the list route skips bad records.
+        raise HTTPException(status_code = 404, detail = "No such training run.")
 
 
 # Extensions accepted into an image-training dataset folder: images the trainer reads,

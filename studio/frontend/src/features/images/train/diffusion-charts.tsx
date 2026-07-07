@@ -4,14 +4,13 @@
 import { type ReactElement, useMemo } from "react";
 
 import type { TrainingSeriesPoint } from "@/features/training";
-// The loss + LR cards are pure presentational (props only), so reuse them directly. We do
-// NOT reuse ChartsSection/ChartsContent: those also render Grad Norm and an Eval Loss card,
-// which are meaningless for diffusion LoRA training and showed as an empty card and an
-// "Evaluation not configured" placeholder. This is a diffusion-only two-card layout.
+// The loss + grad-norm cards are pure presentational (props only), so reuse them directly.
+// We do NOT reuse ChartsSection/ChartsContent: those also render an LR and an Eval Loss
+// card, which add little for diffusion LoRA training (the LR curve is the deterministic
+// schedule the user just picked; eval is not configured). This is a diffusion-only
+// two-card layout: Training Loss + Grad Norm (the actual training health signal).
 // eslint-disable-next-line no-restricted-imports
 import { GradNormChartCard } from "@/features/studio/sections/charts/grad-norm-chart-card";
-// eslint-disable-next-line no-restricted-imports
-import { LearningRateChartCard } from "@/features/studio/sections/charts/learning-rate-chart-card";
 // eslint-disable-next-line no-restricted-imports
 import { TrainingLossChartCard } from "@/features/studio/sections/charts/training-loss-chart-card";
 // eslint-disable-next-line no-restricted-imports
@@ -45,18 +44,17 @@ function fullStepDomain(steps: number[]): [number, number] {
   return [min, max];
 }
 
-// A diffusion-only metrics view: Training Loss and Learning Rate side by side, plus Grad
-// Norm (the pre-clip total gradient norm; spikes flag instability that raw loss noise
-// hides), with a note under the loss card explaining why per-step loss looks noisy.
+// A diffusion-only metrics view: Training Loss and Grad Norm, side by side, with a note
+// under the loss card explaining why per-step loss looks noisy. Always renders both cards
+// (even with no data) so the parent can decide when to mount them; we never early-return
+// null here.
 export function DiffusionCharts({
   lossHistory,
-  lrHistory,
-  gradNormHistory = [],
+  gradNormHistory,
 }: {
   lossHistory: TrainingSeriesPoint[];
-  lrHistory: TrainingSeriesPoint[];
-  gradNormHistory?: TrainingSeriesPoint[];
-}): ReactElement | null {
+  gradNormHistory: TrainingSeriesPoint[];
+}): ReactElement {
   const lossItems = useMemo(() => toLossItems(lossHistory), [lossHistory]);
   const smoothed = useMemo(
     () => (lossItems.length > 0 ? ema(lossItems, SMOOTHING) : []),
@@ -76,18 +74,7 @@ export function DiffusionCharts({
     [reducedLoss],
   );
 
-  const lrData = useMemo(
-    () =>
-      compressSeries(
-        lrHistory
-          .filter((p) => Number.isFinite(p.value))
-          .map((p) => ({ step: p.step, lr: p.value, displayLr: p.value })),
-        MAX_RENDER_POINTS,
-      ),
-    [lrHistory],
-  );
-
-  const gradNormData = useMemo(
+  const gradData = useMemo(
     () =>
       compressSeries(
         gradNormHistory
@@ -101,10 +88,9 @@ export function DiffusionCharts({
   const steps = useMemo(() => {
     const set = new Set<number>();
     for (const p of lossData) set.add(p.step);
-    for (const p of lrData) set.add(p.step);
-    for (const p of gradNormData) set.add(p.step);
+    for (const p of gradData) set.add(p.step);
     return Array.from(set).sort((a, b) => a - b);
-  }, [lossData, lrData, gradNormData]);
+  }, [lossData, gradData]);
 
   const stepDomain = useMemo(() => fullStepDomain(steps), [steps]);
   const xAxisTicks = useMemo(
@@ -116,21 +102,14 @@ export function DiffusionCharts({
     () => buildYDomain(lossData.flatMap((p) => [p.displayLoss, p.displaySmoothed])),
     [lossData],
   );
-  const lrDomain = useMemo(
-    () => buildYDomain(lrData.map((p) => p.displayLr)),
-    [lrData],
+  const gradDomain = useMemo(
+    () => buildYDomain(gradData.map((p) => p.displayGradNorm)),
+    [gradData],
   );
-  const gradNormDomain = useMemo(
-    () => buildYDomain(gradNormData.map((p) => p.displayGradNorm)),
-    [gradNormData],
-  );
-
   const avgRaw =
     lossItems.length > 0
       ? +(lossItems.reduce((s, p) => s + p.loss, 0) / lossItems.length).toFixed(4)
       : 0;
-
-  if (lossItems.length === 0 && lrData.length === 0) return null;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -152,22 +131,13 @@ export function DiffusionCharts({
           the smoothed line for the trend, not the raw jitter.
         </p>
       </div>
-      <LearningRateChartCard
-        data={lrData}
-        domain={lrDomain}
+      <GradNormChartCard
+        data={gradData}
+        domain={gradDomain}
         visibleStepDomain={stepDomain}
         xAxisTicks={xAxisTicks}
         scale="linear"
       />
-      {gradNormData.length > 0 && (
-        <GradNormChartCard
-          data={gradNormData}
-          domain={gradNormDomain}
-          visibleStepDomain={stepDomain}
-          xAxisTicks={xAxisTicks}
-          scale="linear"
-        />
-      )}
     </div>
   );
 }

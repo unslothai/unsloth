@@ -691,6 +691,15 @@ class DiffusionTrainingStartRequest(BaseModel):
         1024, ge = 64, le = 2048, description = "Square training resolution (multiple of 8)"
     )
     train_steps: int = Field(500, ge = 1, le = 100000)
+    num_epochs: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = (
+            "0 = use train_steps; > 0 overrides train_steps with epochs x "
+            "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
+        ),
+    )
     learning_rate: float = Field(1e-4, gt = 0)
     train_batch_size: int = Field(1, ge = 1, le = 64)
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
@@ -779,8 +788,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     loss: Optional[float] = None
     avg_loss: Optional[float] = None
     learning_rate: Optional[float] = None
-    # Pre-clip gradient norm from the trainer's progress events (None when clipping is
-    # disabled), feeding the grad-norm chart.
+    # Total pre-clip gradient norm from the last optimizer step (the training health
+    # signal the UI charts alongside the loss).
     grad_norm: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
@@ -798,6 +807,43 @@ class DiffusionTrainingStatusResponse(BaseModel):
     updated_at: Optional[float] = None
     # Bounded step/loss/lr history for the live loss + LR charts.
     metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunSummary(BaseModel):
+    """One persisted diffusion training run (terminal), as listed in the Train tab's
+    previous-runs history. The heavy payload (config + metric logs) lives in the detail."""
+
+    job_id: str
+    status: str
+    message: str = ""
+    adapter: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    step: int = 0
+    total_steps: int = 0
+    avg_loss: Optional[float] = None
+    # Whether this run left an adapter on disk (full completion or stop-and-save).
+    saved: bool = False
+    catalog_path: Optional[str] = None
+    instance_prompt: Optional[str] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+
+class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
+    """The full persisted record: summary + scrubbed start config + metric logs."""
+
+    loss: Optional[float] = None
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
+    num_images: Optional[int] = None
+    lora_path: Optional[str] = None
+    config: Optional[dict] = None
+    metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunsResponse(BaseModel):
+    runs: List[DiffusionTrainingRunSummary] = Field(default_factory = list)
 
 
 class DiffusionDatasetSummary(BaseModel):

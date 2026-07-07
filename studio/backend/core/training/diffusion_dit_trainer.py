@@ -31,7 +31,7 @@ import os
 import random
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -52,7 +52,9 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     has_functional_torchao,
+    PermutationBatchSampler,
     repo_is_prequantized,
+    resolve_train_steps,
 )
 
 # Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks
@@ -1038,6 +1040,10 @@ def run_dit_lora_training(
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
+    # Resolve num_epochs -> a concrete train_steps now that the dataset size is known, and
+    # rebind cfg so every downstream read (scheduler length, the loop range, progress
+    # total_steps, steps_run) sees the same resolved value.
+    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
     _emit(on_event, "model_load_started", num_images = len(pairs))
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
@@ -1199,6 +1205,10 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     transformer.train()
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
+    # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once
+    # per cycle before repeating, so a short run covers the whole dataset instead of the old
+    # with-replacement draw. Uses the loop's own rng to stay seed-deterministic.
+    index_sampler = PermutationBatchSampler(n_images, rng)
     stopped = False
     running_loss = 0.0
     peak_gb = 0.0
@@ -1218,7 +1228,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
-            idxs = [rng.randrange(n_images) for _ in range(batch_size)]
+            idxs = index_sampler.next_batch(batch_size)
             if latent_cache is not None:
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
@@ -1254,10 +1264,10 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             (loss / cfg.gradient_accumulation_steps).backward()
             step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
 
-        grad_norm: Optional[float] = None
+        grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-            # clip_grad_norm_ returns the PRE-clip total norm: the signal the grad-norm
-            # chart wants (spikes stay visible even when clipping flattens the update).
+            # clip_grad_norm_ returns the total PRE-clip norm: the health signal the UI
+            # charts (an exploding norm shows up here even while the clip caps the update).
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
         optimizer.step()
         lr_sched.step()
