@@ -221,7 +221,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
 
 
-def test_buffered_reasoning_answer_emits_backend_summary(monkeypatch):
+def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
     stream = [
         _sse({"reasoning_content": "I am thinking."}),
         _sse({"reasoning_content": " Still thinking."}),
@@ -240,16 +240,168 @@ def test_buffered_reasoning_answer_emits_backend_summary(monkeypatch):
         )
     )
 
+    content_texts = [e["text"] for e in events if e["type"] == "content"]
+    # Reasoning streams live during BUFFERING instead of arriving as one block:
+    # each reasoning delta is emitted immediately, wrapped in <think>.
+    assert content_texts[0] == "<think>I am thinking."
+    assert content_texts[1] == "<think>I am thinking. Still thinking."
+    # The final event closes the block and appends the answer.
+    assert content_texts[-1] == "<think>I am thinking. Still thinking.</think>Final answer."
+
     summary_index = next(
         i for i, event in enumerate(events) if event["type"] == "reasoning_summary"
     )
-    content_index = next(i for i, event in enumerate(events) if event["type"] == "content")
-    assert summary_index < content_index
-    assert events[summary_index]["duration_ms"] == 62000
-    assert (
-        events[content_index]["text"]
-        == "<think>I am thinking. Still thinking.</think>Final answer."
+    final_content_index = max(
+        i for i, event in enumerate(events) if event["type"] == "content"
     )
+    assert summary_index < final_content_index
+    assert events[summary_index]["duration_ms"] == 62000
+
+
+def test_reasoning_streams_incrementally_with_tools(monkeypatch):
+    # Regression (DeepSeek "thinking doesn't stream"): with a tool/pill active the
+    # tool-loop generator must stream reasoning token-by-token like the no-tool
+    # path, not accumulate it and dump one buffered <think> block.
+    stream = [
+        _sse({"reasoning_content": "Step one."}),
+        _sse({"reasoning_content": " Step two."}),
+        _sse({"reasoning_content": " Step three."}),
+        _sse({"content": "Done."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+    _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "think then answer"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    reasoning_stage = [
+        e["text"]
+        for e in events
+        if e["type"] == "content"
+        and e["text"].startswith("<think>")
+        and "</think>" not in e["text"]
+    ]
+    # One live emission per reasoning delta -- not a single dump.
+    assert reasoning_stage == [
+        "<think>Step one.",
+        "<think>Step one. Step two.",
+        "<think>Step one. Step two. Step three.",
+    ]
+    final = [e["text"] for e in events if e["type"] == "content"][-1]
+    assert final == "<think>Step one. Step two. Step three.</think>Done."
+
+
+def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
+    # A reasoning-only turn (whole answer in reasoning_content, no content, no
+    # tool) with a tool active streams the reasoning live, then resolves to the
+    # bare reasoning text -- identical to the no-tool generate_chat_completion
+    # path -- so the non-streaming drain still returns it as `content`, not an
+    # empty answer.
+    stream = [
+        _sse({"reasoning_content": "The capital of France is Paris."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+    _patch_monotonic(monkeypatch, [1.0, 5.0, 5.0])
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "just think"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e["text"] for e in events if e["type"] == "content"]
+    # Reasoning streamed live during BUFFERING (the fix).
+    assert content_texts[0] == "<think>The capital of France is Paris."
+    # Resolves to bare reasoning, matching the no-tool sibling.
+    assert content_texts[-1] == "The capital of France is Paris."
+
+
+def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
+    # Regression: reasoning streamed live during BUFFERING must be closed with
+    # </think> before a structured tool_call drains, so consumers without a
+    # reasoning extractor (Anthropic /v1/messages) never receive an unclosed
+    # <think>. Mirrors the is_match (XML tool signal) path.
+    tool_stream = [
+        _sse({"reasoning_content": "Let me search."}),
+        *_structured_tool_call("web_search", {"query": "weather"}, "call_1"),
+    ]
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
+    content_before_tool = [
+        e["text"] for e in events[:tool_start_index] if e["type"] == "content"
+    ]
+    # Reasoning streamed live, then closed before the tool -- balanced block.
+    assert content_before_tool[0] == "<think>Let me search."
+    assert content_before_tool[-1] == "<think>Let me search.</think>"
+
+
+def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
+    # _drain_silently sibling of the structured-tool close: a bare-JSON tool call
+    # with a live reasoning prefix must also close </think> before draining, and
+    # must never leak the drained call text as content.
+    tool_stream = [
+        _sse({"reasoning_content": "Searching now."}),
+        _sse({"content": '{"name":"web_search","arguments":{"query":"weather"}}'}),
+        _done(),
+    ]
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    _patch_monotonic(monkeypatch, [1.0, 2.0, 3.0, 4.0, 4.0])
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
+    content_before_tool = [
+        e["text"] for e in events[:tool_start_index] if e["type"] == "content"
+    ]
+    assert content_before_tool[0] == "<think>Searching now."
+    assert content_before_tool[-1] == "<think>Searching now.</think>"
+    # The bare-JSON call text was drained, never surfaced as content.
+    assert not any('"name"' in t for t in content_before_tool)
 
 
 def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
