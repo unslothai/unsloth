@@ -513,19 +513,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isDatasetAudio: isAudio,
               isCheckingDataset: false,
             };
-            if (!get().trainOnCompletionsManuallySet) {
-              const { isVisionModel, isAudioModel } = get();
-              if (isVisionModel && isImage) {
-                updates.trainOnCompletions = false;
-              }
-              // Pure audio model → always uncheck regardless of dataset.
-              if (isAudioModel && !isVisionModel) {
-                updates.trainOnCompletions = false;
-              }
-              // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
-              if (isAudioModel && isVisionModel && isAudio) {
-                updates.trainOnCompletions = false;
-              }
+            const { isVisionModel, isAudioModel } = get();
+            if (isVisionModel && isImage) {
+              updates.trainOnCompletions = false;
+              updates.trainOnCompletionsManuallySet = false;
+            }
+            if (isAudioModel && !isVisionModel) {
+              updates.trainOnCompletions = false;
+              updates.trainOnCompletionsManuallySet = false;
+            }
+            if (isAudioModel && isVisionModel && isAudio) {
+              updates.trainOnCompletions = false;
+              updates.trainOnCompletionsManuallySet = false;
             }
             set(updates);
           })
