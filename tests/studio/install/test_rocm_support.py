@@ -3453,13 +3453,15 @@ class TestWslRerouteNvidiaGuard:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         start = source.find("_maybe_reroute_strixhalo_to_2404()")
         assert start != -1
-        body = source[start : start + 1400]
+        body = source[start : start + 1800]
         nv = body.find("_rr_nvsmi")
+        cvd = body.find("CUDA_VISIBLE_DEVICES")
         wmi = body.find("_wsl_amd_gpu_name")
         assert nv != -1, "reroute must probe nvidia-smi to skip the AMD reroute on NVIDIA hosts"
+        assert cvd != -1, "reroute must honor CUDA_VISIBLE_DEVICES=''/-1 (user-hidden NVIDIA)"
         assert wmi != -1
-        # The NVIDIA guard must precede the AMD/WMI signal and return early.
-        assert nv < wmi
+        # The NVIDIA guard (CVD-aware) must precede the AMD/WMI signal and return early.
+        assert cvd < wmi and nv < wmi
         assert body.find("return 0", nv) < wmi
 
 

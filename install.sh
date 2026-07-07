@@ -1508,12 +1508,18 @@ _maybe_reroute_strixhalo_to_2404() {
     [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
     [ -e /dev/dxg ] || return 0
     # A usable NVIDIA GPU (common on hybrid AMD+NVIDIA hosts) means the CUDA path works
-    # on this distro, so don't reroute for AMD. _has_usable_nvidia_gpu is defined later,
-    # so probe nvidia-smi inline; awk consumes all input (no SIGPIPE under pipefail).
-    _rr_nvsmi="nvidia-smi"; command -v timeout >/dev/null 2>&1 && _rr_nvsmi="timeout 10 nvidia-smi"
-    if command -v nvidia-smi >/dev/null 2>&1 && \
-       $_rr_nvsmi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{f=1} END{exit !f}'; then
-        return 0
+    # on this distro, so don't reroute for AMD. Honor CUDA_VISIBLE_DEVICES=""/-1 (user
+    # forcing AMD) as "NVIDIA hidden", matching _has_usable_nvidia_gpu (defined later).
+    # _has_usable_nvidia_gpu isn't defined yet here, so probe nvidia-smi inline; awk
+    # consumes all input (no SIGPIPE under pipefail).
+    _rr_cvd="$(printf '%s' "${CUDA_VISIBLE_DEVICES-}" | tr -d '[:space:]')"
+    if [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] && { [ -z "$_rr_cvd" ] || [ "$_rr_cvd" = "-1" ]; }; then
+        : # NVIDIA hidden by CUDA_VISIBLE_DEVICES; fall through to the AMD reroute
+    elif command -v nvidia-smi >/dev/null 2>&1; then
+        _rr_nvsmi="nvidia-smi"; command -v timeout >/dev/null 2>&1 && _rr_nvsmi="timeout 10 nvidia-smi"
+        if $_rr_nvsmi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{f=1} END{exit !f}'; then
+            return 0
+        fi
     fi
     # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
     if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
