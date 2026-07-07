@@ -462,31 +462,10 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
 
-    def test_confirm_code_execution_rejected_for_provider_tools(self, monkeypatch):
-        class _UnusedBackend:
-            is_loaded = False
-
-        client = self._v1_client(monkeypatch, _UnusedBackend())
-        resp = client.post(
-            "/v1/chat/completions",
-            json = {
-                "messages": [{"role": "user", "content": "hi"}],
-                "provider_type": "openai",
-                "external_model": "gpt-4.1",
-                "enable_tools": True,
-                "enabled_tools": ["code_execution"],
-                "confirm_code_execution": True,
-            },
-        )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error"]["param"] == "confirm_code_execution"
-        assert "cannot guard provider-hosted code execution" in body["error"]["message"]
-
-    def test_confirm_code_execution_allows_non_code_provider_tools(self, monkeypatch):
-        # A provider request that enables only non-code tools has no code execution
-        # for this flag to guard, so it must not be rejected on the flag alone.
+    def test_confirm_code_execution_ignored_for_provider_tools(self, monkeypatch):
+        # confirm_code_execution guards only local python/terminal. An external
+        # provider runs any hosted code_execution in its own sandbox, so the flag
+        # is ignored (not rejected) -- even when provider code_execution is enabled.
         import routes.inference as inference_route
 
         called = {"proxied": False}
@@ -508,7 +487,7 @@ class TestChatCompletionRequestToolFields:
                 "provider_type": "openai",
                 "external_model": "gpt-4.1",
                 "enable_tools": True,
-                "enabled_tools": ["web_search"],
+                "enabled_tools": ["code_execution"],
                 "confirm_code_execution": True,
             },
         )
@@ -1638,6 +1617,58 @@ class TestGgufVisionToolRouting:
         assert entry["status"] == "error"
         assert "confirm_code_execution requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
+
+    def test_confirm_code_execution_budget_zero_not_rejected_gguf(self, monkeypatch):
+        # max_tool_calls_per_message=0 disables tool execution (max_tool_iterations=0),
+        # so no code-execution tool can run and the stream requirement must not reject.
+        import routes.inference as inf_mod
+
+        reached = {"tools": False}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            # Reaching here proves the request cleared both the pre-switch and the
+            # per-handler confirm_code_execution guards instead of being rejected.
+            reached["tools"] = True
+            raise RuntimeError("reached tool backend")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+            _maybe_recover_from_mtp_crash = lambda e: None,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["python"],
+            confirm_code_execution = True,
+            stream = False,
+            max_tool_calls_per_message = 0,
+            messages = [{"role": "user", "content": "run code"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+        # Reaching the tool backend (and not a confirm_code_execution 400) proves the
+        # budget-zero request was not rejected by the stream requirement.
+        assert reached["tools"] is True
+        assert exc.value.status_code != 400
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
         def _generate(**_kwargs):

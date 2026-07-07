@@ -1718,31 +1718,23 @@ class TestAnthropicMessagesToolRouting:
         assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
         assert backend.calls == []
 
-    def test_confirm_code_execution_rejected_for_code_server_tools(self, monkeypatch):
-        # A code-execution server tool (python) is what confirm_code_execution
-        # would guard; since the server path runs it server-side, reject it.
-        backend = _mock_backend(monkeypatch)
-        payload = _basic_payload(
-            confirm_code_execution = True,
-            tools = [{"type": "python", "name": "python"}],
-        )
+    def test_confirm_code_execution_ignored_for_server_tools(self, monkeypatch):
+        # confirm_code_execution guards only local python/terminal execution.
+        # Anthropic server tools run in the provider's sandbox, not locally, so
+        # the flag does not apply here: it is ignored (never rejects), whether
+        # the requested server tool is code execution or not.
+        for tool in (
+            {"type": "python", "name": "python"},
+            {"type": "web_search_20250305", "name": "web_search"},
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(
+                confirm_code_execution = True,
+                tools = [tool],
+            )
 
-        with pytest.raises(HTTPException) as exc:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        assert exc.value.status_code == 400
-        assert "confirm_code_execution cannot guard" in exc.value.detail["error"]["message"]
-        assert backend.calls == []
-
-    def test_confirm_code_execution_allows_non_code_server_tools(self, monkeypatch):
-        # web_search is not code execution, so the flag must not reject it.
-        backend = _mock_backend(monkeypatch)
-        payload = _basic_payload(
-            confirm_code_execution = True,
-            tools = [{"type": "web_search_20250305", "name": "web_search"}],
-        )
-
-        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        assert backend.calls[0][0] == "tools"
+            assert backend.calls[0][0] == "tools"
 
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)

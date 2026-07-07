@@ -1788,21 +1788,6 @@ def _payload_may_enable_code_execution(payload) -> bool:
     return True
 
 
-def _anthropic_may_run_code_execution(payload, requested_studio_tools: set) -> bool:
-    """True when the Anthropic ``/v1/messages`` server-tool path could run a
-    code-execution tool (python/terminal), computed pre-switch from the payload.
-    Mirrors ``_select_anthropic_server_tools``: an explicit selection
-    (requested server tools or ``enabled_tools``) must list python/terminal; with
-    no explicit selection the server path exposes every Studio tool when the tool
-    loop is enabled."""
-    from core.inference.tools import CODE_EXECUTION_TOOL_NAMES
-
-    selected = set(requested_studio_tools) | set(payload.enabled_tools or [])
-    if requested_studio_tools or payload.enabled_tools is not None:
-        return bool(CODE_EXECUTION_TOOL_NAMES & selected)
-    return bool(_effective_enable_tools(payload))
-
-
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set). The
@@ -5713,30 +5698,9 @@ async def openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
-        # confirm_code_execution guards only local python/terminal. An external
-        # provider that enables its hosted code_execution tool runs code
-        # server-side, which this local gate cannot intercept -- reject it rather
-        # than give a false approval guarantee. Scoped to actual provider code
-        # execution so a non-code provider request (e.g. web_search) is unaffected.
-        if (
-            payload.confirm_code_execution
-            and not payload.bypass_permissions
-            and (
-                (payload.enabled_tools is not None and "code_execution" in payload.enabled_tools)
-                or bool(payload.openai_code_exec_container_id)
-                or bool(payload.anthropic_code_exec_container_id)
-            )
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    "confirm_code_execution cannot guard provider-hosted code execution; "
-                    "it only applies to local python/terminal tools.",
-                    status = 400,
-                    code = "invalid_request_error",
-                    param = "confirm_code_execution",
-                ),
-            )
+        # confirm_code_execution guards only local python/terminal; an external
+        # provider runs any hosted code_execution in its own sandbox, so the flag
+        # simply does not apply here and is ignored (documented on the field).
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request, current_subject)
@@ -5822,6 +5786,7 @@ async def openai_chat_completions(
             payload.confirm_code_execution
             and not payload.bypass_permissions
             and not payload.stream
+            and payload.max_tool_calls_per_message != 0
             and _payload_may_enable_code_execution(payload)
         ):
             raise HTTPException(
@@ -6310,6 +6275,7 @@ async def openai_chat_completions(
                 payload.confirm_code_execution
                 and not payload.bypass_permissions
                 and not payload.stream
+                and payload.max_tool_calls_per_message != 0
                 and _enables_code_execution_tool(tools_to_use)
             ):
                 raise _reject(
@@ -10261,26 +10227,9 @@ async def anthropic_messages(
             ),
         )
 
-    # confirm_code_execution guards only local python/terminal, which the server
-    # path runs server-side and cannot intercept. Reject it -- before the switch,
-    # payload-only, so an invalid request never evicts the loaded model -- but only
-    # when a code-execution tool is actually selected, so web-search-only requests
-    # are unaffected. bypass_permissions suppresses the confirm gate, so both flags
-    # together is fine.
-    if (
-        bool(getattr(payload, "confirm_code_execution", False))
-        and not bool(getattr(payload, "bypass_permissions", False))
-        and _anthropic_may_run_code_execution(payload, requested_studio_tools)
-    ):
-        raise HTTPException(
-            status_code = 400,
-            detail = anthropic_error_body(
-                "confirm_code_execution cannot guard Anthropic server-side code "
-                "execution; it only applies to local python/terminal tools.",
-                status = 400,
-                err_type = "invalid_request_error",
-            ),
-        )
+    # confirm_code_execution guards only local python/terminal; Anthropic server
+    # tools (incl. hosted code execution) run server-side, so the flag does not
+    # apply here and is ignored (documented on the field).
 
     # require_vision rejects a swap to a text-only target before it runs, so an
     # image request can't evict the resident vision model only to hit the vision
