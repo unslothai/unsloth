@@ -367,6 +367,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
+            const modelConfigHasLR = patch.learningRate !== undefined;
+            _yamlLearningRate = patch.learningRate;
             const contextLengthManuallySet = get().contextLengthManuallySet;
             const trainOnCompletionsManuallySet = get().trainOnCompletionsManuallySet;
             const learningRateManuallySet = get().learningRateManuallySet;
@@ -386,11 +388,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (trainOnCompletionsManuallySet) {
               delete patch.trainOnCompletions;
             }
-
-            // Treat a model-config LR as authoritative so async auto-select
-            // won't overwrite it.
-            const modelConfigHasLR = patch.learningRate !== undefined;
-            _yamlLearningRate = patch.learningRate;
 
             // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
             // use the full-finetune default instead of the YAML adapter LR.
@@ -421,6 +418,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (modelSizeBytes && modelSizeBytes > 0 && get().trainingMethod !== "cpt") {
               void autoSelectTrainingMethod(modelSizeBytes, effectiveContextLength)
                 .then((method) => {
+                  if (controller.signal.aborted) return;
                   if (get().selectedModel !== modelName) return;
                   if (get().trainingMethod === "cpt") return;
                   if (method) {
@@ -971,6 +969,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...patch,
             ...(patch.contextLength !== undefined
               ? { contextLengthManuallySet: true }
+              : {}),
+            ...(patch.trainOnCompletions !== undefined
+              ? { trainOnCompletionsManuallySet: true }
               : {}),
             ...(patch.learningRate !== undefined
               ? { learningRateManuallySet: false }
