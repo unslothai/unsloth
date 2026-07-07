@@ -1251,7 +1251,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     multiplier = self.args.unsloth_logit_chunk_multiplier
 
             all_logprobs_list = []
-            all_aux_losses = []
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
@@ -1843,9 +1842,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     mm_token_type_ids_chunk,
                 ) in zipped_inputs:
                     _extra_vision_kwargs = {}
-                    _extra_moe_kwargs = {}
-                    if compute_aux_loss:
-                        _extra_moe_kwargs["output_router_logits"] = True
                     if token_type_ids_chunk is not None:
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
@@ -1860,11 +1856,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 **_extra_vision_kwargs,
-                                **_extra_moe_kwargs,
                             )
-
-                            if compute_aux_loss and getattr(outputs, "aux_loss", None) is not None:
-                                all_aux_losses.append(outputs.aux_loss)
 
                             logits_chunk = outputs.logits
 
@@ -1897,11 +1889,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
                                 **_extra_vision_kwargs,
-                                **_extra_moe_kwargs,
                             )
-
-                            if compute_aux_loss and getattr(outputs, "aux_loss", None) is not None:
-                                all_aux_losses.append(outputs.aux_loss)
 
                             logits_chunk = outputs.logits
 
@@ -1936,11 +1924,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-            aux_loss = (
-                torch.stack(all_aux_losses).mean()
-                if (compute_aux_loss and len(all_aux_losses) > 0)
-                else None
-            )
+            # aux loss defaults off (router_aux_loss_coef set to 0 in models/rl.py), so
+            # compute_aux_loss is normally False -> None. On explicit opt-in the optimized forward
+            # cannot compute it, so return a zero placeholder (never None) for TRL's 3-tuple contract.
+            aux_loss = logprobs.new_zeros(()) if compute_aux_loss else None
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
