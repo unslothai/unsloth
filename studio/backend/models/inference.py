@@ -2068,6 +2068,22 @@ class DiffusionLoadProgressResponse(BaseModel):
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
 
 
+class DiffusionResolvedControl(BaseModel):
+    """One Advanced control's engaged value + provenance, for the "Auto: X" badges.
+
+    ``value`` is what actually applied (a scheme string, a mode string, ``null`` when the
+    control is off, or ``true``/``false`` for cpu_offload), so it is typed ``Any``.
+    ``source`` is "auto" when this backend decided it or "explicit" when the caller did;
+    ``reason`` is the short human-readable why the frontend shows as a tooltip.
+    """
+
+    value: Any = Field(
+        None, description = "The engaged value: a string, a boolean (cpu_offload), or null."
+    )
+    source: str = Field(..., description = '"auto" (backend decided) or "explicit" (caller set it)')
+    reason: str = Field("", description = "Short human-readable reason for the resolved value.")
+
+
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
@@ -2131,12 +2147,42 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    resolved: Optional[dict] = Field(
+    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Present
+    # only on backends that record it; null when nothing is loaded or on older backends. The
+    # frontend renders an "Auto: X" badge next to each control whose source == "auto". Declared
+    # explicitly so pydantic's default extra='ignore' does not silently drop the resolved record.
+    resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
-        description = "Per-control auto-policy provenance (value/source/reason for each resolved "
-        "setting), or null. Declared explicitly so the field is not dropped by the default "
-        "extra='ignore', which would silently discard the backend's resolved record.",
+        description = "Per-control resolved value + provenance (source auto|explicit + reason), "
+        "keyed by Advanced control name; null when unloaded or unavailable.",
     )
+
+
+class DiffusionInferenceInfo(BaseModel):
+    """One family's bf16 component sizes + estimated resident footprint per quant scheme.
+
+    Mirrors the dicts ``family_inference_infos()`` returns: the bf16-resident transformer /
+    text-encoder / VAE sizes, and the estimated resident GB under bf16 and each dense
+    transformer-quant scheme (transformer * factor + companions), rounded to 1 decimal."""
+
+    family: str = Field(..., description = "Diffusion family name (auto-policy table key).")
+    transformer_bf16_gb: float = Field(..., description = "bf16-resident transformer size in GB.")
+    text_encoders_bf16_gb: float = Field(
+        ..., description = "bf16-resident text encoder(s) size in GB."
+    )
+    vae_bf16_gb: float = Field(..., description = "bf16-resident VAE size in GB.")
+    estimated_resident_gb: Dict[str, float] = Field(
+        ...,
+        description = "Estimated resident GB keyed by scheme: bf16, int8, fp8, mxfp8, nvfp4.",
+    )
+
+
+class DiffusionInferenceInfoResponse(BaseModel):
+    """Static per-family footprint summary for the Advanced Dtype tradeoff (GET
+    /api/inference/images/info). Hardware-independent: no GPU probing, so it is served
+    from the pure auto-policy tables and is safe to fetch before anything is loaded."""
+
+    families: List[DiffusionInferenceInfo] = Field(default_factory = list)
 
 
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──

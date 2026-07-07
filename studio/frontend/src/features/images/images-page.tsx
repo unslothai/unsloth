@@ -470,10 +470,44 @@ function Field({
   );
 }
 
+// The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge.
+// Short scheme/mode tokens go uppercase (INT8, FP8, FBCACHE); the attention backend the
+// backend reports as `_native_cudnn` shows as cuDNN; cpu_offload's boolean shows On/Off.
+function formatResolvedValue(key: string, value: string | boolean | null): string {
+  if (key === "cpu_offload") return value ? "On" : "Off";
+  if (value === null || value === "") return "Off";
+  if (typeof value === "boolean") return value ? "On" : "Off";
+  if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
+  return value.toUpperCase();
+}
+
+// The "Auto: X" badge for one Advanced control: rendered only when the backend resolved
+// that control itself (source === "auto"); an explicit user choice renders nothing. The
+// reason is surfaced as a hover tooltip. Muted pill matching the panel's other chips.
+function ResolvedBadge({
+  status,
+  controlKey,
+}: {
+  status: DiffusionStatus | null;
+  controlKey: string;
+}) {
+  const resolved = status?.resolved?.[controlKey];
+  if (!resolved || resolved.source !== "auto") return null;
+  return (
+    <span
+      title={resolved.reason || undefined}
+      className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground"
+    >
+      Auto: {formatResolvedValue(controlKey, resolved.value)}
+    </span>
+  );
+}
+
 // A compact labeled Select row for the Advanced Options panel.
 function AdvancedSelect({
   label,
   hint,
+  badge,
   desc,
   value,
   onValueChange,
@@ -481,6 +515,8 @@ function AdvancedSelect({
 }: {
   label: string;
   hint?: ReactNode;
+  // An optional inline badge next to the label (e.g. the "Auto: X" resolved-value pill).
+  badge?: ReactNode;
   // A short always-visible description under the row (the hint tooltip carries the full
   // detail). Used for controls whose label alone does not convey what they do.
   desc?: string;
@@ -494,6 +530,7 @@ function AdvancedSelect({
         <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
           {label}
           {hint && <InfoHint>{hint}</InfoHint>}
+          {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
           <SelectTrigger className="h-8 w-[160px] text-xs">
@@ -1866,6 +1903,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model (GGUF compiles, dense stays eager). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
         options={[
@@ -1883,6 +1921,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         <AdvancedSelect
           label="Dtype"
           hint="Transformer compute dtype. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
+          badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
@@ -1905,6 +1944,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       <AdvancedSelect
         label="Attention"
         hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (small quality cost)."
+        badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
         options={[
@@ -1918,6 +1958,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
         options={[
@@ -1930,6 +1971,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       <AdvancedSelect
         label="Step cache"
         hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto enables it for many-step schedules and skips it for few-step distilled models; Off disables it entirely."
+        badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
         options={[
@@ -1942,6 +1984,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           CPU offload
           <InfoHint>Offload to CPU to fit low-VRAM cards (slower). Overridden by Memory mode when that is not Auto.</InfoHint>
+          <ResolvedBadge status={status} controlKey="cpu_offload" />
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>

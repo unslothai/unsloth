@@ -4,6 +4,16 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
+// One Advanced control's resolved value + provenance, for the "Auto: X" badges. `value`
+// is the engaged value (a scheme/mode string, null when off, or a boolean for cpu_offload);
+// `source` is "auto" (this backend decided) or "explicit" (the caller set it); `reason` is
+// the short why shown as a tooltip.
+export interface DiffusionResolvedControl {
+  value: string | boolean | null;
+  source: "auto" | "explicit";
+  reason: string;
+}
+
 export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
@@ -24,6 +34,11 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet (drives the ControlNet picker's enabled
   // state). Diffusers only, for families with a ControlNet pipeline; false otherwise.
   supports_controlnet?: boolean;
+  // Per-Advanced-control provenance, keyed by control name (speed_mode, transformer_quant,
+  // attention_backend, memory_mode, transformer_cache, cpu_offload). Present only when a
+  // model is loaded on a backend that records it; the "Auto: X" badges read it. Absent on
+  // older backends.
+  resolved?: Record<string, DiffusionResolvedControl> | null;
 }
 
 export interface DiffusionGenerateProgress {
@@ -172,6 +187,28 @@ async function parseJson<T>(response: Response): Promise<T> {
 
 export async function getDiffusionStatus(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/status"));
+}
+
+// One family's bf16 component sizes + estimated resident footprint per quant scheme
+// (from GET /api/inference/images/info). Hardware-independent, so it can be fetched before
+// anything is loaded to size the Advanced Dtype tradeoff.
+export interface DiffusionInferenceInfo {
+  family: string;
+  transformer_bf16_gb: number;
+  text_encoders_bf16_gb: number;
+  vae_bf16_gb: number;
+  // Estimated resident GB keyed by scheme: bf16, int8, fp8, mxfp8, nvfp4.
+  estimated_resident_gb: Record<string, number>;
+}
+
+export interface DiffusionInferenceInfoResponse {
+  families: DiffusionInferenceInfo[];
+}
+
+/** Static per-family footprint summary for the Advanced Dtype tradeoff. Hardware-independent
+ *  (served from the pure auto-policy tables), so it is safe to fetch before a load. */
+export async function getDiffusionInferenceInfo(): Promise<DiffusionInferenceInfoResponse> {
+  return parseJson(await authFetch("/api/inference/images/info"));
 }
 
 export async function getDiffusionLoadProgress(): Promise<DiffusionLoadProgress> {
