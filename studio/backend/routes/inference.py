@@ -5708,9 +5708,12 @@ async def openai_chat_completions(
     _tools_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     ) and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
+    # DiffusionGemma keeps supports_tools off, so the server-side tool loop can't
+    # claim the request; fall through to client passthrough, matching /v1/messages.
+    _server_tool_loop = _effective_enable_tools(payload) and llama_backend.supports_tools
     if (
         using_gguf
-        and not _effective_enable_tools(payload)
+        and not _server_tool_loop
         and (_tools_passthrough or _has_response_format)
     ):
         if _wants_multiple_choices(payload):
