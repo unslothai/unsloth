@@ -58,6 +58,7 @@ class GenStreamError(str):
     can distinguish a real error from model output whose visible text starts with
     "Error:" by checking isinstance(chunk, GenStreamError).
     """
+
     __slots__ = ()
 
 
