@@ -1655,11 +1655,22 @@ def _iter_hf_cache_snapshots(repo_id: str):
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
-    """Variants from the local HF cache snapshot, or None if not cached."""
+    """Variants from the local HF cache snapshot, or None if not cached.
+
+    A newer snapshot can hold only a companion file (for example a vision
+    projector fetched on demand) while the quant files live in an older
+    snapshot. Returning the first snapshot that merely reports a vision flag
+    would shadow those real variants, so keep scanning older snapshots for
+    actual variants and carry the vision flag across snapshots.
+    """
+    any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
-        if variants or has_vision:
-            return variants, has_vision
+        any_vision = any_vision or has_vision
+        if variants:
+            return variants, any_vision
+    if any_vision:
+        return [], True
     return None
 
 

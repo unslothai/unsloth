@@ -4153,6 +4153,10 @@ class LlamaCppBackend:
                             f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                         )
                         gguf_filename = fallback_file
+                        # Record the fallback's size so the later cache-reuse
+                        # probe can size-verify it; without this the fallback
+                        # main shard is only checked for existence.
+                        expected_sizes[fallback_file] = fallback_size
                         _m = _SHARD_RE.match(gguf_filename)
                         _prefix = _m.group(1) if _m else None
                         if _prefix:

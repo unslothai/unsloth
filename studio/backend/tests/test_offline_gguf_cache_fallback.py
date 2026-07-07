@@ -503,6 +503,41 @@ class TestListGgufVariantsFromCache:
     def test_returns_none_when_not_cached(self, hf_cache):
         assert _list_gguf_variants_from_hf_cache("unsloth/absent") is None
 
+    def test_companion_only_newer_snapshot_does_not_shadow_real_variants(self, hf_cache):
+        # A newer snapshot holds only a vision projector fetched on demand,
+        # while the quant files live in an older snapshot. The newer snapshot
+        # must not shadow the real variants; the vision flag carries over.
+        old = _build_cache(
+            hf_cache,
+            "unsloth/vision-GGUF",
+            {"vision-Q4_K_M.gguf": 100},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/vision-GGUF",
+            {"mmproj-vision-F16.gguf": 10},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+        assert out is not None
+        variants, has_vision = out
+        assert [v.quant for v in variants] == ["Q4_K_M"]
+        assert has_vision is True
+
+    def test_companion_only_cache_returns_empty_variants_with_vision(self, hf_cache):
+        # Only a vision projector is cached anywhere: report the vision flag
+        # with an empty variant list rather than None.
+        _build_cache(hf_cache, "unsloth/vision-GGUF", {"mmproj-vision-F16.gguf": 10})
+        out = _list_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+        assert out is not None
+        variants, has_vision = out
+        assert variants == []
+        assert has_vision is True
+
 
 class TestListGgufVariantsOffline:
     def test_offline_env_short_circuits_api(self, hf_cache, clean_offline_env, monkeypatch):
