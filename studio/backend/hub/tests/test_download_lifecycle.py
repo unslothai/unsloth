@@ -893,3 +893,69 @@ def test_download_watcher_persists_cancel_without_retry(monkeypatch, tmp_path):
 
     assert registry.get_job(key).state == "cancelled"
     assert markers == [("dataset", "Org/Data", None, download_registry.TRANSPORT_XET)]
+
+
+def test_active_download_refs_include_waiting_http_retry(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key_a = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    key_b = download_registry.normalize_job_key("Org/Model::Q5_K_M")
+    assert registry.claim(
+        key_a,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash-a"}),
+        progress_blob_hashes = frozenset({"mainhash-a"}),
+    )
+    assert registry.claim(
+        key_b,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q5_K_M",
+        blob_hashes = frozenset({"mainhash-b"}),
+        progress_blob_hashes = frozenset({"mainhash-b"}),
+    )
+    proc = _make_proc(1, b"xet failed")
+    waiting_variants = []
+
+    def fake_sleep(_seconds):
+        # The Q4_K_M retry is released from the repo guard while it waits for the
+        # slot; deletion stays blocked, so the listing must still surface it.
+        assert registry.begin_delete("Org/Model", "Q4_K_M") is False
+        refs = download_lifecycle.active_download_refs(
+            registry, "Org/Model", with_variant = True
+        )
+        waiting_variants.append(sorted(ref.variant for ref in refs))
+        registry.set_job(key_b, "complete")
+
+    def fake_spawn_worker(args, hf_token, *, use_xet, protected_blob_hashes = None):
+        assert use_xet is False
+        return _make_proc(0, b"http retry")
+
+    monkeypatch.setattr(download_lifecycle.time, "sleep", fake_sleep)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+
+    assert real_register_worker(
+        registry,
+        key_a,
+        proc,
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    # While the HTTP retry waited for the slot, the listing must include both the
+    # still-active sibling and the released retry so the frontend can adopt or
+    # cancel that backend-running retry after a reload.
+    assert waiting_variants == [["Q4_K_M", "Q5_K_M"]]
+    assert registry.get_job(key_a).state == "complete"

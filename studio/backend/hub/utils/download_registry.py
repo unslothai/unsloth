@@ -1197,6 +1197,16 @@ class DownloadRegistry:
                 candidate_keys = list(self._repo_active.get(repo_key, set()))
             else:
                 candidate_keys = [key for active in self._repo_active.values() for key in active]
+            # An XET->HTTP retry handoff briefly drops its key from _repo_active
+            # while its job stays active; include those released-but-active jobs
+            # so the waiting retry still lists and can be adopted or cancelled.
+            seen = set(candidate_keys)
+            for key, job in self._jobs.items():
+                if key in seen or job.state not in _ACTIVE_STATES:
+                    continue
+                if repo_key is not None and _repo_of_key(key) != repo_key:
+                    continue
+                candidate_keys.append(key)
             refs: list[ActiveDownloadRef] = []
             for key in candidate_keys:
                 job = self._jobs.get(key)
