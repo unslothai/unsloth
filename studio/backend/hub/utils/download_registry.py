@@ -1268,9 +1268,22 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:
-            for key in self._repo_active.get(repo_id, set()):
+            active_keys = self._repo_active.get(repo_id, set())
+            for key in active_keys:
                 job = self._jobs.get(key)
                 if job is None or job.state not in _ACTIVE_STATES:
+                    continue
+                if self._active_job_variant_locked(key) != target:
+                    return True
+            # An XET->HTTP retry peer between release_active_slot() and its reclaim
+            # is briefly absent from _repo_active while its job stays active and
+            # still owns the shared companion; mirror the released-but-active scan
+            # used by _delete_blocked_by_active_locked so it still blocks companion
+            # deletion of a different variant.
+            for key, job in self._jobs.items():
+                if key in active_keys or _repo_of_key(key) != repo_id:
+                    continue
+                if job.state not in _ACTIVE_STATES:
                     continue
                 if self._active_job_variant_locked(key) != target:
                     return True
@@ -1322,8 +1335,19 @@ class DownloadRegistry:
                 if job.state not in _ACTIVE_STATES or key in live_keys:
                     continue
                 proc = self._processes.get(key)
-                if proc is not None and proc.poll() == 0:
-                    continue
+                if proc is not None:
+                    if proc.poll() == 0:
+                        continue
+                    # A registered worker that exited nonzero on its own over HTTP
+                    # is a genuine terminal download failure, not a shutdown cancel
+                    # and not retry-capable: leave its error status intact rather
+                    # than persisting a cancel marker that would read as
+                    # cancelled/resumable after restart. Only an exited XET worker
+                    # could still spawn a post-shutdown HTTP retry, so only that
+                    # needs settling here.
+                    metadata = self._metadata.get(key)
+                    if metadata is not None and metadata.transport == TRANSPORT_HTTP:
+                        continue
                 self._pending_cancel[key] = self._generations.get(key)
                 self._jobs[key] = DownloadState("cancelling")
                 settled_no_proc.append(self._metadata.get(key))

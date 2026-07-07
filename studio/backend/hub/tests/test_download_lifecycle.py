@@ -1152,3 +1152,75 @@ def test_shutdown_persists_marker_for_parked_no_process_retry(monkeypatch, tmp_p
     assert registry.get_job(key).state == "cancelling"
     assert registry.cancel_requested(key) is True
     assert ("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET) in markers
+
+
+def test_shutdown_leaves_registered_http_worker_error_alone(monkeypatch, tmp_path):
+    # A registered HTTP worker that exited nonzero on its own is a genuine terminal
+    # download failure, not a shutdown cancel and not retry-capable (only XET can
+    # spawn a post-shutdown HTTP retry). terminate_all() must NOT settle it or
+    # persist a cancel marker, or idle_status would report a real error as
+    # cancelled/resumable after restart. Its error status stays intact.
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+        metadata_transport = download_registry.TRANSPORT_HTTP,
+    )
+    exited_proc = _make_proc(1, b"http failed")
+    assert registry.register_process(key, exited_proc)
+    # The worker exited nonzero; drop_process has not run yet, so it stays in the
+    # process table while poll() already reports the error.
+    exited_proc.wait()
+    assert exited_proc.poll() == 1
+
+    markers = []
+    monkeypatch.setattr(
+        download_registry,
+        "persist_cancel_marker",
+        lambda *args, **_kwargs: markers.append(args),
+    )
+
+    registry.terminate_all("download")
+
+    # Left running so the watcher records its real error; no cancel marker.
+    assert registry.get_job(key).state == "running"
+    assert registry.cancel_requested(key) is False
+    assert markers == []
+
+
+def test_has_active_peer_variant_sees_released_retry_peer(monkeypatch, tmp_path):
+    # A Q4 XET->HTTP retry peer between release_active_slot() and its reclaim is
+    # briefly absent from _repo_active while its job stays active and still owns
+    # the shared companion. Deleting a different variant (Q5) must still see it as
+    # an active peer so companion deletion is blocked; scanning only _repo_active
+    # would miss it and let the delete remove the shared mmproj out from under it.
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key_q4 = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key_q4,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash-q4"}),
+        progress_blob_hashes = frozenset({"mainhash-q4"}),
+    )
+    # The retry has released its slot but its job stays active while it waits to
+    # reclaim over HTTP.
+    registry.release_active_slot(key_q4)
+    assert registry.get_job(key_q4).state == "running"
+    assert key_q4 not in registry._repo_active.get("org/model", set())
+
+    # A different variant's delete must be blocked by the released Q4 peer.
+    assert registry.has_active_peer_variant("Org/Model", "Q5_K_M") is True
+    # Same variant is not a peer: the released-but-active scan still respects the
+    # target-variant filter.
+    assert registry.has_active_peer_variant("Org/Model", "Q4_K_M") is False
