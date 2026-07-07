@@ -21,8 +21,9 @@ if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "setup.ps1 has 
 $TorchIndexMarkerName = ".unsloth-torch-index"
 
 foreach ($name in @(
-    "Get-NormalizedIndexUrl", "Get-TorchIndexMarkerPath", "Read-TorchIndexMarker",
-    "Write-TorchIndexMarker", "Test-MarkerPinMismatch", "Test-RocmKnown211Version"
+    "Get-NormalizedFamilyLeaf", "Get-NormalizedIndexUrl", "Get-TorchIndexMarkerPath",
+    "Read-TorchIndexMarker", "Write-TorchIndexMarker", "Test-MarkerPinMismatch",
+    "Test-RocmKnown211Version"
 )) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name

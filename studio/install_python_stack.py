@@ -1225,13 +1225,25 @@ def _explicit_torch_index_url() -> "str | None":
     return None
 
 
+def _is_pip_rocm_family_leaf(leaf: str) -> bool:
+    """True when a lowercased index leaf names a pip --index-url ROCm family: an
+    actual rocm<digit>... leaf (download.pytorch.org/whl/rocm7.2) or a repo.amd.com
+    per-arch gfx leaf (gfx120x-all). A Radeon find-links directory leaf
+    (repo.radeon.com/.../rocm-rel-7.2.1, which install.sh records in the marker)
+    starts with "rocm" but is NOT a pip index -- it must route to the verbatim/marker
+    path, not a --index-url reinstall that fails against a find-links listing.
+    Mirrors install.sh's rocm[0-9]* / setup.ps1's ^(rocm[0-9]|gfx) gate. Pure function.
+    """
+    return bool(re.match(r"^rocm\d", leaf)) or leaf.startswith("gfx")
+
+
 def _explicit_rocm_torch_index_url() -> "str | None":
-    """The pinned wheel index URL when it names a ROCm family (rocm*/gfx*), else None."""
+    """The pinned wheel index URL when it names a pip ROCm family (rocm<d>/gfx*), else None."""
     url = _explicit_torch_index_url()
     if url is None:
         return None
     leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
-    return url if leaf.startswith(("rocm", "gfx")) else None
+    return url if _is_pip_rocm_family_leaf(leaf) else None
 
 
 def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
@@ -1365,7 +1377,7 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     if url is None:
         return None
     leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
-    if leaf.startswith(("rocm", "gfx")) or leaf == "cpu" or _is_cuda_family_leaf(leaf):
+    if _is_pip_rocm_family_leaf(leaf) or leaf == "cpu" or _is_cuda_family_leaf(leaf):
         return None
     return url
 
@@ -1596,13 +1608,22 @@ def _ensure_cpu_torch() -> None:
     _lines = [
         line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
     ]
-    if not _lines or _lines[-1] != "gpu":
-        return  # already CPU (or unreadable) -- nothing to repair
+    if not _lines:
+        return  # unreadable -- the base install step handles a missing torch
+    if _lines[-1] != "gpu":
+        # torch is already a CPU build. Normally nothing to repair, BUT a standalone
+        # update may change the CPU index URL itself (official /cpu -> a private
+        # UNSLOTH_PYTORCH_MIRROR /cpu) with the same +cpu tag. The tag cannot see the
+        # host change, so consult the exact-URL marker and reinstall from the new pin
+        # only when it records a DIFFERENT index -- mirroring the CUDA/ROCm
+        # same-family-URL handling. No marker (or a matching one) -> leave it alone.
+        if _marker_pin_mismatch(pin) is not True:
+            return
+        _why = "the pinned CPU index URL differs from the recorded marker"
+    else:
+        _why = "torch is a GPU build but an explicit CPU index is pinned"
 
-    print(
-        f"   torch is a GPU build but an explicit CPU index is pinned -- "
-        f"reinstalling CPU torch from {pin}"
-    )
+    print(f"   {_why} -- reinstalling CPU torch from {pin}")
     # Pin to the supported torch<2.11 family (same bounds as the CUDA/ROCm repair
     # specs). The /cpu index now also serves torch 2.11+, so a bare trio off the
     # exclusive --index-url could resolve outside the supported range or drag in

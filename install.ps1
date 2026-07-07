@@ -2234,9 +2234,21 @@ exit 0
         return $installed
     }
 
+    # Track whether THIS run actually installed or repaired torch, so the marker
+    # write below reflects the real wheel source. A migrated venv that keeps its
+    # existing torch (no reinstall) must NOT rewrite its marker to the newly
+    # requested pin, or a later update compares the new pin against a marker that
+    # already matches and skips the reinstall the pin needs (e.g. a per-arch
+    # gfx1151 -> gfx120X-all switch, identical +rocm tag). Fresh installs below
+    # always install torch; the shared flavor repair re-lands it when wrong.
+    $_TorchInstalledThisRun = $true
+
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
-        # in the new venv location, while preserving existing torch/CUDA
+        # in the new venv location, while preserving existing torch/CUDA. Torch is
+        # preserved unless the shared flavor repair below re-lands it, so the marker
+        # must stay as the migrated venv recorded it for the preserved case.
+        $_TorchInstalledThisRun = $false
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
@@ -2422,6 +2434,9 @@ exit 0
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
                     }
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                    # torch was re-landed from $ROCmIndexUrl, so record it (the
+                    # gfx-switch case keeps the same rocm flavor and never reaches here).
+                    $_TorchInstalledThisRun = $true
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
@@ -2431,6 +2446,7 @@ exit 0
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
                     }
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                    $_TorchInstalledThisRun = $true  # torch re-landed from $TorchIndexUrl
                 }
             }
             # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
@@ -2450,7 +2466,7 @@ exit 0
     # $ROCmIndexUrl when the ROCm path ran, the CPU fallback index when a pinned
     # ROCm install failed over to a CPU base, else the CUDA/CPU/pinned $TorchIndexUrl.
     # Skipped for --no-torch (nothing installed). Matches install.sh / setup.ps1.
-    if (-not $SkipTorch) {
+    if ((-not $SkipTorch) -and $_TorchInstalledThisRun) {
         $MarkerIndexUrl = if ($ROCmIndexUrl) { $ROCmIndexUrl } elseif ($RocmCpuFallbackIndexUrl) { $RocmCpuFallbackIndexUrl } else { $TorchIndexUrl }
         Write-TorchIndexMarker -VenvDir $VenvDir -IndexUrl $MarkerIndexUrl
     }

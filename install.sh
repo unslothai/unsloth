@@ -2831,9 +2831,19 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
+# Track whether THIS run actually installed or repaired torch, so the marker at the
+# end reflects the real wheel source. A migrated venv that keeps its existing torch
+# (no reinstall) must NOT rewrite its marker to the newly requested pin, or a later
+# `unsloth studio update` compares the new pin against a marker that already matches
+# and skips the reinstall the pin needs (e.g. a per-arch gfx1151 -> gfx120X-all
+# switch, identical +rocm tag). Fresh installs below always install torch.
+_TORCH_INSTALLED_THIS_RUN=true
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
-    # in the new venv location, while preserving existing torch/CUDA
+    # in the new venv location, while preserving existing torch/CUDA. Torch is
+    # preserved (not reinstalled) unless the ROCm repair below fires, so the
+    # marker must stay as the migrated venv recorded it for the preserved case.
+    _TORCH_INSTALLED_THIS_RUN=false
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
@@ -2880,6 +2890,9 @@ if [ "$_MIGRATED" = true ]; then
                         "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
+                    # torch was actually reinstalled from $TORCH_INDEX_URL now, so the
+                    # marker should record it (the preserved-torch case above must not).
+                    _TORCH_INSTALLED_THIS_RUN=true
                 fi
                 ;;
         esac
@@ -3158,6 +3171,10 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
                 "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                 --index-url "$TORCH_INDEX_URL" \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
+            # torch was re-landed from $TORCH_INDEX_URL, so record it even on a
+            # migrated venv whose flavor was genuinely wrong (the gfx-switch case
+            # keeps the same rocm flavor and does NOT reach here, so its marker stays).
+            _TORCH_INSTALLED_THIS_RUN=true
             _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
             _installed_torch_tag=""
             [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
@@ -3176,11 +3193,13 @@ fi
 # Torch is now fully resolved; write the exact --index-url used so `unsloth studio
 # update` (install_python_stack.py / setup.ps1) can detect a later pin change by an
 # exact string compare rather than the version-tag heuristic. Only when torch was
-# actually installed from a resolved index (skip --no-torch / no-URL fallback).
+# actually installed from a resolved index (skip --no-torch / no-URL fallback) AND
+# actually installed/repaired this run (a migrated venv that kept its existing torch
+# leaves the old marker so a later update can still detect a pin change).
 # Reflects the actual source: the Radeon --find-links path sets
 # _TORCH_MARKER_INDEX_URL to its repo.radeon.com base; every other path falls back
 # to $TORCH_INDEX_URL (the CUDA/CPU/ROCm/pinned index it installed from).
-if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
+if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ] && [ "$_TORCH_INSTALLED_THIS_RUN" = true ]; then
     _write_torch_index_marker "$VENV_DIR" "${_TORCH_MARKER_INDEX_URL:-$TORCH_INDEX_URL}"
 fi
 

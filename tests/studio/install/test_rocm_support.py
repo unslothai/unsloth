@@ -952,6 +952,73 @@ class TestEnsureRocmTorch:
         assert f(f"{amd}/gfx110X-all", "2.10.0") is True
         assert f(f"{amd}/gfx90a", "2.10.0") is True
 
+    def test_radeon_url_not_classified_as_pip_rocm_family(self):
+        """A repo.radeon.com find-links directory (leaf rocm-rel-7.2.1, which
+        install.sh records in the marker) starts with "rocm" but is NOT a pip
+        --index-url ROCm family: it must route to the verbatim/marker path, not a
+        --index-url reinstall that fails against a find-links listing (Codex P2)."""
+        leaf_f = stack_mod._is_pip_rocm_family_leaf
+        # Real pip ROCm families (download.pytorch.org/whl/rocmX.Y, repo.amd.com gfx).
+        assert leaf_f("rocm7.2") is True
+        assert leaf_f("rocm6.4") is True
+        assert leaf_f("gfx120x-all") is True
+        assert leaf_f("gfx1151") is True
+        # A Radeon find-links dir leaf, a custom mirror, cpu and cuda are NOT pip rocm.
+        assert leaf_f("rocm-rel-7.2.1") is False
+        assert leaf_f("simple") is False
+        assert leaf_f("current") is False
+        assert leaf_f("cpu") is False
+        assert leaf_f("cu128") is False
+
+        radeon = "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1"
+        pip_rocm = "https://download.pytorch.org/whl/rocm7.2"
+        amd_gfx = "https://repo.amd.com/rocm/whl/gfx120X-all"
+
+        def _classify(url, fn):
+            with patch.dict(stack_mod.os.environ, {"UNSLOTH_TORCH_INDEX_URL": url}, clear = False):
+                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                return fn()
+
+        rocm_fn = stack_mod._explicit_rocm_torch_index_url
+        unk_fn = stack_mod._explicit_unknown_family_torch_index_url
+        # Real pip rocm/gfx pins ARE a ROCm family (reinstallable via --index-url) and
+        # are NOT "unknown".
+        assert _classify(pip_rocm, rocm_fn) == pip_rocm
+        assert _classify(amd_gfx, rocm_fn) == amd_gfx
+        assert _classify(pip_rocm, unk_fn) is None
+        assert _classify(amd_gfx, unk_fn) is None
+        # The Radeon find-links URL is NOT a pip ROCm family (so _ensure_rocm_torch
+        # skips it instead of a failing --index-url reinstall) and IS unknown, so it
+        # routes to the verbatim/marker path -- a no-op when the marker already matches
+        # (the finding's "leave the matching marker alone" scenario).
+        assert _classify(radeon, rocm_fn) is None
+        assert _classify(radeon, unk_fn) == radeon
+
+    @patch.object(stack_mod, "_write_torch_index_marker")
+    @patch.object(stack_mod, "pip_install")
+    def test_ensure_cpu_torch_honors_marker_url_change(self, mock_pip, mock_marker):
+        """_ensure_cpu_torch: a CPU venv whose marker records a DIFFERENT /cpu index
+        (official -> a private UNSLOTH_PYTORCH_MIRROR /cpu, same +cpu tag) must
+        reinstall from the new pin -- the tag cannot see the host change, so the marker
+        drives it (Codex P2). A matching marker (or none) leaves CPU torch alone."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"cpu\n"  # torch is already a CPU build
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cpu"}
+
+        def _run(mismatch):
+            mock_pip.reset_mock()
+            with patch.dict(stack_mod.os.environ, env, clear = False):
+                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(stack_mod, "_marker_pin_mismatch", return_value = mismatch):
+                        stack_mod._ensure_cpu_torch()
+            return mock_pip.called
+
+        assert _run(True) is True    # marker records a different /cpu index -> reinstall
+        assert _run(False) is False  # marker matches the pin -> no reinstall (no loop)
+        assert _run(None) is False   # no usable marker -> no blind reinstall
+
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
