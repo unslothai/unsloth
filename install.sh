@@ -53,6 +53,11 @@ _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
+_next_is_llama_cpp_dir=false
+# Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
+# (the documented piped-install style) is honored; the --with-llama-cpp-dir
+# flag below overrides it when given.
+_WITH_LLAMA_CPP_DIR="${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}"
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
         PACKAGE_NAME="$arg"
@@ -64,6 +69,11 @@ for arg in "$@"; do
         _next_is_python=false
         continue
     fi
+    if [ "$_next_is_llama_cpp_dir" = true ]; then
+        _WITH_LLAMA_CPP_DIR="$arg"
+        _next_is_llama_cpp_dir=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
@@ -72,6 +82,7 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
 
@@ -253,6 +264,10 @@ if [ "$_next_is_package" = true ]; then
 fi
 if [ "$_next_is_python" = true ]; then
     echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
+    exit 1
+fi
+if [ "$_next_is_llama_cpp_dir" = true ]; then
+    echo "❌ ERROR: --with-llama-cpp-dir requires a path argument." >&2
     exit 1
 fi
 
@@ -1427,8 +1442,14 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+# Apple Silicon: exclude broken mlx-lm 0.31.3 (QK-norm load regression for
+# gemma4 / qwen3_5; mlx-lm #1242). A curl-piped install has no overrides file
+# and skips the guarded MLX step (SKIP_STUDIO_BASE=1), so this is the only cover.
+_MLX_LM_EXCLUDE_ARG=""
+
 # Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _MLX_LM_EXCLUDE_ARG="mlx-lm!=0.31.3"
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
         # uv splits UV_OVERRIDE on whitespace, so a repo path with whitespace
@@ -2664,9 +2685,11 @@ if [ "$_MIGRATED" = true ]; then
             run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
+        # Pin mlx-lm away from 0.31.3 here too: a curl-piped migration has no
+        # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2897,7 +2920,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth -- "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
@@ -3023,6 +3046,13 @@ _run_setup_with_studio_home() {
         "$@"
     fi
 }
+if [ -n "$_WITH_LLAMA_CPP_DIR" ]; then
+    if [ ! -d "$_WITH_LLAMA_CPP_DIR" ]; then
+        echo "[ERROR] --with-llama-cpp-dir path does not exist: $_WITH_LLAMA_CPP_DIR" >&2
+        exit 1
+    fi
+    _WITH_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_WITH_LLAMA_CPP_DIR" && pwd -P)"
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
@@ -3031,6 +3061,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -3045,6 +3076,7 @@ else
     STUDIO_LOCAL_INSTALL=0 \
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
