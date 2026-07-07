@@ -615,8 +615,7 @@ def test_fp8_owner_probe_tolerates_optional_kernel_import_errors():
         if not isinstance(node, ast.Try):
             continue
         if not any(
-            isinstance(child, ast.ImportFrom)
-            and child.module == "unsloth.kernels.fp8"
+            isinstance(child, ast.ImportFrom) and child.module == "unsloth.kernels.fp8"
             for child in node.body
         ):
             continue
