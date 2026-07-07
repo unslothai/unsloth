@@ -356,3 +356,116 @@ def test_import_example_load_failure_maps_to_502(client, ds_root, monkeypatch):
     r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
     assert r.status_code == 502
     assert "Could not import" in r.json()["detail"]
+
+
+# ── upload: same-stem image collision ────────────────────────────────────────
+def _jpg_bytes(color = (30, 120, 200), size = (8, 8)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format = "JPEG")
+    return buf.getvalue()
+
+
+def _upload(client, name, files):
+    # files: list of (filename, bytes). Content type is irrelevant to the route (it keys off the
+    # extension), so send everything as octet-stream.
+    parts = [("files", (fn, data, "application/octet-stream")) for fn, data in files]
+    return client.post("/api/train/diffusion/dataset", data = {"name": name}, files = parts)
+
+
+def test_upload_rejects_same_stem_different_extension(client, ds_root):
+    # sample.png and sample.jpg share the stem "sample", so both map to one sample.txt caption
+    # sidecar; keeping both would silently corrupt captions during training. The second must 400.
+    assert _upload(client, "styleset", [("sample.png", _png_bytes())]).status_code == 200
+    dup = _upload(client, "styleset", [("sample.jpg", _jpg_bytes())])
+    assert dup.status_code == 400
+    assert "Duplicate image name" in dup.json()["detail"]
+    # The rejected image never landed on disk: only sample.png survives.
+    folder = ds_root / "styleset"
+    assert sorted(p.name for p in folder.iterdir() if p.suffix != ".txt") == ["sample.png"]
+
+
+def test_upload_same_stem_collision_within_one_batch(client, ds_root):
+    # The scan must cover files uploaded earlier IN THE SAME batch, not just those already on disk,
+    # so a single multipart request carrying both sample.png and sample.jpg is rejected too.
+    r = _upload(client, "styleset", [("sample.png", _png_bytes()), ("sample.jpg", _jpg_bytes())])
+    assert r.status_code == 400
+    assert "Duplicate image name" in r.json()["detail"]
+
+
+def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root):
+    # Re-uploading the EXACT same name (stem AND extension) is an allowed overwrite, and a .txt
+    # caption for the same stem is the intended kohya flow -- neither is a same-stem image collision.
+    assert (
+        _upload(client, "styleset", [("sample.png", _png_bytes((10, 20, 30)))]).status_code == 200
+    )
+    assert (
+        _upload(client, "styleset", [("sample.png", _png_bytes((90, 90, 90)))]).status_code == 200
+    )
+    assert _upload(client, "styleset", [("sample.txt", b"a caption")]).status_code == 200
+    folder = ds_root / "styleset"
+    assert (folder / "sample.png").is_file()
+    assert (folder / "sample.txt").read_text(encoding = "utf-8") == "a caption"
+
+
+# ── import: promotion is all-or-nothing ──────────────────────────────────────
+def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypatch):
+    # The staging dir is promoted into the dataset folder in one atomic rename. If that rename
+    # fails (a crash / filesystem error mid-promotion), the folder must be left with NO images
+    # rather than a half-filled dataset that the image_count>0 idempotency check would then accept
+    # as complete on retry -- stranding the user with a truncated dataset. Simulate the promotion
+    # rename failing, assert nothing partial is left, and assert a retry re-imports cleanly.
+    import os
+
+    # A client that returns the 500 (as production does) instead of re-raising the server exception.
+    app = FastAPI()
+    app.include_router(training_router, prefix = "/api/train")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    noraise = TestClient(app, raise_server_exceptions = False)
+
+    calls = _install_fake_load_dataset(monkeypatch, n_rows = 3)
+    folder = ds_root / "my-tux"
+    real_replace = os.replace
+
+    def flaky_replace(src, dst, *a, **k):
+        # Only sabotage the staging -> folder promotion; leave every other rename working.
+        if str(dst) == str(folder):
+            raise OSError("simulated crash during promotion")
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    r = noraise.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert r.status_code == 500
+    # No half-filled dataset: the folder holds zero images (and no stray staging dir lingers).
+    assert list(ds_root.glob("my-tux/*.png")) == []
+    assert not any(p.name.startswith(".my-tux.import-") for p in ds_root.iterdir())
+
+    # Retry with the promotion working: a clean, complete import (idempotency did not short-circuit).
+    monkeypatch.setattr(os, "replace", real_replace)
+    r2 = noraise.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["imported"] == 3
+    assert calls["count"] == 2  # the failed attempt did not leave a dataset that blocks a reload
+
+
+def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root, monkeypatch):
+    # If the target folder already holds unrelated NON-image files (so image_count is still 0 and
+    # the import runs), the atomic rmdir refuses and the code falls back to a per-file move: the
+    # images are imported AND the pre-existing file is preserved rather than clobbered or lost.
+    _install_fake_load_dataset(monkeypatch, n_rows = 3)
+    folder = ds_root / "my-tux"
+    folder.mkdir(parents = True)
+    (folder / "notes.md").write_text("keep me", encoding = "utf-8")
+    r = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 3
+    assert sorted(p.name for p in folder.glob("*.png")) == [f"img_{i:04d}.png" for i in range(3)]
+    assert (folder / "notes.md").read_text(encoding = "utf-8") == "keep me"

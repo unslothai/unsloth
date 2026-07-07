@@ -1331,10 +1331,15 @@ async def start_diffusion_training(
     # Reserve the training slot BEFORE freeing residents: is_active() otherwise flips true only
     # at service.start(), after the free below, so a concurrent /images/load or /video/load would
     # pass its training guard during the free-then-spawn window, acquire the GPU, and double-
-    # allocate VRAM against the trainer. Released in the finally so a failed start never leaves
-    # training stuck "active".
-    service.reserve()
+    # allocate VRAM against the trainer. reserve() is a compare-and-set: a second overlapping
+    # /diffusion/start raises RuntimeError (-> 409) here, before it frees anything, so two starts
+    # never both tear down residents and race to start(). unreserve() runs in the finally ONLY
+    # when THIS request acquired the reservation, so a rejected second request never clears the
+    # first request's claim.
+    reserved = False
     try:
+        service.reserve()
+        reserved = True
         # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
         # loads its own pipeline. Offload the blocking teardown (engine unload waits on the
         # generation locks; the export subprocess join can take seconds) to a worker thread so
@@ -1345,7 +1350,7 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except RuntimeError as e:
-        # A job is already running.
+        # A job is already running (or a start is already reserved).
         raise HTTPException(status_code = 409, detail = str(e))
     except HTTPException:
         raise
@@ -1359,8 +1364,10 @@ async def start_diffusion_training(
         )
     finally:
         # On success the now-live proc keeps is_active() true; on any failure this clears the
-        # reservation so training is not left permanently "active".
-        service.unreserve()
+        # reservation so training is not left permanently "active". Only the request that actually
+        # reserved clears it, so a rejected overlapping start does not drop the winner's claim.
+        if reserved:
+            service.unreserve()
     return DiffusionTrainingStartResponse(job_id = job_id, status = "running")
 
 
@@ -1591,6 +1598,30 @@ async def upload_diffusion_dataset(
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
         dest = folder / filename
+        # Reject a second IMAGE that shares this one's stem but differs by extension (sample.png
+        # vs sample.jpg): both resolve to the same <stem>.txt caption sidecar (the kohya/diffusers
+        # convention the reader, editor, and delete paths all use), so keeping both would silently
+        # make them share -- and corrupt -- one caption during training. Scan the whole folder, not
+        # just this batch, because uploads accumulate (earlier-in-batch files are already on disk).
+        # Re-uploading the exact same name (same stem AND extension) stays allowed as an overwrite;
+        # caption/text files are exempt (attaching sample.txt to sample.png is the intended flow).
+        if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
+            stem = Path(filename).stem
+            for existing in folder.iterdir():
+                if (
+                    existing.is_file()
+                    and existing.name != filename
+                    and existing.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+                    and existing.stem == stem
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"Duplicate image name '{stem}'. '{existing.name}' is already in this "
+                            f"dataset; two images sharing a name would share one '{stem}.txt' "
+                            f"caption. Rename one before uploading."
+                        ),
+                    )
         # Stream into a sibling temp file and only atomically promote it once the whole file
         # is written and within the limit. A mid-stream 413 (or any abort) then removes the
         # TEMP file, never dest, so re-uploading a batch that trips the limit can no longer
@@ -2135,6 +2166,7 @@ async def import_diffusion_dataset_example(
     folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
 
     def do_import() -> DiffusionDatasetImportResponse:
+        import os
         import shutil
         import tempfile
 
@@ -2169,8 +2201,21 @@ async def import_diffusion_dataset_example(
                         status_code = 502,
                         detail = f"No images found in '{entry['repo']}'.",
                     )
-                for p in staging.iterdir():
-                    shutil.move(str(p), str(folder / p.name))
+                # Promote the fully-materialized staging dir as a UNIT. A per-file move loop is
+                # not atomic: a hard process death (SIGKILL / OOM / power loss) between two moves
+                # would leave the folder with SOME images, and the image_count>0 idempotency check
+                # above would then accept that truncated dataset as complete on the next retry. The
+                # folder was created empty on this path (it only runs when it holds no images), so
+                # a single same-filesystem directory rename is atomic. If the folder holds
+                # unrelated non-image files (rmdir refuses), fall back to a per-file move rather
+                # than abort -- the common fresh-import path stays atomic.
+                try:
+                    os.rmdir(folder)
+                except OSError:
+                    for p in staging.iterdir():
+                        shutil.move(str(p), str(folder / p.name))
+                else:
+                    os.replace(str(staging), str(folder))
             finally:
                 shutil.rmtree(staging, ignore_errors = True)
         summary = _diffusion_dataset_summary(folder)
