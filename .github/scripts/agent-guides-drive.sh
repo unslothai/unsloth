@@ -154,7 +154,12 @@ raw_env() {  # $1 = var name -> value (one shlex-quote layer stripped)
 # writers as a side effect (it writes each agent's relocated session config).
 parse_connect() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
-  if ! unsloth start "$AGENT" --no-launch --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
+  # CONNECT_YOLO=1 adds --yolo. opencode/openclaw gate tool approval through their
+  # config (which now prompts by default), so the file-edit test opts into auto-approval
+  # here, the same intent as claude/codex's per-call bypass flags.
+  local yolo=()
+  [ -n "${CONNECT_YOLO:-}" ] && yolo=(--yolo)
+  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
     cat_redacted "$raw"
     guide_fail "'unsloth start ${AGENT} --no-launch' exited non-zero"
   fi
@@ -394,7 +399,10 @@ case "$MODE" in
     T2='Run hello.py with python and show me the exact output.'
 
     # The start.py recipe writers + crosscheck must see the repo; run them
-    # from the repo root BEFORE cd-ing into the scratch work dir.
+    # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
+    # gate tool approval through their config (prompting by default), so file-edit
+    # opts them into auto-approval to run edits/commands headlessly.
+    case "$AGENT" in opencode|openclaw) CONNECT_YOLO=1 ;; esac
     parse_connect
     crosscheck_contract
     # File-edit needs real tools, so we cannot zero them as in connection.
