@@ -405,6 +405,11 @@ def test_v5_blank_repair_roundtrip(build):
     # keeps scaling in a buffer (issue #2405 / PR #6907).
     from unsloth.models import loader
 
+    # The repair only runs on transformers v5 (it is what blanks the buffers);
+    # on v4 _fix_rope_inv_freq is a no-op, so the round-trip cannot restore.
+    if not loader._NEEDS_ROPE_FIX:
+        pytest.skip("transformers < 5 does not blank rope buffers; repair is a no-op")
+
     rot, config = build()
     snapshot = {name: buf.detach().clone() for name, buf in rot.named_buffers()}
     assert snapshot, "rotary registers no buffers; nothing to guard"
