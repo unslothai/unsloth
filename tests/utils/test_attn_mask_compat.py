@@ -33,13 +33,13 @@ compat = _load_compat_module()
 
 
 def test_no_deprecation_warning_on_causal_mask():
-    with warnings.catch_warnings(record = True) as caught:
+    with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        compat.AttentionMaskConverter(is_causal = True, sliding_window = 3).to_causal_4d(
+        compat.AttentionMaskConverter(is_causal=True, sliding_window=3).to_causal_4d(
             1,
             8,
             8,
-            dtype = torch.float16,
+            dtype=torch.float16,
         )
     assert not any(
         issubclass(w.category, FutureWarning) and "modeling_attn_mask_utils" in str(w.message)
@@ -62,23 +62,23 @@ def test_causal_4d_matches_transformers(batch_size, query_length, sliding_window
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         expected = legacy.AttentionMaskConverter(
-            is_causal = True,
-            sliding_window = sliding_window,
+            is_causal=True,
+            sliding_window=sliding_window,
         ).to_causal_4d(
             batch_size,
             query_length,
             key_value_length,
-            dtype = dtype,
+            dtype=dtype,
         )
 
     actual = compat.AttentionMaskConverter(
-        is_causal = True,
-        sliding_window = sliding_window,
+        is_causal=True,
+        sliding_window=sliding_window,
     ).to_causal_4d(
         batch_size,
         query_length,
         key_value_length,
-        dtype = dtype,
+        dtype=dtype,
     )
 
     if expected is None:
@@ -106,7 +106,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
 
     batch_size = 2 if attention_mask is not None else 1
     query_length = 5
-    inputs_embeds = torch.zeros(batch_size, query_length, 16, dtype = torch.float32)
+    inputs_embeds = torch.zeros(batch_size, query_length, 16, dtype=torch.float32)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
@@ -115,7 +115,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
             (batch_size, query_length),
             inputs_embeds,
             past_length,
-            sliding_window = 3,
+            sliding_window=3,
         )
 
     actual = compat._prepare_4d_causal_attention_mask_for_sdpa(
@@ -123,7 +123,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
         (batch_size, query_length),
         inputs_embeds,
         past_length,
-        sliding_window = 3,
+        sliding_window=3,
     )
 
     if expected is None:
@@ -138,14 +138,14 @@ def test_prepare_4d_attention_mask_for_sdpa_matches_transformers():
     except ImportError:
         pytest.skip("transformers.modeling_attn_mask_utils unavailable")
 
-    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1]], dtype = torch.float32)
+    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 1]], dtype=torch.float32)
     dtype = torch.float32
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
-        expected = legacy._prepare_4d_attention_mask_for_sdpa(mask, dtype = dtype)
+        expected = legacy._prepare_4d_attention_mask_for_sdpa(mask, dtype=dtype)
 
-    actual = compat._prepare_4d_attention_mask_for_sdpa(mask, dtype = dtype)
+    actual = compat._prepare_4d_attention_mask_for_sdpa(mask, dtype=dtype)
 
     if expected is None:
         assert actual is None
@@ -159,7 +159,7 @@ def test_repo_has_no_direct_deprecated_imports():
     for path in model_dir.glob("*.py"):
         if path.name == "_attn_mask_compat.py":
             continue
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         if "transformers.modeling_attn_mask_utils" in text:
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     assert offenders == []
@@ -174,8 +174,14 @@ def test_import_falls_back_when_is_tracing_missing():
     on the lower bound tested in CI (`__from_pyproject__` matrix cell).
 
     Reload the module with `is_tracing` removed from the namespace and confirm
-    the local fallback is used (returns False when dynamo is idle, without
-    raising).
+    the local fallback is used. The fallback must mirror the legacy
+    `transformers==4.51.3` inline expression
+    (``torch.jit.is_tracing() or isinstance(tensor, torch.fx.Proxy) or
+    is_torchdynamo_compiling()``) so the data-dependent ``torch.all(...)``
+    branches in the mask helpers continue to be skipped during JIT trace,
+    symbolic trace, and Dynamo compilation — otherwise tracing/exporting
+    these models on transformers 4.51.x either fails on proxy control flow
+    or bakes the wrong SDPA causal-mask path.
     """
     fake_import_utils = types.ModuleType("transformers.utils.import_utils")
 
@@ -203,7 +209,28 @@ def test_import_falls_back_when_is_tracing_missing():
         "would not exercise the fallback path"
     )
 
-    # Falls back to the local definition.
+    # Dynamo idle and no JIT/FX active → False.
     assert reloaded.is_tracing() is False
     # Sanity: accepts an optional tensor positional arg without raising.
     assert reloaded.is_tracing(torch.zeros(1)) is False
+
+    # ``torch.fx.Proxy`` should be detected even when Dynamo is idle, since
+    # symbolic_trace / export-only paths don't go through dynamo. Construct
+    # the Proxy from a real fx.Graph node (passing a Tensor directly to
+    # ``Proxy(...)`` is a common foot-gun that raises AttributeError).
+    fx_graph = torch.fx.Graph()
+    fx_node = fx_graph.create_node("call_function", torch.zeros, (torch.zeros(1).shape,))
+    proxy = torch.fx.Proxy(fx_node)
+    assert reloaded.is_tracing(proxy) is True
+
+    # ``torch.jit.is_tracing()`` should be detected via patch.
+    with mock.patch("torch.jit.is_tracing", return_value=True):
+        assert reloaded.is_tracing() is True
+
+    # Dynamo compilation is also covered (the fallback calls
+    # ``is_torchdynamo_compiling`` from the module-level import, which is
+    # bound at fallback-definition time — exactly the same import binding
+    # that the real ``is_tracing`` uses). We don't re-test the dynamo path
+    # here because it's already exercised by the upstream test suite, and
+    # patching the import after the module is loaded would not affect the
+    # closure's reference.
