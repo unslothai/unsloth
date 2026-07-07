@@ -618,22 +618,30 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn managed_cli_capability_cache_hit_skips_help_probe() {
+    async fn managed_cli_capability_help_probe_runs_before_cache() {
         use std::fs;
 
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("cache-hit");
 
         remove_managed_capability_cache();
+        // `-h` always succeeds unless `modeh` exists; the desktop-capabilities
+        // probe always succeeds unless `modecap` exists. Toggling those lets us
+        // prove the ordering: -h runs on every probe (even a cache hit), while
+        // the heavier capability probe is skipped once the cache is warm.
         let fake = fake_cli(
             "cap-cache-hit",
             r#"#!/bin/sh
 log="$0.calls"
-mode="$0.mode"
+modeh="$0.modeh"
+modecap="$0.modecap"
 printf '%s\n' "$*" >> "$log"
-if [ -f "$mode" ]; then exit 42; fi
-if [ "$1" = "-h" ]; then exit 0; fi
+if [ "$1" = "-h" ]; then
+  if [ -f "$modeh" ]; then exit 42; fi
+  exit 0
+fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$modecap" ]; then exit 42; fi
   printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
   exit 0
 fi
@@ -642,8 +650,10 @@ exit 1
         );
         let bin = fake.bin.clone();
         let calls = bin.with_extension("calls");
-        let mode = bin.with_extension("mode");
+        let modeh = bin.with_extension("modeh");
+        let modecap = bin.with_extension("modecap");
 
+        // Cold probe: runs -h and the capability probe, then caches the result.
         assert!(matches!(
             probe_managed_bin(bin.clone()).await,
             ManagedProbe::Ready { .. }
@@ -652,65 +662,25 @@ exit 1
         assert!(first_calls.contains("-h"));
         assert!(first_calls.contains("studio desktop-capabilities --json"));
 
-        fs::write(&mode, "cached").unwrap();
+        // Cache hit: -h still runs, but the capability probe is skipped (breaking
+        // it via `modecap` proves it is not invoked).
+        fs::write(&modecap, "broken").unwrap();
         fs::write(&calls, "").unwrap();
         assert!(matches!(
             probe_managed_bin(bin.clone()).await,
             ManagedProbe::Ready { .. }
         ));
-        assert_eq!(fs::read_to_string(&calls).unwrap(), "");
-
-        // A marker change invalidates the cache, so preflight falls back to the
-        // cheap CLI help probe before deciding the managed install is stale.
-        fs::write(fake.dir.join("pyvenv.cfg"), "changed").unwrap();
-        let stale = probe_managed_bin(bin).await;
-        assert!(matches!(stale, ManagedProbe::Stale { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        remove_managed_capability_cache();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn managed_cli_capability_cache_hit_rechecks_executable() {
-        use std::fs;
-        use std::os::unix::fs::PermissionsExt;
-
-        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
-        let _cache_home = ManagedCapabilityCacheHome::new("cache-hit-exec");
-
-        remove_managed_capability_cache();
-        let fake = fake_cli(
-            "cap-cache-exec",
-            r#"#!/bin/sh
-if [ "$1" = "-h" ]; then exit 0; fi
-if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
-  exit 0
-fi
-exit 1
-"#,
-        );
-        let bin = fake.bin.clone();
-
-        // Prime the capability cache with a successful full probe.
+        // A non-launchable CLI is caught by the -h probe even with a warm cache:
+        // preflight reports Stale (for repair) and never trusts the cache.
+        fs::write(&modeh, "broken").unwrap();
+        fs::write(&calls, "").unwrap();
         assert!(matches!(
-            probe_managed_bin(bin.clone()).await,
-            ManagedProbe::Ready { .. }
-        ));
-
-        // Clearing the executable bit leaves the fingerprint (path/size/mtime/
-        // markers) unchanged, so the cache still "matches", but the binary can
-        // no longer launch. Preflight must not report Ready from cache; it falls
-        // back to the CLI help probe, which fails to spawn and yields Stale.
-        let mut perms = fs::metadata(&bin).unwrap().permissions();
-        perms.set_mode(0o644);
-        fs::set_permissions(&bin, perms).unwrap();
-
-        assert!(matches!(
-            probe_managed_bin(bin.clone()).await,
+            probe_managed_bin(bin).await,
             ManagedProbe::Stale { .. }
         ));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
         remove_managed_capability_cache();
     }

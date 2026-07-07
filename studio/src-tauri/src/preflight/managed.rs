@@ -408,46 +408,14 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
     desktop_capability_stale_reason(capability).is_none()
 }
 
-/// Cheap launchability guard for the cached fast path. A matching capability
-/// fingerprint only proves the binary's path/size/mtime/markers are unchanged,
-/// not that the current user can still execute it: the executable bit may have
-/// been cleared, or be set only for another owner/group, or be denied by an ACL,
-/// all without touching mtime/size. Use a real access(X_OK) check (which honors
-/// the caller's uid/gid and ACLs, unlike a raw mode bitmask) so a
-/// permission/ownership change is caught. When the binary is not launchable,
-/// skip the cache shortcut and fall back to the CLI help probe so preflight
-/// reports Stale/repair instead of letting a later backend start fail confusingly.
-#[cfg(unix)]
-fn managed_bin_is_executable(bin: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c_path) = std::ffi::CString::new(bin.as_os_str().as_bytes()) else {
-        // A path with an interior NUL cannot name a real file; let the probe decide.
-        return false;
-    };
-    // SAFETY: c_path is a valid NUL-terminated C string kept alive for the call.
-    unsafe { libc::access(c_path.as_ptr(), libc::X_OK) == 0 }
-}
-
-#[cfg(not(unix))]
-fn managed_bin_is_executable(_bin: &Path) -> bool {
-    true
-}
-
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
-    if managed_bin_is_executable(&bin) {
-        if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
-            if read_cached_capability(&fingerprint).is_some() {
-                info!(
-                    "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                    bin,
-                    started.elapsed().as_millis()
-                );
-                return ManagedProbe::Ready { bin };
-            }
-        }
-    }
-
+    // Always verify the managed CLI actually launches before trusting the cache.
+    // A matching capability fingerprint does not prove the binary can still run:
+    // its venv interpreter or a runtime dependency can be broken while the
+    // path/size/mtime/markers are unchanged, so the -h probe runs first and a
+    // non-launchable install is reported Stale for repair. The capability cache
+    // below still skips the heavier desktop-capabilities probe on a hit.
     if !run_cli_probe(&bin, &["-h"]).await {
         info!(
             "Managed preflight: cli unusable for {:?} in {}ms",
@@ -458,6 +426,17 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
             bin,
             reason: "cli_unusable".to_string(),
         };
+    }
+
+    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
+        if read_cached_capability(&fingerprint).is_some() {
+            info!(
+                "Managed preflight: using cached desktop capability for {:?} in {}ms",
+                bin,
+                started.elapsed().as_millis()
+            );
+            return ManagedProbe::Ready { bin };
+        }
     }
 
     let capability = probe_cli_capability(&bin).await;
