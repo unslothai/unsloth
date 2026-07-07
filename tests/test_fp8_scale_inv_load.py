@@ -65,6 +65,7 @@ def _install_loader_utils_stubs():
 
     model_utils = types.ModuleType("unsloth.models._utils")
     model_utils.TorchAOConfig = type("TorchAOConfig", (), {})
+    model_utils._apply_text_only_key_mapping = lambda *args, **kwargs: None
     sys.modules["unsloth.models._utils"] = model_utils
 
     zoo_utils = types.ModuleType("unsloth_zoo.utils")
@@ -431,6 +432,33 @@ def test_skips_shape_incompatible_local_scale():
     assert not hasattr(model.fp8, "weight_scale_inv")
 
 
+def test_reshapes_same_numel_local_scale_placeholder():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(
+        weight = torch.randn(4, 4, dtype = torch.float16),
+        weight_scale = torch.ones((1, 4), dtype = torch.float16),
+    )
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.arange(4, dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert model.fp8.weight_scale_inv.shape == (1, 4)
+    assert torch.equal(
+        model.fp8.weight_scale_inv, torch.arange(4, dtype = torch.float16).reshape(1, 4)
+    )
+
+
 def test_restores_multielement_scale_without_local_placeholder():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
@@ -519,6 +547,8 @@ def test_restore_accepts_cache_download_selection_kwargs():
 class _Fp8Expert(torch.nn.Module):
     def __init__(self):
         super().__init__()
+        self.up_proj_scale_inv = torch.ones(2, dtype = torch.float16)
+        self.up_proj_scale = torch.ones(2, dtype = torch.float16)
         self.gate_up_proj_scale_inv = torch.ones(2, dtype = torch.float16)
         self.down_proj_scale_inv = torch.ones(2, dtype = torch.float16)
         self.gate_up_proj_scale = torch.ones(2, dtype = torch.float16)
@@ -575,6 +605,34 @@ def test_restores_fbgemm_expert_scale_tensors():
     assert skipped == 0
     assert torch.equal(model.expert.gate_up_proj_scale, torch.full((2,), 4.0, dtype = torch.float16))
     assert torch.equal(model.expert.down_proj_scale, torch.full((2,), 5.0, dtype = torch.float16))
+
+
+def test_restores_fp8_scale_alias_tensors():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+    model.expert = _Fp8Expert()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {
+                "fp8.scale": torch.full((2, 1), 6.0, dtype = torch.float32),
+                "expert.up_proj_scale": torch.full((2,), 7.0, dtype = torch.float32),
+                "expert.up_proj_scale_inv": torch.full((2,), 8.0, dtype = torch.float32),
+            },
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 3
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale, torch.full((2, 1), 6.0, dtype = torch.float16))
+    assert torch.equal(model.expert.up_proj_scale, torch.full((2,), 7.0, dtype = torch.float16))
+    assert torch.equal(model.expert.up_proj_scale_inv, torch.full((2,), 8.0, dtype = torch.float16))
 
 
 def test_loader_detects_direct_or_requested_fp8_restore_paths():
@@ -733,6 +791,55 @@ def test_offline_fp8_cache_uses_safe_serialization():
                 return
 
     pytest.fail("_offline_quantize_to_fp8 must save safetensors caches.")
+
+
+def test_offline_fp8_cache_regenerates_bin_only_cache(monkeypatch):
+    loader_utils = _load_loader_utils()
+
+    class DummyConfig:
+        architectures = ["DummyForCausalLM"]
+
+    class DummyModel:
+        def save_pretrained(self, path, safe_serialization = False):
+            assert safe_serialization is True
+            os.makedirs(path, exist_ok = True)
+            Path(path, "model.safetensors").write_text("safe")
+
+    class DummyTokenizer:
+        def save_pretrained(self, path):
+            Path(path, "tokenizer.json").write_text("{}")
+
+    class DummyAutoModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return DummyModel()
+
+    class DummyTokenizerLoader:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return DummyTokenizer()
+
+    import transformers
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: DummyConfig())
+    monkeypatch.setattr(transformers, "AutoModelForCausalLM", DummyAutoModel)
+    monkeypatch.setattr(transformers, "AutoModelForImageTextToText", DummyAutoModel)
+    monkeypatch.setattr(transformers, "AutoTokenizer", DummyTokenizerLoader)
+    monkeypatch.setattr(transformers, "AutoProcessor", DummyTokenizerLoader)
+    monkeypatch.setattr(transformers, "TorchAoConfig", lambda config: config)
+    monkeypatch.setattr(loader_utils, "_get_torchao_fp8_config", lambda mode: {"mode": mode})
+    monkeypatch.setattr(loader_utils.torch.cuda, "empty_cache", lambda: None)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        monkeypatch.setattr(loader_utils.tempfile, "gettempdir", lambda: temp_dir)
+        stale_cache = Path(temp_dir) / "model-fp8-row"
+        stale_cache.mkdir()
+        Path(stale_cache, "pytorch_model.bin").write_text("old")
+
+        result = loader_utils._offline_quantize_to_fp8("org/model", "row")
+        assert result == str(stale_cache)
+        assert not Path(result, "pytorch_model.bin").exists()
+        assert Path(result, "model.safetensors").exists()
 
 
 def test_offline_fp8_cache_forces_safetensors_loads():

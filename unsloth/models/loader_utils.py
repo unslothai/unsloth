@@ -17,6 +17,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import torch
 import re
 import tempfile
@@ -328,6 +329,11 @@ def _offline_quantize_to_fp8(
     new_model_name = os.path.join(temp_dir, cache_name)
     print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
 
+    if os.path.isdir(new_model_name) and not any(
+        filename.endswith(".safetensors") for filename in os.listdir(new_model_name)
+    ):
+        shutil.rmtree(new_model_name)
+
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
 
@@ -414,8 +420,13 @@ def _model_has_real_fp8_modules(model):
 
 
 _FP8_SCALE_SUFFIXES = (
+    ("weight_scale", ".scale"),
     ("weight_scale", ".weight_scale"),
     ("weight_scale_inv", ".weight_scale_inv"),
+    ("gate_proj_scale", ".gate_proj_scale"),
+    ("gate_proj_scale_inv", ".gate_proj_scale_inv"),
+    ("up_proj_scale", ".up_proj_scale"),
+    ("up_proj_scale_inv", ".up_proj_scale_inv"),
     ("gate_up_proj_scale", ".gate_up_proj_scale"),
     ("gate_up_proj_scale_inv", ".gate_up_proj_scale_inv"),
     ("down_proj_scale", ".down_proj_scale"),
@@ -629,9 +640,12 @@ def _restore_missing_fp8_weight_scale_inv(
         if isinstance(weight, torch.Tensor) and weight.device.type == "meta":
             skipped += 1
             continue
-        if isinstance(reference, torch.Tensor) and reference.shape != scale_tensor.shape:
-            skipped += 1
-            continue
+        target_shape = reference.shape if isinstance(reference, torch.Tensor) else None
+        if target_shape is not None and target_shape != scale_tensor.shape:
+            if reference.numel() != scale_tensor.numel():
+                skipped += 1
+                continue
+            scale_tensor = scale_tensor.reshape(target_shape)
         if (
             not isinstance(reference, torch.Tensor)
             and isinstance(weight, torch.Tensor)
