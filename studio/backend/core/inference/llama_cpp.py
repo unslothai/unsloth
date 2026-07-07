@@ -886,6 +886,21 @@ def _snapshot_has_all_shards(
     return True
 
 
+def _resolve_repo_id_casing(hf_repo: str) -> str:
+    """Map a requested repo id to its cached canonical casing, or return it unchanged.
+
+    A case-variant request (for example a lowercased id) resolves to the
+    canonical-cased cache directory so the main GGUF and its companions
+    (mmproj / MTP drafter) all read the same cache entry. Returns ``hf_repo``
+    unchanged when resolution is unavailable or errors.
+    """
+    try:
+        from utils.paths import resolve_cached_repo_id_case
+        return resolve_cached_repo_id_case(hf_repo)
+    except Exception:
+        return hf_repo
+
+
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     m = _SHARD_FULL_RE.match(first_shard)
     if not m:
@@ -4016,20 +4031,14 @@ class LlamaCppBackend:
                 "Install it with: pip install huggingface_hub"
             )
 
-        from utils.paths import resolve_cached_repo_id_case
-
-        try:
-            resolved_hf_repo = resolve_cached_repo_id_case(hf_repo)
-        except Exception as e:
-            logger.debug("Could not resolve cached repo_id casing for %s: %s", hf_repo, e)
-        else:
-            if resolved_hf_repo != hf_repo:
-                logger.info(
-                    "Using cached repo_id casing '%s' for requested '%s'",
-                    resolved_hf_repo,
-                    hf_repo,
-                )
-                hf_repo = resolved_hf_repo
+        resolved_hf_repo = _resolve_repo_id_casing(hf_repo)
+        if resolved_hf_repo != hf_repo:
+            logger.info(
+                "Using cached repo_id casing '%s' for requested '%s'",
+                resolved_hf_repo,
+                hf_repo,
+            )
+            hf_repo = resolved_hf_repo
 
         # Resolve the filename from the variant
         gguf_filename = None
@@ -4090,7 +4099,21 @@ class LlamaCppBackend:
             # cold whenever free disk is below the full weight footprint,
             # even though nothing needs downloading.
             already_cached_bytes = 0
-            if not force:
+            # A split GGUF whose shards are not co-located in a single snapshot is
+            # refetched as a whole set later (see the co-location check below), so it
+            # must not be counted as cached here. Otherwise the preflight can read 0
+            # bytes to download, skip the smaller-variant fallback, and then fail the
+            # full download on a low-disk machine.
+            split_needs_refetch = False
+            if not force and gguf_extra_shards:
+                main_cached = _cached_hf_snapshot_file(
+                    hf_repo, gguf_filename, expected_size = expected_sizes.get(gguf_filename)
+                )
+                if main_cached is None or not _snapshot_has_all_shards(
+                    main_cached, gguf_filename, gguf_extra_shards, expected_sizes
+                ):
+                    split_needs_refetch = True
+            if not force and not split_needs_refetch:
                 for p in path_infos:
                     if not p.size:
                         continue
@@ -5081,6 +5104,19 @@ class LlamaCppBackend:
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
             if hf_repo:
+                # Resolve the requested repo id to its cached canonical casing once,
+                # up front, so the main GGUF and its companions (mmproj / MTP drafter)
+                # all resolve from the same cache entry. Otherwise a case-variant
+                # request resolves the main file from the canonical cache dir while the
+                # companions keep the requested casing and miss the cached files.
+                _resolved_repo = _resolve_repo_id_casing(hf_repo)
+                if _resolved_repo != hf_repo:
+                    logger.info(
+                        "Using cached repo_id casing '%s' for requested '%s'",
+                        _resolved_repo,
+                        hf_repo,
+                    )
+                    hf_repo = _resolved_repo
                 with _hf_offline_if_dns_dead():
                     model_path = self._download_gguf(
                         hf_repo = hf_repo,

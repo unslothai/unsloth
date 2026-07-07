@@ -82,6 +82,7 @@ from core.inference.llama_cpp import (
     _gguf_files_for_variant,
     _hf_offline_if_dns_dead,
     _probe_dns_dead,
+    _resolve_repo_id_casing,
 )
 from utils.models.model_config import (
     _detect_gguf_from_hf_cache,
@@ -502,6 +503,24 @@ class TestListGgufVariantsFromCache:
 
     def test_returns_none_when_not_cached(self, hf_cache):
         assert _list_gguf_variants_from_hf_cache("unsloth/absent") is None
+
+
+class TestResolveRepoIdCasing:
+    def test_maps_to_canonical_casing(self, monkeypatch):
+        monkeypatch.setattr(
+            "utils.paths.resolve_cached_repo_id_case",
+            lambda repo: "unsloth/Gemma-4-GGUF" if repo.lower() == "unsloth/gemma-4-gguf" else repo,
+        )
+        # A companion download passed the resolved id reads the same cache entry
+        # as the main GGUF instead of missing it under the requested casing.
+        assert _resolve_repo_id_casing("unsloth/gemma-4-gguf") == "unsloth/Gemma-4-GGUF"
+
+    def test_passthrough_on_resolver_error(self, monkeypatch):
+        def boom(_repo):
+            raise RuntimeError("resolver unavailable")
+
+        monkeypatch.setattr("utils.paths.resolve_cached_repo_id_case", boom)
+        assert _resolve_repo_id_casing("unsloth/gemma-4-gguf") == "unsloth/gemma-4-gguf"
 
     def test_companion_only_newer_snapshot_does_not_shadow_real_variants(self, hf_cache):
         # A newer snapshot holds only a vision projector fetched on demand,
