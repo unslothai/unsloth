@@ -5296,9 +5296,7 @@ def _append_existing_bwrap_bind(
 _SANDBOX_LIBRARY_DIR_NAMES = frozenset({"lib", "lib64"})
 
 
-def _is_broad_sandbox_library_path(
-    path: str | Path, *, require_library_dir: bool = False
-) -> bool:
+def _is_broad_sandbox_library_path(path: str | Path, *, require_library_dir: bool = False) -> bool:
     candidate = Path(path)
     resolved = _resolve_existing_path(candidate)
     if not candidate.is_absolute() and not str(candidate).startswith(("/", "\\")):
@@ -5320,7 +5318,10 @@ def _is_broad_sandbox_library_path(
 
 
 def _sandbox_library_path_targets(
-    env: dict[str, str], key: str, *, require_library_dir: bool = False
+    env: dict[str, str],
+    key: str,
+    *,
+    require_library_dir: bool = False,
 ) -> list[Path]:
     return [
         _resolve_existing_path(Path(part))
