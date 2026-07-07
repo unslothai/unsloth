@@ -73,12 +73,33 @@ def _get(model_name: str | None = None):
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
 
-            device = _device()
-            logger.info("loading embedding model %s on %s", name, device)
-            _model = SentenceTransformer(
-                name, device = device, model_kwargs = {"torch_dtype": "float16"}
-            )
-            _name = name
+            import os as _os
+
+            _offline = _os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            } or _os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if _offline:
+                _os.environ["HF_HUB_OFFLINE"] = "1"
+                _os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            try:
+                device = _device()
+                logger.info("loading embedding model %s on %s", name, device)
+                _model = SentenceTransformer(
+                    name, device = device, model_kwargs = {"torch_dtype": "float16"}
+                )
+                _name = name
+            finally:
+                if _offline:
+                    _os.environ.pop("HF_HUB_OFFLINE", None)
+                    _os.environ.pop("TRANSFORMERS_OFFLINE", None)
         return _model
 
 

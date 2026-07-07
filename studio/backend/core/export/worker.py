@@ -635,7 +635,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Offline window covers the export (save_pretrained_gguf etc. may
+                # trigger Hub calls via transformers tokenizer init -> model_info).
+                with _offline_window_if_unreachable(step = "exporting"):
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)
