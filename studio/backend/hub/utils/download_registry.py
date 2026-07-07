@@ -1308,6 +1308,17 @@ class DownloadRegistry:
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
+            # Settle no-process active jobs too: an XET->HTTP retry parked in the
+            # reclaim wait loop has dropped its worker and slot guard, so it is
+            # absent from `live` above. Arm a pending cancel so the loop bails at
+            # its cancel_requested check, and any retry already racing past that
+            # check has its freshly spawned worker killed on register, instead of
+            # surviving this shutdown snapshot.
+            for key, job in list(self._jobs.items()):
+                if job.state not in _ACTIVE_STATES or key in self._processes:
+                    continue
+                self._pending_cancel[key] = self._generations.get(key)
+                self._jobs[key] = DownloadState("cancelling")
         reaped: list[tuple[str, subprocess.Popen, Optional[DownloadMetadata]]] = []
         for key, proc, metadata in live:
             try:

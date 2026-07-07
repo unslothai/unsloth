@@ -963,3 +963,78 @@ def test_active_download_refs_include_waiting_http_retry(monkeypatch, tmp_path):
     # cancel that backend-running retry after a reload.
     assert waiting_variants == [["Q4_K_M", "Q5_K_M"]]
     assert registry.get_job(key_a).state == "complete"
+
+
+def test_http_retry_bails_when_shutdown_settles_parked_retry(monkeypatch, tmp_path):
+    # A parked XET->HTTP retry has dropped its worker and active-slot guard, so it
+    # is absent from terminate_all()'s process snapshot. If shutdown runs while the
+    # retry waits behind an active sibling, terminate_all() must still settle the
+    # no-process job so the reclaim loop bails instead of spawning a fresh HTTP
+    # worker that outlives shutdown cleanup.
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key_a = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    key_b = download_registry.normalize_job_key("Org/Model::Q5_K_M")
+    assert registry.claim(
+        key_a,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash-a"}),
+        progress_blob_hashes = frozenset({"mainhash-a"}),
+    )
+    assert registry.claim(
+        key_b,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q5_K_M",
+        blob_hashes = frozenset({"mainhash-b"}),
+        progress_blob_hashes = frozenset({"mainhash-b"}),
+    )
+    # The sibling holds a live worker so it appears in terminate_all()'s snapshot.
+    sibling_proc = _make_proc(1, b"sibling xet")
+    assert registry.register_process(key_b, sibling_proc)
+    markers = []
+    shutdown_calls = 0
+
+    def fake_persist_cancel_marker(*args, **_kwargs):
+        markers.append(args)
+
+    def fake_spawn_worker(*_args, **_kwargs):
+        raise AssertionError("parked retry must not spawn a worker after shutdown")
+
+    def fake_sleep(_seconds):
+        nonlocal shutdown_calls
+        shutdown_calls += 1
+        # Shutdown fires while key_a's retry is parked in the reclaim wait loop.
+        registry.terminate_all("download")
+        # The killed sibling's watcher then clears the repo guard, which without a
+        # settled retry would let the loop reclaim the slot and spawn a worker.
+        registry.set_job(key_b, "cancelled")
+
+    monkeypatch.setattr(download_lifecycle.time, "sleep", fake_sleep)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+    monkeypatch.setattr(download_registry, "persist_cancel_marker", fake_persist_cancel_marker)
+
+    assert real_register_worker(
+        registry,
+        key_a,
+        _make_proc(1, b"xet failed a"),
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch-a",
+    )
+
+    assert shutdown_calls == 1
+    assert registry.get_job(key_a).state == "cancelled"
+    # The bailed retry still persists its XET cancel marker / orphan breadcrumb.
+    assert ("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET) in markers
