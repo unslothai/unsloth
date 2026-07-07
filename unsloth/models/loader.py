@@ -439,7 +439,7 @@ class FastLanguageModel(FastLlamaModel):
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
-        restore_fp8_scales = load_in_fp8 != False
+        restore_fp8_scales = False
         if not use_exact_model_name:
             new_model_name = get_model_name(
                 model_name,
@@ -458,12 +458,14 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_16bit,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
+                restore_fp8_scales = True
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
                 # If mapper resolved to a pre-quantized FP8 model, disable
                 # on-the-fly quantization to avoid double quantization
                 if load_in_fp8 != False and new_model_name != old_model_name:
+                    restore_fp8_scales = True
                     load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
@@ -870,6 +872,11 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 revision = revision if not is_peft else None,
                 local_files_only = local_files_only,
+                subfolder = kwargs.get("subfolder"),
+                variant = kwargs.get("variant"),
+                use_safetensors = kwargs.get("use_safetensors"),
+                cache_dir = kwargs.get("cache_dir"),
+                force_download = kwargs.get("force_download", False),
             )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
@@ -1099,7 +1106,7 @@ class FastModel(FastBaseModel):
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
-        restore_fp8_scales = load_in_fp8 != False
+        restore_fp8_scales = False
         if not use_exact_model_name:
             new_model_name = get_model_name(
                 model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
@@ -1114,12 +1121,14 @@ class FastModel(FastBaseModel):
                     load_in_16bit,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
+                restore_fp8_scales = True
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
                 # If mapper resolved to a pre-quantized FP8 model, disable
                 # on-the-fly quantization to avoid double quantization
                 if load_in_fp8 != False and new_model_name != old_model_name:
+                    restore_fp8_scales = True
                     load_in_fp8 = False
 
         # Check if pre-quantized models are allowed
@@ -1480,7 +1489,11 @@ class FastModel(FastBaseModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                model_name = get_model_name(model_name, load_in_4bit)
+                model_name = get_model_name(
+                    model_name,
+                    load_in_4bit = load_in_4bit,
+                    load_in_fp8 = load_in_fp8,
+                )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -1752,6 +1765,11 @@ class FastModel(FastBaseModel):
                 token = token,
                 revision = revision if not is_peft else None,
                 local_files_only = local_files_only,
+                subfolder = kwargs.get("subfolder"),
+                variant = kwargs.get("variant"),
+                use_safetensors = kwargs.get("use_safetensors"),
+                cache_dir = kwargs.get("cache_dir"),
+                force_download = kwargs.get("force_download", False),
             )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 

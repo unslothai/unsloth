@@ -14,6 +14,7 @@
 
 from ..device_type import DEVICE_TYPE_TORCH
 import importlib
+import json
 import logging
 import os
 import torch
@@ -344,7 +345,7 @@ def _offline_quantize_to_fp8(
             **load_kwargs,
         )
         tokenizer = auto_processor.from_pretrained(model_name)
-        model.save_pretrained(new_model_name, safe_serialization = False)
+        model.save_pretrained(new_model_name, safe_serialization = True)
         del model
         for _ in range(2):
             torch.cuda.empty_cache()
@@ -412,6 +413,13 @@ def _model_has_real_fp8_modules(model):
     return False
 
 
+_FP8_SCALE_SUFFIXES = (
+    ("weight_scale_inv", ".weight_scale_inv"),
+    ("gate_up_proj_scale_inv", ".gate_up_proj_scale_inv"),
+    ("down_proj_scale_inv", ".down_proj_scale_inv"),
+)
+
+
 def _resolve_weight_scale_inv_candidates(module_name, named_modules):
     if module_name in named_modules:
         return module_name
@@ -422,7 +430,82 @@ def _resolve_weight_scale_inv_candidates(module_name, named_modules):
     return None
 
 
-def _find_fp8_scale_inv_tensors(model_dir, model_name, revision = None, token = None, local_files_only = False):
+def _variant_file_names(variant):
+    if variant:
+        return [
+            f"model.{variant}.safetensors",
+            f"pytorch_model.{variant}.safetensors",
+        ]
+    return [
+        "model.safetensors",
+        "pytorch_model.safetensors",
+    ]
+
+
+def _variant_index_names(variant):
+    if variant:
+        return [
+            f"model.{variant}.safetensors.index.json",
+            f"pytorch_model.{variant}.safetensors.index.json",
+        ]
+    return [
+        "model.safetensors.index.json",
+        "pytorch_model.safetensors.index.json",
+    ]
+
+
+def _resolve_fp8_scale_safetensors_files(model_dir, variant = None, use_safetensors = None):
+    if use_safetensors is False:
+        return []
+
+    for index_name in _variant_index_names(variant):
+        index_path = os.path.join(model_dir, index_name)
+        if not os.path.isfile(index_path):
+            continue
+        try:
+            with open(index_path, encoding = "utf-8") as fh:
+                weight_map = json.load(fh).get("weight_map", {})
+        except Exception:
+            continue
+        selected = []
+        for key, filename in weight_map.items():
+            if not any(key.endswith(suffix) for _, suffix in _FP8_SCALE_SUFFIXES):
+                continue
+            full_path = os.path.join(model_dir, filename)
+            if filename.endswith(".safetensors") and os.path.isfile(full_path):
+                selected.append(full_path)
+        return sorted(set(selected))
+
+    for filename in _variant_file_names(variant):
+        full_path = os.path.join(model_dir, filename)
+        if os.path.isfile(full_path):
+            return [full_path]
+
+    if variant is not None:
+        return []
+
+    safetensors_files = [
+        os.path.join(model_dir, filename)
+        for filename in os.listdir(model_dir)
+        if filename.endswith(".safetensors") and os.path.isfile(os.path.join(model_dir, filename))
+    ]
+    if len(safetensors_files) == 1:
+        return safetensors_files
+    return []
+
+
+def _find_fp8_scale_inv_tensors(
+    model_dir,
+    model_name,
+    revision = None,
+    token = None,
+    local_files_only = False,
+    subfolder = None,
+    variant = None,
+    use_safetensors = None,
+    cache_dir = None,
+    force_download = False,
+):
     if not os.path.exists(model_dir):
         try:
             from huggingface_hub import snapshot_download
@@ -435,6 +518,8 @@ def _find_fp8_scale_inv_tensors(model_dir, model_name, revision = None, token = 
                 revision = revision,
                 token = token,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
+                force_download = force_download,
             )
         except Exception:
             return []
@@ -442,42 +527,34 @@ def _find_fp8_scale_inv_tensors(model_dir, model_name, revision = None, token = 
     if not os.path.isdir(model_dir):
         return []
 
+    if subfolder:
+        model_dir = os.path.join(model_dir, subfolder)
+        if not os.path.isdir(model_dir):
+            return []
+
     try:
         from safetensors.torch import safe_open
     except Exception:
         return []
 
     module_scales = {}
-    suffix = ".weight_scale_inv"
-    for filename in os.listdir(model_dir):
-        full_path = os.path.join(model_dir, filename)
-        if filename.endswith(".safetensors"):
-            try:
-                with safe_open(full_path, framework = "pt", device = "cpu") as f:
-                    for key in f.keys():
+    for full_path in _resolve_fp8_scale_safetensors_files(
+        model_dir,
+        variant = variant,
+        use_safetensors = use_safetensors,
+    ):
+        try:
+            with safe_open(full_path, framework = "pt", device = "cpu") as f:
+                for key in f.keys():
+                    for attr_name, suffix in _FP8_SCALE_SUFFIXES:
                         if not key.endswith(suffix):
                             continue
                         module_name = key[: -len(suffix)]
-                        module_scales[module_name] = f.get_tensor(key)
-            except Exception:
-                continue
-            continue
-        if not filename.endswith(".bin"):
-            continue
-        try:
-            state_dict = torch.load(full_path, map_location = "cpu")
-            if isinstance(state_dict, dict) and isinstance(state_dict.get("state_dict"), dict):
-                state_dict = state_dict["state_dict"]
-            if not isinstance(state_dict, dict):
-                continue
-            for key, value in state_dict.items():
-                if not key.endswith(suffix) or not isinstance(value, torch.Tensor):
-                    continue
-                module_name = key[: -len(suffix)]
-                module_scales[module_name] = value
+                        module_scales[(module_name, attr_name)] = f.get_tensor(key)
+                        break
         except Exception:
             continue
-    return list(module_scales.items())
+    return [(module_name, attr_name, tensor) for (module_name, attr_name), tensor in module_scales.items()]
 
 
 def _restore_missing_fp8_weight_scale_inv(
@@ -486,6 +563,9 @@ def _restore_missing_fp8_weight_scale_inv(
     token = None,
     revision = None,
     local_files_only = False,
+    subfolder = None,
+    variant = None,
+    use_safetensors = None,
 ):
     """Find checkpointed `.weight_scale_inv` tensors and restore missing runtime tensors on FP8 modules.
 
@@ -501,43 +581,59 @@ def _restore_missing_fp8_weight_scale_inv(
         revision = revision,
         token = token,
         local_files_only = local_files_only,
+        subfolder = subfolder,
+        variant = variant,
+        use_safetensors = use_safetensors,
     )
     if len(scaled_tensors) == 0:
         return 0, 0
 
     restored = 0
     skipped = 0
-    for module_name, scale_tensor in scaled_tensors:
+    for module_name, attr_name, scale_tensor in scaled_tensors:
         target_name = _resolve_weight_scale_inv_candidates(module_name, name_to_module)
         if target_name is None:
             skipped += 1
             continue
 
         module = name_to_module[target_name]
-        if not _is_real_fp8_owner(module):
+        if not _is_real_fp8_owner(module) and not hasattr(module, attr_name):
             skipped += 1
             continue
 
         weight = getattr(module, "weight", None)
-        if not isinstance(weight, torch.Tensor):
+        reference = getattr(module, attr_name, None)
+        if not isinstance(reference, torch.Tensor) and attr_name == "weight_scale_inv":
+            reference = getattr(module, "weight_scale", None)
+        if not isinstance(weight, torch.Tensor) and not isinstance(reference, torch.Tensor):
+            skipped += 1
+            continue
+        target_device = reference.device if isinstance(reference, torch.Tensor) else weight.device
+        if target_device.type == "meta":
+            skipped += 1
+            continue
+        if isinstance(weight, torch.Tensor) and weight.device.type == "meta":
+            skipped += 1
+            continue
+        if isinstance(reference, torch.Tensor) and reference.shape != scale_tensor.shape:
+            skipped += 1
+            continue
+        if not isinstance(reference, torch.Tensor) and scale_tensor.numel() != 1:
             skipped += 1
             continue
 
-        restored_scale = scale_tensor.to(device = weight.device)
-        reference = getattr(module, "weight_scale_inv", None)
-        if not isinstance(reference, torch.Tensor):
-            reference = getattr(module, "weight_scale", None)
+        restored_scale = scale_tensor.to(device = target_device)
         if isinstance(reference, torch.Tensor):
             try:
                 restored_scale = restored_scale.to(dtype = reference.dtype)
             except Exception:
                 pass
-        if "weight_scale_inv" in module._buffers:
-            module._buffers["weight_scale_inv"] = restored_scale
+        if attr_name in module._buffers:
+            module._buffers[attr_name] = restored_scale
         else:
-            if hasattr(module, "weight_scale_inv"):
-                delattr(module, "weight_scale_inv")
-            module.register_buffer("weight_scale_inv", restored_scale)
+            if hasattr(module, attr_name):
+                delattr(module, attr_name)
+            module.register_buffer(attr_name, restored_scale)
         restored += 1
 
     return restored, skipped

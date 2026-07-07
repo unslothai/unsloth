@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -7,6 +8,7 @@ import tempfile
 import types
 
 import pytest
+import safetensors.torch
 import torch
 from safetensors.torch import save_file
 
@@ -81,8 +83,8 @@ def _load_loader_utils():
     return module
 
 
-def _make_checkpoint(path, tensors):
-    full_path = os.path.join(path, "model-00001-of-00001.safetensors")
+def _make_checkpoint(path, tensors, filename = "model.safetensors"):
+    full_path = os.path.join(path, filename)
     save_file(tensors, full_path)
     return path
 
@@ -215,7 +217,7 @@ def test_preserves_checkpoint_scale_dtype_for_packed_fp8_weights():
     assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.25], dtype = torch.float32))
 
 
-def test_restores_missing_fp8_weight_scale_inv_from_bin_checkpoint():
+def test_skips_bin_checkpoint_without_torch_load(monkeypatch):
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _PackedFp8Owner()
@@ -225,6 +227,104 @@ def test_restores_missing_fp8_weight_scale_inv_from_bin_checkpoint():
             checkpoint_dir,
             {"fp8.weight_scale_inv": torch.tensor([2.5], dtype = torch.float32)},
         )
+        monkeypatch.setattr(loader_utils.torch, "load", lambda *args, **kwargs: pytest.fail("torch.load should not run"))
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 0
+    assert skipped == 0
+    assert not hasattr(model.fp8, "weight_scale_inv")
+
+
+def test_variant_limits_scale_restore_to_selected_safetensors():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+            filename = "model.safetensors",
+        )
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([3.0], dtype = torch.float32)},
+            filename = "model.fp8.safetensors",
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+            variant = "fp8",
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([3.0], dtype = torch.float32))
+
+
+def test_subfolder_limits_scale_restore_to_selected_safetensors():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+        )
+        subfolder = Path(checkpoint_dir) / "nested"
+        subfolder.mkdir()
+        _make_checkpoint(
+            subfolder,
+            {"fp8.weight_scale_inv": torch.tensor([4.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+            subfolder = "nested",
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([4.0], dtype = torch.float32))
+
+
+def test_safetensors_index_opens_only_scale_shards(monkeypatch):
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+    opened = []
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([5.0], dtype = torch.float32)},
+            filename = "scale.safetensors",
+        )
+        _make_checkpoint(
+            checkpoint_dir,
+            {"other.weight": torch.tensor([9.0], dtype = torch.float32)},
+            filename = "other.safetensors",
+        )
+        index = {
+            "weight_map": {
+                "fp8.weight_scale_inv": "scale.safetensors",
+                "other.weight": "other.safetensors",
+            }
+        }
+        (Path(checkpoint_dir) / "model.safetensors.index.json").write_text(json.dumps(index))
+        def recording_safe_open(path, *args, **kwargs):
+            opened.append(Path(path).name)
+            return original_safe_open(path, *args, **kwargs)
+
+        original_safe_open = safetensors.torch.safe_open
+        monkeypatch.setattr(safetensors.torch, "safe_open", recording_safe_open)
         restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
             model,
             model_name = checkpoint_dir,
@@ -233,7 +333,84 @@ def test_restores_missing_fp8_weight_scale_inv_from_bin_checkpoint():
 
     assert restored == 1
     assert skipped == 0
-    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([2.5], dtype = torch.float32))
+    assert opened == ["scale.safetensors"]
+
+
+def test_skips_meta_device_scale_restore():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.empty(4, 4, device = "meta"), weight_scale = torch.empty(1, device = "meta"))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 0
+    assert skipped == 1
+    assert not hasattr(model.fp8, "weight_scale_inv")
+
+
+def test_skips_shape_incompatible_local_scale():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(
+        weight = torch.randn(4, 4, dtype = torch.float16),
+        weight_scale = torch.ones(2, dtype = torch.float16),
+    )
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.ones(4, dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 0
+    assert skipped == 1
+    assert not hasattr(model.fp8, "weight_scale_inv")
+
+
+class _Fp8Expert(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate_up_proj_scale_inv = torch.ones(2, dtype = torch.float16)
+        self.down_proj_scale_inv = torch.ones(2, dtype = torch.float16)
+
+
+def test_restores_fp8_expert_scale_tensors():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.expert = _Fp8Expert()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {
+                "expert.gate_up_proj_scale_inv": torch.full((2,), 2.0, dtype = torch.float32),
+                "expert.down_proj_scale_inv": torch.full((2,), 3.0, dtype = torch.float32),
+            },
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 2
+    assert skipped == 0
+    assert torch.equal(model.expert.gate_up_proj_scale_inv, torch.full((2,), 2.0, dtype = torch.float16))
+    assert torch.equal(model.expert.down_proj_scale_inv, torch.full((2,), 3.0, dtype = torch.float16))
 
 
 def test_loader_detects_direct_or_requested_fp8_restore_paths():
@@ -298,6 +475,63 @@ def test_loader_restores_fp8_scales_with_base_revision_for_peft():
         hit_count += 1
 
     assert hit_count == 2
+
+
+def test_loader_passes_selected_artifact_knobs_to_fp8_restore():
+    tree = ast.parse(LOADER.read_text())
+    hit_count = 0
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "_restore_missing_fp8_weight_scale_inv":
+            continue
+        keyword_names = {kw.arg for kw in node.keywords}
+        if {"subfolder", "variant", "use_safetensors"}.issubset(keyword_names):
+            hit_count += 1
+
+    assert hit_count == 2
+
+
+def test_fastmodel_peft_base_mapping_forwards_load_in_fp8():
+    tree = ast.parse(LOADER.read_text())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if not isinstance(node.test, ast.Name) or node.test.id != "is_peft":
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Assign):
+                continue
+            if not any(isinstance(target, ast.Name) and target.id == "model_name" for target in child.targets):
+                continue
+            value = child.value
+            if not isinstance(value, ast.Call):
+                continue
+            if not isinstance(value.func, ast.Name) or value.func.id != "get_model_name":
+                continue
+            keyword_names = {kw.arg for kw in value.keywords}
+            if {"load_in_4bit", "load_in_fp8"}.issubset(keyword_names):
+                return
+
+    pytest.fail("FastModel PEFT base mapping must forward load_in_fp8 to get_model_name.")
+
+
+def test_offline_fp8_cache_uses_safe_serialization():
+    tree = ast.parse(LOADER_UTILS.read_text())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "save_pretrained":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "safe_serialization" and isinstance(kw.value, ast.Constant):
+                assert kw.value.value is True
+                return
+
+    pytest.fail("_offline_quantize_to_fp8 must save safetensors caches.")
 
 
 def test_fp8_probe_skips_missing_optional_kernel_module():
