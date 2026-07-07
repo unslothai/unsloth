@@ -5236,9 +5236,18 @@ def _bwrap_can_sandbox(bwrap_path: str) -> bool:
     ok = False
     try:
         result = subprocess.run(
-            [bwrap_path, "--ro-bind", "/", "/", "--unshare-all", "--die-with-parent",
-             _resolve_command_path("true") or "/bin/true"],
-            stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, timeout = 20,
+            [
+                bwrap_path,
+                "--ro-bind",
+                "/",
+                "/",
+                "--unshare-all",
+                "--die-with-parent",
+                _resolve_command_path("true") or "/bin/true",
+            ],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 20,
         )
         ok = result.returncode == 0
     except Exception:
