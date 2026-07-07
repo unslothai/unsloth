@@ -638,6 +638,17 @@ function oaiMessagesToRecords(
 // (see #6179). `toolCallId` isn't part of the exported format, so it's
 // synthesized on the way back in, same as the OpenAI JSONL importer does for
 // tool calls that arrive without one.
+// Mirrors chat-adapter.ts's SERVER_SIDE_BUILTIN_TOOL_NAMES -- only these
+// tool names can ever be provider-side builtins there; args._server_tool on
+// any other tool name is just a user-controlled argument that happens to
+// share that key, not a builtin marker (see isServerSideBuiltinToolPart).
+const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
+  "web_search",
+  "web_fetch",
+  "code_execution",
+  "image_generation",
+]);
+
 function parseToolCallSegment(segment: string): Record<string, unknown> | null {
   if (!segment.startsWith("{") || !segment.endsWith("}")) return null;
   let parsed: Record<string, unknown>;
@@ -657,13 +668,26 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
   // it into something that will silently disappear on the next send.
   if (parsed.result === undefined || parsed.result === null) return null;
   const args = parsed.args !== null && typeof parsed.args === "object" ? parsed.args : {};
-  // `args._server_tool` is the backend's marker for a provider-side builtin
-  // call (web_search, web_fetch, code_execution, image_generation -- see
-  // SERVER_SIDE_BUILTIN_TOOL_NAMES in chat-adapter.ts). Those only replay
-  // through native provider parts the live call produced; a decoded part
-  // rebuilt from plain-text history has no such native part, so
-  // serializeAssistantToolCallPart drops it entirely. Leave it as text too.
-  if ((args as Record<string, unknown>)._server_tool === true) return null;
+  // `args._server_tool` only makes a call server-side-builtin (see
+  // isServerSideBuiltinToolPart) once the tool *name* is also one of
+  // SERVER_SIDE_BUILTIN_TOOL_NAMES -- a non-builtin tool (e.g. a user's
+  // "submit_form") that merely has an argument literally named
+  // "_server_tool" is unaffected there and replays normally, so gating
+  // only on the marker without the name check was leaving those
+  // perfectly-replayable calls undecoded.
+  const isBuiltinName = SERVER_SIDE_BUILTIN_TOOL_NAMES.has(parsed.tool_call.toLowerCase());
+  if (isBuiltinName && (args as Record<string, unknown>)._server_tool === true) return null;
+  // `contentBlocksToText` always emits this exact compact shape --
+  // `JSON.stringify({tool_call, args, result})`, fixed key order, no
+  // formatting. A JSON object with the same fields but different key
+  // order or added whitespace could never have come from that encoder, so
+  // it's literal assistant text that merely looks tool-call-shaped (e.g. a
+  // training example demonstrating the format); decoding it anyway would
+  // silently change what gets replayed/exported for that turn. Round-trip
+  // through the exact same serialization the encoder uses and only accept
+  // an exact byte match.
+  const canonical = JSON.stringify({ tool_call: parsed.tool_call, args: parsed.args, result: parsed.result });
+  if (canonical !== segment) return null;
   return {
     type: "tool-call",
     toolCallId: crypto.randomUUID(),
@@ -812,10 +836,22 @@ function textToContentParts(value: string, role: string): Record<string, unknown
             textBuffer += leftover;
             havePendingText = true;
           }
+        } else if (prevToolCall && toolCall) {
+          // Both neighbors are tool calls, which contribute nothing of
+          // their own -- but a genuine whitespace-only *text* block can
+          // still sit between them as its own island (e.g. tool1, a text
+          // part whose content is "\n\n", tool2), contributing a join on
+          // each side plus its own content in between. Strip exactly one
+          // join's worth (2 bytes) off each end and keep whatever's left
+          // as its own text part; a run that's only the two joins with
+          // nothing between them (length 2 or 4, no middle block at all,
+          // or an empty-string middle block) correctly yields nothing.
+          const middle = runBefore.length > 4 ? runBefore.slice(2, runBefore.length - 2) : "";
+          if (middle) {
+            textBuffer += middle;
+            havePendingText = true;
+          }
         }
-        // Both neighbors resolving to tool calls means neither side can
-        // have contributed anything beyond the plain "\n\n" join, so
-        // there's nothing left to fold in here.
       }
       if (toolCall) {
         flushText();
