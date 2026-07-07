@@ -150,6 +150,27 @@ function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[])
   downloadBlob(lines, "prompt-collection.jsonl", "application/x-ndjson");
 }
 
+// A tool-call part's `args` is coerced to an object for the UI (a
+// key/value display can't render a bare string/null), but chat-adapter's
+// serializeAssistantToolCallPart already treats `argsText` as the
+// authoritative raw value for replay when present -- re-export should use
+// the same precedent, or a decoded null/string args value (e.g. from
+// imported OpenAI JSONL where function.arguments was null or already a raw
+// JSON string) would silently turn into "{}" here even though the decoder
+// preserved the original faithfully in argsText.
+function toolCallExportArgs(p: Record<string, unknown>): unknown {
+  const argsText = p.argsText;
+  if (typeof argsText !== "string") return p.args;
+  try {
+    return JSON.parse(argsText);
+  } catch {
+    // Not valid JSON on its own -- argsText is itself the raw arguments
+    // string (the non-string-args branch below always produces valid
+    // JSON), so that string *is* the original value.
+    return argsText;
+  }
+}
+
 function contentBlocksToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return JSON.stringify(content);
@@ -173,7 +194,7 @@ function contentBlocksToText(content: unknown): string {
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,
-            args: p.args,
+            args: toolCallExportArgs(p),
             result: p.result,
           }),
         );
@@ -892,73 +913,78 @@ function textToContentParts(value: string, role: string): Record<string, unknown
     flushText();
   };
 
+  // A reasoning block's own content can legitimately contain the literal
+  // text "[thinking]"/"[/thinking]" as part of a blank-line-delimited
+  // example (e.g. a model explaining the format it was trained on), and
+  // separately, ordinary *visible* text right after a real close can just
+  // as legitimately mention "[/thinking]" on its own. Neither "always take
+  // the first close" nor "always take the last close before the next open"
+  // handles both: the first swallows an embedded fake close into visible
+  // text, the second swallows visible text (that merely mentions the tag)
+  // into reasoning.
+  //
+  // What actually distinguishes them is nesting: a complete embedded
+  // example doesn't change how many opens are still waiting on a close; a
+  // real close is the one that brings that count back to zero. For each
+  // open, count depth forward from that open's own position (an open bumps
+  // depth up, a close brings it down, the close that returns depth to 0 is
+  // this open's real end) -- a single shared left-to-right pass can't do
+  // this correctly, because an open with no close ever after it (e.g. a
+  // training file of many literal, never-closed "[thinking]" markers) has
+  // no way to "give up" its claim on depth, so it silently absorbs every
+  // close that belongs to a real block appearing later in the value. A
+  // per-open scan avoids that: each open's depth count is independent, so
+  // unrelated unclosed siblings can't blot out a real block after them.
+  //
+  // The tradeoff is that a per-open scan is quadratic in the number of
+  // literal, never-closed markers, since each one independently rescans
+  // the rest of the value looking for a close that isn't there. The short
+  // circuit below covers exactly that reported case cheaply: if the value
+  // contains no "[/thinking]"-shaped close at all, no open anywhere can
+  // possibly resolve, so skip scanning entirely and fall through to plain
+  // text. A lone embedded close with no paired open is the one residual
+  // case none of this can resolve syntactically, same as before either of
+  // the nesting fixes existed.
   let lastIndex = 0;
   let hadMatch = false;
-  let openMatch: RegExpExecArray | null;
-  while ((openMatch = openThinkingRegex.exec(value)) !== null) {
-    const contentStart = openMatch.index + openMatch[0].length;
-
-    // A reasoning block's own content can legitimately contain the literal
-    // text "[thinking]"/"[/thinking]" as part of a blank-line-delimited
-    // example (e.g. a model explaining the format it was trained on), and
-    // separately, ordinary *visible* text right after the real close can
-    // just as legitimately mention "[/thinking]" on its own. Neither
-    // "always take the first close" nor "always take the last close in the
-    // window up to the next open" handles both: the first rule swallows an
-    // embedded fake close into visible text, the second rule swallows
-    // visible text (that merely mentions the tag) into reasoning.
-    //
-    // What actually distinguishes them is nesting: an embedded example is
-    // a *complete open+close pair* inside the content, so it doesn't
-    // change how many opens are still waiting on a close; a real close is
-    // the one that brings that count back to zero. Track it like balanced
-    // brackets -- start at depth 1 for this wrapper's own open, treat every
-    // further open as needing its own close before this one can, and take
-    // the first close that brings the depth back to 0. A lone embedded
-    // close with no paired open (no way to tell it apart from the real one
-    // syntactically at all) is the one residual case this can't resolve,
-    // same as it was before either of these fixes existed.
-    const nestedOpenProbe = new RegExp(openThinkingRegex.source, "g");
-    const nestedCloseProbe = new RegExp(closeThinkingRegex.source, "g");
-    nestedOpenProbe.lastIndex = contentStart;
-    nestedCloseProbe.lastIndex = contentStart;
-
-    let depth = 1;
-    let pendingOpen: RegExpExecArray | null = nestedOpenProbe.exec(value);
-    let pendingClose: RegExpExecArray | null = nestedCloseProbe.exec(value);
-    let realClose: RegExpExecArray | null = null;
-    while (pendingClose !== null) {
-      if (pendingOpen !== null && pendingOpen.index < pendingClose.index) {
-        depth += 1;
-        nestedOpenProbe.lastIndex = pendingOpen.index + pendingOpen[0].length;
-        pendingOpen = nestedOpenProbe.exec(value);
+  if (closeThinkingRegex.test(value)) {
+    closeThinkingRegex.lastIndex = 0;
+    let openMatch: RegExpExecArray | null;
+    while ((openMatch = openThinkingRegex.exec(value)) !== null) {
+      const contentStart = openMatch.index + openMatch[0].length;
+      const nestedOpenProbe = new RegExp(openThinkingRegex.source, "g");
+      const nestedCloseProbe = new RegExp(closeThinkingRegex.source, "g");
+      nestedOpenProbe.lastIndex = contentStart;
+      nestedCloseProbe.lastIndex = contentStart;
+      let depth = 1;
+      let pendingOpen = nestedOpenProbe.exec(value);
+      let pendingClose = nestedCloseProbe.exec(value);
+      let realClose: RegExpExecArray | null = null;
+      while (pendingClose !== null) {
+        if (pendingOpen !== null && pendingOpen.index < pendingClose.index) {
+          depth += 1;
+          nestedOpenProbe.lastIndex = pendingOpen.index + pendingOpen[0].length;
+          pendingOpen = nestedOpenProbe.exec(value);
+          continue;
+        }
+        depth -= 1;
+        if (depth === 0) {
+          realClose = pendingClose;
+          break;
+        }
+        nestedCloseProbe.lastIndex = pendingClose.index + 1;
+        pendingClose = nestedCloseProbe.exec(value);
+      }
+      if (!realClose) {
+        openThinkingRegex.lastIndex = openMatch.index + 1;
         continue;
       }
-      depth -= 1;
-      if (depth === 0) {
-        realClose = pendingClose;
-        break;
-      }
-      nestedCloseProbe.lastIndex = pendingClose.index + 1;
-      pendingClose = nestedCloseProbe.exec(value);
+      pushChunk(value.slice(lastIndex, openMatch.index), hadMatch);
+      parts.push({ type: "reasoning", text: value.slice(contentStart, realClose.index) });
+      lastIndex = realClose.index + realClose[0].length;
+      hadMatch = true;
+      openThinkingRegex.lastIndex = lastIndex;
     }
-
-    if (!realClose) {
-      // Depth never returned to 0 before running out of closes -- this
-      // "[thinking]" was never actually closed (malformed/truncated
-      // export), so it isn't a genuine wrapper. Leave it as literal text:
-      // resume scanning right after this open match instead of consuming
-      // it, without touching `lastIndex`/pushing anything, so it stays
-      // embedded in whatever chunk eventually gets flushed as plain text.
-      openThinkingRegex.lastIndex = openMatch.index + 1;
-      continue;
-    }
-
-    pushChunk(value.slice(lastIndex, openMatch.index), hadMatch);
-    parts.push({ type: "reasoning", text: value.slice(contentStart, realClose.index) });
-    lastIndex = realClose.index + realClose[0].length;
-    hadMatch = true;
-    openThinkingRegex.lastIndex = lastIndex;
   }
   pushChunk(value.slice(lastIndex), hadMatch);
 
