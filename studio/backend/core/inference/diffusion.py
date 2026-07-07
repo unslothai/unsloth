@@ -159,13 +159,24 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     advertised model is unusable. The images load route uses this to reinterpret such a pick as a
     ``single_file`` load of the sole checkpoint. A real pipeline dir (has ``model_index.json``) or
     an ambiguous one (0 or more than 1 ``.safetensors``, e.g. a sharded pipeline) returns None and
-    loads unchanged. Never raises."""
+    loads unchanged. A PEFT LoRA adapter folder is also skipped (see below). Never raises."""
     try:
         root = Path(model_path).expanduser()
         if not root.is_dir() or (root / "model_index.json").is_file():
             return None
+        # A PEFT LoRA adapter folder (adapter_config.json + adapter_model.safetensors) is not a
+        # base checkpoint: from_single_file would fail on the adapter weights AFTER the route
+        # evicted the resident GPU model. Skip it so the pick stays a pipeline load and 400s in
+        # validation, before the GPU handoff. Also drop a bare adapter_model.safetensors so a
+        # config-less adapter export is never reinterpreted as the sole checkpoint.
+        if (root / "adapter_config.json").is_file():
+            return None
         checkpoints = [
-            p.name for p in root.iterdir() if p.is_file() and p.suffix.lower() == ".safetensors"
+            p.name
+            for p in root.iterdir()
+            if p.is_file()
+            and p.suffix.lower() == ".safetensors"
+            and p.stem.lower() != "adapter_model"
         ]
     except OSError:
         return None

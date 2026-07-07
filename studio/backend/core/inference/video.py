@@ -1291,111 +1291,112 @@ class VideoBackend:
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
-        # A cancelled/superseded load must not place weights on the GPU the arbiter
-        # may already have handed to another backend; recheck right before placement
-        # (the commit below still does the final locked check).
-        if _load_token is not None and _load_token != self._load_token:
-            del pipe
-            clear_gpu_cache()
-            raise RuntimeError("Video load was cancelled or superseded.")
-        offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
-        # A dual-DiT MoE pipe (Wan2.2-A14B) needs no extra per-expert offload pass here:
-        # apply_memory_plan's group tier (_apply_group_offload) already block-streams every
-        # DiT it finds on the pipe -- transformer AND transformer_2 -- and model/sequential
-        # offload hook every top-level module, so the second expert is covered under all tiers.
-        # A second _apply_group_offload on transformer_2 would re-register the group-offload
-        # hooks it already carries, which diffusers rejects with a duplicate-hook ValueError.
-        if not vae_tiling:
-            # Decode of a whole clip is the video memory peak; tiling is near-free
-            # in quality and keeps the decode bounded, so it is always on.
-            try:
-                pipe.vae.enable_tiling()
-                vae_tiling = True
-            except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
-                logger.warning("video.vae_tiling_failed: %s", exc)
-
-        resolved = build_resolved_record(
-            {
-                "memory_mode": (
-                    memory_mode,
-                    plan.requested_mode,
-                    f"planned '{plan.offload_policy}' offload from the family size table",
-                ),
-                "speed_mode": (
-                    speed_mode,
-                    effective_speed,
-                    "quantized transformer requires compile"
-                    if transformer_quant_engaged is not None
-                    else "clip denoises amortise the one-time compile within a single run"
-                    if speed_mode is None
-                    else "requested",
-                ),
-                "attention_backend": (
-                    attention_backend,
-                    attention_engaged or "native",
-                    "cuDNN fused attention on NVIDIA when a speed profile is active",
-                ),
-                "transformer_cache": (
-                    None if cache_auto else transformer_cache,
-                    cache_engaged or "off",
-                    cache_reason,
-                ),
-                "transformer_quant": (
-                    transformer_quant,
-                    transformer_quant_engaged or "off",
-                    "dense DiT(s) torchao-quantised onto the low-precision tensor cores"
-                    if transformer_quant_engaged is not None
-                    else (
-                        "skipped: offload moves the DiT, unsupported for torchao "
-                        "tensors; pin a resident memory mode to combine them"
-                        if quant_skipped_for_offload
-                        else "not engaged (dense bf16 DiT loaded)"
-                    ),
-                ),
-                "text_encoder_quant": (
-                    text_encoder_quant,
-                    text_encoder_quant_engaged or "off",
-                    "dense text encoder quantised in place"
-                    if text_encoder_quant_engaged is not None
-                    else "not engaged (dense bf16 text encoder loaded)",
-                ),
-            }
-        )
-
-        with self._lock:
+        with self._generate_lock:
+            # A cancelled/superseded load must not place weights on the GPU the arbiter
+            # may already have handed to another backend; recheck right before placement
+            # (the commit below still does the final locked check).
             if _load_token is not None and _load_token != self._load_token:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
-            self._state = _VideoLoadState(
-                pipe = pipe,
-                family = fam,
-                repo_id = repo_id,
-                base_repo = base,
-                device = device,
-                dtype = str(dtype).replace("torch.", ""),
-                kind = kind,
-                gguf_filename = gguf_filename,
-                offload_policy = offload_policy,
-                vae_tiling = vae_tiling,
-                memory_mode = plan.requested_mode,
-                speed_mode = effective_speed,
-                # Already filtered above to only the optimisations that engaged;
-                # apply_speed_optims returns every flag True/False and the view
-                # loop keeps just the True names.
-                speed_optims = speed_optims,
-                backend_flags = backend_flags,
-                attention_backend = attention_engaged,
-                transformer_cache = cache_engaged,
-                cache_auto = cache_may_toggle,
-                cache_quant_active = cache_quant_active,
-                cache_threshold = transformer_cache_threshold,
-                transformer_quant = transformer_quant_engaged,
-                text_encoder_quant = text_encoder_quant_engaged,
-                resolved = resolved,
+            offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
+            # A dual-DiT MoE pipe (Wan2.2-A14B) needs no extra per-expert offload pass here:
+            # apply_memory_plan's group tier (_apply_group_offload) already block-streams every
+            # DiT it finds on the pipe -- transformer AND transformer_2 -- and model/sequential
+            # offload hook every top-level module, so the second expert is covered under all tiers.
+            # A second _apply_group_offload on transformer_2 would re-register the group-offload
+            # hooks it already carries, which diffusers rejects with a duplicate-hook ValueError.
+            if not vae_tiling:
+                # Decode of a whole clip is the video memory peak; tiling is near-free
+                # in quality and keeps the decode bounded, so it is always on.
+                try:
+                    pipe.vae.enable_tiling()
+                    vae_tiling = True
+                except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
+                    logger.warning("video.vae_tiling_failed: %s", exc)
+
+            resolved = build_resolved_record(
+                {
+                    "memory_mode": (
+                        memory_mode,
+                        plan.requested_mode,
+                        f"planned '{plan.offload_policy}' offload from the family size table",
+                    ),
+                    "speed_mode": (
+                        speed_mode,
+                        effective_speed,
+                        "quantized transformer requires compile"
+                        if transformer_quant_engaged is not None
+                        else "clip denoises amortise the one-time compile within a single run"
+                        if speed_mode is None
+                        else "requested",
+                    ),
+                    "attention_backend": (
+                        attention_backend,
+                        attention_engaged or "native",
+                        "cuDNN fused attention on NVIDIA when a speed profile is active",
+                    ),
+                    "transformer_cache": (
+                        None if cache_auto else transformer_cache,
+                        cache_engaged or "off",
+                        cache_reason,
+                    ),
+                    "transformer_quant": (
+                        transformer_quant,
+                        transformer_quant_engaged or "off",
+                        "dense DiT(s) torchao-quantised onto the low-precision tensor cores"
+                        if transformer_quant_engaged is not None
+                        else (
+                            "skipped: offload moves the DiT, unsupported for torchao "
+                            "tensors; pin a resident memory mode to combine them"
+                            if quant_skipped_for_offload
+                            else "not engaged (dense bf16 DiT loaded)"
+                        ),
+                    ),
+                    "text_encoder_quant": (
+                        text_encoder_quant,
+                        text_encoder_quant_engaged or "off",
+                        "dense text encoder quantised in place"
+                        if text_encoder_quant_engaged is not None
+                        else "not engaged (dense bf16 text encoder loaded)",
+                    ),
+                }
             )
-            # Ownership of the globals transferred to _state / _teardown_state.
-            self._precommit_globals = None
+
+            with self._lock:
+                if _load_token is not None and _load_token != self._load_token:
+                    del pipe
+                    clear_gpu_cache()
+                    raise RuntimeError("Video load was cancelled or superseded.")
+                self._state = _VideoLoadState(
+                    pipe = pipe,
+                    family = fam,
+                    repo_id = repo_id,
+                    base_repo = base,
+                    device = device,
+                    dtype = str(dtype).replace("torch.", ""),
+                    kind = kind,
+                    gguf_filename = gguf_filename,
+                    offload_policy = offload_policy,
+                    vae_tiling = vae_tiling,
+                    memory_mode = plan.requested_mode,
+                    speed_mode = effective_speed,
+                    # Already filtered above to only the optimisations that engaged;
+                    # apply_speed_optims returns every flag True/False and the view
+                    # loop keeps just the True names.
+                    speed_optims = speed_optims,
+                    backend_flags = backend_flags,
+                    attention_backend = attention_engaged,
+                    transformer_cache = cache_engaged,
+                    cache_auto = cache_may_toggle,
+                    cache_quant_active = cache_quant_active,
+                    cache_threshold = transformer_cache_threshold,
+                    transformer_quant = transformer_quant_engaged,
+                    text_encoder_quant = text_encoder_quant_engaged,
+                    resolved = resolved,
+                )
+                # Ownership of the globals transferred to _state / _teardown_state.
+                self._precommit_globals = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,

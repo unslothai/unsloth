@@ -1272,6 +1272,21 @@ def test_resolve_local_single_file(tmp_path):
     # A remote repo id (not a local dir) -> None.
     assert resolve_local_single_file("unsloth/Qwen-Image-2512-GGUF") is None
 
+    # A PEFT LoRA adapter folder (adapter_config.json + adapter_model.safetensors), even with a
+    # family-token name, is NOT a base checkpoint: from_single_file would fail on the adapter
+    # weights AFTER the route evicted the resident GPU model, so it must not be reinterpreted as a
+    # single_file pick -> None (the pipeline pick then 400s in validation, before the handoff).
+    adapter = tmp_path / "flux-style-lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "adapter_model.safetensors").write_bytes(b"w")
+    assert resolve_local_single_file(str(adapter)) is None
+    # A bare adapter_model.safetensors (no config) is likewise not treated as the sole checkpoint.
+    adapter2 = tmp_path / "z-image-lora"
+    adapter2.mkdir()
+    (adapter2 / "adapter_model.safetensors").write_bytes(b"w")
+    assert resolve_local_single_file(str(adapter2)) is None
+
 
 def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
     # When no base_repo is passed, the base is resolved from the GGUF repo's base_model card

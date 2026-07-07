@@ -699,6 +699,62 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert status["loaded"] is False
 
 
+def test_load_holds_generate_lock_across_placement(fake_runtime, tmp_path, monkeypatch):
+    # The video load must hold _generate_lock across GPU placement (apply_memory_plan) so an
+    # unload / arbiter eviction -- which barriers on _generate_lock before freeing -- cannot hand
+    # the GPU to another backend while a multi-GB pipeline is still being moved onto it (mirrors
+    # the image backend, which places + commits under this lock). Verify unload() blocks until
+    # placement releases the lock, and the superseded load then aborts without committing.
+    import threading
+
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    placement_started = threading.Event()
+    release_placement = threading.Event()
+    real_apply = video_mod.apply_memory_plan
+
+    def blocking_apply(pipe, plan, **kw):
+        placement_started.set()
+        assert release_placement.wait(timeout = 5), "test placement barrier never released"
+        return real_apply(pipe, plan, **kw)
+
+    monkeypatch.setattr(video_mod, "apply_memory_plan", blocking_apply)
+
+    load_exc = []
+
+    def do_load():
+        try:
+            _load_gguf(backend, tmp_path)
+        except Exception as e:  # noqa: BLE001 -- the concurrent unload supersedes this load
+            load_exc.append(e)
+
+    load_thread = threading.Thread(target = do_load)
+    load_thread.start()
+    assert placement_started.wait(timeout = 5), "load never reached placement"
+
+    # Placement is in flight, holding _generate_lock. unload() must block on its barrier.
+    unload_done = []
+
+    def do_unload():
+        backend.unload()
+        unload_done.append(True)
+
+    unload_thread = threading.Thread(target = do_unload)
+    unload_thread.start()
+    unload_thread.join(timeout = 0.5)
+    assert not unload_done, "unload() returned while placement still held _generate_lock (the race)"
+
+    # Release placement; unload()'s barrier then passes and its teardown runs strictly AFTER
+    # the load's placement+commit -- never concurrently -- so no two pipelines are ever resident.
+    release_placement.set()
+    unload_thread.join(timeout = 5)
+    load_thread.join(timeout = 5)
+    assert unload_done, "unload() did not complete after placement released _generate_lock"
+    assert not load_thread.is_alive() and not load_exc
+    assert backend._state is None  # unload's teardown ran after the load, leaving nothing resident
+
+
 def test_load_records_engaged_speed_optims(fake_runtime, tmp_path, monkeypatch):
     # Regression: the load tail once re-ran the already-filtered speed_optims
     # tuple through ``.items()`` as if it were still the raw applied dict, so
