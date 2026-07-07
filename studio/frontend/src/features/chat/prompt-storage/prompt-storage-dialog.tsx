@@ -671,6 +671,19 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
     args,
     argsText: JSON.stringify(args),
     result: parsed.result,
+    // chat-adapter's shouldFlushCompletedLocalToolPair (see
+    // studio/frontend/src/features/chat/api/chat-adapter.ts) only keeps
+    // consecutive tool calls in strict call/result/call/result order when
+    // each part's provenance.source is "local" -- the same marker the
+    // backend's tool_event_provenance() stamps on a live local-tool
+    // execution (studio/backend/core/inference/tool_loop_controller.py).
+    // A decoded call has already completed locally by definition (it has
+    // a real `result` and isn't a server-side builtin, both checked
+    // above), so without this marker two consecutive imported tool calls
+    // get batched into one assistant turn instead of being replayed as
+    // separate steps, which corrupts the order when a later call's
+    // arguments depended on an earlier call's result.
+    provenance: { source: "local" },
   };
 }
 
@@ -710,24 +723,56 @@ function textToContentParts(value: string, role: string): Record<string, unknown
   // all -- or genuine leading blank lines before the first block -- is
   // never touched.
   const pushChunk = (chunk: string, afterMatch: boolean) => {
-    const withoutJoin = afterMatch ? chunk.replace(/^\r?\n\r?\n/, "") : chunk;
+    // The join contentBlocksToText inserts between blocks is always the
+    // literal two-byte sequence "\n\n" -- plain Array.prototype.join,
+    // never adapted for CRLF -- so the leading strip below only ever needs
+    // to match that exact sequence.
+    const withoutJoin = afterMatch ? chunk.replace(/^\n\n/, "") : chunk;
     if (withoutJoin === "") return;
-    // Capture the separators (odd indices) instead of discarding them, so a
-    // run of segments that all end up merged into one text part can be
-    // reassembled with their exact original bytes -- CRLF included -- and
-    // not a hardcoded "\n\n" that would otherwise normalize CSV/ShareGPT
-    // rows with Windows-style paragraph breaks and no thinking/tool markers.
-    const pieces = withoutJoin.split(/(\r?\n\r?\n)/);
-    const isContent = (i: number) => i % 2 === 0;
-    if (pieces.every((piece, i) => !isContent(i) || piece.trim() === "")) return;
 
-    const classified = pieces
-      .map((piece, i) => ({ i, piece }))
-      .filter(({ i }) => isContent(i))
-      .map(({ i, piece }) => {
-        const trimmed = piece.trim();
-        return { i, piece, toolCall: trimmed ? parseToolCallSegment(trimmed) : null };
-      });
+    // Split into "islands" at genuine encoder block boundaries only, not
+    // at every run of newline-ish characters. A run between two islands is
+    // a real boundary if and only if it *contains* the literal "\n\n"
+    // join somewhere in it; a run that never contains a bare LF pair at
+    // all (e.g. "\r\n\r\n" in the middle of a pasted CRLF paragraph,
+    // which is entirely CRLF units with no two adjacent bare LFs) isn't a
+    // boundary candidate in the first place and is left untouched inside
+    // whichever island contains it -- splitting there would risk
+    // misreading one half of an ordinary paragraph as a stray tool-call
+    // blob.
+    //
+    // Only a "text" block can contribute its own extra whitespace right
+    // at a boundary (reasoning/tool-call/image/audio all serialize to a
+    // fixed shape with no incidental leading/trailing characters), so once
+    // a run does qualify, exactly one side can own anything beyond the
+    // plain "\n\n": whichever neighbor resolves to a tool call
+    // contributes nothing of its own, so any extra bytes in the run must
+    // belong to the *other* side. That's determined by which neighbor is
+    // the tool call, not by inspecting the run's own leading/trailing
+    // characters -- which is what lets this handle CRLF on either side of
+    // a tool-call blob with the same rule.
+    type Island = { content: string; runBefore: string };
+    const islands: Island[] = [];
+    {
+      const runRegex = /[\r\n]+/g;
+      let curStart = 0;
+      let pendingRun = "";
+      let boundary: RegExpExecArray | null;
+      while ((boundary = runRegex.exec(withoutJoin)) !== null) {
+        const run = boundary[0];
+        if (run.includes("\n\n")) {
+          islands.push({ content: withoutJoin.slice(curStart, boundary.index), runBefore: pendingRun });
+          pendingRun = run;
+          curStart = boundary.index + run.length;
+        }
+      }
+      islands.push({ content: withoutJoin.slice(curStart), runBefore: pendingRun });
+    }
+
+    const classified = islands.map((island) => {
+      const trimmed = island.content.trim();
+      return { ...island, toolCall: trimmed ? parseToolCallSegment(trimmed) : null };
+    });
 
     let textBuffer = "";
     let havePendingText = false;
@@ -739,45 +784,49 @@ function textToContentParts(value: string, role: string): Record<string, unknown
       }
     };
     for (let k = 0; k < classified.length; k += 1) {
-      const { i, piece, toolCall } = classified[k];
-      if (toolCall) {
-        // A tool-call segment is only ever the bare JSON blob -- it never
-        // carries whitespace of its own -- so any leading/trailing
-        // whitespace still attached to `piece` here is a stray newline the
-        // "\r?\n\r?\n" split above couldn't absorb (e.g. a text block
-        // that ends with its own trailing "\n" right before this blob,
-        // making three newlines in a row instead of the encoder's usual
-        // two). Fold it back into the neighboring text instead of
-        // dropping it, so re-exporting reproduces the exact original byte
-        // count.
-        const leadWs = piece.slice(0, piece.length - piece.trimStart().length);
-        if (leadWs) {
-          textBuffer += leadWs;
+      const { content, runBefore, toolCall } = classified[k];
+      const prevToolCall = k > 0 ? classified[k - 1].toolCall : null;
+      if (runBefore) {
+        if (!prevToolCall && !toolCall) {
+          // Neither neighbor is a tool call -- keep the run's exact
+          // original bytes. Whether it was "really" the encoder's join or
+          // a block's own internal blank line makes no difference once
+          // both sides land in the same merged text part anyway.
+          textBuffer += runBefore;
           havePendingText = true;
+        } else if (prevToolCall && !toolCall) {
+          // The preceding block contributed nothing, so the run is
+          // exactly "\n\n" followed by whatever this (text) island's own
+          // leading whitespace is.
+          const leftover = runBefore.slice(2);
+          if (leftover) {
+            textBuffer += leftover;
+            havePendingText = true;
+          }
+        } else if (!prevToolCall && toolCall) {
+          // The upcoming block contributes nothing, so the run is
+          // whatever the preceding (text) island's own trailing
+          // whitespace is, followed by exactly "\n\n".
+          const leftover = runBefore.slice(0, runBefore.length - 2);
+          if (leftover) {
+            textBuffer += leftover;
+            havePendingText = true;
+          }
         }
+        // Both neighbors resolving to tool calls means neither side can
+        // have contributed anything beyond the plain "\n\n" join, so
+        // there's nothing left to fold in here.
+      }
+      if (toolCall) {
         flushText();
         parts.push(toolCall);
-        const trailWs = piece.slice(piece.trimEnd().length);
-        if (trailWs) {
-          textBuffer += trailWs;
-          havePendingText = true;
-        }
-        continue;
-      }
-      // Keep the segment's own whitespace intact (don't trim) so ordinary
-      // text isn't mutated just for having passed through this parser.
-      textBuffer += piece;
-      havePendingText = true;
-      // Only fold the separator that follows this segment into the buffer
-      // when the *next* segment is also staying as plain text -- i.e. the
-      // two will land in the same merged text part. A separator right
-      // before a tool call belongs to the boundary between two different
-      // parts, which contentBlocksToText's own re-export already rejoins
-      // with its own "\n\n"; keeping it here too would double it up.
-      const next = classified[k + 1];
-      if (next && !next.toolCall) {
-        const separator = pieces[i + 1];
-        if (separator) textBuffer += separator;
+      } else {
+        // Keep the island's own whitespace intact (don't trim) so ordinary
+        // text -- including a whitespace-only island, e.g. a genuine blank
+        // paragraph exported right before a [thinking] block -- isn't
+        // mutated or silently dropped just for having passed through here.
+        textBuffer += content;
+        havePendingText = true;
       }
     }
     flushText();
