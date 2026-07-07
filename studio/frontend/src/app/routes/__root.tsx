@@ -65,6 +65,13 @@ const ImagesPage = lazy(() =>
   import("@/features/images").then((m) => ({ default: m.ImagesPage })),
 );
 
+// VideoPage gets the same persistent-mount treatment as ImagesPage so an in-flight
+// generation survives leaving the tab. Kept lazy so its bundle loads only on the first
+// /video visit.
+const VideoPage = lazy(() =>
+  import("@/features/video").then((m) => ({ default: m.VideoPage })),
+);
+
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
   return null;
@@ -167,13 +174,24 @@ function RootLayout() {
     setImagesMounted(true);
   }
   const shouldMountImages = isImagesRoute || imagesMounted;
-  // Chat and Images both render their own full-height shell (a fixed top rail + an
-  // internally-scrolling body), so both want the chat-style layout: no outer pt-14
-  // inset and no outer scroll. Keying the layout off isChatRoute alone gave /images
-  // the non-chat pt-14 + outer overflow, pushing its picker down and clipping the
+
+  // Same persistent-mount treatment for /video so a long generation keeps running when
+  // the user flips to another tab (VideoPage reads no URL search, so it needs no freeze
+  // dance -- just the mount latch). Mounts lazily on first /video visit, then stays
+  // mounted, hidden+inert while off-route.
+  const isVideoRoute = pathname === "/video";
+  const [videoMounted, setVideoMounted] = useState(isVideoRoute);
+  if (isVideoRoute && !videoMounted) {
+    setVideoMounted(true);
+  }
+  const shouldMountVideo = isVideoRoute || videoMounted;
+  // Chat, Images and Video all render their own full-height shell (a fixed top rail + an
+  // internally-scrolling body), so all three want the chat-style layout: no outer pt-14
+  // inset and no outer scroll. Keying the layout off isChatRoute alone gave /images and
+  // /video the non-chat pt-14 + outer overflow, pushing the picker down and clipping the
   // bottom gallery. Treat them the same for the container padding/overflow only; the
   // keep-alive mounts below stay keyed to each specific route.
-  const isChatLike = isChatRoute || isImagesRoute;
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -305,12 +323,29 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
+              {/* Same keep-alive treatment for Video so a long generation keeps running
+                  off-tab; `active` force-closes its body-portaled overlays (model selector,
+                  recipe popover) so none can bleed over another tab while hidden. */}
+              {shouldMountVideo && (
+                <div
+                  className={
+                    isVideoRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isVideoRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <VideoPage active={isVideoRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && !isImagesRoute && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

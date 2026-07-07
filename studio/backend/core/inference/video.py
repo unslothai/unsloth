@@ -119,6 +119,47 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_VIDEO_REPOS
 
 
+def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
+    """``general.architecture`` of a picked GGUF, or None. The Video picker admits a GGUF by its
+    arch (not its name) -- for a LOCAL dir (``repo_id`` is a directory) AND for a cached HUB repo
+    (the cached-gguf listing tags it by arch too), so a renamed/opaquely-named file whose path
+    carries no family token still shows up; reading the arch lets the loader resolve the same
+    family the picker offered. Reads the local file when present, else the cached hub blob
+    (network-free via try_to_load_from_cache). Header-only, bounds-checked."""
+    try:
+        from pathlib import Path
+
+        path = Path(repo_id).expanduser() / gguf_filename
+        if not path.is_file():
+            # Not a local dir: resolve a cached HUB blob from the HF cache (no network). The
+            # cached-gguf picker only offers already-downloaded repos, so the blob is on disk --
+            # but that listing scans the active, legacy, AND default cache roots, so probe all
+            # three here or a GGUF cached in a non-active root would be offered yet 400 on load.
+            from huggingface_hub import try_to_load_from_cache
+
+            cached = try_to_load_from_cache(repo_id, gguf_filename)
+            if not isinstance(cached, str):
+                from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+                for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+                    try:
+                        cached = try_to_load_from_cache(
+                            repo_id, gguf_filename, cache_dir = str(root_fn())
+                        )
+                    except Exception:  # noqa: BLE001 -- a bad/absent root just falls through
+                        cached = None
+                    if isinstance(cached, str):
+                        break
+            if not isinstance(cached, str):
+                return None
+            path = Path(cached)
+        from utils.models.gguf_metadata import read_gguf_general_metadata
+
+        arch = (read_gguf_general_metadata(str(path)) or {}).get("general.architecture")
+        return arch.strip() if isinstance(arch, str) and arch.strip() else None
+    except Exception:  # noqa: BLE001 -- a header read glitch just falls through to name detection
+        return None
+
+
 def _detect_load_family(
     repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
@@ -126,11 +167,21 @@ def _detect_load_family(
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
-    return detect_video_family(repo_id, family_override) or (
+    fam = detect_video_family(repo_id, family_override) or (
         detect_video_family(f"{repo_id}/{gguf_filename}")
         if gguf_filename and not family_override
         else None
     )
+    if fam is None and gguf_filename and not family_override:
+        # The picker admits a GGUF (local dir OR cached hub repo) by its general.architecture, but
+        # its path/name may carry no whole-segment family token (e.g. a renamed "model.gguf"), so
+        # the name-based detection above misses it. Resolve the same family the picker offered by
+        # reading the arch -- its string ("ltxv") is a family alias. A video arch with no backend
+        # family (e.g. "wan") still yields None, so an unsupported pick 400s exactly as before.
+        arch = _picked_gguf_arch(repo_id, gguf_filename)
+        if arch:
+            fam = detect_video_family(repo_id, override = arch)
+    return fam
 
 
 def _ensure_mp4_encoder_available() -> None:
@@ -582,6 +633,19 @@ class VideoBackend:
             downloaded_bytes = int(downloaded),
             expected_bytes = int(expected) if expected else None,
         )
+
+    def loading_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids an in-flight background load is downloading (empty when idle).
+
+        The delete-cached guard needs this: during a load ``status()["loaded"]`` is
+        still False, but deleting the target repo (or its companion base) would yank
+        blobs and snapshot files from under the download/assembly. Mirrors the image
+        backend's guard (DiffusionBackend.loading_repo_ids)."""
+        with self._lock:
+            loading = self._loading
+            if loading is None or loading.error is not None:
+                return ()
+            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
 
     # ── the load itself ──────────────────────────────────────────────────────
 

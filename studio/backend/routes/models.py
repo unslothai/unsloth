@@ -3178,12 +3178,16 @@ _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
         "aura",
         "hidream",
         "cosmos",
-        "ltxv",
         "hyvid",
-        "wan",
         "lumina2",
     }
 )
+
+# Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv"; the Wan
+# community GGUFs as "wan"). Tagged text-to-video so they surface in the Video
+# picker (VIDEO_GEN_TASKS) and stay out of chat (NON_CHAT_TASKS).
+_VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
+_VIDEO_GEN_TASK = "text-to-video"
 
 # Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
@@ -3204,6 +3208,16 @@ def _arch_to_task(arch: Optional[str]) -> Optional[str]:
     a = arch.lower()
     if a in _DIFFUSION_GGUF_ARCHS:
         return "text-to-image"
+    if a in _VIDEO_GGUF_ARCHS:
+        # Only advertise as loadable video when a VideoFamily is actually registered for this arch
+        # (the video registry differs across the stacked video PRs -- wan is pre-registered here but
+        # its family lands later). An unregistered video arch would 400 on load, so fall it through
+        # to the unsupported bucket (hidden from chat, not surfaced in the Video/Images pickers)
+        # until its family exists, rather than advertising a GGUF that cannot load.
+        from core.inference.video_families import detect_video_family
+        if detect_video_family("", override = a) is not None:
+            return _VIDEO_GEN_TASK
+        return _UNSUPPORTED_DIFFUSION_TASK
     # A diffusion arch the backend can't assemble: hide it from chat (it would die
     # in llama.cpp) without surfacing it in Images (it would 400 in validate_load).
     if a in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:
@@ -3504,6 +3518,36 @@ async def delete_cached_model(
                 raise HTTPException(
                     status_code = 400,
                     detail = "An Images model load is using this repo; wait for it to finish",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # And refuse if the Video backend has this repo loaded: it shares the On-Device GGUF
+    # delete UI, so without this guard a loaded video GGUF could be removed from under a live
+    # pipeline -- the same invariant the three guards above enforce. Repo-level match.
+    try:
+        from core.inference.video import get_video_backend
+
+        video_backend = get_video_backend()
+        video_status = video_backend.status()
+        if video_status.get("loaded") and video_status.get("repo_id"):
+            loaded_id = str(video_status["repo_id"]).lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+        # Also refuse while a background VIDEO load is DOWNLOADING this repo (or its companion
+        # base): status().loaded is still False in that window, but deleting would remove blobs
+        # from under the in-flight download/assembly -- same as the Images guard above.
+        for lid in getattr(video_backend, "loading_repo_ids", tuple)():
+            lid = str(lid).lower()
+            if lid == repo_id.lower() or lid.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "A Video model load is using this repo; wait for it to finish",
                 )
     except HTTPException:
         raise

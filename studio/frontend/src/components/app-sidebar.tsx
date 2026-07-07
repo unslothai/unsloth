@@ -80,6 +80,7 @@ import {
   Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
+  Video01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -1204,6 +1205,20 @@ export function AppSidebar() {
                 active={pathname === "/images" || pathname.startsWith("/images/")}
                 onClick={() => {
                   navigate({ to: "/images" });
+                  closeMobileIfOpen();
+                }}
+              />
+              {/* Video is diffusers-only (no native CPU engine), so a chat-only host can
+                  never load it; disable with a hint instead of bouncing off the root
+                  guard's redirect. */}
+              <NavItem
+                icon={Video01Icon}
+                label={t("shell.navigation.video")}
+                active={pathname === "/video" || pathname.startsWith("/video/")}
+                disabled={chatOnly}
+                tooltip={chatOnly ? "Video generation needs an NVIDIA or AMD GPU." : undefined}
+                onClick={() => {
+                  navigate({ to: "/video" });
                   closeMobileIfOpen();
                 }}
               />

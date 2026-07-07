@@ -749,15 +749,29 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
     # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
     # out (they'd 400 in validate_load).
-    for arch in ("sdxl", "sd1", "sd3", "wan", "lumina2", "hidream", "cosmos"):
+    for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid"):
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
         assert task not in ("text-generation", "text-to-image")
+    # A video arch with a REGISTERED VideoFamily surfaces with the Video-picker task (unsloth
+    # LTX-2.x GGUFs ship general.architecture "ltxv" and ltx-2 is registered).
+    assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
+    assert models_route._arch_to_task("ltxv") not in ("text-generation", "text-to-image")
+    # A video arch that is pre-registered in _VIDEO_GGUF_ARCHS but has NO VideoFamily yet ("wan"
+    # in this build) must NOT be advertised as loadable video -- it would 400 on load. It falls to
+    # the unsupported bucket (hidden from chat and from the Video/Images pickers) until its family
+    # lands, rather than surfacing a GGUF that cannot load.
+    assert models_route._arch_to_task("wan") == models_route._UNSUPPORTED_DIFFUSION_TASK
+    assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
     # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
-    # classified here as some image task (loadable OR unsupported), never chat.
+    # classified here as some non-chat task (image, video, or unsupported).
     from core.inference.llama_cpp import LlamaCppBackend
 
-    classified = models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+    classified = (
+        models_route._DIFFUSION_GGUF_ARCHS
+        | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+        | models_route._VIDEO_GGUF_ARCHS
+    )
     missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
@@ -793,6 +807,54 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
         asyncio.run(
             models_route.delete_cached_model(
                 repo_id = "org/Z-Image-GGUF",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException refusing the delete"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail
+
+
+def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
+    # The cached-delete guard must refuse deleting a repo the Video backend has loaded (it
+    # shares the On-Device GGUF delete UI with chat/Images), so its GGUF can't be removed from
+    # under a live video pipeline -- the same invariant the three sibling guards enforce.
+    from fastapi import HTTPException
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+    import routes.inference as routes_inference
+
+    # Chat, orchestrator, and Images all report nothing loaded; only Video holds the repo.
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "get_video_backend",
+        lambda: SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "unsloth/LTX-2.3-GGUF"}),
+    )
+
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "unsloth/LTX-2.3-GGUF",
                 variant = None,
                 current_subject = "u",
             )
