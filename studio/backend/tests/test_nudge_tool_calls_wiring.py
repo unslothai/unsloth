@@ -70,7 +70,6 @@ def test_safetensors_loop_is_opt_in_while_gguf_stays_default_on():
 
 def test_api_request_models_default_the_flag_off():
     from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
-
     for model in (ChatCompletionRequest, AnthropicMessagesRequest):
         field = model.model_fields["nudge_tool_calls"]
         assert field.default is None, model.__name__
@@ -81,7 +80,6 @@ def test_studio_routes_forward_the_request_flag():
     # with nudge_tool_calls=true; the route handlers forward the request value
     # (external API clients that omit it fall back to the opt-in default).
     from routes import inference as routes_inference
-
     for handler in (
         routes_inference.openai_chat_completions,
         routes_inference.anthropic_messages,

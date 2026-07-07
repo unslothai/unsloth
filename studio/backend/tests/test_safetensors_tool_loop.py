@@ -2651,6 +2651,7 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap
         from core.inference.safetensors_agentic import MAX_ACT_REPROMPTS as sf_cap
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
+
         assert gguf_cap == sf_cap == shared_cap
 
 
