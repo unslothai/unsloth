@@ -43,4 +43,4 @@ def test_bad_mappings_redirect_every_listed_name():
     get_model_name, bad_mappings = _load_get_model_name()
     assert bad_mappings, "BAD_MAPPINGS should not be empty"
     for name, expected in bad_mappings.items():
-        assert get_model_name(name, load_in_4bit=True) == expected, name
+        assert get_model_name(name, load_in_4bit = True) == expected, name
