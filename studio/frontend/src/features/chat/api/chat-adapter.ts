@@ -143,6 +143,32 @@ interface ServerTimings {
   diffusion_steps_per_second?: number;
 }
 
+interface ResponseDetailsMetadata {
+  modelId: string;
+  modelLabel: string;
+  responseModelId: string;
+  providerId?: string;
+  providerName: string;
+  providerType: string;
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+  sessionId?: string;
+  cancelId: string;
+  toolCalls: string[];
+  tools: {
+    search: boolean;
+    fetch: boolean;
+    code: boolean;
+    images: boolean;
+    mcp: boolean;
+    docs: boolean;
+    artifacts: boolean;
+    confirmToolCalls: boolean;
+    bypassPermissions: boolean;
+  };
+}
+
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
 
@@ -1814,6 +1840,9 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+      const selectedModelSummary = runtime.models.find(
+        (model) => model.id === params.checkpoint,
+      );
       const externalApiKey = externalProvider
         ? getExternalProviderApiKey(externalProvider.id).trim()
         : "";
@@ -2196,6 +2225,7 @@ export function createOpenAIStreamAdapter(
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
+      let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
       let resolveFirstToken: (() => void) | null = null;
@@ -2417,6 +2447,59 @@ export function createOpenAIStreamAdapter(
         const externalBackendProviderType = toExternalBackendProviderType(
           externalProvider?.providerType,
         );
+        const buildResponseDetails = (
+          finishedAt: number,
+        ): ResponseDetailsMetadata => ({
+          modelId: params.checkpoint,
+          modelLabel:
+            (isExternalRequest || responseModelId !== params.checkpoint
+              ? responseModelId
+              : selectedModelSummary?.name || responseModelId) ||
+            params.checkpoint ||
+            "Unknown model",
+          responseModelId:
+            responseModelId ||
+            externalSelection?.modelId ||
+            params.checkpoint,
+          ...(externalProvider?.id ? { providerId: externalProvider.id } : {}),
+          providerName:
+            externalProvider?.name ??
+            (isExternalRequest ? "External provider" : "Local model"),
+          providerType: externalProvider?.providerType ?? "local",
+          startedAt: streamStartTime,
+          finishedAt,
+          durationMs: finishedAt - streamStartTime,
+          ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
+          cancelId,
+          toolCalls: Array.from(
+            new Set(
+              toolCallParts
+                .map((part) => part.toolName)
+                .filter(
+                  (toolName): toolName is string =>
+                    typeof toolName === "string" && toolName.length > 0,
+                ),
+            ),
+          ),
+          tools: {
+            search:
+              webSearchEnabledForThisTurn ||
+              (!isExternalRequest && supportsTools && toolsEnabled),
+            fetch: webFetchEnabledForThisTurn,
+            code:
+              codeExecEnabledForThisTurn ||
+              (!isExternalRequest && supportsTools && codeToolsEnabled),
+            images: imageGenerationEnabledForThisTurn,
+            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            docs:
+              !isExternalRequest &&
+              supportsTools &&
+              (ragEnabled || projectRagEnabled),
+            artifacts: renderHtmlToolEnabledForThisTurn,
+            confirmToolCalls,
+            bypassPermissions,
+          },
+        });
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
@@ -2784,6 +2867,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
+                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
                   max_tool_calls_per_message:
                     useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
@@ -2812,6 +2896,11 @@ export function createOpenAIStreamAdapter(
             const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
+              const chunkModel = (chunk as { model?: unknown }).model;
+              if (typeof chunkModel === "string" && chunkModel.length > 0) {
+                responseModelId = chunkModel;
+              }
+
               // Handle tool status events
               const toolStatusText = (
                 chunk as unknown as { _toolStatus?: string }
@@ -3479,11 +3568,12 @@ export function createOpenAIStreamAdapter(
           });
         }
 
+        const finishedAt = Date.now();
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
           serverPromptEvalTime ?? firstTokenTime,
-          Date.now() - streamStartTime,
+          finishedAt - streamStartTime,
           finalTokenCount,
           toolCallParts.length,
           finalTokPerSec,
@@ -3519,6 +3609,7 @@ export function createOpenAIStreamAdapter(
                     modelId: params.checkpoint,
                   }
                 : undefined,
+              responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
             },
           },
