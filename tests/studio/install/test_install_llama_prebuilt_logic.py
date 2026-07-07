@@ -56,6 +56,7 @@ LINUX_LDD_PROBE_OK = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_OK
 LINUX_LDD_PROBE_SKIPPED = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_SKIPPED
 LINUX_LDD_PROBE_ERROR = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_ERROR
 preflight_linux_installed_binaries = INSTALL_LLAMA_PREBUILT.preflight_linux_installed_binaries
+bwrap_can_sandbox = INSTALL_LLAMA_PREBUILT._bwrap_can_sandbox
 
 
 @pytest.fixture(autouse = True)
@@ -1114,6 +1115,18 @@ def _command_contains_path(plan: ValidationLaunchPlan, path_fragment: str) -> bo
 def _command_has_setenv(plan: ValidationLaunchPlan, key: str) -> bool:
     for index in range(len(plan.command) - 2):
         if plan.command[index] == "--setenv" and plan.command[index + 1] == key:
+            return True
+    return False
+
+
+def _command_has_bind(plan: ValidationLaunchPlan, flag: str, source: str | Path) -> bool:
+    source_text = str(Path(source))
+    for index in range(len(plan.command) - 2):
+        if (
+            plan.command[index] == flag
+            and plan.command[index + 1] == source_text
+            and plan.command[index + 2] == source_text
+        ):
             return True
     return False
 
@@ -3255,6 +3268,24 @@ def test_build_validation_sandbox_plan_linux_unusable_bwrap_skips_ldd(monkeypatc
     assert "skip ldd probe" in plan.reason
 
 
+def test_bwrap_capability_probe_uses_clean_launcher_env(monkeypatch):
+    captured: dict[str, dict[str, str]] = {}
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/bad/loader")
+    monkeypatch.setenv("LD_PRELOAD", "/bad/preload.so")
+    INSTALL_LLAMA_PREBUILT._bwrap_sandbox_capability.clear()
+
+    def fake_run(*_args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(args = [], returncode = 0)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.subprocess, "run", fake_run)
+
+    assert bwrap_can_sandbox("/usr/bin/bwrap")
+    assert "LD_LIBRARY_PATH" not in captured["env"]
+    assert "LD_PRELOAD" not in captured["env"]
+    assert captured["env"]["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
 def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_path):
     bwrap_path = tmp_path / "bwrap"
     bwrap_path.write_text("")
@@ -3314,6 +3345,45 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_pa
     assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_SANDBOX
     assert str(model_dir) in plan.command
     assert str(helper_lib) in plan.command
+
+
+def test_build_validation_sandbox_plan_linux_skips_broad_inherited_library_binds(
+    monkeypatch, tmp_path
+):
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path) if command == "bwrap" else None,
+    )
+    install_dir = tmp_path / "install"
+    binary_dir = tmp_path / "bin"
+    runtime_lib = tmp_path / "runtime" / "lib"
+    model_dir = tmp_path / "models"
+    for directory in (install_dir, binary_dir, runtime_lib, model_dir):
+        directory.mkdir(parents = True, exist_ok = True)
+    binary_path = binary_dir / "llama-server"
+    binary_path.write_text("")
+
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "-m", str(model_dir / "stories260K.gguf"), "--port", "7777"],
+        binary_path = binary_path,
+        install_dir = install_dir,
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {
+            "LD_LIBRARY_PATH": os.pathsep.join(
+                [str(Path("/")), str(Path("/home/alice")), str(runtime_lib)]
+            )
+        },
+    )
+
+    assert plan.is_runnable
+    assert _command_has_bind(plan, "--ro-bind", runtime_lib)
+    assert not _command_has_bind(plan, "--ro-bind", Path("/"))
+    assert not _command_has_bind(plan, "--ro-bind", Path("/home/alice"))
 
 
 def test_build_validation_sandbox_plan_linux_server_probe_uses_resolved_helper_path(
@@ -3855,7 +3925,9 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     output_path = Path("/tmp/out/probe-q4.gguf")
 
     monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "sandbox-exec"
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
     )
     mac_run = build_validation_sandbox_plan(
         [str(binary_path), str(probe_path), str(output_path), "Q6_K", "2"],
@@ -3864,10 +3936,10 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
         host = macos_host(),
         purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
         runtime_line = None,
-        env = {"DYLD_LIBRARY_PATH": "/opt/dyld"},
+        env = {"DYLD_LIBRARY_PATH": os.pathsep.join(["/", "/Users/alice", "/opt/dyld"])},
     )
     assert mac_run.is_runnable
-    assert mac_run.command[:2] == ["sandbox-exec", "-p"]
+    assert mac_run.command[:2] == ["/usr/bin/sandbox-exec", "-p"]
     assert "/usr/bin/env" in mac_run.command
     profile = mac_run.command[2]
     assert "(deny default)" in profile
@@ -3886,15 +3958,15 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     )
     assert any(
         f'(subpath "{literal}")' in profile
-        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/tmp/out")
-    )
-    assert any(
-        f'(subpath "{literal}")' in profile
         for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/opt/dyld")
     )
+    for broad_path in ("/", "/Users/alice"):
+        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals(broad_path):
+            assert f'(literal "{literal}")' not in profile
+            assert f'(subpath "{literal}")' not in profile
     assert "localhost" not in profile
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_resolve_command_path", lambda *_a, **_k: None)
     mac_skip = build_validation_sandbox_plan(
         [str(binary_path), str(probe_path), str(output_path), "Q6_K", "2"],
         binary_path = binary_path,
@@ -3909,7 +3981,9 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
 
 def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
     monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "sandbox-exec"
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
     )
     plan = build_validation_sandbox_plan(
         ["llama-server", "-m", str(Path("/tmp/models/story.gguf")), "--port", "7777"],
@@ -3921,7 +3995,7 @@ def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
         env = {},
     )
     assert plan.is_runnable
-    assert plan.command[:2] == ["sandbox-exec", "-p"]
+    assert plan.command[:2] == ["/usr/bin/sandbox-exec", "-p"]
     assert "/usr/bin/env" in plan.command
     profile = plan.command[2]
     assert "(deny default)" in profile
