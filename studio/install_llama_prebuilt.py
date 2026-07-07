@@ -42,7 +42,7 @@ try:
 except ImportError:
     FileLock = None
     FileLockTimeout = None
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Literal, Union
 
 # Shared component-agnostic machinery lives in prebuilt_core (same directory);
@@ -4819,15 +4819,24 @@ def _append_existing_bwrap_bind(
     )
 
 
-def _is_broad_sandbox_library_path(path: str | Path) -> bool:
+_SANDBOX_LIBRARY_DIR_NAMES = frozenset({"lib", "lib64"})
+
+
+def _is_broad_sandbox_library_path(
+    path: str | Path, *, require_library_dir: bool = False
+) -> bool:
     candidate = Path(path)
+    resolved = _resolve_existing_path(candidate)
     if not candidate.is_absolute() and not str(candidate).startswith(("/", "\\")):
         return True
-    resolved = _resolve_existing_path(candidate)
     if len(resolved.parts) <= 2:
         return True
     if len(resolved.parts) <= 3 and resolved.parts[1].lower() in {"home", "users"}:
         return True
+    if require_library_dir:
+        parts = PurePosixPath(str(path)).parts
+        if parts[-1].lower() not in _SANDBOX_LIBRARY_DIR_NAMES:
+            return True
     try:
         if resolved == Path.home().resolve():
             return True
@@ -4836,11 +4845,14 @@ def _is_broad_sandbox_library_path(path: str | Path) -> bool:
     return False
 
 
-def _sandbox_library_path_targets(env: dict[str, str], key: str) -> list[Path]:
+def _sandbox_library_path_targets(
+    env: dict[str, str], key: str, *, require_library_dir: bool = False
+) -> list[Path]:
     return [
         _resolve_existing_path(Path(part))
         for part in env.get(key, "").split(os.pathsep)
-        if part and not _is_broad_sandbox_library_path(part)
+        if part
+        and not _is_broad_sandbox_library_path(part, require_library_dir = require_library_dir)
     ]
 
 
@@ -5184,7 +5196,9 @@ def _macos_validation_sandbox_prefix(
         binary_path.parent,
         runtime_home,
     ]
-    read_targets.extend(_sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH"))
+    read_targets.extend(
+        _sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH", require_library_dir = True)
+    )
     write_targets: list[str | Path] = [runtime_home]
     if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
         read_targets.append(Path(command[1]).parent)
@@ -5204,9 +5218,12 @@ def _macos_validation_sandbox_prefix(
         "/usr/lib",
         "/System",
         "/System/Library",
+        install_dir,
         binary_path.parent,
     ]
-    executable_map_targets.extend(_sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH"))
+    executable_map_targets.extend(
+        _sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH", require_library_dir = True)
+    )
     profile_parts = [
         "(version 1)",
         "(deny default)",
@@ -6145,6 +6162,7 @@ _PYTHON_IMPORT_POINTER_VARS = (
     "PYTHONHOME",
     "PYTHONPATH",
 )
+_DYLD_ALLOWED_ENV_NAMES = frozenset({"DYLD_LIBRARY_PATH"})
 
 _isolated_runtime_home_dir: str | None = None
 
@@ -6176,6 +6194,9 @@ def scrubbed_environ() -> dict[str, str]:
         *_PYTHON_IMPORT_POINTER_VARS,
     ):
         env.pop(pointer, None)
+    for key in tuple(env):
+        if key.upper().startswith("DYLD_") and key.upper() not in _DYLD_ALLOWED_ENV_NAMES:
+            env.pop(key, None)
     return env
 
 
