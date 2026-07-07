@@ -647,14 +647,23 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
     return null;
   }
   if (typeof parsed.tool_call !== "string") return null;
-  // `contentBlocksToText` omits `result` entirely for a pending/cancelled
-  // tool call, and chat-adapter's replay (canReplayToolCallWithoutRoleTool)
-  // drops a non-builtin tool-call part with no result -- decoding one here
-  // would make the imported thread silently lose that content on the next
-  // send, so leave it as the literal JSON blob instead (parseToolCallSegment
-  // returning null falls through to plain text in the caller).
-  if (parsed.result === undefined) return null;
+  // `contentBlocksToText` omits `result` for a pending/cancelled tool call,
+  // but also legitimately serializes a completed one whose result is a
+  // JSON `null`. chat-adapter's serializeToolResultPart (see
+  // studio/frontend/src/features/chat/api/chat-adapter.ts) treats both the
+  // same way -- undefined or null, no role="tool" message is produced --
+  // and a non-builtin tool-call part without one is dropped entirely on
+  // replay. Leave either case as the literal JSON blob instead of decoding
+  // it into something that will silently disappear on the next send.
+  if (parsed.result === undefined || parsed.result === null) return null;
   const args = parsed.args !== null && typeof parsed.args === "object" ? parsed.args : {};
+  // `args._server_tool` is the backend's marker for a provider-side builtin
+  // call (web_search, web_fetch, code_execution, image_generation -- see
+  // SERVER_SIDE_BUILTIN_TOOL_NAMES in chat-adapter.ts). Those only replay
+  // through native provider parts the live call produced; a decoded part
+  // rebuilt from plain-text history has no such native part, so
+  // serializeAssistantToolCallPart drops it entirely. Leave it as text too.
+  if ((args as Record<string, unknown>)._server_tool === true) return null;
   return {
     type: "tool-call",
     toolCallId: crypto.randomUUID(),
@@ -703,26 +712,53 @@ function textToContentParts(value: string, role: string): Record<string, unknown
   const pushChunk = (chunk: string, afterMatch: boolean) => {
     const withoutJoin = afterMatch ? chunk.replace(/^\r?\n\r?\n/, "") : chunk;
     if (withoutJoin === "") return;
-    const segments = withoutJoin.split(/\r?\n\r?\n/);
-    if (segments.every((s) => s.trim() === "")) return;
+    // Capture the separators (odd indices) instead of discarding them, so a
+    // run of segments that all end up merged into one text part can be
+    // reassembled with their exact original bytes -- CRLF included -- and
+    // not a hardcoded "\n\n" that would otherwise normalize CSV/ShareGPT
+    // rows with Windows-style paragraph breaks and no thinking/tool markers.
+    const pieces = withoutJoin.split(/(\r?\n\r?\n)/);
+    const isContent = (i: number) => i % 2 === 0;
+    if (pieces.every((piece, i) => !isContent(i) || piece.trim() === "")) return;
 
-    let textBuffer: string[] = [];
+    const classified = pieces
+      .map((piece, i) => ({ i, piece }))
+      .filter(({ i }) => isContent(i))
+      .map(({ i, piece }) => {
+        const trimmed = piece.trim();
+        return { i, piece, toolCall: trimmed ? parseToolCallSegment(trimmed) : null };
+      });
+
+    let textBuffer = "";
+    let havePendingText = false;
     const flushText = () => {
-      if (textBuffer.length > 0) {
-        parts.push({ type: "text", text: textBuffer.join("\n\n") });
-        textBuffer = [];
+      if (havePendingText) {
+        parts.push({ type: "text", text: textBuffer });
+        textBuffer = "";
+        havePendingText = false;
       }
     };
-    for (const segment of segments) {
-      const trimmed = segment.trim();
-      const toolCall = trimmed ? parseToolCallSegment(trimmed) : null;
+    for (let k = 0; k < classified.length; k += 1) {
+      const { i, piece, toolCall } = classified[k];
       if (toolCall) {
         flushText();
         parts.push(toolCall);
-      } else {
-        // Keep the segment's own whitespace intact (don't trim) so ordinary
-        // text isn't mutated just for having passed through this parser.
-        textBuffer.push(segment);
+        continue;
+      }
+      // Keep the segment's own whitespace intact (don't trim) so ordinary
+      // text isn't mutated just for having passed through this parser.
+      textBuffer += piece;
+      havePendingText = true;
+      // Only fold the separator that follows this segment into the buffer
+      // when the *next* segment is also staying as plain text -- i.e. the
+      // two will land in the same merged text part. A separator right
+      // before a tool call belongs to the boundary between two different
+      // parts, which contentBlocksToText's own re-export already rejoins
+      // with its own "\n\n"; keeping it here too would double it up.
+      const next = classified[k + 1];
+      if (next && !next.toolCall) {
+        const separator = pieces[i + 1];
+        if (separator) textBuffer += separator;
       }
     }
     flushText();
