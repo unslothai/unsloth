@@ -192,16 +192,32 @@ def test_training_precision_preflight_error(monkeypatch):
     assert training_precision_preflight_error("", "int8") is None
 
     # On a CUDA-ABSENT host, bf16_unsupported_reason exempts CPU-only, but the DiT trainer's dense
-    # precisions still require CUDA (mirroring _resolve_base_precision), so bf16/int8/fp8 for a DiT
-    # family are rejected UP FRONT rather than after eviction. nf4/auto (and SDXL) still pass.
+    # precisions still require CUDA (mirroring _resolve_base_precision), so bf16/int8/fp8/mxfp8 for
+    # a DiT family are rejected UP FRONT rather than after eviction. nf4/auto (and SDXL) still pass.
     monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    for dense in ("bf16", "int8", "fp8"):
+    for dense in ("bf16", "int8", "fp8", "mxfp8"):
         reason = training_precision_preflight_error("flux.1", dense)
         assert reason is not None and "CUDA" in reason
     assert training_precision_preflight_error("flux.1", "nf4") is None
     assert training_precision_preflight_error("flux.1", "auto") is None
     assert training_precision_preflight_error("sdxl", "bf16") is None
+
+    # mxfp8 needs a Blackwell (sm100+) GPU: its MX GEMM has no kernel below sm100 and would raise at
+    # the first training step, AFTER a full dense-transformer load. On a CUDA GPU that is older than
+    # Blackwell the preflight rejects mxfp8 UP FRONT (mirroring _resolve_base_precision) so eviction
+    # is skipped; other dense precisions on the same GPU still pass.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
+    reason = training_precision_preflight_error("flux.1", "mxfp8")
+    assert reason is not None and "Blackwell" in reason
+    assert training_precision_preflight_error("flux.1", "bf16") is None
+    assert training_precision_preflight_error("flux.1", "fp8") is None
+
+    # On a Blackwell (sm100+) GPU mxfp8 is accepted, and it never gates a non-DiT (SDXL) family.
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (10, 0))
+    assert training_precision_preflight_error("flux.1", "mxfp8") is None
+    assert training_precision_preflight_error("sdxl", "mxfp8") is None
 
 
 def test_family_train_infos_empties_dit_modes_on_non_bf16(monkeypatch):

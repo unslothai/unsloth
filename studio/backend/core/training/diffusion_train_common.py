@@ -289,20 +289,21 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the
     start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
-    child, after eviction). Three gates, all mirroring _resolve_base_precision so a doomed run is
+    child, after eviction). Four gates, all mirroring _resolve_base_precision so a doomed run is
     rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); the dense
-    precisions (bf16/int8/fp8) requiring a CUDA GPU; and an explicit int8 needing a FUNCTIONAL
-    torchao (its _int8_quantize_base has no fallback). Never raises."""
+    precisions (bf16/int8/fp8/mxfp8) requiring a CUDA GPU; an explicit int8 needing a FUNCTIONAL
+    torchao (its _int8_quantize_base has no fallback); and an explicit mxfp8 needing a Blackwell
+    (sm100+) GPU (its MX GEMM has no kernel below sm100). Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
-    if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8"):
+    if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # The DiT trainer's dense precisions all require CUDA (_resolve_base_precision rejects
-        # bf16/int8/fp8 on device != "cuda"). bf16_unsupported_reason exempts a CPU-only host (the
-        # fp32 fallback for import/unit tests), so without this a dense request on a GPU-less host
-        # would pass the preflight, evict resident workloads, then raise only in the child.
+        # bf16/int8/fp8/mxfp8 on device != "cuda"). bf16_unsupported_reason exempts a CPU-only host
+        # (the fp32 fallback for import/unit tests), so without this a dense request on a GPU-less
+        # host would pass the preflight, evict resident workloads, then raise only in the child.
         try:
             import torch
             has_cuda = torch.cuda.is_available()
@@ -318,6 +319,21 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 "base_precision='int8' needs a functional torchao install; this host's torchao is "
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
             )
+        # mxfp8 needs Blackwell (sm100+): its MX GEMM has no kernel below sm100 and raises at the
+        # first training step, AFTER a full dense-transformer load. Re-check here (mirroring
+        # _resolve_base_precision) so a stale or direct client on an older CUDA GPU fails fast
+        # before eviction instead of crashing mid-run.
+        if mode == "mxfp8":
+            try:
+                import torch
+                blackwell = torch.cuda.get_device_capability() >= (10, 0)
+            except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
+                blackwell = False
+            if not blackwell:
+                return (
+                    "base_precision='mxfp8' needs a Blackwell (sm100+) GPU; this GPU is older. "
+                    "Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
+                )
     return None
 
 
