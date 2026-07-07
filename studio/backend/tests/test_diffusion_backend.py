@@ -2581,14 +2581,34 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
 
 
 def test_reset_step_cache_helper_is_best_effort():
-    # Calls the transformer's reset hook when present.
+    # Prefers the real diffusers CacheMixin hook (_reset_stateful_cache): on a genuine Flux /
+    # QwenImage transformer that is the reset entry point, and reset_stateful_hooks lives only on
+    # the HookRegistry (getattr for it on the transformer returns None), so the old lookup was a
+    # silent no-op that left stale FBCache residuals for the next generation.
     calls = []
     pipe = types.SimpleNamespace(
-        transformer = types.SimpleNamespace(reset_stateful_hooks = lambda: calls.append(True))
+        transformer = types.SimpleNamespace(_reset_stateful_cache = lambda: calls.append("real"))
     )
     DiffusionBackend._reset_step_cache(pipe)
-    assert calls == [True]
-    # No transformer, or a transformer without the hook -> silent no-op (never raises).
+    assert calls == ["real"]
+    # _reset_stateful_cache wins when both are present.
+    calls.clear()
+    pipe = types.SimpleNamespace(
+        transformer = types.SimpleNamespace(
+            _reset_stateful_cache = lambda: calls.append("real"),
+            reset_stateful_hooks = lambda: calls.append("fallback"),
+        )
+    )
+    DiffusionBackend._reset_step_cache(pipe)
+    assert calls == ["real"]
+    # Falls back to reset_stateful_hooks for a transformer that exposes only that.
+    calls.clear()
+    pipe = types.SimpleNamespace(
+        transformer = types.SimpleNamespace(reset_stateful_hooks = lambda: calls.append("fallback"))
+    )
+    DiffusionBackend._reset_step_cache(pipe)
+    assert calls == ["fallback"]
+    # No transformer, or a transformer without either hook -> silent no-op (never raises).
     DiffusionBackend._reset_step_cache(types.SimpleNamespace())
     DiffusionBackend._reset_step_cache(types.SimpleNamespace(transformer = object()))
 
@@ -2605,8 +2625,10 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
         family_override = "z-image",
     )
     resets = []
+    # Use the real diffusers CacheMixin entry point (_reset_stateful_cache); a genuine
+    # Flux/QwenImage transformer exposes this, not reset_stateful_hooks.
     backend._state.pipe.transformer = types.SimpleNamespace(
-        reset_stateful_hooks = lambda: resets.append(True)
+        _reset_stateful_cache = lambda: resets.append(True)
     )
     # No cache engaged (transformer_cache is None) -> reset must NOT run.
     backend.generate(prompt = "a sloth")

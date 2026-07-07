@@ -2126,14 +2126,18 @@ class DiffusionBackend:
 
         diffusers keys FBCache residuals by cache context ("cond"/"uncond") on the
         long-lived transformer, and neither the pipeline nor the context exit resets
-        them (``StateManager`` only clears via ``reset_stateful_hooks``, which no
-        pipeline calls). This backend reuses one resident pipe across generations, so
-        without a reset the next generation's first step compares its first-block
-        residual against the PREVIOUS request's -- a tensor-shape mismatch when the
-        resolution/batch changed, or a stale-cache reuse otherwise. Best-effort: a
-        transformer without the hook (uncached load) is a silent no-op."""
+        them. The transformer-level reset entry point is ``_reset_stateful_cache`` in
+        diffusers 0.39 (``reset_stateful_hooks`` lives only on the HookRegistry, so a
+        getattr for it on the transformer is a silent no-op), and no pipeline calls it.
+        This backend reuses one resident pipe across generations, so without a reset the
+        next generation's first step compares its first-block residual against the
+        PREVIOUS request's -- a tensor-shape mismatch when the resolution/batch changed,
+        or a stale-cache reuse otherwise. Best-effort: a transformer without the hook
+        (uncached load) is a silent no-op."""
         transformer = getattr(pipe, "transformer", None)
-        reset = getattr(transformer, "reset_stateful_hooks", None)
+        reset = getattr(transformer, "_reset_stateful_cache", None) or getattr(
+            transformer, "reset_stateful_hooks", None
+        )
         if callable(reset):
             try:
                 reset()
