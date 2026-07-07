@@ -117,6 +117,35 @@ def test_delete_removes_both_files():
     assert len(gallery.list_videos()) == 1
 
 
+def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
+    # delete() must remove the MP4 FIRST: list_videos globs *.mp4 but requires a readable sidecar,
+    # so if the sidecar were dropped first and the mp4 unlink then failed (a Windows lock from a
+    # concurrent stream/transcode), the still-present mp4 would vanish from the gallery with no way
+    # to retry. Simulate the mp4 unlink failing and assert the video stays listable (sidecar kept).
+    record = gallery.save(_mp4(), _meta(prompt = "keep"))
+    directory = gallery.gallery_dir()
+    mp4 = directory / f"{record['id']}.mp4"
+    sidecar = directory / f"{record['id']}.json"
+
+    real_unlink = os.unlink
+
+    def _fail_on_mp4(path, *a, **k):
+        if str(path).endswith(".mp4"):
+            raise PermissionError("mp4 locked")
+        return real_unlink(path, *a, **k)
+
+    # Scope the os.unlink patch to its own context so undoing it does NOT also revert the autouse
+    # fixture's studio_root redirect (both share the function-scoped monkeypatch); otherwise
+    # list_videos below would read the real home dir instead of the tmp gallery.
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(os, "unlink", _fail_on_mp4)
+        assert gallery.delete(record["id"]) is False  # mp4 unlink failed
+    # The sidecar was NOT dropped, so the record is still listable and the user can retry.
+    assert sidecar.exists() and mp4.exists()
+    assert [r["prompt"] for r in gallery.list_videos()] == ["keep"]
+    assert gallery.delete(record["id"]) is True  # retry now succeeds
+
+
 def test_clear_returns_count():
     gallery.save(_mp4(), _meta(prompt = "a"))
     gallery.save(_mp4(), _meta(prompt = "b"))

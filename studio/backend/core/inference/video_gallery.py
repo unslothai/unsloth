@@ -221,18 +221,24 @@ def delete(video_id: str) -> bool:
     path = video_path(video_id)
     if path is None:
         return False
-    # Best-effort on the sidecar: a leftover json without its mp4 is skipped by
-    # list_videos anyway, so a failed sidecar unlink must not fail the delete.
+    # Delete the MP4 payload FIRST. list_videos globs *.mp4 but requires a readable sidecar, so
+    # a video whose sidecar is gone is skipped as an orphan. If the sidecar were dropped first and
+    # the mp4 unlink then failed (a Windows lock from a concurrent stream/transcode, or a
+    # permission change), the still-present mp4 would vanish from the gallery with no way to retry
+    # the delete. Ordering mp4-first means the worst case is an orphaned sidecar, which
+    # list_videos ignores.
+    try:
+        path.unlink()
+    except OSError as exc:
+        logger.warning("video_gallery.delete_failed: %s", exc)
+        return False
+    # Best-effort on the sidecar: a leftover json without its mp4 is skipped by list_videos
+    # anyway, so a failed sidecar unlink must not fail the delete.
     try:
         _sidecar_path(video_id).unlink()
     except OSError:
         pass
-    try:
-        path.unlink()
-        return True
-    except OSError as exc:
-        logger.warning("video_gallery.delete_failed: %s", exc)
-        return False
+    return True
 
 
 def clear() -> int:
@@ -243,14 +249,15 @@ def clear() -> int:
     except OSError:
         return 0
     for path in paths:
-        # Drop the sidecar first; an orphaned json is harmless (skipped by list).
+        # Delete the mp4 first; if it can't be unlinked, leave the sidecar so the video stays
+        # listable (an orphaned mp4 would vanish from the gallery). An orphaned json is harmless.
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed += 1
         try:
             _sidecar_path(path.stem).unlink()
         except OSError:
             pass
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            continue
     return removed
