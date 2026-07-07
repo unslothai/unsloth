@@ -1319,8 +1319,11 @@ async def start_diffusion_training(
         raise HTTPException(status_code = 400, detail = str(e))
 
     # Free resident GPU workloads (export / Images pipeline / chat) before the trainer
-    # loads its own pipeline.
-    _free_gpu_for_diffusion_training()
+    # loads its own pipeline. Offload the blocking teardown (engine unload waits on the
+    # generation locks; the export subprocess join can take seconds) to a worker thread so
+    # the event loop stays free for concurrent status/progress/cancel requests, as the
+    # inference routes do for their blocking load/unload calls.
+    await asyncio.to_thread(_free_gpu_for_diffusion_training)
 
     service = get_diffusion_training_service()
     try:

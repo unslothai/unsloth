@@ -361,6 +361,36 @@ def test_route_start_ok(client):
     assert Path(client._fake.started_with["output_dir"]).is_absolute()
 
 
+def test_route_start_frees_gpu_off_the_coroutine_thread(client, monkeypatch):
+    # The GPU cleanup can block for seconds (engine unload waits on generation locks; the
+    # export subprocess join can take seconds), so the async start route must offload it via
+    # asyncio.to_thread rather than run it inline and freeze the event loop for concurrent
+    # status/progress/cancel requests. Assert the cleanup runs on a DIFFERENT thread than the
+    # inline coroutine body (service.start), which an inline (un-offloaded) call could not.
+    import threading
+
+    import routes.training as tr
+
+    threads: dict = {}
+
+    def _record_cleanup():
+        threads["cleanup"] = threading.current_thread()
+
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", _record_cleanup)
+
+    orig_start = client._fake.start
+
+    def _record_start(config):
+        threads["inline"] = threading.current_thread()
+        return orig_start(config)
+
+    monkeypatch.setattr(client._fake, "start", _record_start)
+
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+    assert threads["cleanup"] is not threads["inline"]  # offloaded to a worker, not run inline
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
