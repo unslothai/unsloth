@@ -796,12 +796,27 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     # LTX-2.x GGUFs ship general.architecture "ltxv" and ltx-2 is registered).
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
     assert models_route._arch_to_task("ltxv") not in ("text-generation", "text-to-image")
-    # A video arch that is pre-registered in _VIDEO_GGUF_ARCHS but has NO VideoFamily yet ("wan"
-    # in this build) must NOT be advertised as loadable video -- it would 400 on load. It falls to
-    # the unsupported bucket (hidden from chat and from the Video/Images pickers) until its family
-    # lands, rather than surfacing a GGUF that cannot load.
+    # A video arch that does not resolve from the bare arch alone ("wan" is ambiguous -- it
+    # covers both the loadable single-DiT TI2V-5B and the A14B MoE whose single file the loader
+    # refuses) stays unsupported when no repo/file name is available to disambiguate, rather than
+    # surfacing a GGUF that might 400 on load.
     assert models_route._arch_to_task("wan") == models_route._UNSUPPORTED_DIFFUSION_TASK
     assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
+    # With a repo/file name hint, the loadable TI2V-5B Wan GGUF resolves to the Video task (so it
+    # surfaces in the Video On-Device picker), while the A14B MoE (single file refused by the
+    # loader) stays in the unsupported bucket -- matching the loader's own name-aware detection.
+    assert (
+        models_route._arch_to_task("wan", ("QuantStack/Wan2.2-TI2V-5B-GGUF",))
+        == models_route._VIDEO_GEN_TASK
+    )
+    assert (
+        models_route._arch_to_task("wan", (None, "Wan2.2-TI2V-5B-Q4_K_M.gguf"))
+        == models_route._VIDEO_GEN_TASK
+    )
+    assert (
+        models_route._arch_to_task("wan", ("QuantStack/Wan2.2-T2V-A14B-GGUF",))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
     # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
     # classified here as some non-chat task (image, video, or unsupported).
     from core.inference.llama_cpp import LlamaCppBackend

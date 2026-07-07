@@ -774,6 +774,71 @@ def test_diffusion_dataset_upload_rejects_unsupported_files(client, dataset_root
     assert "Unsupported file" in r.json()["detail"]
 
 
+def test_free_gpu_for_diffusion_training_unloads_video(monkeypatch):
+    # A resident Video pipeline loads under the VIDEO arbiter owner, which the Images teardown
+    # does not free; starting diffusion training must unload it too or the trainer OOMs against
+    # the still-resident video model.
+    import routes.training as tr
+    from core.inference import gpu_arbiter
+
+    class _Exp:
+        current_checkpoint = None
+
+        def is_export_active(self):
+            return False
+
+    class _Diff:
+        is_loaded = False
+
+        def unload(self):
+            pass
+
+    unloaded = {"video": False}
+
+    class _Vid:
+        def status(self):
+            return {"loaded": True}
+
+        def unload(self):
+            unloaded["video"] = True
+
+    released = []
+    monkeypatch.setattr("core.export.get_export_backend", lambda: _Exp())
+    monkeypatch.setattr(
+        "core.inference.diffusion_engine_router.get_active_diffusion_engine", lambda: _Diff()
+    )
+    monkeypatch.setattr("core.inference.video.get_video_backend", lambda: _Vid())
+    monkeypatch.setattr(gpu_arbiter, "release", lambda owner: released.append(owner))
+
+    tr._free_gpu_for_diffusion_training()
+
+    assert unloaded["video"] is True
+    assert gpu_arbiter.VIDEO in released
+
+
+def test_import_example_partial_failure_leaves_no_partial_dataset(
+    client, dataset_roots, monkeypatch
+):
+    # A materialize that writes some images then fails must not leave a partial dataset: it stages
+    # into a discarded temp dir, so the target folder stays empty and a retry re-materializes
+    # instead of the image_count>0 idempotency check treating a truncated result as complete.
+    import routes.training as tr
+
+    ds_root, _ = dataset_roots
+
+    def _boom(entry, dest, cap):
+        (dest / "img_0000.png").write_bytes(b"x")  # partial write into staging
+        raise RuntimeError("transient copy error")
+
+    monkeypatch.setattr(tr, "_materialize_hf_dataset", _boom)
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "dreambooth-dog"})
+    assert r.status_code == 502
+    folder = ds_root / "dreambooth-dog"
+    assert not folder.exists() or not any(folder.iterdir())
+    # And no leftover staging dir surfaces as a dataset.
+    assert not any(p.name.startswith(".dreambooth-dog.import-") for p in ds_root.iterdir())
+
+
 def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypatch):
     # A doomed start (non-SDXL base) must 400 BEFORE resident GPU workloads are freed,
     # so a bad pick never unloads the user's working chat/Images model.

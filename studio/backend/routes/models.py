@@ -3206,20 +3206,31 @@ def _gguf_architecture(path: str) -> Optional[str]:
     return arch.strip() if isinstance(arch, str) and arch.strip() else None
 
 
-def _arch_to_task(arch: Optional[str]) -> Optional[str]:
+def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if arch is None:
         return None
     a = arch.lower()
     if a in _DIFFUSION_GGUF_ARCHS:
         return "text-to-image"
     if a in _VIDEO_GGUF_ARCHS:
-        # Only advertise as loadable video when a VideoFamily is actually registered for this arch
-        # (the video registry differs across the stacked video PRs -- wan is pre-registered here but
-        # its family lands later). An unregistered video arch would 400 on load, so fall it through
-        # to the unsupported bucket (hidden from chat, not surfaced in the Video/Images pickers)
-        # until its family exists, rather than advertising a GGUF that cannot load.
+        # Advertise as loadable video only when a VideoFamily actually resolves. Some archs map
+        # straight from the arch (ltxv); others are ambiguous at the arch level -- bare "wan"
+        # covers both the single-DiT TI2V-5B (GGUF-loadable) and the dual-expert A14B MoE whose
+        # single file the loader refuses -- so when the bare arch does not resolve, fall back to
+        # the repo/file names like the loader's own detect_video_family does (each tried
+        # separately, since it matches on name segments not substrings), and surface only a
+        # non-MoE (loadable) match. Without a name we cannot disambiguate, so a bare-arch Wan
+        # GGUF (which the loader also cannot resolve) stays in the unsupported bucket rather than
+        # advertising a GGUF that would 400 on load.
         from core.inference.video_families import detect_video_family
-        if detect_video_family("", override = a) is not None:
+        fam = detect_video_family("", override = a)
+        if fam is None:
+            for hint in name_hints:
+                if hint:
+                    fam = detect_video_family(hint)
+                    if fam is not None:
+                        break
+        if fam is not None and not getattr(fam, "is_moe", False):
             return _VIDEO_GEN_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     # A diffusion arch the backend can't assemble: hide it from chat (it would die
@@ -3234,11 +3245,14 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
     'text-to-image' for a loadable diffusion arch, the non-loadable diffusion tag
     for a recognized-but-unsupported image arch, else 'text-generation' (None if
     unreadable)."""
+    repo_id = getattr(repo_info, "repo_id", None)
     try:
         for path in _iter_gguf_paths(Path(repo_info.repo_path)):
             if _is_mmproj_filename(path.name):
                 continue
-            task = _arch_to_task(_gguf_architecture(str(path)))
+            task = _arch_to_task(
+                _gguf_architecture(str(path)), name_hints = (repo_id, path.name)
+            )
             if task is not None:
                 return task
     except Exception:
@@ -3255,15 +3269,20 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
     models get the 'text-to-image' tag instead of being dropped as task=null; the load
     path accepts these as a local pipeline."""
     path = model.path
+    _id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf":
         try:
             p = Path(path)
             if p.suffix.lower() == ".gguf" and p.is_file():
-                return _arch_to_task(_gguf_architecture(str(p)))
+                return _arch_to_task(
+                    _gguf_architecture(str(p)), name_hints = _id_hints + (p.name,)
+                )
             for f in _iter_gguf_paths(p):
                 if _is_mmproj_filename(f.name):
                     continue
-                task = _arch_to_task(_gguf_architecture(str(f)))
+                task = _arch_to_task(
+                    _gguf_architecture(str(f)), name_hints = _id_hints + (f.name,)
+                )
                 if task is not None:
                     return task
         except Exception:

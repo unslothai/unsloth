@@ -444,6 +444,24 @@ async def start_training(
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
             try:
+                # A resident or in-flight Video pipeline holds GPU memory the training run
+                # needs too, and it loads under the VIDEO arbiter owner the diffusion teardown
+                # above never touches. Tear it down the same way (unload is a no-op when nothing
+                # is loaded and preempts an in-flight load) and release VIDEO, so starting
+                # training while a generated-video session is resident can't OOM the run. Must
+                # precede the chat block, which early-returns.
+                from core.inference import gpu_arbiter
+                from core.inference.video import get_video_backend
+
+                video = get_video_backend()
+                if video.status().get("loaded"):
+                    logger.info("Unloading Video model to free GPU memory for training")
+                video.unload()
+                gpu_arbiter.release(gpu_arbiter.VIDEO)
+            except Exception as e:
+                logger.warning("Could not unload video model for training: %s", e)
+
+            try:
                 from routes.training_vram import (
                     can_keep_chat_during_training,
                     free_chat_models_for_training,
@@ -1131,6 +1149,21 @@ def _free_gpu_for_diffusion_training() -> None:
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
     try:
+        # A resident Video pipeline loads under the VIDEO arbiter owner, which the Images
+        # teardown above does not free; unload it too (no-op when nothing is loaded) and release
+        # VIDEO so a generated-video session left resident can't OOM the diffusion trainer.
+        from core.inference import gpu_arbiter
+        from core.inference.video import get_video_backend
+
+        video = get_video_backend()
+        if video.status().get("loaded"):
+            logger.info("Unloading resident Video pipeline to free GPU memory for training")
+        video.unload()  # no-op when nothing is loaded; also preempts an in-flight load
+        gpu_arbiter.release(gpu_arbiter.VIDEO)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not unload Video pipeline for diffusion training: %s", e)
+
+    try:
         # The SDXL trainer's footprint can't be cheaply sized against a resident chat
         # model, so free chat unconditionally (same conservative choice the LLM path
         # makes for an in-flight chat load) rather than risk an OOM.
@@ -1445,7 +1478,11 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
         root = datasets_root()
         found: list[DiffusionDatasetSummary] = []
         try:
-            children = sorted(p for p in root.iterdir() if p.is_dir())
+            # Skip hidden dirs: they are never user datasets, and an in-progress example
+            # import stages into a dot-prefixed sibling that must not surface as a dataset.
+            children = sorted(
+                p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
+            )
         except OSError:
             children = []
         for child in children:
@@ -2068,28 +2105,46 @@ async def import_diffusion_dataset_example(
     folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
 
     def do_import() -> DiffusionDatasetImportResponse:
+        import shutil
+        import tempfile
+
         folder.mkdir(parents = True, exist_ok = True)
         existing = _diffusion_dataset_summary(folder)
         imported = 0
         if existing.image_count == 0:
             cap = int(entry["image_cap"])
+            # Materialize into a private staging dir and promote into the dataset folder only
+            # after the whole import succeeds. A materialize that fails partway (a transient
+            # fetch/copy error after writing some images) then leaves only the staging dir,
+            # never a half-filled dataset -- otherwise the image_count>0 idempotency check
+            # above would treat that partial result as complete on the next retry (imported=0)
+            # and strand the user with a truncated dataset (there is no dataset-delete flow).
+            # Staged as a hidden sibling on the same filesystem so promotion is an atomic rename.
+            staging = Path(
+                tempfile.mkdtemp(dir = folder.parent, prefix = f".{folder.name}.import-")
+            )
             try:
-                if entry["loader"] == "imagefolder_jsonl":
-                    imported = _materialize_imagefolder_jsonl(entry, folder, cap)
-                else:
-                    imported = _materialize_hf_dataset(entry, folder, cap)
-            except HTTPException:
-                raise
-            except Exception as e:  # noqa: BLE001 -- surface a readable fetch/parse failure
-                raise HTTPException(
-                    status_code = 502,
-                    detail = f"Could not import '{entry['repo']}': {e}",
-                )
-            if imported == 0:
-                raise HTTPException(
-                    status_code = 502,
-                    detail = f"No images found in '{entry['repo']}'.",
-                )
+                try:
+                    if entry["loader"] == "imagefolder_jsonl":
+                        imported = _materialize_imagefolder_jsonl(entry, staging, cap)
+                    else:
+                        imported = _materialize_hf_dataset(entry, staging, cap)
+                except HTTPException:
+                    raise
+                except Exception as e:  # noqa: BLE001 -- surface a readable fetch/parse failure
+                    raise HTTPException(
+                        status_code = 502,
+                        detail = f"Could not import '{entry['repo']}': {e}",
+                    )
+                if imported == 0:
+                    raise HTTPException(
+                        status_code = 502,
+                        detail = f"No images found in '{entry['repo']}'.",
+                    )
+                for p in staging.iterdir():
+                    shutil.move(str(p), str(folder / p.name))
+            finally:
+                shutil.rmtree(staging, ignore_errors = True)
         summary = _diffusion_dataset_summary(folder)
         return DiffusionDatasetImportResponse(
             name = folder.name,

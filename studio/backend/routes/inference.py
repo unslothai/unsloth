@@ -3136,13 +3136,13 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             user_override = request.chat_template_override,
         )
 
-        # Reclaim the GPU from the diffusion (Images) backend before any chat
-        # load path — including the already-loaded fast path below, so chat
-        # ownership is asserted without depending on chat/diffusion exclusivity
-        # holding. No-op when diffusion isn't loaded.
+        # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the
+        # load is known viable: the already-loaded fast paths below re-assert CHAT ownership
+        # themselves, and the real handoff is deferred past identifier / gpu_ids / training-memory
+        # validation so a doomed chat load (bad id, unsupported gpu_ids on GGUF, or a training
+        # 409) can't evict a working image/video model and then error. Mirrors the image/video
+        # loaders, which validate before acquire_for.
         from core.inference.gpu_arbiter import acquire_for, CHAT
-
-        await asyncio.to_thread(acquire_for, CHAT)
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
@@ -3177,6 +3177,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
+                # The requested GGUF chat model is already resident: assert CHAT ownership (a
+                # no-op when it already holds it) so a drifted arbiter owner is corrected. This
+                # is a guaranteed-success path, not a doomed load, so evicting here is correct.
+                await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -3229,6 +3233,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 _sf_flags = _detect_safetensors_features(backend, _chat_template)
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
+                # The requested chat model is already resident: assert CHAT ownership (no-op when
+                # it already holds it) to correct a drifted arbiter owner. Guaranteed-success
+                # path, not a doomed load, so evicting here is correct.
+                await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -3302,6 +3310,13 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
         )
+
+        # The load is now known viable (valid identifier, gpu_ids ok, fits alongside any active
+        # training): reclaim the GPU for chat, evicting a resident Images/Video pipeline. Doing
+        # this only here -- not before the validation above -- is what keeps a doomed chat load
+        # from evicting a working image/video model and then erroring. No-op when chat already
+        # owns the GPU.
+        await asyncio.to_thread(acquire_for, CHAT)
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:

@@ -165,6 +165,24 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 200
         assert r.json()["total"] == 512
 
+    def test_diffusion_dataset_upload_in_body_passthrough(self, main_module):
+        # The diffusion dataset upload route lives under the protected /api/train prefix, so it
+        # must be in the REAL passthrough allowlist with the DB-aware + multipart-overhead cap;
+        # otherwise MaxBodyMiddleware would 413 near-limit batches (and ignore a raised
+        # max_upload_size_mb) before the handler's own get_upload_limit_bytes() check runs.
+        from utils.upload_limits import (
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        path = "/api/train/diffusion/dataset"
+        assert any(
+            path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES
+        )
+        cap = main_module._get_upload_passthrough_request_max_bytes(path)
+        assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
+        assert cap > default_request_body_limit_bytes()  # not the plain default body cap
+
     def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,

@@ -743,16 +743,26 @@ _DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
+# The diffusion dataset upload route (POST /api/train/diffusion/dataset) is a multipart
+# image upload under the protected /api/train prefix. Like /api/datasets/upload it enforces
+# its own get_upload_limit_bytes() cap, so it must bypass the default body cap here or the
+# middleware would 413 near-limit batches (and ignore a raised max_upload_size_mb) before the
+# handler runs. Its small-JSON sub-routes (import-example, caption) merely inherit the more
+# generous cap, which is harmless.
+_DIFFUSION_DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/train/diffusion/dataset"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     _DATASET_UPLOAD_PASSTHROUGH_PREFIX,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
+    _DIFFUSION_DATASET_UPLOAD_PASSTHROUGH_PREFIX,
 )
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
-    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX):
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX) or path.startswith(
+        _DIFFUSION_DATASET_UPLOAD_PASSTHROUGH_PREFIX
+    ):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
 
