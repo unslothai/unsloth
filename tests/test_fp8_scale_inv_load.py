@@ -1306,3 +1306,82 @@ def test_index_extra_patterns_prefix_subfolder():
         extras = loader_utils._fp8_scale_index_extra_patterns(model_dir, subfolder = "sub")
 
     assert extras == ["sub/weights-00001.safetensors"]
+
+
+def test_restores_transposed_column_wise_scale():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    # weight is [out=2, in=4]; a transposed/column-wise scale has shape[0] == in == 4, which
+    # exceeds out but is a layout the FP8 kernel supports and must not be skipped.
+    model.fp8 = _Fp8Owner(weight = torch.randn(2, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0, 2.0, 3.0, 4.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert tuple(model.fp8.weight_scale_inv.shape) == (4,)
+
+
+def test_skips_scale_that_matches_neither_weight_dim():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(2, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            # 5 rows matches neither out(2) nor in(4): a genuinely oversized scale, still skipped.
+            {"fp8.weight_scale_inv": torch.arange(5, dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 0
+    assert skipped == 1
+
+
+def test_parameter_scale_restore_preserves_metadata_and_identity():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+    placeholder = torch.nn.Parameter(
+        torch.tensor([2.0], dtype = torch.float16), requires_grad = False
+    )
+    # Non-default block geometry the fp8 kernels read via getattr(weight_scale, "block_size", ...).
+    placeholder.block_size = [64, 64]
+    model.fp8.weight_scale_inv = placeholder
+    placeholder_id = id(model.fp8.weight_scale_inv)
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert isinstance(model.fp8.weight_scale_inv, torch.nn.Parameter)
+    # Same Parameter object, so custom metadata survives the restore.
+    assert id(model.fp8.weight_scale_inv) == placeholder_id
+    assert getattr(model.fp8.weight_scale_inv, "block_size", None) == [64, 64]
+    assert torch.equal(
+        model.fp8.weight_scale_inv.detach(),
+        torch.tensor([1.0], dtype = torch.float16),
+    )

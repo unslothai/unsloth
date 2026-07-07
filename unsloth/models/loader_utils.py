@@ -808,6 +808,10 @@ def _restore_missing_fp8_weight_scale_inv(
             and scale_tensor.ndim > 0
             and weight.ndim > 0
             and scale_tensor.shape[0] > weight.shape[0]
+            # A transposed/column-wise scale has shape[0] == weight.shape[1] and is a layout the
+            # FP8 kernel handles (see unsloth/kernels/fp8.py transposed weight/scale branch), so
+            # only reject scales whose row count matches neither the weight rows nor columns. #6749
+            and (weight.ndim < 2 or scale_tensor.shape[0] != weight.shape[1])
         ):
             skipped += 1
             continue
@@ -839,10 +843,17 @@ def _restore_missing_fp8_weight_scale_inv(
             # to a buffer changes the module's parameter set and breaks tensor-parallel/optimizer/
             # PEFT parameter inspection that expects these FP8 scales to stay parameters. #6749
             existing = module._parameters[attr_name]
-            requires_grad = bool(getattr(existing, "requires_grad", False))
-            module._parameters[attr_name] = torch.nn.Parameter(
-                restored_scale, requires_grad = requires_grad
-            )
+            if isinstance(existing, torch.nn.Parameter):
+                # Update in place so any runtime metadata the kernels read off the scale (e.g.
+                # `block_size`, which fp8 dequant pulls via getattr) survives; building a fresh
+                # Parameter would drop those attributes and force default block geometry. #6749
+                with torch.no_grad():
+                    existing.data = restored_scale
+            else:
+                module._parameters[attr_name] = torch.nn.Parameter(
+                    restored_scale,
+                    requires_grad = bool(getattr(existing, "requires_grad", False)),
+                )
         else:
             if hasattr(module, attr_name):
                 delattr(module, attr_name)
