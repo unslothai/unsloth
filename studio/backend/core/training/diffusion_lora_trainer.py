@@ -20,6 +20,13 @@ Design:
 - ``run_diffusion_training_process`` is the thin mp.Queue adapter; it dispatches to the
   trainer registered for the resolved family (SDXL here, DiT families in a follow-up).
   ``main`` is a CLI.
+
+Memory/perf: captions are encoded once up front and the CLIP text encoders freed; VAE
+latents are likewise precomputed into a small CPU cache (``cache_latents``) and the VAE
+freed. The cache stores the posterior's affine pair (mean/std, scale folded in), so every
+step still draws a fresh VAE sample -- distribution-identical to encoding in the loop,
+without keeping the VAE resident or paying a per-step encode. TF32 matmuls + cudnn
+autotuning are enabled for the run under ``cfg.enable_tf32``.
 """
 
 from __future__ import annotations
@@ -40,12 +47,18 @@ from core.training.diffusion_train_common import (  # noqa: F401
     EventCb,
     StopCb,
     DiffusionLoraConfig,
+    LATENT_CACHE_OVER_BUDGET,
+    _apply_perf_flags,
     _assert_trusted_base_model,
     _coerce_gradient_checkpointing,
     _config_from_dict,
     _CONFIG_ALIASES,
     _emit,
+    _latent_cache_forced,
+    _latent_cache_over_budget,
+    _plan_cache_variants,
     _publish_to_lora_catalog,
+    _restore_perf_flags,
     discover_image_caption_pairs,
     get_trainer,
 )
@@ -99,6 +112,43 @@ def _load_image_tensor(
     return tensor, time_ids
 
 
+def _load_image_tensor_planned(
+    path: str, resolution: int, center_crop: bool, u_left: float, u_top: float, flip: bool
+) -> tuple[Any, tuple[int, int, int, int, int, int]]:
+    """Deterministic variant of ``_load_image_tensor`` for the latent cache: the crop comes
+    as unit fractions (mapped uniformly over the same inclusive integer range ``randint``
+    draws from) and the flip as a bool. Geometry (EXIF transpose, LANCZOS short-side resize,
+    the SDXL ``add_time_ids`` from the original size + actual crop offset) matches
+    ``_load_image_tensor`` exactly; ``center_crop`` reproduces the legacy floor-div center
+    bit-for-bit. The flip does not change time_ids (only the mirrored crop_left does)."""
+    import numpy as np
+    import torch
+    from PIL import Image, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    original_w, original_h = img.size
+    scale = resolution / min(original_w, original_h)
+    resized_w = max(resolution, round(original_w * scale))
+    resized_h = max(resolution, round(original_h * scale))
+    img = img.resize((resized_w, resized_h), Image.LANCZOS)
+    if center_crop:
+        left, top = (resized_w - resolution) // 2, (resized_h - resolution) // 2
+    else:
+        left = min(int(u_left * (resized_w - resolution + 1)), max(0, resized_w - resolution))
+        top = min(int(u_top * (resized_h - resolution + 1)), max(0, resized_h - resolution))
+    img = img.crop((left, top, left + resolution, top + resolution))
+    crop_left = left
+    if flip:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        # Mirror the crop's left origin so the conditioning matches the flipped pixels, the
+        # same mirroring ``_load_image_tensor`` applies on a random flip.
+        crop_left = max(0, resized_w - resolution - left)
+    arr = np.asarray(img, dtype = np.float32) / 255.0
+    tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
+    time_ids = (original_h, original_w, top, crop_left, resolution, resolution)
+    return tensor, time_ids
+
+
 def _encode_sdxl_prompts(
     prompts: list[str], tokenizers: list, text_encoders: list, device: Any
 ) -> tuple:
@@ -124,6 +174,102 @@ def _encode_sdxl_prompts(
         embeds_list.append(out.hidden_states[-2])
     prompt_embeds = torch.concat(embeds_list, dim = -1)
     return prompt_embeds, pooled
+
+
+def _build_sdxl_latent_cache(
+    vae, vae_scale, image_paths, cfg, device, weight_dtype, on_event, check_stop
+):
+    """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
+    encode once and store ``(A, B, time_ids)`` on CPU in fp32. ``A`` and ``B`` are the affine
+    posterior parameters (mean/std with the VAE scale folded in) so a per-step sample is
+    ``A + B * randn`` -- distribution-identical to an in-loop ``latent_dist.sample()`` -- and
+    ``time_ids`` is the SDXL micro-conditioning for the crop. The stats stay fp32 so the
+    per-step sample happens in fp32 and only the RESULT is cast to weight_dtype, matching the
+    in-loop path (encode fp32 -> sample fp32 -> scale -> .to(weight_dtype)); fp32 doubles the
+    cache RAM over bf16 but the cache is tiny (a handful of latents per image). Returns None if
+    the build was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed."""
+    import torch
+
+    plan = _plan_cache_variants(
+        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+    )
+
+    def _hold(t):
+        t = t.to(torch.float32).cpu()
+        if device == "cuda":
+            try:
+                t = t.pin_memory()
+            except RuntimeError:
+                pass
+        return t
+
+    cache: list[list[tuple]] = []
+    total = len(image_paths)
+    total_variants = sum(len(v) for v in plan)
+    forced = _latent_cache_forced()
+    gated = False
+    for i, path in enumerate(image_paths):
+        variants = []
+        for u_left, u_top, flip in plan[i]:
+            tensor, time_ids = _load_image_tensor_planned(
+                path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
+            )
+            pixel_values = tensor.unsqueeze(0).to(device, dtype = torch.float32)
+            with torch.no_grad():
+                dist = vae.encode(pixel_values).latent_dist
+            a = _hold(dist.mean * vae_scale)
+            b = _hold(dist.std * vae_scale)
+            if not forced and not gated:
+                # Size-gate the automatic cache off the first REAL encoded variant, before
+                # building the rest: thousands of images x variants of two fp32 tensors can
+                # exhaust host/pinned RAM with no fallback. Over budget we bail with the VAE
+                # still resident so the loop encodes latents per step instead.
+                per_variant = a.numel() * a.element_size() + b.numel() * b.element_size()
+                if _latent_cache_over_budget(per_variant, total_variants):
+                    _emit(
+                        on_event,
+                        "warning",
+                        message = (
+                            "Latent cache disabled: estimated "
+                            f"{per_variant * total_variants / 1024 ** 3:.1f} GiB over the "
+                            "budget; encoding latents per step instead. Set "
+                            "UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to keep it."
+                        ),
+                    )
+                    return LATENT_CACHE_OVER_BUDGET
+                gated = True
+            variants.append((a, b, tuple(time_ids)))
+        cache.append(variants)
+        if (i + 1) % 4 == 0 or i + 1 == total:
+            _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = total)
+        if check_stop():
+            return None
+    return cache
+
+
+def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
+    """Draw one latent + its time_ids per index from the cache: pick a variant, then sample
+    the posterior (A + B * randn) with fresh noise per step, exactly like an in-loop
+    ``latent_dist.sample() * vae_scale``. The cached stats are fp32, so the sample is drawn in
+    fp32 and only the RESULT is cast to weight_dtype (matching the in-loop path). Returns
+    ``(latents, batch_time_ids)`` already on ``device`` in the training dtype (scale is folded
+    into the cache)."""
+    import torch
+
+    parts_a, parts_b, tid_rows = [], [], []
+    for i in idxs:
+        variants = cache[i]
+        a, b, time_ids = (
+            variants[variant_rng.randrange(len(variants))] if len(variants) > 1 else variants[0]
+        )
+        parts_a.append(a)
+        parts_b.append(b)
+        tid_rows.append(time_ids)
+    lat_a = torch.cat(parts_a).to(device, non_blocking = True)
+    lat_b = torch.cat(parts_b).to(device, non_blocking = True)
+    latents = (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype = weight_dtype)
+    batch_time_ids = torch.tensor(tid_rows, device = device, dtype = weight_dtype)
+    return latents, batch_time_ids
 
 
 def run_diffusion_lora_training(
@@ -174,250 +320,320 @@ def run_diffusion_lora_training(
         precision = "fp16"
     weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
-    # Preflight the base model against the same trust gate as inference, before any fetch.
-    _assert_trusted_base_model(cfg.base_model)
+    # TF32 / cudnn.benchmark for the run, restored on the way out (the trainer subprocess is
+    # disposable, but restoring keeps in-process callers -- tests, notebooks -- clean). Wraps
+    # the whole body so every return (early stop and normal) restores the backend flags.
+    snap = _apply_perf_flags(cfg, device)
+    try:
+        # Preflight the base model against the same trust gate as inference, before any fetch.
+        _assert_trusted_base_model(cfg.base_model)
 
-    pairs = discover_image_caption_pairs(
-        cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
-    )
-    _emit(on_event, "model_load_started", num_images = len(pairs))
+        pairs = discover_image_caption_pairs(
+            cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
+        )
+        _emit(on_event, "model_load_started", num_images = len(pairs))
 
-    # Honour a stop requested before the (potentially large / slow) base model loads, the
-    # same way the LLM training worker checks its stop thread around model load.
-    if _check_stop():
+        # Honour a stop requested before the (potentially large / slow) base model loads, the
+        # same way the LLM training worker checks its stop thread around model load.
+        if _check_stop():
+            out_dir = Path(cfg.output_dir).expanduser()
+            _emit(
+                on_event,
+                "complete",
+                output_dir = str(out_dir),
+                lora_path = None,
+                stopped = True,
+                steps_run = 0,
+            )
+            return str(out_dir)
+
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
+        )
+        unet, vae = pipe.unet, pipe.vae
+        tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
+        text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
+        noise_scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
+
+        # Freeze the base; only the LoRA trains. The SDXL VAE overflows fp16, so keep it fp32.
+        for m in (unet, vae, *text_encoders):
+            m.requires_grad_(False)
+        vae.to(device, dtype = torch.float32)
+        for m in (unet, *text_encoders):
+            m.to(device, dtype = weight_dtype)
+
+        unet.add_adapter(
+            LoraConfig(
+                r = cfg.lora_rank,
+                lora_alpha = cfg.lora_alpha,
+                lora_dropout = cfg.lora_dropout,
+                init_lora_weights = "gaussian",
+                target_modules = list(cfg.lora_target_modules),
+            )
+        )
+        if cfg.gradient_checkpointing:
+            unet.enable_gradient_checkpointing()
+        # LoRA params must be fp32 for a stable optimizer under mixed precision.
+        if weight_dtype != torch.float32:
+            cast_training_params(unet, dtype = torch.float32)
+
+        lora_params = [p for p in unet.parameters() if p.requires_grad]
+        optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
+        # The scheduler advances once per optimizer update: lr_sched.step() runs a single
+        # time per outer opt_step (after the accumulation inner loop), for cfg.train_steps
+        # total. Count warmup/decay in those optimizer steps -- multiplying by the
+        # accumulation factor would stretch warmup past the run and never reach the decay.
+        lr_sched = get_scheduler(
+            cfg.lr_scheduler,
+            optimizer = optimizer,
+            num_warmup_steps = cfg.lr_warmup_steps,
+            num_training_steps = cfg.train_steps,
+        )
+
+        vae_scale = vae.config.scaling_factor
+        prediction_type = noise_scheduler.config.prediction_type
+
+        # Precompute text embeddings once per unique caption, then free the CLIP text encoders.
+        # SDXL re-encoded captions every step (pure waste: captions are constant) and kept both
+        # text encoders (~1.5 GB) resident. Embeddings are deterministic and this consumes no
+        # torch RNG, so the training math is bit-identical to in-loop encoding -- only faster and
+        # lighter. The env toggle exists purely so the accuracy guard can A/B the two paths.
+        precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
+        caption_embeds: dict[str, tuple] = {}
+        if precompute:
+            for cap in sorted({c for _, c in pairs}):
+                pe, pooled_c = _encode_sdxl_prompts([cap], tokenizers, text_encoders, device)
+                caption_embeds[cap] = (pe.cpu(), pooled_c.cpu())
+            for te in text_encoders:
+                te.to("cpu")
+            text_encoders = []
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+        # Precompute the VAE latent cache, then free the VAE: the cache holds the posterior
+        # affine pair (mean/std, scale folded in) so per-step sampling noise is preserved. The
+        # env toggle lets the accuracy guard A/B the cached vs in-loop encode paths.
+        use_cache = cfg.cache_latents and os.environ.get(
+            "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
+        ) not in ("1", "true")
+        latent_cache = None
+        if use_cache:
+            latent_cache = _build_sdxl_latent_cache(
+                vae,
+                vae_scale,
+                [p for p, _ in pairs],
+                cfg,
+                device,
+                weight_dtype,
+                on_event,
+                _check_stop,
+            )
+            if latent_cache is LATENT_CACHE_OVER_BUDGET:
+                # The estimated cache exceeded the host-memory budget; keep the VAE resident
+                # and fall through to the in-loop encode path (latent_cache stays None).
+                latent_cache = None
+            elif latent_cache is None:  # stopped during the cache build; nothing trained yet
+                out_dir = Path(cfg.output_dir).expanduser()
+                _emit(
+                    on_event,
+                    "complete",
+                    output_dir = str(out_dir),
+                    lora_path = None,
+                    stopped = True,
+                    steps_run = 0,
+                )
+                return str(out_dir)
+            else:
+                try:
+                    pipe.vae = None
+                except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
+                    pass
+                del vae
+                vae = None
+                gc.collect()
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+        # Variant picks use their own stream so the loop's index/noise draws stay on the same
+        # seed-deterministic sequence whether or not the cache is enabled.
+        variant_rng = random.Random(cfg.seed + 1)
+
+        _emit(on_event, "model_load_completed")
+
+        def _next_batch() -> tuple[list[int], list[str], list[str]]:
+            idx = rng.sample(range(len(pairs)), k = min(cfg.train_batch_size, len(pairs)))
+            chosen = [pairs[i] for i in idx]
+            return idx, [c[0] for c in chosen], [c[1] for c in chosen]
+
+        unet.train()
+        stopped = False
+        micro = 0
+        running_loss = 0.0
+        peak_gb = 0.0
+        t_start = time.time()
+        done = 0
+        for opt_step in range(cfg.train_steps):
+            optimizer.zero_grad(set_to_none = True)
+            step_loss = 0.0
+            for _ in range(cfg.gradient_accumulation_steps):
+                idx, img_paths, captions = _next_batch()
+                if latent_cache is not None:
+                    # Scale is folded into the cache; the sampler draws in fp32 and casts the
+                    # result to weight_dtype (matching the in-loop path below).
+                    latents, batch_time_ids = _sample_sdxl_cached_latents(
+                        latent_cache, idx, variant_rng, device, weight_dtype
+                    )
+                else:
+                    loaded = [
+                        _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
+                        for p in img_paths
+                    ]
+                    pixel_values = torch.stack([t for t, _ in loaded]).to(
+                        device, dtype = torch.float32
+                    )
+                    # Per-sample SDXL micro-conditioning from the actual crop (original size + offset).
+                    batch_time_ids = torch.tensor(
+                        [tid for _, tid in loaded], device = device, dtype = weight_dtype
+                    )
+
+                    with torch.no_grad():
+                        latents = vae.encode(pixel_values).latent_dist.sample() * vae_scale
+                    latents = latents.to(dtype = weight_dtype)
+
+                noise = torch.randn_like(latents)
+                bsz = latents.shape[0]
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps, (bsz,), device = device
+                ).long()
+                noisy = noise_scheduler.add_noise(latents, noise, timesteps)
+
+                if precompute:
+                    prompt_embeds = torch.cat([caption_embeds[c][0] for c in captions]).to(device)
+                    pooled = torch.cat([caption_embeds[c][1] for c in captions]).to(device)
+                else:
+                    prompt_embeds, pooled = _encode_sdxl_prompts(
+                        captions, tokenizers, text_encoders, device
+                    )
+                prompt_embeds = prompt_embeds.to(dtype = weight_dtype)
+                pooled = pooled.to(dtype = weight_dtype)
+                added = {"text_embeds": pooled, "time_ids": batch_time_ids}
+
+                model_pred = unet(
+                    noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
+                )[0]
+
+                if prediction_type == "v_prediction":
+                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    target = noise
+
+                if cfg.snr_gamma is not None:
+                    snr = compute_snr(noise_scheduler, timesteps)
+                    w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
+                        dim = 1
+                    )[0]
+                    w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                    loss = loss.mean(dim = list(range(1, loss.ndim))) * w
+                    loss = loss.mean()
+                else:
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+
+                (loss / cfg.gradient_accumulation_steps).backward()
+                step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
+                micro += 1
+
+            # max_grad_norm <= 0 means "disable clipping" (the Studio payload sends 0.0 for that);
+            # passing 0.0 to clip_grad_norm_ would scale every gradient to zero (no learning).
+            grad_norm: Optional[float] = None
+            if cfg.max_grad_norm and cfg.max_grad_norm > 0:
+                # clip_grad_norm_ returns the PRE-clip total norm (the grad-norm chart signal).
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
+            optimizer.step()
+            lr_sched.step()
+
+            running_loss += step_loss
+            done = opt_step + 1
+            if done % cfg.log_every == 0 or done == cfg.train_steps:
+                # ``learning_rate`` (not ``lr``) is the field the Studio training pump reads, so
+                # these progress events are directly consumable by the existing training
+                # status/SSE machinery when the diffusion trainer is wired into the worker.
+                if device == "cuda":
+                    peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                samples_per_second = round(
+                    (done * cfg.train_batch_size * cfg.gradient_accumulation_steps)
+                    / max(time.time() - t_start, 1e-6),
+                    3,
+                )
+                _emit(
+                    on_event,
+                    "progress",
+                    step = done,
+                    total_steps = cfg.train_steps,
+                    loss = round(step_loss, 5),
+                    avg_loss = round(running_loss / done, 5),
+                    learning_rate = lr_sched.get_last_lr()[0],
+                    grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
+                    samples_per_second = samples_per_second,
+                    peak_memory_gb = peak_gb or None,
+                )
+
+            if _check_stop():
+                stopped = True
+                break
+
+        # Export the trained LoRA in diffusers format (loadable via load_lora_weights), unless
+        # the run was cancelled with save disabled -- then leave no partial adapter behind.
         out_dir = Path(cfg.output_dir).expanduser()
+        lora_path: Optional[str] = None
+        catalog_path: Optional[str] = None
+        if not (stopped and not save_on_stop):
+            out_dir.mkdir(parents = True, exist_ok = True)
+            unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+            StableDiffusionXLPipeline.save_lora_weights(
+                save_directory = str(out_dir),
+                unet_lora_layers = unet_lora,
+                safe_serialization = True,
+                weight_name = DEFAULT_LORA_FILENAME,
+            )
+            lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+            # Mirror into the Studio diffusion LoRA directory so the Images picker discovers it
+            # (its scan lists only files directly under loras/diffusion, not subdirectories).
+            catalog_path = _publish_to_lora_catalog(lora_path, cfg)
         _emit(
             on_event,
             "complete",
             output_dir = str(out_dir),
-            lora_path = None,
-            stopped = True,
-            steps_run = 0,
+            lora_path = lora_path,
+            catalog_path = catalog_path,
+            family = cfg.resolved_family,
+            base_model = cfg.base_model,
+            stopped = stopped,
+            steps_run = done if cfg.train_steps else 0,
         )
         return str(out_dir)
-
-    pipe = StableDiffusionXLPipeline.from_pretrained(
-        cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
-    )
-    unet, vae = pipe.unet, pipe.vae
-    tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
-    text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
-    noise_scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
-
-    # Freeze the base; only the LoRA trains. The SDXL VAE overflows fp16, so keep it fp32.
-    for m in (unet, vae, *text_encoders):
-        m.requires_grad_(False)
-    vae.to(device, dtype = torch.float32)
-    for m in (unet, *text_encoders):
-        m.to(device, dtype = weight_dtype)
-
-    unet.add_adapter(
-        LoraConfig(
-            r = cfg.lora_rank,
-            lora_alpha = cfg.lora_alpha,
-            lora_dropout = cfg.lora_dropout,
-            init_lora_weights = "gaussian",
-            target_modules = list(cfg.lora_target_modules),
-        )
-    )
-    if cfg.gradient_checkpointing:
-        unet.enable_gradient_checkpointing()
-    # LoRA params must be fp32 for a stable optimizer under mixed precision.
-    if weight_dtype != torch.float32:
-        cast_training_params(unet, dtype = torch.float32)
-
-    lora_params = [p for p in unet.parameters() if p.requires_grad]
-    optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
-    # The scheduler advances once per optimizer update: lr_sched.step() runs a single
-    # time per outer opt_step (after the accumulation inner loop), for cfg.train_steps
-    # total. Count warmup/decay in those optimizer steps -- multiplying by the
-    # accumulation factor would stretch warmup past the run and never reach the decay.
-    lr_sched = get_scheduler(
-        cfg.lr_scheduler,
-        optimizer = optimizer,
-        num_warmup_steps = cfg.lr_warmup_steps,
-        num_training_steps = cfg.train_steps,
-    )
-
-    vae_scale = vae.config.scaling_factor
-    prediction_type = noise_scheduler.config.prediction_type
-
-    # Precompute text embeddings once per unique caption, then free the CLIP text encoders.
-    # SDXL re-encoded captions every step (pure waste: captions are constant) and kept both
-    # text encoders (~1.5 GB) resident. Embeddings are deterministic and this consumes no
-    # torch RNG, so the training math is bit-identical to in-loop encoding -- only faster and
-    # lighter. The env toggle exists purely so the accuracy guard can A/B the two paths.
-    precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
-    caption_embeds: dict[str, tuple] = {}
-    if precompute:
-        for cap in sorted({c for _, c in pairs}):
-            pe, pooled_c = _encode_sdxl_prompts([cap], tokenizers, text_encoders, device)
-            caption_embeds[cap] = (pe.cpu(), pooled_c.cpu())
-        for te in text_encoders:
-            te.to("cpu")
-        text_encoders = []
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
-    _emit(on_event, "model_load_completed")
-
-    def _next_batch() -> tuple[list[str], list[str]]:
-        idx = rng.sample(range(len(pairs)), k = min(cfg.train_batch_size, len(pairs)))
-        chosen = [pairs[i] for i in idx]
-        return [c[0] for c in chosen], [c[1] for c in chosen]
-
-    unet.train()
-    stopped = False
-    micro = 0
-    running_loss = 0.0
-    peak_gb = 0.0
-    t_start = time.time()
-    done = 0
-    for opt_step in range(cfg.train_steps):
-        optimizer.zero_grad(set_to_none = True)
-        step_loss = 0.0
-        for _ in range(cfg.gradient_accumulation_steps):
-            img_paths, captions = _next_batch()
-            loaded = [
-                _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
-                for p in img_paths
-            ]
-            pixel_values = torch.stack([t for t, _ in loaded]).to(device, dtype = torch.float32)
-            # Per-sample SDXL micro-conditioning from the actual crop (original size + offset).
-            batch_time_ids = torch.tensor(
-                [tid for _, tid in loaded], device = device, dtype = weight_dtype
-            )
-
-            with torch.no_grad():
-                latents = vae.encode(pixel_values).latent_dist.sample() * vae_scale
-            latents = latents.to(dtype = weight_dtype)
-
-            noise = torch.randn_like(latents)
-            bsz = latents.shape[0]
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bsz,), device = device
-            ).long()
-            noisy = noise_scheduler.add_noise(latents, noise, timesteps)
-
-            if precompute:
-                prompt_embeds = torch.cat([caption_embeds[c][0] for c in captions]).to(device)
-                pooled = torch.cat([caption_embeds[c][1] for c in captions]).to(device)
-            else:
-                prompt_embeds, pooled = _encode_sdxl_prompts(
-                    captions, tokenizers, text_encoders, device
-                )
-            prompt_embeds = prompt_embeds.to(dtype = weight_dtype)
-            pooled = pooled.to(dtype = weight_dtype)
-            added = {"text_embeds": pooled, "time_ids": batch_time_ids}
-
-            model_pred = unet(
-                noisy, timesteps, prompt_embeds, added_cond_kwargs = added, return_dict = False
-            )[0]
-
-            if prediction_type == "v_prediction":
-                target = noise_scheduler.get_velocity(latents, noise, timesteps)
-            else:
-                target = noise
-
-            if cfg.snr_gamma is not None:
-                snr = compute_snr(noise_scheduler, timesteps)
-                w = torch.stack([snr, cfg.snr_gamma * torch.ones_like(timesteps)], dim = 1).min(
-                    dim = 1
-                )[0]
-                w = w / snr if prediction_type != "v_prediction" else w / (snr + 1)
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
-                loss = loss.mean(dim = list(range(1, loss.ndim))) * w
-                loss = loss.mean()
-            else:
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
-
-            (loss / cfg.gradient_accumulation_steps).backward()
-            step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
-            micro += 1
-
-        # max_grad_norm <= 0 means "disable clipping" (the Studio payload sends 0.0 for that);
-        # passing 0.0 to clip_grad_norm_ would scale every gradient to zero (no learning).
-        grad_norm: Optional[float] = None
-        if cfg.max_grad_norm and cfg.max_grad_norm > 0:
-            # clip_grad_norm_ returns the PRE-clip total norm (the grad-norm chart signal).
-            grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
-        optimizer.step()
-        lr_sched.step()
-
-        running_loss += step_loss
-        done = opt_step + 1
-        if done % cfg.log_every == 0 or done == cfg.train_steps:
-            # ``learning_rate`` (not ``lr``) is the field the Studio training pump reads, so
-            # these progress events are directly consumable by the existing training
-            # status/SSE machinery when the diffusion trainer is wired into the worker.
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
-            samples_per_second = round(
-                (done * cfg.train_batch_size * cfg.gradient_accumulation_steps)
-                / max(time.time() - t_start, 1e-6),
-                3,
-            )
-            _emit(
-                on_event,
-                "progress",
-                step = done,
-                total_steps = cfg.train_steps,
-                loss = round(step_loss, 5),
-                avg_loss = round(running_loss / done, 5),
-                learning_rate = lr_sched.get_last_lr()[0],
-                grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
-                samples_per_second = samples_per_second,
-                peak_memory_gb = peak_gb or None,
-            )
-
-        if _check_stop():
-            stopped = True
-            break
-
-    # Export the trained LoRA in diffusers format (loadable via load_lora_weights), unless
-    # the run was cancelled with save disabled -- then leave no partial adapter behind.
-    out_dir = Path(cfg.output_dir).expanduser()
-    lora_path: Optional[str] = None
-    catalog_path: Optional[str] = None
-    if not (stopped and not save_on_stop):
-        out_dir.mkdir(parents = True, exist_ok = True)
-        unet_lora = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
-        StableDiffusionXLPipeline.save_lora_weights(
-            save_directory = str(out_dir),
-            unet_lora_layers = unet_lora,
-            safe_serialization = True,
-            weight_name = DEFAULT_LORA_FILENAME,
-        )
-        lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
-        # Mirror into the Studio diffusion LoRA directory so the Images picker discovers it
-        # (its scan lists only files directly under loras/diffusion, not subdirectories).
-        catalog_path = _publish_to_lora_catalog(lora_path, cfg)
-    _emit(
-        on_event,
-        "complete",
-        output_dir = str(out_dir),
-        lora_path = lora_path,
-        catalog_path = catalog_path,
-        family = cfg.resolved_family,
-        base_model = cfg.base_model,
-        stopped = stopped,
-        steps_run = done if cfg.train_steps else 0,
-    )
-    return str(out_dir)
+    finally:
+        _restore_perf_flags(snap)
 
 
 def _make_lora_optimizer(params: list, lr: float) -> Any:
     """8-bit AdamW (bitsandbytes) by default -- half the optimizer state, no meaningful
-    quality cost for LoRA -- falling back to fp32 AdamW when unavailable or when
-    UNSLOTH_DIFFUSION_FP32_OPTIM is set (used by the accuracy guard)."""
+    quality cost for LoRA -- falling back to torch AdamW (fused on CUDA) when unavailable.
+    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW: the accuracy guard wants the
+    reference optimizer, so it must not take the fused path."""
     import torch
 
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") not in ("1", "true"):
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        return torch.optim.AdamW(params, lr = lr)
+    try:
+        import bitsandbytes as bnb
+        return bnb.optim.AdamW8bit(params, lr = lr)
+    except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
+        pass
+    if torch.cuda.is_available():
         try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
+            return torch.optim.AdamW(params, lr = lr, fused = True)
+        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
             pass
     return torch.optim.AdamW(params, lr = lr)
 

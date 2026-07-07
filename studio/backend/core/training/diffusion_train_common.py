@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -123,6 +124,82 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     return "sdxl"
 
 
+def repo_is_prequantized(base_model: str) -> bool:
+    """Heuristic: a repo whose name marks a bitsandbytes 4-bit build already ships a
+    quantized transformer, so it loads as-is for nf4 and cannot serve the dense
+    (bf16/int8/fp8) base precisions."""
+    name = str(base_model or "").lower()
+    return "bnb-4bit" in name or "-4bit" in name or "int4" in name or "nf4" in name
+
+
+def _module_is_torchao_stub(module: Any) -> bool:
+    """True iff ``module`` is the Unsloth Windows-ROCm torchao import stub rather than the
+    real package. The stub (core/_torchao_stub.py) satisfies find_spec and even lets
+    ``from torchao.quantization import quantize_`` succeed -- but the imported symbols are
+    no-op stub types, so the quantization never happens. Every stub module carries the
+    ``_unsloth_stub`` sentinel, so match on it (comparing against the stub module's own
+    sentinel object, not identity of a re-created one)."""
+    if module is None:
+        return False
+    sentinel = getattr(module, "_unsloth_stub", None)
+    if sentinel is None:
+        return False
+    try:
+        from core._torchao_stub import _STUB_SENTINEL
+    except Exception:  # noqa: BLE001 -- stub module absent -> nothing to compare against
+        return False
+    return sentinel is _STUB_SENTINEL
+
+
+def has_functional_torchao() -> bool:
+    """True iff the real torchao quantization API is importable (not the Windows-ROCm stub).
+
+    ``_int8_quantize_base`` needs ``Int8WeightOnlyConfig`` + ``quantize_`` from
+    ``torchao.quantization`` and has no runtime fallback, so gate both the auto int8 pick
+    and the advertised int8 mode on a FUNCTIONAL import: a plain ``find_spec("torchao")``
+    is satisfied by the stub, whose quantize_ is a no-op that leaves the transformer dense
+    while compile is disabled as if it were int8. Import the exact symbols the int8 path
+    uses and reject the stub module. Never raises."""
+    try:
+        import importlib
+
+        quant = importlib.import_module("torchao.quantization")
+        if _module_is_torchao_stub(quant):
+            return False
+        # The symbols the int8 path actually imports must exist on the real module.
+        return hasattr(quant, "Int8WeightOnlyConfig") and hasattr(quant, "quantize_")
+    except Exception:  # noqa: BLE001 -- torchao absent / broken build -> treat as unavailable
+        return False
+
+
+def train_precision_modes() -> tuple[list[str], str]:
+    """(supported base_precision modes, recommended pick) for the current machine: nf4
+    always works; bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/fp8 additionally
+    need a FUNCTIONAL torchao (their explicit paths import torchao with no fallback, and the
+    Windows-ROCm stub only looks installed). fp8 also needs an fp8-capable GPU (sm89+). The
+    dense modes all train in bf16 compute, which the DiT trainer requires, so a non-bf16 CUDA
+    GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise /info would advertise a start that
+    evicts resident models and then fails the trainer's bf16 guard. Used by the /info endpoint
+    so the UI can gate the precision selector. Never raises."""
+    modes = ["nf4"]
+    recommended = "nf4"
+    try:
+        import torch
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            modes.append("bf16")
+            torchao_ok = has_functional_torchao()
+            if torchao_ok:
+                modes.append("int8")
+            major, minor = torch.cuda.get_device_capability()
+            if torchao_ok and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
+                modes.append("fp8")
+            modes.append("auto")
+            recommended = "auto"
+    except Exception:  # noqa: BLE001 -- no torch / probe failure -> nf4 only
+        pass
+    return modes, recommended
+
+
 def get_trainer(family: str) -> Callable[..., str]:
     """Return the training entrypoint for ``family``. Imports the trainer module lazily so
     this shared module stays free of the heavy trainer imports (and any import cycle)."""
@@ -170,19 +247,96 @@ _FAMILY_VRAM_NOTES = {
     "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
 }
 
+# The flow-matching DiT families (run by diffusion_dit_trainer). They expose the
+# base_precision / compile levers and require bf16 compute on CUDA; SDXL is absent because
+# it uses its own mixed_precision path. Kept as a set so the UI gate, the bf16 preflight,
+# and any future dispatch stay in sync.
+_DIT_TRAIN_FAMILIES = frozenset({"flux.1", "qwen-image", "z-image"})
+
+
+def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
+    """Return a user-facing error string if ``resolved_family`` needs bf16 compute that the
+    live GPU cannot provide, else None. The DiT trainer requires a bf16-capable GPU (Ampere
+    or newer) and otherwise raises deep in model load; the start route uses this to fail fast
+    BEFORE evicting resident GPU workloads. CPU-only hosts (which fall back to fp32 for
+    import/unit tests) and SDXL (its own mixed_precision path) are exempt. Never raises."""
+    if (resolved_family or "").strip().lower() not in _DIT_TRAIN_FAMILIES:
+        return None
+    try:
+        import torch
+        if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+            return (
+                "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
+                "device does not support bf16. Train the DiT families on a newer GPU."
+            )
+    except Exception:  # noqa: BLE001 -- torch probe failure must not block a start
+        return None
+    return None
+
+
+def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
+    """Reason the requested DiT precision cannot run on this host, else None -- checked by the
+    start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
+    child, after eviction). Three gates, all mirroring _resolve_base_precision so a doomed run is
+    rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); the dense
+    precisions (bf16/int8/fp8) requiring a CUDA GPU; and an explicit int8 needing a FUNCTIONAL
+    torchao (its _int8_quantize_base has no fallback). Never raises."""
+    reason = bf16_unsupported_reason(resolved_family)
+    if reason:
+        return reason
+    fam = (resolved_family or "").strip().lower()
+    mode = (base_precision or "").strip().lower()
+    if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8"):
+        # The DiT trainer's dense precisions all require CUDA (_resolve_base_precision rejects
+        # bf16/int8/fp8 on device != "cuda"). bf16_unsupported_reason exempts a CPU-only host (the
+        # fp32 fallback for import/unit tests), so without this a dense request on a GPU-less host
+        # would pass the preflight, evict resident workloads, then raise only in the child.
+        try:
+            import torch
+            has_cuda = torch.cuda.is_available()
+        except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as no CUDA
+            has_cuda = False
+        if not has_cuda:
+            return (
+                f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
+                "Use base_precision='nf4' or 'auto'."
+            )
+        if mode == "int8" and not has_functional_torchao():
+            return (
+                "base_precision='int8' needs a functional torchao install; this host's torchao is "
+                "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
+            )
+    return None
+
 
 def family_train_infos() -> list[dict[str, Any]]:
     """Describe every trainable family for the Train UI: name, label, the default + allowed
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
     the family registry so it stays in sync with what the trainers actually support."""
     from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_transformer_quant import _family_denied
 
+    dit_modes, dit_recommended = train_precision_modes()
     infos: list[dict[str, Any]] = []
     for name in trainable_family_names():
         fam = detect_family("", override = name)
         if fam is None:
             continue
         repos = list(fam.train_base_repos) or [fam.base_repo]
+        # base_precision / compile apply to the DiT trainer only; SDXL keeps its
+        # mixed_precision lever, so the UI hides the selector for it.
+        is_dit = name in _DIT_TRAIN_FAMILIES
+        # On a non-bf16 CUDA GPU the start route's preflight rejects EVERY DiT family (even nf4,
+        # since the DiT trainer requires bf16 unconditionally on CUDA), so advertise no precision
+        # for it -- otherwise /info offers an nf4 DiT option that always 400s. Otherwise drop any
+        # scheme this family's DiT corrupts (fp8 on Qwen-Image: activation outliers exceed fp8's
+        # range; the inference path denies the same set), so the UI never offers a mode
+        # normalized() would then reject.
+        dit_block = bf16_unsupported_reason(name) if is_dit else None
+        if not is_dit or dit_block:
+            fam_modes: list[str] = []
+        else:
+            fam_modes = [m for m in dit_modes if not _family_denied(name, m)]
         infos.append(
             {
                 "name": name,
@@ -190,7 +344,10 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "default_base": repos[0],
                 "base_repos": repos,
                 "defaults": train_defaults(name),
-                "vram_note": _FAMILY_VRAM_NOTES.get(name, ""),
+                "vram_note": dit_block or _FAMILY_VRAM_NOTES.get(name, ""),
+                "precision_modes": fam_modes,
+                "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
+                "supports_compile": bool(is_dit and not dit_block),
             }
         )
     return infos
@@ -228,6 +385,23 @@ class DiffusionLoraConfig:
     caption_column: str = "text"  # column in metadata.jsonl
     adapter_name: str = "default"
     hf_token: Optional[str] = None
+    # Precompute the VAE latents once (freeing the VAE for the whole run) instead of
+    # re-encoding every step. ``cache_variants`` crop/flip draws are frozen per image;
+    # the per-step VAE sampling noise itself is preserved (see the DiT trainer docstring).
+    cache_latents: bool = True
+    cache_variants: int = 4
+    # Regional torch.compile of the transformer blocks: "off" | "on" | "auto" (auto turns
+    # it on only for a dense, non-bitsandbytes base where it is a clean win).
+    compile_transformer: str = "auto"
+    # TF32 matmuls + high fp32 matmul precision + cudnn autotuning for the run. Near-lossless;
+    # disable for strict bit-reproducibility A/Bs.
+    enable_tf32: bool = True
+    # DiT base transformer precision: "nf4" (bitsandbytes QLoRA, the memory floor and the
+    # default), "bf16" (dense, fastest eager, compile-friendly), "int8" (torchao
+    # weight-only, half of bf16), "fp8" (torchao float8 training compute on the frozen
+    # linears, Ada/Hopper/Blackwell + compile), or "auto" (pick by free VRAM + GPU class).
+    # Non-nf4 modes need a dense base repo (not a prequant bnb-4bit one). SDXL ignores it.
+    base_precision: str = "nf4"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
     # Optional explicit family override ("sdxl" / "flux.1" / ...); None = detect from
@@ -259,6 +433,43 @@ class DiffusionLoraConfig:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
+        if not 1 <= int(self.cache_variants) <= 16:
+            raise ValueError("cache_variants must be between 1 and 16")
+        compile_transformer = str(self.compile_transformer or "auto").strip().lower()
+        if compile_transformer not in ("off", "on", "auto"):
+            raise ValueError("compile_transformer must be one of off / on / auto")
+        base_precision = str(self.base_precision or "nf4").strip().lower()
+        if base_precision not in ("nf4", "bf16", "int8", "fp8", "auto"):
+            raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / auto")
+        # base_precision is a DiT-only lever (nf4/bf16/int8/fp8/auto for the transformer
+        # load); SDXL uses its own mixed_precision path and ignores base_precision entirely,
+        # so the dense-mode gates (prequant base / non-bf16 compute) apply only to the DiT
+        # families. The mode-name validity check above still runs for every family.
+        if resolved_family != "sdxl" and base_precision in ("bf16", "int8", "fp8"):
+            if repo_is_prequantized(self.base_model):
+                raise ValueError(
+                    f"base_precision={base_precision!r} needs a dense base repo, but "
+                    f"'{self.base_model}' is already bitsandbytes-quantized. Pick the "
+                    f"family's dense (bf16) base repo for this mode, or use nf4/auto."
+                )
+            if self.mixed_precision != "bf16":
+                raise ValueError(
+                    f"base_precision={base_precision!r} trains in bf16 compute; set "
+                    f"mixed_precision to bf16."
+                )
+            # Some DiT families are corrupted by fp8's activation range: outliers exceed even
+            # per-row fp8's dynamic range, so the frozen linears' float8 training compute
+            # learns against a garbage forward pass. The inference path already denies these
+            # schemes; mirror that deny here so the run fails fast instead of silently
+            # producing a broken adapter. int8 (per-token) is unaffected and stays allowed.
+            from core.inference.diffusion_transformer_quant import _family_denied
+
+            if _family_denied(resolved_family, base_precision):
+                raise ValueError(
+                    f"base_precision={base_precision!r} is not supported for "
+                    f"{resolved_family}: its activations exceed fp8's range and corrupt the "
+                    f"trained result. Use 'nf4', 'int8', 'bf16', or 'auto'."
+                )
         # A zero/negative gamma would zero out (or invert) the min-SNR weight and
         # silently train on a degenerate loss; None is the documented disable.
         if self.snr_gamma is not None and float(self.snr_gamma) <= 0:
@@ -283,6 +494,9 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            cache_variants = int(self.cache_variants),
+            compile_transformer = compile_transformer,
+            base_precision = base_precision,
             resolved_family = resolved_family,
         )
 
@@ -367,6 +581,145 @@ def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
         on_event({"type": type_, "ts": time.time(), **kw})
 
 
+def _plan_cache_variants(
+    num_images: int, cache_variants: int, center_crop: bool, random_flip: bool, seed: int
+) -> list[list[tuple[float, float, bool]]]:
+    """Seed-deterministic crop/flip plan for the latent cache: per image, up to
+    ``cache_variants`` draws of (u_left, u_top, flip) with the crop as unit fractions the
+    loader maps onto its integer crop range. Uses its own rng stream so the training
+    loop's draws are untouched. Center-crop / no-flip collapse duplicate variants (a
+    center crop without flip is one variant no matter how many draws), so callers encode
+    each distinct variant exactly once. Pure (no torch) for CPU unit tests."""
+    crop_rng = random.Random(seed)
+    plan: list[list[tuple[float, float, bool]]] = []
+    for _ in range(max(0, num_images)):
+        variants: list[tuple[float, float, bool]] = []
+        for _ in range(max(1, cache_variants)):
+            u_left, u_top = crop_rng.random(), crop_rng.random()
+            flip = bool(random_flip and crop_rng.random() < 0.5)
+            if center_crop:
+                u_left = u_top = 0.5  # loader ignores the fractions for a center crop
+            key = (u_left, u_top, flip)
+            if key not in variants:
+                variants.append(key)
+        plan.append(variants)
+    return plan
+
+
+# Host-memory budget for the AUTOMATIC latent cache. The cache holds two fp32 posterior
+# tensors (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA
+# host. At 1024px an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times
+# that, so a few thousand images x cache_variants can exhaust host or pinned RAM with no
+# fallback. Over this budget the default falls back to per-step VAE encoding. A fixed
+# constant (rather than a psutil RAM fraction) keeps the gate dependency-free and identical
+# across hosts; it is deliberately conservative, well under a typical training host's RAM.
+_LATENT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GiB
+
+# Returned by the cache builders when the estimated cache exceeds the budget: the caller
+# keeps the VAE resident and encodes each step's latents in-loop. A distinct sentinel from
+# ``None`` (which means a stop was requested mid-build) so the two are not conflated.
+LATENT_CACHE_OVER_BUDGET: Any = object()
+
+
+def _latent_cache_forced() -> bool:
+    """The user explicitly forced the latent cache on, bypassing the size gate. This is the
+    explicit opt-in counterpart to ``UNSLOTH_DIFFUSION_NO_LATENT_CACHE`` (the explicit
+    opt-out); only the automatic default is size-gated, so an explicit choice is honoured
+    verbatim in either direction."""
+    return os.environ.get("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "") in ("1", "true")
+
+
+def _latent_cache_over_budget(
+    per_variant_bytes: int,
+    total_variants: int,
+    budget_bytes: Optional[int] = None,
+) -> bool:
+    """True when a cache of ``total_variants`` entries, each two fp32 tensors totalling
+    ``per_variant_bytes``, is estimated to exceed ``budget_bytes``. ``per_variant_bytes`` is
+    measured from a real encoded latent, so the estimate tracks the actual per-family tensor
+    shape (SDXL 4-channel vs. a packed 16-channel DiT latent) rather than a guess. The budget
+    is read from the module constant at call time when not given, so tests can override it."""
+    if budget_bytes is None:
+        budget_bytes = _LATENT_CACHE_BUDGET_BYTES
+    return per_variant_bytes * max(0, total_variants) > budget_bytes
+
+
+def _apply_perf_flags(
+    cfg: "DiffusionLoraConfig",
+    device: str,
+    cudnn_benchmark: bool = False,
+) -> dict:
+    """Set the run-scoped torch backend knobs: TF32 matmuls + high fp32 matmul precision
+    when ``cfg.enable_tf32`` is on, strict fp32 (all TF32 flags cleared) when it is off,
+    plus cudnn autotuning when the caller opts in. Autotune is
+    for the conv-heavy SDXL U-Net only: measured on B200, it DOUBLES peak VRAM (fp32 VAE
+    conv workspaces) while the DiT loop -- pure matmuls once the latent cache is built --
+    gains nothing from it. Returns a snapshot for ``_restore_perf_flags``. Best-effort:
+    missing attributes on a CPU/other-vendor build are skipped."""
+    from core.inference.diffusion_speed import snapshot_backend_flags
+
+    snap: dict[str, Any] = {"flags": snapshot_backend_flags(), "matmul_precision": None}
+    if device != "cuda":
+        return snap
+    try:
+        import torch
+
+        snap["matmul_precision"] = torch.get_float32_matmul_precision()
+        if cfg.enable_tf32:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+        else:
+            # The opt-out is a strict-fp32 A/B mode, so actively clear the flags rather
+            # than inherit ambient state (cudnn TF32 defaults to ON in torch).
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.set_float32_matmul_precision("highest")
+        if cudnn_benchmark:
+            torch.backends.cudnn.benchmark = True
+        # The cuDNN SDPA backend's TRAINING graph is broken for the FLUX attention shapes
+        # on torch 2.10 + cu130 (B200): mha_graph.execute fails, then poisons the context
+        # into illegal memory accesses. Flash / mem-efficient SDPA are mathematically
+        # equivalent, so pin those for the run (restored on exit).
+        cuda_backends = getattr(torch.backends, "cuda", None)
+        if cuda_backends is not None and hasattr(cuda_backends, "enable_cudnn_sdp"):
+            try:
+                snap["cudnn_sdp"] = bool(cuda_backends.cudnn_sdp_enabled())
+            except Exception:  # noqa: BLE001 -- flag unreadable: skip the tweak entirely
+                snap["cudnn_sdp"] = None
+            if snap["cudnn_sdp"]:
+                cuda_backends.enable_cudnn_sdp(False)
+    except Exception:  # noqa: BLE001 -- perf flags are never fatal
+        pass
+    return snap
+
+
+def _restore_perf_flags(snap: Optional[dict]) -> None:
+    """Undo ``_apply_perf_flags`` (the trainer subprocess is disposable, but in-process
+    callers -- tests, notebooks -- must not inherit mutated globals)."""
+    if not snap:
+        return
+    from core.inference.diffusion_speed import restore_backend_flags
+
+    restore_backend_flags(snap.get("flags"))
+    try:
+        import torch
+
+        if snap.get("matmul_precision"):
+            torch.set_float32_matmul_precision(snap["matmul_precision"])
+        # Restore the exact pre-run cudnn SDPA state; None means the flag was unreadable
+        # (or absent) at apply time and was never touched.
+        cuda_backends = getattr(torch.backends, "cuda", None)
+        if (
+            snap.get("cudnn_sdp") is not None
+            and cuda_backends is not None
+            and hasattr(cuda_backends, "enable_cudnn_sdp")
+        ):
+            cuda_backends.enable_cudnn_sdp(bool(snap["cudnn_sdp"]))
+    except Exception:  # noqa: BLE001 -- best-effort restore
+        pass
+
+
 def _assert_trusted_base_model(base_model: str) -> None:
     """Gate the training base model the same way the inference backend gates non-GGUF loads:
     a local path or a trusted repo (``unsloth/*`` or an allowlisted official base). This runs
@@ -446,6 +799,15 @@ def _coerce_gradient_checkpointing(value: Any) -> bool:
     return bool(value)
 
 
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a flag that may arrive as a string through the generic Studio config path
+    (e.g. "false" / "0" / "off"). A non-empty string like "false" is otherwise truthy, so
+    an opt-out would silently no-op. A real bool passes through."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "none", "false", "0", "no", "off")
+    return bool(value)
+
+
 def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     """Build a DiffusionLoraConfig from a plain dict. Unknown keys are ignored so a richer
     request payload (UI form) does not break construction; a small set of generic Studio
@@ -465,4 +827,7 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
         kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
             kwargs["gradient_checkpointing"]
         )
+    for flag in ("cache_latents", "enable_tf32"):
+        if flag in kwargs:
+            kwargs[flag] = _coerce_bool(kwargs[flag])
     return DiffusionLoraConfig(**kwargs)

@@ -73,6 +73,7 @@ from models.training import (
     DiffusionTrainingStartRequest,
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
+    DiffusionTrainingStopRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
@@ -1233,9 +1234,22 @@ async def start_diffusion_training(
     from core.training.diffusion_lora_trainer import _config_from_dict
 
     try:
-        _config_from_dict(config).normalized()
+        normalized_cfg = _config_from_dict(config).normalized()
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
+
+    # Preflight the requested DiT precision BEFORE freeing GPU residents: the DiT trainer's own
+    # checks (a bf16-capable GPU is required; an explicit int8 needs a functional torchao) fire
+    # only in the child, AFTER _free_gpu_for_diffusion_training() already evicted the user's
+    # chat/Images model. Fail fast (400) so a pre-Ampere GPU (T4 / V100 / RTX 20xx) or a
+    # stub-torchao host never tears down resident models for a run that cannot start.
+    from core.training.diffusion_train_common import training_precision_preflight_error
+
+    _precision_reason = training_precision_preflight_error(
+        normalized_cfg.resolved_family, normalized_cfg.base_precision
+    )
+    if _precision_reason:
+        raise HTTPException(status_code = 400, detail = _precision_reason)
 
     # Run the trainers' trust gate here too (both assert the same predicate before
     # from_pretrained), so an untrusted/typoed base 400s BEFORE freeing GPU residents
@@ -1291,11 +1305,17 @@ async def start_diffusion_training(
 
 
 @router.post("/diffusion/stop")
-async def stop_diffusion_training(current_subject: str = Depends(get_current_subject)):
-    """Request a clean stop of the running diffusion training job (partial adapter saved)."""
+async def stop_diffusion_training(
+    body: Optional[DiffusionTrainingStopRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Request a clean stop of the running diffusion training job. The optional body's
+    ``save`` mirrors the LLM /stop: true (default, also for an empty POST) exports the
+    partial adapter, false cancels without saving one."""
     from core.training.diffusion_training_service import get_diffusion_training_service
 
-    stopped = get_diffusion_training_service().stop()
+    save = body.save if body is not None else True
+    stopped = get_diffusion_training_service().stop(save = save)
     return {"status": "stopping" if stopped else "idle"}
 
 
