@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import io
+import json
 import logging
 
 from hub.services import download_lifecycle
@@ -141,6 +142,19 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(
             return _make_proc(0, b"http retry")
 
         def fake_register_worker(*_args, **kwargs):
+            assert registry.get_job_metadata(key).transport == download_registry.TRANSPORT_HTTP
+            if repo_type == "model" and variant:
+                sibling_claimed, sibling_state = registry.claim(
+                    "Org/Model::Q5_K_M",
+                    download_registry.TRANSPORT_XET,
+                    repo_type = "model",
+                    repo_id = "Org/Model",
+                    variant = "Q5_K_M",
+                    blob_hashes = frozenset({"q5-main"}),
+                    progress_blob_hashes = frozenset({"q5-main", "mmprojhash"}),
+                )
+                assert sibling_claimed is False
+                assert sibling_state == "running"
             retry_registers.append(kwargs)
             return True
 
@@ -177,6 +191,165 @@ def test_download_watcher_retries_xet_failure_over_http_for_model_and_dataset(
             [("model", "Org/Model", progress_blob_hashes)] if progress_blob_hashes else []
         )
         assert registry.get_job(key).state == "running"
+
+
+def test_download_watcher_defers_http_retry_while_sibling_xet_variant_is_active(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key_a = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    key_b = download_registry.normalize_job_key("Org/Model::Q5_K_M")
+    assert registry.claim(
+        key_a,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash-a"}),
+        progress_blob_hashes = frozenset({"mainhash-a"}),
+    )
+    assert registry.claim(
+        key_b,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q5_K_M",
+        blob_hashes = frozenset({"mainhash-b"}),
+        progress_blob_hashes = frozenset({"mainhash-b"}),
+    )
+    proc = _make_proc(1, b"xet failed")
+    sleep_calls = []
+    spawned = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        assert registry.get_job(key_a).state == "running"
+        assert registry.get_job_metadata(key_a).transport == download_registry.TRANSPORT_XET
+        assert registry.begin_delete("Org/Model", "Q4_K_M") is False
+        registry.set_job(key_b, "complete")
+
+    def fake_spawn_worker(
+        args,
+        hf_token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
+        assert use_xet is False
+        assert registry.get_job_metadata(key_a).transport == download_registry.TRANSPORT_HTTP
+        spawned.append((args, protected_blob_hashes))
+        return _make_proc(0, b"http retry")
+
+    monkeypatch.setattr(download_lifecycle.time, "sleep", fake_sleep)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+
+    assert real_register_worker(
+        registry,
+        key_a,
+        proc,
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert sleep_calls == [0.05]
+    assert spawned == [(["--repo-id", "Org/Model", "--variant", "Q4_K_M"], None)]
+    metadata = registry.get_job_metadata(key_a)
+    assert metadata is not None
+    assert metadata.transport == download_registry.TRANSPORT_HTTP
+    assert registry.get_job(key_a).state == "complete"
+    assert registry.get_job(key_b).state == "complete"
+
+
+def test_download_watcher_does_not_deadlock_when_sibling_xet_variants_both_fail(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key_a = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    key_b = download_registry.normalize_job_key("Org/Model::Q5_K_M")
+    for key, variant, blob_hash in (
+        (key_a, "Q4_K_M", "mainhash-a"),
+        (key_b, "Q5_K_M", "mainhash-b"),
+    ):
+        assert registry.claim(
+            key,
+            download_registry.TRANSPORT_XET,
+            repo_type = "model",
+            repo_id = "Org/Model",
+            variant = variant,
+            blob_hashes = frozenset({blob_hash}),
+            progress_blob_hashes = frozenset({blob_hash}),
+        )
+
+    spawned = []
+    triggered_b = False
+
+    def fake_spawn_worker(
+        args,
+        hf_token,
+        *,
+        use_xet,
+        protected_blob_hashes = None,
+    ):
+        assert use_xet is False
+        spawned.append(args)
+        return _make_proc(0, b"http retry")
+
+    def fake_sleep(_seconds):
+        nonlocal triggered_b
+        assert registry.get_job(key_a).state == "running"
+        assert registry.get_job_metadata(key_a).transport == download_registry.TRANSPORT_XET
+        assert not triggered_b
+        triggered_b = True
+        assert real_register_worker(
+            registry,
+            key_b,
+            _make_proc(1, b"xet failed b"),
+            hf_token = None,
+            label = "Org/Model [Q5_K_M]",
+            log_prefix = "Download",
+            logger = logging.getLogger("test"),
+            repo_type = "model",
+            repo_id = "Org/Model",
+            transport = download_registry.TRANSPORT_XET,
+            watch_name = "model-watch-b",
+        )
+
+    monkeypatch.setattr(download_lifecycle.time, "sleep", fake_sleep)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+
+    assert real_register_worker(
+        registry,
+        key_a,
+        _make_proc(1, b"xet failed a"),
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch-a",
+    )
+
+    assert triggered_b
+    assert spawned == [
+        ["--repo-id", "Org/Model", "--variant", "Q5_K_M"],
+        ["--repo-id", "Org/Model", "--variant", "Q4_K_M"],
+    ]
+    assert registry.get_job(key_a).state == "complete"
+    assert registry.get_job(key_b).state == "complete"
 
 
 def test_download_watcher_keeps_http_failure_terminal(monkeypatch, tmp_path):
@@ -325,6 +498,246 @@ def test_download_watcher_restores_xet_transport_when_http_retry_spawn_fails(mon
     metadata = registry.get_job_metadata(key)
     assert metadata is not None
     assert metadata.transport == download_registry.TRANSPORT_XET
+
+
+def test_download_watcher_preserves_xet_marker_when_http_retry_is_cancelled_before_register(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+    )
+    generation = registry.current_generation(key)
+    proc = _make_proc(1, b"xet failed")
+    markers = []
+
+    def fake_spawn_worker(*_args, **_kwargs):
+        assert registry.get_job_metadata(key).transport == download_registry.TRANSPORT_HTTP
+        assert registry.mark_pending_cancel(key, generation)
+        return _make_proc(0, b"http retry")
+
+    def fake_persist_cancel_marker(*args, **_kwargs):
+        markers.append(args)
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+    monkeypatch.setattr(download_registry, "persist_cancel_marker", fake_persist_cancel_marker)
+
+    assert real_register_worker(
+        registry,
+        key,
+        proc,
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert registry.get_job(key).state == "cancelled"
+    assert markers == [("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET)]
+    assert registry.get_job_metadata(key) is None
+
+
+def test_download_watcher_honors_cancel_before_http_retry_spawn(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+    )
+    generation = registry.current_generation(key)
+    proc = _make_proc(1, b"xet failed")
+    proc._waited = True
+    markers = []
+
+    def fake_drain_stderr_excerpt(_stream):
+        assert (
+            download_lifecycle.cancel_worker(
+                registry,
+                key,
+                generation = generation,
+                label = "Org/Model [Q4_K_M]",
+                logger = logging.getLogger("test"),
+            )
+            == "cancelling"
+        )
+        return b"xet failed"
+
+    def fake_spawn_worker(*_args, **_kwargs):
+        raise AssertionError("cancelled retry should not spawn a worker")
+
+    def fake_register_worker(*_args, **_kwargs):
+        raise AssertionError("cancelled retry should not register a worker")
+
+    def fake_persist_cancel_marker(*args, **_kwargs):
+        markers.append(args)
+
+    monkeypatch.setattr(download_lifecycle, "drain_stderr_excerpt", fake_drain_stderr_excerpt)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+    monkeypatch.setattr(download_lifecycle, "register_worker", fake_register_worker)
+    monkeypatch.setattr(download_registry, "persist_cancel_marker", fake_persist_cancel_marker)
+
+    assert real_register_worker(
+        registry,
+        key,
+        proc,
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert registry.get_job(key).state == "cancelled"
+    assert markers == [("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET)]
+
+
+def test_download_watcher_preserves_xet_marker_when_http_retry_is_cancelled_after_register(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    real_register_worker = download_lifecycle.register_worker
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+    )
+    generation = registry.current_generation(key)
+    markers = []
+
+    class _CancellingProc:
+        pid = 5252
+
+        def __init__(self):
+            self.stderr = io.BytesIO(b"cancelled")
+
+        def wait(self, timeout = None):
+            proc = registry.get_process(key)
+            assert proc is self
+            assert registry.request_cancel(key, self, generation)
+            return -9
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            raise AssertionError("registered retry worker should exit by cancellation")
+
+    def fake_spawn_worker(*_args, **_kwargs):
+        assert registry.get_job_metadata(key).transport == download_registry.TRANSPORT_HTTP
+        return _CancellingProc()
+
+    def fake_persist_cancel_marker(*args, **_kwargs):
+        markers.append(args)
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", fake_spawn_worker)
+    monkeypatch.setattr(download_registry, "persist_cancel_marker", fake_persist_cancel_marker)
+
+    assert real_register_worker(
+        registry,
+        key,
+        _make_proc(1, b"xet failed"),
+        hf_token = None,
+        label = "Org/Model [Q4_K_M]",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert registry.get_job(key).state == "cancelled"
+    assert markers == [("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET)]
+    assert registry.get_job_metadata(key) is not None
+    assert registry.get_job_metadata(key).transport == download_registry.TRANSPORT_HTTP
+
+
+def test_http_retry_shutdown_and_breadcrumb_preserve_xet_marker(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+        cancel_marker_transport = download_registry.TRANSPORT_XET,
+    )
+    metadata = registry.get_job_metadata(key)
+    assert metadata is not None
+    assert metadata.transport == download_registry.TRANSPORT_HTTP
+    assert metadata.cancel_marker_transport == download_registry.TRANSPORT_XET
+    markers = []
+
+    class _KillableProc:
+        pid = 6262
+
+        def __init__(self):
+            self._rc = None
+            self.killed = False
+
+        def poll(self):
+            return self._rc
+
+        def kill(self):
+            self.killed = True
+            self._rc = -9
+
+        def wait(self, timeout = None):
+            return self._rc
+
+    proc = _KillableProc()
+    assert registry.register_process(key, proc)
+    worker_files = list(state_dir.workers_dir().glob("*.json"))
+    assert len(worker_files) == 1
+    payload = json.loads(worker_files[0].read_text(encoding = "utf-8"))
+    assert payload["transport"] == download_registry.TRANSPORT_HTTP
+    assert payload["cancel_marker_transport"] == download_registry.TRANSPORT_XET
+
+    def fake_persist_cancel_marker(*args, **_kwargs):
+        markers.append(args)
+
+    monkeypatch.setattr(download_registry, "persist_cancel_marker", fake_persist_cancel_marker)
+
+    registry.terminate_all("download")
+
+    assert proc.killed is True
+    assert markers == [("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET)]
 
 
 def test_download_watcher_preserves_pending_cancel_when_http_retry_claim_fails(

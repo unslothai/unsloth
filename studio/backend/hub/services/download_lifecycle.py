@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -206,6 +207,7 @@ def finalize_worker_exit(
     repo_type: Optional[RepoType] = None,
     repo_id: Optional[str] = None,
     transport: Optional[str] = None,
+    cancel_marker_transport: Optional[str] = None,
     defer_error: bool = False,
 ) -> str:
     """Block until *proc* exits, then record the job's terminal state in
@@ -227,6 +229,8 @@ def finalize_worker_exit(
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
+        if transport == download_registry.TRANSPORT_HTTP:
+            registry.update_job_transport(key, download_registry.TRANSPORT_HTTP)
         if stderr_text:
             if download_manifest.MANIFEST_DEGRADED_MARKER in stderr_text:
                 logger.warning(
@@ -259,7 +263,7 @@ def finalize_worker_exit(
             metadata.variant
             if metadata is not None and metadata.variant
             else download_registry.variant_from_key(key),
-            transport,
+            cancel_marker_transport or transport,
             logger = logger,
         )
     else:
@@ -273,12 +277,6 @@ def finalize_worker_exit(
             f"{log_prefix} failed for {label} (rc={rc}): {stderr_text}",
         )
     return state
-
-
-def _set_job_transport(
-    registry: download_registry.DownloadRegistry, key: str, transport: str
-) -> None:
-    registry.update_job_transport(key, transport)
 
 
 def _set_retry_failure_state(
@@ -374,34 +372,60 @@ def _try_http_retry(
         else 0
     )
     generation = registry.current_generation(key)
+    registry.release_active_slot(key)
+    while True:
+        if registry.cancel_requested(key):
+            _set_retry_failure_state(
+                registry,
+                key,
+                "HTTP retry cancelled before reclaiming the download slot",
+                repo_type = repo_type,
+                repo_id = repo_id,
+                fallback_variant = variant,
+                fallback_transport = original_metadata.transport,
+                logger = logger,
+            )
+            return False
 
-    claimed, _ = registry.claim(
-        key,
-        download_registry.TRANSPORT_HTTP,
-        repo_type = repo_type,
-        repo_id = repo_id,
-        variant = variant,
-        blob_hashes = blob_hashes,
-        progress_blob_hashes = progress_blob_hashes,
-        completed_baseline_bytes = completed_baseline_bytes,
-        generation = generation,
-        replace_active = True,
-    )
-    if not claimed:
-        logger.debug(
-            "%s XET retry claim rejected for %s; another job took the slot", log_prefix, label
-        )
-        _set_retry_failure_state(
-            registry,
+        claimed, conflict_state = registry.claim(
             key,
-            "HTTP retry could not reclaim the download slot",
+            download_registry.TRANSPORT_HTTP,
             repo_type = repo_type,
             repo_id = repo_id,
-            fallback_variant = variant,
-            fallback_transport = original_metadata.transport,
-            logger = logger,
+            variant = variant,
+            blob_hashes = blob_hashes,
+            progress_blob_hashes = progress_blob_hashes,
+            completed_baseline_bytes = completed_baseline_bytes,
+            generation = generation,
+            replace_active = True,
+            cancel_marker_transport = original_metadata.transport,
         )
-        return False
+        if claimed:
+            break
+        if conflict_state == "deleting":
+            logger.debug(
+                "%s XET retry claim rejected for %s; repo is being deleted",
+                log_prefix,
+                label,
+            )
+            _set_retry_failure_state(
+                registry,
+                key,
+                "HTTP retry could not reclaim the download slot",
+                repo_type = repo_type,
+                repo_id = repo_id,
+                fallback_variant = variant,
+                fallback_transport = original_metadata.transport,
+                logger = logger,
+            )
+            return False
+        logger.debug(
+            "%s XET retry claim blocked for %s by active sibling state %s; waiting",
+            log_prefix,
+            label,
+            conflict_state,
+        )
+        time.sleep(0.05)
 
     args: list[str] = ["--repo-id", repo_id]
     if repo_type == "dataset":
@@ -432,7 +456,7 @@ def _try_http_retry(
             label,
             scrubbed,
         )
-        _set_job_transport(registry, key, download_registry.TRANSPORT_XET)
+        registry.update_job_transport(key, original_metadata.transport)
         _set_retry_failure_state(
             registry,
             key,
@@ -456,6 +480,7 @@ def _try_http_retry(
         repo_type = repo_type,
         repo_id = repo_id,
         transport = download_registry.TRANSPORT_HTTP,
+        cancel_marker_transport = original_metadata.transport,
         watch_name = watch_name,
     )
 
@@ -493,6 +518,7 @@ def register_worker(
     repo_type: RepoType,
     repo_id: str,
     transport: str,
+    cancel_marker_transport: Optional[str] = None,
     watch_name: str,
 ) -> bool:
     if not registry.register_process(key, proc):
@@ -521,6 +547,7 @@ def register_worker(
                 repo_type = repo_type,
                 repo_id = repo_id,
                 transport = transport,
+                cancel_marker_transport = cancel_marker_transport,
                 defer_error = can_retry_http,
             )
             # XET-to-HTTP recovery: when a non-cancelled XET worker fails and
@@ -634,8 +661,19 @@ def cancel_worker(
             return "cancelling"
         return registry.get_job(key).state
     # Worker already exited; let its watcher classify the real return code.
-    # Arming a pending cancel here could mislabel a genuine failure as a cancel.
     if proc.poll() is not None:
+        get_metadata = getattr(registry, "get_job_metadata", None)
+        metadata = get_metadata(key) if get_metadata is not None else None
+        can_retry_http = (
+            metadata is not None
+            and metadata.transport == download_registry.TRANSPORT_XET
+            and download_registry.download_transport_unavailable_reason(
+                download_registry.TRANSPORT_HTTP
+            )
+            is None
+        )
+        if can_retry_http and registry.mark_pending_cancel(key, generation):
+            return "cancelling"
         return registry.get_job(key).state
 
     if not registry.request_cancel(key, proc, generation):

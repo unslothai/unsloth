@@ -126,6 +126,9 @@ def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMeta
         "repo_id": metadata.repo_id if metadata is not None else None,
         "variant": metadata.variant if metadata is not None else None,
         "transport": metadata.transport if metadata is not None else None,
+        "cancel_marker_transport": metadata.cancel_marker_transport
+        if metadata is not None
+        else None,
     }
     tmp = path.with_name(f".{path.name}.tmp-{pid}")
     try:
@@ -305,7 +308,7 @@ def reap_orphan_workers() -> None:
                 data.get("repo_type"),
                 repo_id,
                 data.get("variant"),
-                data.get("transport"),
+                data.get("cancel_marker_transport") or data.get("transport"),
             )
         except Exception as exc:
             logger.debug("Reaper failed for breadcrumb %s: %s", entry, exc)
@@ -699,6 +702,7 @@ class DownloadMetadata:
     repo_id: str
     variant: Optional[str]
     transport: Optional[str]
+    cancel_marker_transport: Optional[str] = None
     # GGUF variant main/writable hashes, identifying the variant-specific shards
     # for concurrency decisions.
     blob_hashes: frozenset[str] = field(default_factory = frozenset)
@@ -801,6 +805,7 @@ class DownloadRegistry:
         self._processes: dict[str, subprocess.Popen] = {}
         self._repo_active: dict[str, set[str]] = {}
         self._metadata: dict[str, DownloadMetadata] = {}
+        self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a
@@ -839,6 +844,7 @@ class DownloadRegistry:
             if state in TERMINAL_STATES:
                 self._put_terminal_job_locked(key, state, error)
                 self._pending_cancel.pop(key, None)
+                self._cancel_marker_transports.pop(key, None)
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
@@ -861,6 +867,9 @@ class DownloadRegistry:
                 has_pending_cancel and self._generation_matches_locked(key, pending_generation)
             )
             terminal_state: JobState = "cancelled" if should_cancel else "error"
+            marker_transport = self._cancel_marker_transports.pop(key, None)
+            if marker_transport is None and metadata is not None:
+                marker_transport = metadata.cancel_marker_transport
             self._put_terminal_job_locked(
                 key,
                 terminal_state,
@@ -873,6 +882,8 @@ class DownloadRegistry:
                 active.discard(key)
                 if not active:
                     self._repo_active.pop(repo, None)
+            if should_cancel and metadata is not None and marker_transport is not None:
+                metadata = replace(metadata, transport = marker_transport)
             return terminal_state, metadata
 
     def update_job_transport(self, key: str, transport: str) -> None:
@@ -882,6 +893,17 @@ class DownloadRegistry:
             if metadata is None or metadata.transport == transport:
                 return
             self._metadata[key] = replace(metadata, transport = transport)
+
+    def release_active_slot(self, key: str) -> None:
+        key = normalize_job_key(key)
+        repo = _repo_of_key(key)
+        with self._lock:
+            active = self._repo_active.get(repo)
+            if active is None:
+                return
+            active.discard(key)
+            if not active:
+                self._repo_active.pop(repo, None)
 
     def get_job(self, key: str) -> DownloadState:
         key = normalize_job_key(key)
@@ -919,6 +941,14 @@ class DownloadRegistry:
             ):
                 self._put_terminal_job_locked(key, "cancelled")
                 metadata_to_persist = self._metadata.pop(key, None)
+                marker_transport = self._cancel_marker_transports.pop(key, None)
+                if marker_transport is None and metadata_to_persist is not None:
+                    marker_transport = metadata_to_persist.cancel_marker_transport
+                if metadata_to_persist is not None and marker_transport is not None:
+                    metadata_to_persist = replace(
+                        metadata_to_persist,
+                        transport = marker_transport,
+                    )
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
@@ -1000,6 +1030,8 @@ class DownloadRegistry:
         completed_baseline_bytes: int = 0,
         generation: Optional[int] = None,
         replace_active: bool = False,
+        metadata_transport: Optional[str] = None,
+        cancel_marker_transport: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1058,7 +1090,8 @@ class DownloadRegistry:
                     repo_type = repo_type,
                     repo_id = repo_id,
                     variant = variant,
-                    transport = transport,
+                    transport = metadata_transport if metadata_transport is not None else transport,
+                    cancel_marker_transport = cancel_marker_transport,
                     blob_hashes = requested_hashes,
                     progress_blob_hashes = requested_progress_hashes,
                     completed_baseline_bytes = max(
@@ -1066,8 +1099,13 @@ class DownloadRegistry:
                         int(completed_baseline_bytes or 0),
                     ),
                 )
+                if cancel_marker_transport is not None:
+                    self._cancel_marker_transports[key] = cancel_marker_transport
+                else:
+                    self._cancel_marker_transports.pop(key, None)
             else:
                 self._metadata.pop(key, None)
+                self._cancel_marker_transports.pop(key, None)
             return True, "running"
 
     def adoptable(self, key: str) -> bool:
@@ -1093,9 +1131,20 @@ class DownloadRegistry:
         download. A variant delete conflicts only with that same variant or a
         whole-repo download writing the shared snapshot; other quantizations
         download concurrently and never block it."""
-        for key in self._repo_active.get(repo_id, set()):
+        active_keys = self._repo_active.get(repo_id, set())
+        for key in active_keys:
             job = self._jobs.get(key)
             if job is None or job.state not in _ACTIVE_STATES:
+                continue
+            if variant is None:
+                return True
+            other_variant = self._active_job_variant_locked(key)
+            if other_variant is None or other_variant == variant:
+                return True
+        for key, job in self._jobs.items():
+            if key in active_keys or _repo_of_key(key) != repo_id:
+                continue
+            if job.state not in _ACTIVE_STATES:
                 continue
             if variant is None:
                 return True
@@ -1262,7 +1311,7 @@ class DownloadRegistry:
                         metadata.repo_type,
                         metadata.repo_id,
                         metadata.variant,
-                        metadata.transport,
+                        metadata.cancel_marker_transport or metadata.transport,
                     )
                 continue
             reaped.append((key, proc, metadata))
@@ -1282,7 +1331,7 @@ class DownloadRegistry:
                     metadata.repo_type,
                     metadata.repo_id,
                     metadata.variant,
-                    metadata.transport,
+                    metadata.cancel_marker_transport or metadata.transport,
                 )
 
 
