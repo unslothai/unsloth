@@ -24,7 +24,12 @@ def apply_presence_penalty(input_ids, scores, penalty: float, prompt_len: int):
         if generated.numel() == 0:
             continue
         seen = torch.unique(generated)
-        seen = seen[seen < vocab_size]
+        # Bound generated ids to the valid range [0, vocab_size). Real completion
+        # tokens are always in range, so this is a zero-regression safety net that
+        # drops any stray out-of-range or negative id before indexing (mirrors the
+        # MLX path's bound). Filtering both ends avoids indexing scores with a
+        # negative id (which would silently wrap to the wrong row).
+        seen = seen[(seen >= 0) & (seen < vocab_size)]
         if seen.numel():
             scores[b, seen] = scores[b, seen] - penalty
     return scores

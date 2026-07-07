@@ -58,8 +58,28 @@ def _make_mlx_presence_penalty_processor(penalty: float):
         generated = tokens[state["prompt_len"] :]
         if generated.size == 0:
             return logits
-        # Scatter-assign is idempotent for duplicate ids: presence applies once per token, on-device.
-        logits[:, generated] = logits[:, generated] - penalty
+        import mlx.core as mx
+
+        vocab = logits.shape[-1]
+        # Bound generated ids to the valid range [0, vocab) before they index
+        # logits. MLX does no bounds checking and out-of-bounds indexing is
+        # documented undefined behavior (crash / memory corruption), unlike the
+        # torch path's harmless negative wrap -- so this bound is load-bearing
+        # here and matches the torch filter seen[(seen >= 0) & (seen < vocab)].
+        # MLX has no boolean-mask filtering (data-dependent output shape is
+        # unsupported), so instead of compacting the id list we route every
+        # out-of-range or negative id to a scratch slot at index ``vocab`` that
+        # is dropped before the subtract. That scratch slot can never collide
+        # with a real token, so real ids (including id 0) are penalized exactly
+        # once and stray ids are ignored.
+        valid = (generated >= 0) & (generated < vocab)
+        safe = mx.where(valid, generated, vocab).astype(mx.int32)
+        # Scatter-assign a scalar penalty into a (vocab + 1)-wide mask: duplicate
+        # ids are idempotent, so presence applies once per distinct token; the
+        # scratch column is discarded and the full-width subtract stays on-device.
+        mask = mx.zeros((vocab + 1,), dtype=logits.dtype)
+        mask[safe] = penalty
+        logits = logits - mask[:vocab]
         return logits
 
     return _processor

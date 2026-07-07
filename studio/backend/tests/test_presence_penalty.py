@@ -87,6 +87,31 @@ def test_out_of_vocab_id_ignored():
     assert torch.equal(out, torch.zeros(1, 5))
 
 
+def test_negative_generated_id_ignored():
+    # A negative generated id (defensive) must be dropped, not wrap to scores[-1].
+    input_ids = torch.tensor([[0, -1]])
+    scores = torch.zeros(1, 5)
+    out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
+    # Nothing penalized; in particular the last row (the numpy/torch wrap target
+    # for id -1) is untouched.
+    assert torch.equal(out, torch.zeros(1, 5))
+
+
+def test_mixed_oob_negative_and_valid_ids_only_in_range_penalized():
+    # Completion mixes a valid id (1), an out-of-vocab id (9 >= vocab 5) and a
+    # negative id (-1). Only the in-range distinct id is penalized; OOB/negative
+    # ids are ignored with no crash and no wrong-index wrap. This fails under the
+    # old ``seen[seen < vocab_size]`` filter (id -1 wraps to the last row) and
+    # passes only with the both-ends bound.
+    input_ids = torch.tensor([[0, 1, 9, -1, 1]])  # prompt [0], completion [1, 9, -1, 1]
+    scores = torch.zeros(1, 5)
+    out = apply_presence_penalty(input_ids, scores, penalty = 1.0, prompt_len = 1)
+    expected = torch.zeros(1, 5)
+    expected[0, 1] = -1.0  # once per distinct in-range id (multiplicity ignored)
+    assert torch.equal(out, expected)
+    assert out[0, 4].item() == pytest.approx(0.0)  # id -1 did not wrap to the last row
+
+
 def test_dtype_and_device_preserved():
     input_ids = torch.tensor([[0, 1]])
     scores = torch.zeros(1, 4, dtype = torch.float16)
@@ -142,6 +167,28 @@ def test_mlx_presence_penalty_callable():
     out1 = proc(seq, logits1)
     assert float(out1[0, 5]) == pytest.approx(-1.5)
     assert float(out1[0, 10]) == pytest.approx(0.0)  # prompt token untouched
+
+
+def test_mlx_presence_penalty_bounds_out_of_range_ids():
+    # Documents (and, on Apple Silicon CI, enforces) the intended MLX bound:
+    # out-of-vocab and negative completion ids must be ignored. MLX does no
+    # bounds checking and OOB indexing is undefined behavior (crash / memory
+    # corruption), so the processor routes stray ids to a discarded scratch slot
+    # and penalizes only in-range distinct ids -- matching the torch filter
+    # seen[(seen >= 0) & (seen < vocab)]. Skips off arm64 macOS where MLX is absent.
+    mx = pytest.importorskip("mlx.core", reason = "MLX only ships on arm64 macOS")
+    from core.inference.mlx_inference import _make_mlx_presence_penalty_processor
+
+    proc = _make_mlx_presence_penalty_processor(1.0)
+    proc(mx.array([10, 11]), mx.zeros((1, 8)))  # first call latches prompt_len = 2
+    # Completion appends a valid id (3), an out-of-vocab id (99 >= vocab 8) and a
+    # negative id (-1); only the in-range id is penalized and nothing crashes.
+    seq = mx.array([10, 11, 3, 99, -1])
+    out = proc(seq, mx.zeros((1, 8)))
+    assert float(out[0, 3]) == pytest.approx(-1.0)
+    for tok in range(8):
+        if tok != 3:
+            assert float(out[0, tok]) == pytest.approx(0.0)
 
 
 # Param propagation: route payload -> orchestrator cmd -> worker gen_kwargs
