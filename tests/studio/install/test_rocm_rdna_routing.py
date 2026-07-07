@@ -57,13 +57,13 @@ print("RESULT " + json.dumps({{"device_type": device_type, "targets": targets}})
 """
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def routed():
-    code = _CHILD.format(tests=str(_TESTS_DIR), arches=list(_ARCHES))
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    code = _CHILD.format(tests = str(_TESTS_DIR), arches = list(_ARCHES))
+    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
     assert line, f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-    return json.loads(line[len("RESULT "):])
+    return json.loads(line[len("RESULT ") :])
 
 
 @pytest.mark.parametrize("gfx", list(_ARCHES))

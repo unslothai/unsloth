@@ -17,16 +17,16 @@ import sys
 # gfx -> (marketing name, (capability major, minor), torch.version.hip). hip is
 # the ROCm build torch was made against (RDNA2/3 ship 6.x; gfx1102/115x/RDNA4 7.2).
 _PROFILES: dict[str, tuple[str, tuple[int, int], str]] = {
-    "gfx1030": ("AMD Radeon RX 6900 XT", (10, 3), "6.4.43483"),   # RDNA2
+    "gfx1030": ("AMD Radeon RX 6900 XT", (10, 3), "6.4.43483"),  # RDNA2
     "gfx1031": ("AMD Radeon RX 6700 XT", (10, 3), "6.4.43483"),
     "gfx1032": ("AMD Radeon RX 6600", (10, 3), "6.4.43483"),
     "gfx1034": ("AMD Radeon RX 6400", (10, 3), "6.4.43483"),
     "gfx1100": ("AMD Radeon RX 7900 XTX", (11, 0), "6.4.43483"),  # RDNA3
     "gfx1101": ("AMD Radeon RX 7800 XT", (11, 0), "6.4.43483"),
     "gfx1102": ("AMD Radeon RX 7600", (11, 0), "7.2.1"),
-    "gfx1150": ("AMD Radeon 890M", (11, 5), "7.2.1"),             # RDNA3.5 APU
+    "gfx1150": ("AMD Radeon 890M", (11, 5), "7.2.1"),  # RDNA3.5 APU
     "gfx1151": ("AMD Radeon 8060S", (11, 5), "7.2.1"),
-    "gfx1200": ("AMD Radeon RX 9060 XT", (12, 0), "7.2.1"),       # RDNA4
+    "gfx1200": ("AMD Radeon RX 9060 XT", (12, 0), "7.2.1"),  # RDNA4
     "gfx1201": ("AMD Radeon RX 9070 XT", (12, 0), "7.2.1"),
 }
 
@@ -36,8 +36,7 @@ def _cuda_spoof():
     torch.cuda machinery instead of duplicating it."""
     if "_zoo_aggressive_cuda_spoof" in sys.modules:
         return sys.modules["_zoo_aggressive_cuda_spoof"]
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "_zoo_aggressive_cuda_spoof.py")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_zoo_aggressive_cuda_spoof.py")
     spec = importlib.util.spec_from_file_location("_zoo_aggressive_cuda_spoof", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -71,7 +70,7 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
     _p.name = name
     _p.gcnArchName = f"{gfx}:sramecc-:xnack-"  # ROCm advertises feature flags
     _p.major, _p.minor = cap
-    _p.total_memory = 16 * 1024 ** 3
+    _p.total_memory = 16 * 1024**3
     _p.multi_processor_count = 40
     _p.warp_size = 32  # RDNA wavefront (CDNA is 64)
     _p.is_integrated = gfx in ("gfx1150", "gfx1151")
@@ -82,5 +81,4 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
 if __name__ == "__main__":
     apply()
     import torch
-    print("ROCm spoof applied:", torch.version.hip,
-          torch.cuda.get_device_properties(0).gcnArchName)
+    print("ROCm spoof applied:", torch.version.hip, torch.cuda.get_device_properties(0).gcnArchName)
