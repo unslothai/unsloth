@@ -4353,8 +4353,10 @@ async def generate_stream(
                 temperature = request.temperature,
                 top_p = request.top_p,
                 top_k = request.top_k,
+                min_p = request.min_p,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
+                presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
             )
             _DONE = object()
@@ -6995,6 +6997,7 @@ async def openai_chat_completions(
                 min_p = payload.min_p,
                 max_tokens = effective_max_tokens,
                 repetition_penalty = payload.repetition_penalty,
+                presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
@@ -7240,6 +7243,7 @@ async def openai_chat_completions(
         min_p = payload.min_p,
         max_new_tokens = effective_max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
+        presence_penalty = payload.presence_penalty,
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.

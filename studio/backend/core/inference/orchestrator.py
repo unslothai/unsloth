@@ -422,6 +422,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        presence_penalty: float = 0.0,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -436,6 +437,7 @@ class InferenceOrchestrator:
             "min_p": min_p,
             "max_new_tokens": max_new_tokens,
             "repetition_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
         # Only forward template kwargs the caller set, for older worker compat.
         if use_adapter is not None:
@@ -602,6 +604,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -654,6 +657,7 @@ class InferenceOrchestrator:
             min_p = min_p,
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -1128,6 +1132,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -1137,6 +1142,8 @@ class InferenceOrchestrator:
 
         ``stats_holder``: caller-owned dict; on gen_done its "stats" key gets
         the worker's usage/timings. Request-scoped to avoid cross-stream reads.
+
+        ``presence_penalty`` matches the GGUF sampling path (0 disables it).
         """
         yield from self._generate_inner(
             messages = messages,
@@ -1155,6 +1162,7 @@ class InferenceOrchestrator:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             stats_holder = stats_holder,
+            presence_penalty = presence_penalty,
         )
 
     def generate_chat_completion_with_tools(
@@ -1182,6 +1190,7 @@ class InferenceOrchestrator:
         bypass_permissions: bool = False,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1217,6 +1226,7 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
                 # last turn wins, like the GGUF tool loop
                 stats_holder = stats_holder,
+                presence_penalty = presence_penalty,
             )
             if use_adapter is not None:
                 yield from self.generate_with_adapter_control(
@@ -1284,6 +1294,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -1327,6 +1338,7 @@ class InferenceOrchestrator:
                 min_p = min_p,
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
