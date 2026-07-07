@@ -1504,6 +1504,21 @@ def test_opencode_effective_disabled_reads_global_when_no_project(tmp_path, monk
     assert start._opencode_effective_disabled_providers() == ["unsloth", "openai"]
 
 
+def test_opencode_effective_disabled_walks_up_to_project_config(tmp_path, monkeypatch):
+    # Running from a subdir must still find the project config in an ancestor, the
+    # way opencode discovers it.
+    monkeypatch.undo()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "opencode.json").write_text(json.dumps({"disabled_providers": ["unsloth", "gemini"]}))
+    deep = repo / "src" / "deep"
+    deep.mkdir(parents = True)
+    monkeypatch.chdir(deep)
+    assert start._opencode_effective_disabled_providers() == ["unsloth", "gemini"]
+
+
 def test_opencode_dir_disabled_parses_jsonc_and_config_json(tmp_path):
     (tmp_path / "jsonc").mkdir()
     (tmp_path / "jsonc" / "opencode.jsonc").write_text(

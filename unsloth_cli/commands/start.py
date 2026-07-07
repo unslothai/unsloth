@@ -1183,10 +1183,18 @@ def _opencode_effective_disabled_providers() -> list:
     # array-replace semantics that is the project config's list if the current
     # repo sets one, otherwise the user's global config. Best-effort: unreadable
     # or absent configs contribute nothing.
+    # opencode discovers the project config by walking up from the cwd, so use the
+    # nearest ancestor that sets disabled_providers, not just the cwd itself.
+    project = None
     try:
-        project = _opencode_dir_disabled_providers(Path.cwd())
+        cwd = Path.cwd()
     except OSError:
-        project = None
+        cwd = None
+    if cwd is not None:
+        for directory in (cwd, *cwd.parents):
+            project = _opencode_dir_disabled_providers(directory)
+            if project is not None:
+                break
     if project is not None:
         return project
     dirs: list[Path] = []
