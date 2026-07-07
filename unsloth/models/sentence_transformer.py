@@ -1690,7 +1690,7 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
-            os.environ["UNSLOTH_EMBEDDING_HIGH_PRECISION"] = _old_embedding_precision
+        os.environ["UNSLOTH_EMBEDDING_HIGH_PRECISION"] = "1"
 
         from sentence_transformers import SentenceTransformer
 

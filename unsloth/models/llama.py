@@ -2613,8 +2613,9 @@ class FastLlamaModel:
                     offload_embedding = False,
                     fast_inference = False,
                 )
-                model.fast_generate = make_fast_generate_wrapper(model.generate)
-                model.fast_generate_batches = None
+                if hasattr(model, "generate"):
+                    model.fast_generate = make_fast_generate_wrapper(model.generate)
+                    model.fast_generate_batches = None
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,
@@ -2686,7 +2687,10 @@ class FastLlamaModel:
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
 
         # Patch up QKV / O and MLP
-        for idx, layer in enumerate(model.model.layers):
+        # When auto_model=AutoModel (e.g. embedding models), the loaded model
+        # is a bare Qwen3Model/LlamaModel without the ForCausalLM wrapper.
+        inner = model.model if hasattr(model, "model") else model
+        for idx, layer in enumerate(inner.layers):
             layer.self_attn.apply_qkv = original_apply_qkv
             layer.self_attn.apply_o = original_apply_o
 
