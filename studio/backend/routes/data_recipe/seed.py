@@ -60,6 +60,9 @@ UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# Frontend-generated upload namespace (UUID4 hex). Legacy node ids (n1, ...)
+# never match: those directories can be shared by several recipes.
+_UPLOAD_UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _validate_safe_id(value: str, label: str) -> str:
@@ -583,8 +586,15 @@ async def remove_unstructured_file(block_id: str, file_id: str):
 
 @router.delete("/seed/unstructured-block/{block_id}")
 async def remove_unstructured_block(block_id: str):
-    """Delete a block's upload directory; files on disk still count toward its quota."""
+    """Delete a block's upload directory; files on disk still count toward its quota.
+
+    Only uid-namespaced directories may be bulk-deleted: they have exactly one
+    owning block. Legacy node-id directories (n1, ...) can be shared by other
+    recipes, so they are managed file-by-file instead.
+    """
     _validate_safe_id(block_id, "block_id")
+    if not _UPLOAD_UID_RE.match(block_id):
+        raise HTTPException(400, "Invalid block_id: only uid-namespaced blocks can be deleted")
 
     block_dir = (UNSTRUCTURED_UPLOAD_ROOT / block_id).resolve()
     if not block_dir.is_relative_to(UNSTRUCTURED_UPLOAD_ROOT.resolve()):
