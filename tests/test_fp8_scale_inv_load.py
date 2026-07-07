@@ -83,7 +83,11 @@ def _load_loader_utils():
     return module
 
 
-def _make_checkpoint(path, tensors, filename = "model.safetensors"):
+def _make_checkpoint(
+    path,
+    tensors,
+    filename = "model.safetensors",
+):
     full_path = os.path.join(path, filename)
     save_file(tensors, full_path)
     return path
@@ -96,7 +100,12 @@ def _make_bin_checkpoint(path, tensors):
 
 
 class _Fp8Owner(torch.nn.Module):
-    def __init__(self, weight, quant_method = "fp8", weight_scale = None):
+    def __init__(
+        self,
+        weight,
+        quant_method = "fp8",
+        weight_scale = None,
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(weight)
         self.quant_method = quant_method
@@ -227,7 +236,11 @@ def test_skips_bin_checkpoint_without_torch_load(monkeypatch):
             checkpoint_dir,
             {"fp8.weight_scale_inv": torch.tensor([2.5], dtype = torch.float32)},
         )
-        monkeypatch.setattr(loader_utils.torch, "load", lambda *args, **kwargs: pytest.fail("torch.load should not run"))
+        monkeypatch.setattr(
+            loader_utils.torch,
+            "load",
+            lambda *args, **kwargs: pytest.fail("torch.load should not run"),
+        )
         restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
             model,
             model_name = checkpoint_dir,
@@ -319,6 +332,7 @@ def test_safetensors_index_opens_only_scale_shards(monkeypatch):
             }
         }
         (Path(checkpoint_dir) / "model.safetensors.index.json").write_text(json.dumps(index))
+
         def recording_safe_open(path, *args, **kwargs):
             opened.append(Path(path).name)
             return original_safe_open(path, *args, **kwargs)
@@ -339,7 +353,9 @@ def test_safetensors_index_opens_only_scale_shards(monkeypatch):
 def test_skips_meta_device_scale_restore():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
-    model.fp8 = _Fp8Owner(weight = torch.empty(4, 4, device = "meta"), weight_scale = torch.empty(1, device = "meta"))
+    model.fp8 = _Fp8Owner(
+        weight = torch.empty(4, 4, device = "meta"), weight_scale = torch.empty(1, device = "meta")
+    )
 
     with tempfile.TemporaryDirectory() as checkpoint_dir:
         _make_checkpoint(
@@ -409,7 +425,9 @@ def test_restores_fp8_expert_scale_tensors():
 
     assert restored == 2
     assert skipped == 0
-    assert torch.equal(model.expert.gate_up_proj_scale_inv, torch.full((2,), 2.0, dtype = torch.float16))
+    assert torch.equal(
+        model.expert.gate_up_proj_scale_inv, torch.full((2,), 2.0, dtype = torch.float16)
+    )
     assert torch.equal(model.expert.down_proj_scale_inv, torch.full((2,), 3.0, dtype = torch.float16))
 
 
@@ -453,7 +471,10 @@ def test_loader_restores_fp8_scales_with_base_revision_for_peft():
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if not isinstance(node.func, ast.Name) or node.func.id != "_restore_missing_fp8_weight_scale_inv":
+        if (
+            not isinstance(node.func, ast.Name)
+            or node.func.id != "_restore_missing_fp8_weight_scale_inv"
+        ):
             continue
 
         revision_kw = next((kw for kw in node.keywords if kw.arg == "revision"), None)
@@ -484,7 +505,10 @@ def test_loader_passes_selected_artifact_knobs_to_fp8_restore():
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if not isinstance(node.func, ast.Name) or node.func.id != "_restore_missing_fp8_weight_scale_inv":
+        if (
+            not isinstance(node.func, ast.Name)
+            or node.func.id != "_restore_missing_fp8_weight_scale_inv"
+        ):
             continue
         keyword_names = {kw.arg for kw in node.keywords}
         if {"subfolder", "variant", "use_safetensors"}.issubset(keyword_names):
@@ -504,7 +528,10 @@ def test_fastmodel_peft_base_mapping_forwards_load_in_fp8():
         for child in ast.walk(node):
             if not isinstance(child, ast.Assign):
                 continue
-            if not any(isinstance(target, ast.Name) and target.id == "model_name" for target in child.targets):
+            if not any(
+                isinstance(target, ast.Name) and target.id == "model_name"
+                for target in child.targets
+            ):
                 continue
             value = child.value
             if not isinstance(value, ast.Call):
@@ -559,10 +586,7 @@ def test_fp8_probe_uses_absolute_optional_import_and_narrow_missing_module_guard
             if not isinstance(child, ast.Try):
                 continue
 
-            imports = [
-                stmt for stmt in child.body
-                if isinstance(stmt, ast.ImportFrom)
-            ]
+            imports = [stmt for stmt in child.body if isinstance(stmt, ast.ImportFrom)]
             handlers = child.handlers
             if not imports or not handlers:
                 continue

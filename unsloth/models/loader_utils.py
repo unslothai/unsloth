@@ -454,7 +454,11 @@ def _variant_index_names(variant):
     ]
 
 
-def _resolve_fp8_scale_safetensors_files(model_dir, variant = None, use_safetensors = None):
+def _resolve_fp8_scale_safetensors_files(
+    model_dir,
+    variant = None,
+    use_safetensors = None,
+):
     if use_safetensors is False:
         return []
 
@@ -554,7 +558,10 @@ def _find_fp8_scale_inv_tensors(
                         break
         except Exception:
             continue
-    return [(module_name, attr_name, tensor) for (module_name, attr_name), tensor in module_scales.items()]
+    return [
+        (module_name, attr_name, tensor)
+        for (module_name, attr_name), tensor in module_scales.items()
+    ]
 
 
 def _restore_missing_fp8_weight_scale_inv(
