@@ -712,11 +712,39 @@ def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
         )
 
 
-def test_mlx_trainer_rejects_compute_metrics():
-    """compute_metrics is still unsupported by MLXTrainer."""
+def test_mlx_trainer_accepts_compute_metrics():
+    """compute_metrics is routed to MLXTrainer when the zoo backend supports it."""
+    import inspect
+
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "compute_metrics"):
+    if "compute_metrics" not in inspect.signature(unsloth.MLXTrainer.__init__).parameters:
+        pytest.skip("requires unsloth-zoo MLXTrainer compute_metrics support")
+
+    compute_metrics = lambda *_: None
+    preprocess = lambda logits, labels: logits
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        compute_metrics = compute_metrics,
+        preprocess_logits_for_metrics = preprocess,
+    )
+    assert trainer.compute_metrics is compute_metrics
+    assert trainer.preprocess_logits_for_metrics is preprocess
+
+
+def test_mlx_trainer_rejects_compute_metrics_with_old_zoo(monkeypatch):
+    """Older unsloth-zoo builds should fail clearly instead of TypeError."""
+    unsloth = _import_mlx_unsloth()
+
+    monkeypatch.setattr(
+        unsloth,
+        "_mlx_trainer_supports_kwarg",
+        lambda name: name not in {"compute_metrics", "preprocess_logits_for_metrics"},
+    )
+
+    with pytest.raises(NotImplementedError, match = "compute_metrics.*require"):
         unsloth.UnslothTrainer(
             model = _DummyModel(),
             tokenizer = None,

@@ -992,6 +992,8 @@ if _IS_MLX:
         "formatting_func",
         "processor",
         "callbacks",
+        "compute_metrics",
+        "preprocess_logits_for_metrics",
     )
     _TRL_SFT_TRAINER_POSITIONAL_KWARGS = (
         "model",
