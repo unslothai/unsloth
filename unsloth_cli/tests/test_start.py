@@ -149,6 +149,64 @@ def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
     )
 
 
+def test_refresh_windows_path_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+    before = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", before)
+    start._refresh_windows_path()
+    assert os.environ.get("PATH", "") == before
+
+
+def test_refresh_windows_path_merges_registry_hives(monkeypatch):
+    # Fake the Windows registry: User + Machine "Path" values the process cannot
+    # see yet because it started before the installer wrote them.
+    hkcu, hklm = object(), object()
+    reg = {
+        (hkcu, "Environment"): r"C:\Users\me\hermes\bin",
+        (
+            hklm,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ): r"C:\Windows\System32",
+    }
+
+    class _Key:
+        def __init__(self, value):
+            self._value = value
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def open_key(root, sub):
+        if (root, sub) in reg:
+            return _Key(reg[(root, sub)])
+        raise OSError("missing hive")
+
+    fake_winreg = SimpleNamespace(
+        HKEY_CURRENT_USER = hkcu,
+        HKEY_LOCAL_MACHINE = hklm,
+        OpenKey = open_key,
+        QueryValueEx = lambda key, name: (key._value, 1),
+    )
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setenv("PATH", r"C:\existing")
+
+    start._refresh_windows_path()
+
+    # os.pathsep is ":" on this host, which also appears in "C:\...", so assert on
+    # substring membership rather than splitting (the join uses os.pathsep, which
+    # is ";" on real Windows).
+    path = os.environ["PATH"]
+    assert r"C:\Users\me\hermes\bin" in path  # newly installed agent dir now visible
+    assert r"C:\Windows\System32" in path
+    assert r"C:\existing" in path  # prior PATH preserved
+    # Registry values are merged ahead of the stale in-process PATH.
+    assert path.index(r"C:\Users\me\hermes\bin") < path.index(r"C:\existing")
+
+
 def test_install_agent_declined_returns_none(monkeypatch):
     # TTY + no: never runs anything; caller falls back to the print-hint failure.
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))

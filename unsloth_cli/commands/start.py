@@ -859,6 +859,41 @@ def _print_env(
     typer.echo(" ".join((*inline, shlex.join(command))))
 
 
+def _refresh_windows_path() -> None:
+    # A Windows installer persists its directory to the User/Machine PATH in the
+    # registry and updates only its own process, so this process keeps a stale PATH
+    # until it restarts (the installers themselves print "restart your terminal").
+    # Merge the registry hives back into PATH so the post-install shutil.which can
+    # see a just-installed agent without the user opening a new shell. No-op off
+    # Windows and on any read error; only ever augments PATH.
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+    except Exception:
+        return
+    hives = (
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    reg_paths = []
+    for root, sub in hives:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if value:
+            reg_paths.append(os.path.expandvars(str(value)))
+    if not reg_paths:
+        return
+    reg_paths.append(os.environ.get("PATH", ""))
+    os.environ["PATH"] = os.pathsep.join(p for p in reg_paths if p)
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -877,6 +912,9 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
         install_command = ["/bin/sh", "-c", install_hint]
     if subprocess.run(install_command).returncode != 0:
         _fail(f"Install command failed. Run it yourself, then re-run: {install_hint}")
+    # The installer just wrote PATH to the registry (Windows); pull it into this
+    # process so the freshly installed agent resolves without a shell restart.
+    _refresh_windows_path()
     executable = shutil.which(name)
     if executable is None:
         _fail(
