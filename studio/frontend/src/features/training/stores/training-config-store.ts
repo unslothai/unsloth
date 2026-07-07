@@ -125,7 +125,6 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isCheckingDataset",
   "isDatasetImage",
   "isDatasetAudio",
-  "trainOnCompletions",
   "maxPositionEmbeddings",
   "s3Config",
 ]);
@@ -254,10 +253,10 @@ function getCptTrainingPatch(): TrainingMethodStatePatch {
   };
 }
 
-function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
+function getCptModelDefaultsPatch(learningRateManuallySet: boolean): TrainingMethodStatePatch {
   return {
     ...getCptTrainingPatch(),
-    learningRate: LR_DEFAULT_CPT,
+    ...(learningRateManuallySet ? {} : { learningRate: LR_DEFAULT_CPT }),
   };
 }
 
@@ -424,7 +423,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // are tuned for standard LoRA and would clobber CPT settings.
             const cptOverrides =
               get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
+                ? getCptModelDefaultsPatch(learningRateManuallySet)
                 : {};
 
             set({
@@ -584,6 +583,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
             trainOnCompletionsManuallySet: false,
+            contextLengthManuallySet: false,
             learningRateManuallySet: false,
             trainingMethodManuallySet: false,
           });
@@ -602,6 +602,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isAudioModel?: boolean;
             isEmbeddingModel?: boolean;
             trainOnCompletionsManuallySet?: boolean;
+            contextLengthManuallySet?: boolean;
             learningRateManuallySet?: boolean;
             trainingMethodManuallySet?: boolean;
           } = {
@@ -621,6 +622,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             patch.isAudioModel = false;
             patch.isEmbeddingModel = false;
             patch.trainOnCompletionsManuallySet = false;
+            patch.contextLengthManuallySet = false;
             patch.learningRateManuallySet = false;
             patch.trainingMethodManuallySet = false;
           }
@@ -639,6 +641,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               modelDefaultsError: null,
               modelDefaultsAppliedFor: null,
               trainOnCompletionsManuallySet: false,
+              contextLengthManuallySet: false,
               learningRateManuallySet: false,
               trainingMethodManuallySet: false,
             });
@@ -995,7 +998,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 13,
+      version: 14,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -1062,6 +1065,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           s.trainOnCompletionsManuallySet = false;
           s.learningRateManuallySet = false;
           s.trainingMethodManuallySet = false;
+        }
+        if (version < 14) {
+          s.trainOnCompletionsManuallySet = false;
         }
         return s as unknown as TrainingConfigStore;
       },
