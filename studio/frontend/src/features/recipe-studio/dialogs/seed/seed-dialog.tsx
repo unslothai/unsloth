@@ -52,8 +52,8 @@ import {
   getGithubEnvTokenStatus,
   inspectSeedDataset,
   inspectSeedUpload,
-  removeUnstructuredBlock,
 } from "../../api";
+import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import { resolveImagePreview } from "../../utils/image-preview";
 import type {
   GithubItemType,
@@ -598,6 +598,10 @@ export function SeedDialog({
   const mode = config.seed_source_type ?? "hf";
   const previewEmpty = getPreviewEmptyStateCopy(mode);
 
+  const queueUploadCleanup = useRecipeStudioStore(
+    (state) => state.queueUploadCleanup,
+  );
+
   // config.id collides across recipes (ids reset to n1 on import); use a
   // stable per-block uid instead, falling back to config.id for legacy blocks.
   const uploadUid = config.unstructured_upload_uid?.trim() ?? "";
@@ -734,12 +738,10 @@ export function SeedDialog({
             subset: config.hf_subset?.trim() || undefined,
             preview_size: 10,
           });
-          // Only uid-namespaced directories are safe to bulk-delete: legacy
-          // node-id directories (n1, ...) can be shared by other recipes.
+          // Queue the block's upload directory for deletion after the next
+          // save; only uid-namespaced directories qualify (single owner).
           if (uploadUid && unstructuredFileCount > 0) {
-            void removeUnstructuredBlock(uploadUid).catch((error) => {
-              console.warn("Failed to clean up uploaded documents:", error);
-            });
+            queueUploadCleanup(uploadUid);
           }
           onUpdate({
             hf_path: response.resolved_path,
@@ -776,12 +778,10 @@ export function SeedDialog({
             content_base64: payload,
             preview_size: 10,
           });
-          // Only uid-namespaced directories are safe to bulk-delete: legacy
-          // node-id directories (n1, ...) can be shared by other recipes.
+          // Queue the block's upload directory for deletion after the next
+          // save; only uid-namespaced directories qualify (single owner).
           if (uploadUid && unstructuredFileCount > 0) {
-            void removeUnstructuredBlock(uploadUid).catch((error) => {
-              console.warn("Failed to clean up uploaded documents:", error);
-            });
+            queueUploadCleanup(uploadUid);
           }
           onUpdate({
             hf_path: response.resolved_path,
@@ -863,6 +863,7 @@ export function SeedDialog({
       localFile,
       mode,
       onUpdate,
+      queueUploadCleanup,
       unstructuredFiles,
       unstructuredFileCount,
       uploadBlockId,

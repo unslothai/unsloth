@@ -4,11 +4,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { normalizeNonEmptyName } from "@/utils";
+import { removeUnstructuredBlock } from "../api";
 import {
   buildSignature,
   copyTextToClipboard,
   formatSavedLabel,
 } from "../executions/execution-helpers";
+import { useRecipeStudioStore } from "../stores/recipe-studio";
 import { importRecipePayload, type RecipeSnapshot } from "../utils/import";
 import type { RecipePayloadResult } from "../utils/payload/types";
 
@@ -176,6 +178,40 @@ function sanitizeSeedForShare(payload: unknown): unknown {
   return root;
 }
 
+// Delete queued upload directories once a save stops referencing them, so a
+// reload before autosave can never leave the saved recipe pointing at
+// already-deleted files. Skips any uid the just-saved payload still uses.
+function drainQueuedUploadCleanups(
+  savedPayload: RecipePayloadResult["payload"],
+): void {
+  const pending = useRecipeStudioStore.getState().pendingUploadCleanups;
+  if (pending.length === 0) {
+    return;
+  }
+  const ui =
+    savedPayload && typeof savedPayload === "object"
+      ? (savedPayload as { ui?: Record<string, unknown> }).ui
+      : undefined;
+  const savedUid =
+    ui && typeof ui.unstructured_upload_uid === "string"
+      ? ui.unstructured_upload_uid
+      : "";
+  const ready = pending.filter((uid) => uid !== savedUid);
+  if (ready.length === 0) {
+    return;
+  }
+  useRecipeStudioStore.setState((state) => ({
+    pendingUploadCleanups: state.pendingUploadCleanups.filter(
+      (uid) => !ready.includes(uid),
+    ),
+  }));
+  for (const uid of ready) {
+    void removeUnstructuredBlock(uid).catch((error) => {
+      console.warn("Failed to clean up uploaded documents:", error);
+    });
+  }
+}
+
 export function useRecipePersistence({
   recipeId,
   initialRecipeName,
@@ -254,6 +290,7 @@ export function useRecipePersistence({
       });
       setLastSavedAt(result.updatedAt);
       setSavedSignature(buildSignature(nextName, currentPayload));
+      drainQueuedUploadCleanups(currentPayload);
     } catch (error) {
       console.error("Save recipe failed:", error);
       toastError("Save failed", "Could not save recipe.");
