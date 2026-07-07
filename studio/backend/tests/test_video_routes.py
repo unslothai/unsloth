@@ -64,6 +64,12 @@ class _FakeBackend:
     def __init__(self) -> None:
         self.loaded = False
         self.last_load_kwargs: dict = {}
+        # Repo ids of in-flight (not yet committed) loads; empty tuple = none. The unload
+        # route reads this to keep VIDEO ownership while a concurrent load is still loading.
+        self.loading: tuple = ()
+
+    def loading_repo_ids(self) -> tuple:
+        return tuple(self.loading)
 
     def validate_load_request(
         self,
@@ -491,6 +497,24 @@ def test_unload_releases_arbiter(client, monkeypatch):
     resp = client.post("/api/inference/video/unload")
     assert resp.status_code == 200 and resp.json()["loaded"] is False
     assert gpu_arbiter.current_owner() is None
+
+
+def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
+    # A concurrent /video/load re-acquires VIDEO and starts a background load, so the backend
+    # is NOT loaded yet (the pipeline commits later) but a load IS in flight. The unload route
+    # must keep ownership on the in-flight state alone, or a later chat/image load would see no
+    # owner, skip eviction, and OOM against the newly resident pipeline. The committed-loaded
+    # state stays False the whole load window, so the loaded-only check is insufficient here.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend.loaded = False
+    backend.loading = ("unsloth/ltx-video-2b",)
+    resp = client.post("/api/inference/video/unload")
+    assert resp.status_code == 200 and resp.json()["loaded"] is False
+    assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO  # ownership retained for the load
+
+    backend.loading = ()
 
 
 def test_load_refused_during_training(client, monkeypatch):

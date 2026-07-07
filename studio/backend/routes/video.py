@@ -238,8 +238,16 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
     from core.inference.gpu_arbiter import VIDEO, release
     from core.inference.video import get_video_backend
 
-    status_dict = await asyncio.to_thread(get_video_backend().unload)
-    release(VIDEO)
+    backend = get_video_backend()
+    status_dict = await asyncio.to_thread(backend.unload)
+    # Drop VIDEO ownership only if nothing is resident AND no new load is in flight: a concurrent
+    # /video/load that re-acquired VIDEO while this (slow) unload ran must keep ownership, or a
+    # later chat/image load would see no owner, skip eviction, and OOM against the newly resident
+    # (or still in-flight) video pipeline. release() is owner-guarded and identity-less, so an
+    # unconditional release here would clear the newer load's claim. Mirrors the images-route
+    # guard (inference.py), plus the in-flight check the committed-loaded state cannot cover.
+    if not backend.loading_repo_ids() and not backend.status()["loaded"]:
+        release(VIDEO)
     return VideoStatusResponse(**status_dict)
 
 

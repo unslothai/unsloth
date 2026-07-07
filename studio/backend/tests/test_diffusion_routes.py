@@ -24,10 +24,16 @@ from routes.inference import studio_router
 class _FakeBackend:
     def __init__(self) -> None:
         self.loaded = False
+        # Repo ids of in-flight (not yet committed) loads; empty tuple = none. The unload
+        # route reads this to keep DIFFUSION ownership while a concurrent load is still loading.
+        self.loading: tuple = ()
 
     @property
     def is_loaded(self) -> bool:
         return self.loaded
+
+    def loading_repo_ids(self) -> tuple:
+        return tuple(self.loading)
 
     def validate_load_request(
         self,
@@ -265,6 +271,25 @@ def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypat
     r = client.post("/api/inference/images/unload")
     assert r.status_code == 200
     assert gpu_arbiter.current_owner() is None
+
+
+def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
+    # A concurrent /images/load re-acquires DIFFUSION and starts a background load, so the
+    # engine is NOT is_loaded yet (the pipeline commits later) but a load IS in flight. The
+    # unload route must keep ownership on the in-flight state alone, or a later chat load would
+    # see no owner, skip eviction, and OOM against the newly resident pipeline. is_loaded stays
+    # False the whole download/finalize window, so the loaded-only check is insufficient here.
+    backend = diffusion_module.get_diffusion_backend()
+    gpu_arbiter._owner = gpu_arbiter.DIFFUSION
+
+    backend.loaded = False
+    backend.loading = ("unsloth/z-image-turbo",)
+    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": False})
+    r = client.post("/api/inference/images/unload")
+    assert r.status_code == 200
+    assert gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION  # ownership retained for the load
+
+    backend.loading = ()
 
 
 def test_generate_batch_size_persists_each_image(client):
