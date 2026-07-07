@@ -4745,11 +4745,14 @@ def _binary_is_setuid_root(path: str | Path) -> bool:
     return stat_result.st_uid == 0 and bool(stat_result.st_mode & stat.S_ISUID)
 
 
-def _has_command(command: str) -> bool:
-    return _resolve_command_path(command) is not None
-
-
 _bwrap_sandbox_capability: dict[str, bool] = {}
+_LINUX_DYNAMIC_LOADER_ENV_VARS = (
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_ORIGIN_PATH",
+)
 
 
 def _bwrap_can_sandbox(bwrap_path: str) -> bool:
@@ -4775,6 +4778,7 @@ def _bwrap_can_sandbox(bwrap_path: str) -> bool:
             ],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
+            env = _linux_validation_launcher_env({}),
             timeout = 20,
         )
         ok = result.returncode == 0
@@ -4803,9 +4807,34 @@ def _append_existing_bwrap_bind(
     )
 
 
+def _is_broad_sandbox_library_path(path: str | Path) -> bool:
+    candidate = Path(path)
+    if not candidate.is_absolute() and not str(candidate).startswith(("/", "\\")):
+        return True
+    resolved = _resolve_existing_path(candidate)
+    if len(resolved.parts) <= 2:
+        return True
+    if len(resolved.parts) <= 3 and resolved.parts[1].lower() in {"home", "users"}:
+        return True
+    try:
+        if resolved == Path.home().resolve():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _sandbox_library_path_targets(env: dict[str, str], key: str) -> list[Path]:
+    return [
+        _resolve_existing_path(Path(part))
+        for part in env.get(key, "").split(os.pathsep)
+        if part and not _is_broad_sandbox_library_path(part)
+    ]
+
+
 def _linux_validation_launcher_env(payload_env: dict[str, str]) -> dict[str, str]:
     env = scrubbed_environ()
-    for key in payload_env:
+    for key in (*payload_env, *_LINUX_DYNAMIC_LOADER_ENV_VARS):
         env.pop(key, None)
     # Keep a stable base command search path.
     env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -5001,9 +5030,7 @@ def _linux_validation_bwrap_prefix(
         )
     if Path("/nix/store") in command_path.parents:
         readonly_targets.append("/nix/store")
-    readonly_targets.extend(
-        part for part in payload_env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
-    )
+    readonly_targets.extend(_sandbox_library_path_targets(payload_env, "LD_LIBRARY_PATH"))
     server_command = payload_command or command
 
     if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
@@ -5125,7 +5152,13 @@ def _sandbox_profile_path_literals(path: str | Path) -> list[str]:
 
 
 def _macos_validation_sandbox_prefix(
-    command: list[str], *, binary_path: Path, install_dir: Path, purpose: str, env: dict[str, str]
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    env: dict[str, str],
+    adapter_path: str,
 ) -> list[str]:
     runtime_home = Path(isolated_runtime_home())
     read_targets: list[str | Path] = [
@@ -5139,7 +5172,7 @@ def _macos_validation_sandbox_prefix(
         binary_path.parent,
         runtime_home,
     ]
-    read_targets.extend(part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part)
+    read_targets.extend(_sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH"))
     write_targets: list[str | Path] = [runtime_home]
     if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
         read_targets.append(Path(command[1]).parent)
@@ -5161,9 +5194,7 @@ def _macos_validation_sandbox_prefix(
         "/System/Library",
         binary_path.parent,
     ]
-    executable_map_targets.extend(
-        part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part
-    )
+    executable_map_targets.extend(_sandbox_library_path_targets(env, "DYLD_LIBRARY_PATH"))
     profile_parts = [
         "(version 1)",
         "(deny default)",
@@ -5199,7 +5230,7 @@ def _macos_validation_sandbox_prefix(
             profile_parts.append(f'(allow network* (remote ip "localhost:{server_port}"))')
     profile = "".join(profile_parts)
     return [
-        "sandbox-exec",
+        adapter_path,
         "-p",
         profile,
     ]
@@ -5331,7 +5362,8 @@ def build_validation_sandbox_plan(
         )
 
     if _host_is_macos(host):
-        if _has_command("sandbox-exec"):
+        sandbox_exec_path = _resolve_command_path("sandbox-exec")
+        if sandbox_exec_path is not None:
             network_policy = (
                 _VALIDATION_NETWORK_POLICY_SANDBOX
                 if purpose == _VALIDATION_PURPOSE_SERVER
@@ -5346,6 +5378,7 @@ def build_validation_sandbox_plan(
                         install_dir = install_dir,
                         purpose = purpose,
                         env = env,
+                        adapter_path = sandbox_exec_path,
                     ),
                     "/usr/bin/env",
                     "-i",
