@@ -171,23 +171,15 @@ def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
     newer["createdAt"] = 1_700_000_100_000
     studio_db.upsert_chat_thread(older)
     studio_db.upsert_chat_thread(newer)
-    assert [t["id"] for t in studio_db.list_chat_threads()] == [
-        "thread-new",
-        "thread-old",
-    ]
+    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-new", "thread-old"]
 
     studio_db.upsert_chat_message(
         _message("msg-1", 1_700_000_200_000, "hi", thread_id = "thread-old")
     )
-    assert [t["id"] for t in studio_db.list_chat_threads()] == [
-        "thread-old",
-        "thread-new",
-    ]
+    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-old", "thread-new"]
 
 
-def test_chat_threads_updated_at_migration_backfills_from_messages(
-    tmp_path, monkeypatch
-):
+def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     db_path = studio_db_path()
     db_path.parent.mkdir(parents = True, exist_ok = True)
@@ -245,16 +237,9 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(
     finally:
         conn.close()
 
-    assert (
-        studio_db.get_chat_thread("thread-with-msgs")["updatedAt"]
-        == 1_700_000_002_000
-    )
-    assert (
-        studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
-    )
-    assert (
-        studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
-    )
+    assert studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
+    assert studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
+    assert studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
 
 
 def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatch):

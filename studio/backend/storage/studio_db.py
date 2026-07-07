@@ -1433,9 +1433,7 @@ def _bump_chat_thread_updated_at(
     )
 
 
-def _recompute_chat_thread_updated_at(
-    conn: sqlite3.Connection, thread_id: str
-) -> None:
+def _recompute_chat_thread_updated_at(conn: sqlite3.Connection, thread_id: str) -> None:
     """Set updated_at from the remaining messages, floored at created_at.
 
     Unlike the ratchet-only bump, this can lower updated_at -- needed after
@@ -1498,9 +1496,7 @@ def upsert_chat_message(message: dict) -> dict:
                 int(message["createdAt"]),
             ),
         )
-        _bump_chat_thread_updated_at(
-            conn, message["threadId"], int(message["createdAt"])
-        )
+        _bump_chat_thread_updated_at(conn, message["threadId"], int(message["createdAt"]))
         conn.commit()
         return message
     except Exception:
