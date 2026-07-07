@@ -996,7 +996,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "auto",
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [transformerCache, setTransformerCache] = useState<"off" | "fbcache">("off");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced
   // options without the user re-picking it from the dropdown.
@@ -1479,7 +1479,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-          transformer_cache: transformerCache === "off" ? undefined : transformerCache,
+          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         });
       } catch (err) {
         dismissLoadToast();
@@ -1929,10 +1929,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Leave off for few-step distilled models."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto enables it for many-step schedules and skips it for few-step distilled models; Off disables it entirely."
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
         options={[
+          ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
         ]}

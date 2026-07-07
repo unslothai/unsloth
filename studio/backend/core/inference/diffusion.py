@@ -32,6 +32,7 @@ from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
+    default_generation_params,
     detect_family_for_pick,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -71,10 +72,20 @@ from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
     select_attention_backend,
+    _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_gguf_compile as gguf_compile
-from .diffusion_cache import apply_step_cache, normalize_transformer_cache
+from .diffusion_cache import (
+    FBCACHE_MIN_STEPS,
+    TC_AUTO,
+    TC_FBCACHE,
+    apply_step_cache,
+    effective_denoise_steps,
+    effective_request_strength,
+    maybe_toggle_step_cache,
+    normalize_transformer_cache,
+)
 from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .diffusion_prequant import (
     load_prequantized_transformer,
@@ -282,6 +293,13 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Step cache engaged ("fbcache") or None. Opt-in, for many-step models.
     transformer_cache: Optional[str] = None
+    # True when the cache decision was AUTO on a cache-capable transformer: generate()
+    # then re-checks the actual step count and toggles FBCache across FBCACHE_MIN_STEPS.
+    # An explicit request (off / fbcache) is never toggled.
+    cache_auto: bool = False
+    # Inputs the generation-time toggle re-applies (quantised threshold + override).
+    cache_quant_active: bool = False
+    cache_threshold: Optional[float] = None
     # Shared eager monkey-patches (diffusion_eager_patches) installed for this load (any
     # non-off speed tier). Uninstalled on unload so a later `off` load is bit-identical.
     eager_patched: bool = False
@@ -987,6 +1005,23 @@ class DiffusionBackend:
 
         import diffusers
 
+        # Pre-install the optional attention kernel BEFORE taking the load locks. The
+        # wheel-only pip install can run up to 600s, and doing it under _lock /
+        # _generate_lock (as the in-lock apply_attention_backend otherwise would) blocks
+        # unload() and cancellation for that whole window. Only an explicit backend pulls
+        # a package -- auto resolves to cuDNN / native, which ship with torch -- and an
+        # explicit backend's resolution ignores the speed tier, so it can run here without
+        # effective_speed. Best-effort: the authoritative resolve + set still happens under
+        # the lock, where the now-satisfied install call is a fast no-op.
+        try:
+            preinstall_backend = select_attention_backend(
+                target, attention_backend, speed_active = True
+            )
+            if preinstall_backend is not None:
+                _ensure_attention_backend_installed(preinstall_backend, logger)
+        except Exception:  # noqa: BLE001 — the locked path re-resolves and validates
+            pass
+
         # Signal an in-flight denoise to abort, then take _generate_lock to WAIT for
         # it to actually exit before allocating the replacement: a load is about to
         # claim VRAM, so unlike unload() it must not overlap a still-live pipeline.
@@ -1250,20 +1285,54 @@ class DiffusionBackend:
                     ),
                     logger = logger,
                 )
-                # Opt-in step caching (First-Block-Cache), also before compile. OFF by
-                # default; for many-step models it reuses the transformer tail across steps
-                # (~1.4x on Flux at LPIPS ~0.08). When engaged, compile must drop fullgraph
-                # (the cache's per-step decision is a graph break), so pass it through.
+                # Step caching (First-Block-Cache), also before compile. For many-step
+                # models it reuses the transformer tail across steps (~1.4x on Flux at
+                # LPIPS ~0.08). When engaged, compile must drop fullgraph (the cache's
+                # per-step decision is a graph break), so pass it through.
+                # Tri-state request: unset / "auto" lets the step-count policy decide
+                # (engage when this model's DEFAULT schedule reaches FBCACHE_MIN_STEPS,
+                # then re-check against the actual step count on every generation);
+                # explicit "off" / "fbcache" are pinned and never toggled.
+                cache_request = normalize_transformer_cache(transformer_cache)
+                cache_auto = transformer_cache is None or cache_request == TC_AUTO
+                cache_quant_active = transformer_quant_engaged is not None or bool(gguf_filename)
+                default_steps: Optional[int] = None
+                if cache_auto:
+                    default_steps, _ = default_generation_params(
+                        gguf_filename, repo_id, base, fam.name
+                    )
+                    cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
                 cache_engaged = apply_step_cache(
                     pipe,
-                    mode = transformer_cache,
+                    mode = cache_request,
                     threshold = transformer_cache_threshold,
                     # GGUF transformers are quantized too (the default Studio path), so the
                     # cache needs the higher quantized threshold to still trigger -- not just
                     # the dense-quant fast path.
-                    quant_active = transformer_quant_engaged is not None or bool(gguf_filename),
+                    quant_active = cache_quant_active,
                     logger = logger,
                 )
+                # An auto decision can flip at generation time, but only on a transformer
+                # that supports caching at all; a non-CacheMixin transformer (e.g.
+                # Z-Image) can never engage, so compile keeps fullgraph there.
+                cache_may_toggle = cache_auto and callable(
+                    getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+                )
+                if cache_auto:
+                    if cache_engaged:
+                        cache_reason = (
+                            f"auto: {default_steps}-step default schedule reaches "
+                            f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                        )
+                    elif cache_request is not None:
+                        cache_reason = "auto: model does not support step caching"
+                    else:
+                        cache_reason = (
+                            f"auto: {default_steps}-step default schedule is below "
+                            f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                        )
+                else:
+                    cache_reason = "requested"
                 # Install the shared compile-safe eager patches (fused RMSNorm /
                 # AdaLayerNorm) for any active speed tier. They are class-level, idempotent
                 # and math-equivalent (FMA / fused -> neutral under compile, equal-or-more
@@ -1329,8 +1398,12 @@ class DiffusionBackend:
                             compile_kwargs = {
                                 # Mirrors apply_speed_optims' fullgraph decision: an active
                                 # step cache OR a planned offload graph-breaks, so the cached
-                                # bundle must be keyed on the same fullgraph setting.
+                                # bundle must be keyed on the same fullgraph setting. An auto
+                                # cache that could still engage mid-session also drops
+                                # fullgraph: enabling FBCache under a fullgraph-compiled
+                                # transformer would crash the first cached generation.
                                 "fullgraph": cache_engaged is None
+                                and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
                                 "dynamic": effective_speed != SPEED_MAX,
                                 "mode": "max-autotune-no-cudagraphs"
@@ -1346,7 +1419,7 @@ class DiffusionBackend:
                         is_gguf = gguf_transformer,
                         family = fam,
                         speed_mode = effective_speed,
-                        cache_active = cache_engaged is not None,
+                        cache_active = cache_engaged is not None or cache_may_toggle,
                         # The planned offload policy: group/model/sequential offload installs
                         # compiler-disabled onload hooks, so compile must drop fullgraph.
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
@@ -1420,9 +1493,9 @@ class DiffusionBackend:
                                 "planned from measured free VRAM vs estimated footprint",
                             ),
                             "transformer_cache": (
-                                transformer_cache,
+                                None if cache_auto else transformer_cache,
                                 cache_engaged or "off",
-                                "off by default" if transformer_cache is None else "requested",
+                                cache_reason,
                             ),
                             "cpu_offload": (
                                 True if cpu_offload else None,
@@ -1451,6 +1524,9 @@ class DiffusionBackend:
                         transformer_quant = transformer_quant_engaged,
                         attention_backend = attention_engaged,
                         transformer_cache = cache_engaged,
+                        cache_auto = cache_may_toggle,
+                        cache_quant_active = cache_quant_active,
+                        cache_threshold = transformer_cache_threshold,
                         eager_patched = eager_patched,
                         compile_cache_ctx = compile_ctx,
                         hf_token = hf_token,
@@ -2253,6 +2329,49 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
+                # An AUTO cache decision is re-checked against the ACTUAL step count:
+                # a 28-step dev-style request gains FBCache even when the load's default
+                # schedule kept it off, and a few-step turbo request drops it (skipping
+                # a step there is a large quality hit). Explicit choices never toggle.
+                if state.cache_auto:
+                    # Key the policy on the EFFECTIVE denoise steps: an img2img/upscale/
+                    # inpaint request at strength < 1 only denoises a fraction of `steps`
+                    # (e.g. a 28-step upscale at strength 0.35 runs ~10 steps), so passing
+                    # the raw request would wrongly engage FBCache on exactly the short
+                    # trajectory the policy keeps uncached. Only fold in `strength` when it
+                    # is ACTUALLY applied to the pipe (same gate as the kwarg below), so a
+                    # stray strength on a txt2img request never shortens the count.
+                    # The pipe denoises `steps * strength`. When the request omits strength the
+                    # kwarg above is NOT passed, so the pipe runs its OWN signature default (< 1 for
+                    # every img2img/inpaint pipeline here, e.g. 0.6) -- still a short trajectory the
+                    # policy must key on, or FBCache engages on a fraction of the advertised steps.
+                    strength_applied = effective_request_strength(
+                        strength,
+                        init_pil is not None,
+                        "strength" in call_params,
+                        call_params["strength"].default if "strength" in call_params else None,
+                    )
+                    denoise_steps = effective_denoise_steps(steps, strength_applied)
+                    toggled = maybe_toggle_step_cache(
+                        state.pipe,
+                        steps = denoise_steps,
+                        quant_active = state.cache_quant_active,
+                        threshold = state.cache_threshold,
+                        logger = logger,
+                    )
+                    if toggled != state.transformer_cache:
+                        # _LoadState is frozen (loads swap it as one unit); this is the
+                        # one deliberate in-place update, tracking the pipe-level toggle
+                        # that already happened so status() reports the true cache state.
+                        object.__setattr__(state, "transformer_cache", toggled)
+                        entry = (state.resolved or {}).get("transformer_cache")
+                        if isinstance(entry, dict):
+                            entry["value"] = toggled or "off"
+                            entry["reason"] = (
+                                f"auto: {denoise_steps}-step generation "
+                                + ("reaches" if toggled else "is below")
+                                + f" {FBCACHE_MIN_STEPS}"
+                            )
                 # Start each generation from a clean step cache: FBCache residuals from
                 # a prior request on this resident pipe would otherwise be compared
                 # against this generation's first step (shape mismatch on a resolution/

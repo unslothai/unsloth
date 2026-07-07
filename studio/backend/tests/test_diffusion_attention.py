@@ -232,3 +232,194 @@ def test_active_attention_backend_reads_tuple_return():
 
     _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
     assert att._active_attention_backend() == "native"
+
+
+# ── on-demand wheel-only install of optional kernels ─────────────────────────────
+@pytest.fixture(autouse = True)
+def _no_real_installs(monkeypatch):
+    # Unit tests must never shell out to pip: the apply path probes installable
+    # backends (sage/flash*), so hard-disable the gate; install tests re-enable it
+    # with a stubbed subprocess.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
+    # The install once-per-process memo is module state; clear it so each test starts
+    # with a fresh "not yet attempted" set (otherwise an earlier test's attempt would
+    # make a later install a no-op).
+    att._INSTALL_ATTEMPTED.clear()
+
+
+class _Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(list(cmd))
+        return types.SimpleNamespace(returncode = 0)
+
+
+def _stub_subprocess(monkeypatch, run):
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_install_skipped_when_gate_disabled(monkeypatch):
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert run.calls == []
+
+
+def test_install_skipped_when_module_present(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object() if name == "sageattention" else None
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert run.calls == []
+
+
+def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert len(run.calls) == 1
+    cmd = run.calls[0]
+    assert "--only-binary" in cmd and ":all:" in cmd and "sageattention" in cmd
+
+
+def test_install_uses_no_deps_to_protect_core_deps(monkeypatch):
+    # A kernel add-on (xformers/flash-attn) pins an exact torch, so a normal install would
+    # upgrade/replace the running torch/triton. --no-deps installs only the kernel wheel;
+    # an ABI-incompatible one fails to import and falls back to native rather than clobbering
+    # the environment's core deps.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("xformers")
+    assert len(run.calls) == 1
+    assert "--no-deps" in run.calls[0]
+
+
+def test_failed_install_not_retried_in_same_process(monkeypatch):
+    # The loader pre-installs the kernel OUTSIDE its locks and then re-resolves the same
+    # backend under _generate_lock; if the pre-install failed (no wheel / offline) the
+    # in-lock apply path must NOT re-run pip (a second up-to-600s install holding the load
+    # lock blocks unload/cancel). The once-per-process memo makes the retry a no-op.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)  # stays missing
+
+    calls: list[list[str]] = []
+
+    def _boom(cmd, **kwargs):
+        calls.append(list(cmd))
+        raise sp.CalledProcessError(returncode = 1, cmd = cmd)
+
+    _stub_subprocess(monkeypatch, _boom)
+    att._ensure_attention_backend_installed("sage")  # pre-install attempt (outside lock)
+    att._ensure_attention_backend_installed("sage")  # in-lock retry -> must be skipped
+    assert len(calls) == 1
+
+
+def test_install_invalidates_import_caches_on_success(monkeypatch):
+    # A wheel written to site-packages after the finder cached that directory can be
+    # missed by the very next import, so a successful install must invalidate the caches
+    # (otherwise set_attention_backend imports the missing package and falls back).
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_subprocess(monkeypatch, _Recorder())
+    invalidated = []
+    monkeypatch.setattr(importlib, "invalidate_caches", lambda: invalidated.append(True))
+    att._ensure_attention_backend_installed("sage")
+    assert invalidated == [True]
+
+
+def test_install_failure_skips_cache_invalidation(monkeypatch):
+    # A failed install left nothing to import, so the finder caches must be left alone.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(returncode = 1, cmd = cmd)
+
+    _stub_subprocess(monkeypatch, _boom)
+    invalidated = []
+    monkeypatch.setattr(importlib, "invalidate_caches", lambda: invalidated.append(True))
+    att._ensure_attention_backend_installed("sage")
+    assert invalidated == []
+
+
+def test_install_never_attempted_for_builtin_backends(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("_native_cudnn")
+    att._ensure_attention_backend_installed("native")
+    assert run.calls == []
+
+
+def test_install_failure_logs_pip_stderr(monkeypatch):
+    # A CalledProcessError's str() hides the pip reason; the warning must surface the
+    # captured stderr (decoding bytes) so a fallback to native is diagnosable.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(
+            returncode = 1, cmd = cmd, stderr = b"ERROR: No matching distribution found"
+        )
+
+    _stub_subprocess(monkeypatch, _boom)
+
+    warnings: list[str] = []
+
+    class _Logger:
+        def info(self, *a, **k):
+            pass
+
+        def warning(self, msg, *args):
+            warnings.append(msg % args if args else msg)
+
+    att._ensure_attention_backend_installed("sage", _Logger())
+    assert warnings and "No matching distribution found" in warnings[-1]
+
+
+def test_install_failure_falls_back_to_native(monkeypatch):
+    # pip failing (no wheel for this platform) must not break the load: the apply
+    # path proceeds, set_attention_backend raises on the missing package, and the
+    # dispatcher is restored to native -- same contract as before the hook.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(returncode = 1, cmd = cmd)
+
+    _stub_subprocess(monkeypatch, _boom)
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
+    t = _FakeTransformer(fail = True)
+    assert apply_attention_backend(_pipe(t), "sage") is None

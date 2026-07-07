@@ -159,6 +159,123 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
+# Optional-kernel backends the loader may install on demand: dispatcher name ->
+# (probe module, pip package). Only wheels are ever installed (--only-binary=:all:):
+# a source build of flash-attn or sageattention takes tens of minutes and needs a
+# CUDA toolchain, which a Studio host cannot be assumed to have -- no wheel for this
+# python/torch/cuda combo means the request falls back to the native default exactly
+# as an uninstallable kernel does today. cuDNN/native need nothing (ship with torch).
+_INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
+    "sage": ("sageattention", "sageattention"),
+    "flash": ("flash_attn", "flash-attn"),
+    "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 stream from the HF kernels hub
+    "flash_4_hub": ("kernels", "kernels"),
+    "xformers": ("xformers", "xformers"),
+}
+
+# Gate for the on-demand install, mirroring UNSLOTH_DIFFUSION_SD_CPP_INSTALL:
+#   auto (default) / 1 - install the missing package when a gated backend is requested
+#   0                  - never install; a missing kernel falls back to native
+_ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
+
+# Packages a pip install has already been attempted for in THIS process (success or
+# failure). The loader pre-installs the kernel OUTSIDE its locks and then re-resolves the
+# same backend under _generate_lock, where apply_attention_backend would otherwise call
+# pip a SECOND time -- for a package with no matching wheel / an offline host that repeat
+# runs the full (up to 600s) install while holding the load lock, blocking unload/cancel/
+# new loads for exactly the failure the pre-install was added to keep off the lock. Record
+# each attempt so a retry is a no-op and set_attention_backend falls back to native at once.
+_INSTALL_ATTEMPTED: set[str] = set()
+
+
+def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
+    """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
+
+    Called after arch gating (select_attention_backend already dropped kernels this
+    card cannot run), so an install attempt is only made for a backend that could
+    actually work here. Failure is logged and swallowed: the subsequent
+    set_attention_backend raises on the still-missing package and the load falls
+    back to the native default, same as before this hook existed."""
+    import importlib.util
+    import os
+
+    spec = _INSTALLABLE_BACKENDS.get(backend)
+    if spec is None:
+        return
+    module, package = spec
+    gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
+    if gate in ("0", "false", "no", "off"):
+        return
+    try:
+        if importlib.util.find_spec(module) is not None:
+            return
+    except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
+        pass
+    # Only ever attempt each package's install once per process. The loader pre-installs
+    # this backend outside its locks; if that failed (no wheel / offline) the module is
+    # still missing here, so without this guard the in-lock apply path would re-run the
+    # whole install under _generate_lock and block unload/cancel. A recorded attempt makes
+    # the retry a no-op -> set_attention_backend raises on the missing package -> native.
+    if package in _INSTALL_ATTEMPTED:
+        return
+    _INSTALL_ATTEMPTED.add(package)
+    import subprocess
+    import sys
+
+    if logger is not None:
+        logger.info(
+            "diffusion.attention: installing %s for backend=%s (wheel-only)", package, backend
+        )
+    try:
+        subprocess.run(
+            # --no-deps: install ONLY this best-effort kernel wheel, never its declared
+            # dependencies. xformers/flash-attn pin an exact torch (e.g. torch==2.x), so
+            # normal resolution would upgrade/replace the running torch/triton and leave
+            # later loads on a different, possibly CUDA-mismatched dependency stack. Without
+            # its deps an ABI-incompatible kernel simply fails to import -> native fallback,
+            # which is the same best-effort outcome as an uninstallable wheel.
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--only-binary",
+                ":all:",
+                "--no-deps",
+                package,
+            ],
+            capture_output = True,
+            timeout = 600,
+            check = True,
+        )
+        # The wheel just landed in site-packages, but the import system caches each
+        # directory's listing; the very next find_spec / import in this same process can
+        # still miss the freshly installed package when the install lands within the
+        # directory mtime's resolution -- silently falling back to native on the first
+        # use. Invalidate the finder caches so set_attention_backend picks it up now.
+        importlib.invalidate_caches()
+    except Exception as exc:  # noqa: BLE001 — no wheel / no network -> native fallback
+        if logger is not None:
+            # A failed pip install raises CalledProcessError whose str() shows only the
+            # exit code and command; the real reason (no matching wheel, resolver error)
+            # is in exc.stderr. Surface it so a fallback to native is diagnosable.
+            stderr = getattr(exc, "stderr", None)
+            if stderr:
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", errors = "replace")
+                logger.warning(
+                    "diffusion.attention: could not install %s; pip failed with: %s",
+                    package,
+                    stderr.strip() or str(exc),
+                )
+            else:
+                logger.warning(
+                    "diffusion.attention: could not install %s (%s); falling back to default",
+                    package,
+                    exc,
+                )
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -181,6 +298,7 @@ def apply_attention_backend(
     if not callable(fn):
         return None
     if backend is not None:
+        _ensure_attention_backend_installed(backend, logger)
         try:
             fn(backend)
             # set_attention_backend also pins the backend in diffusers' process-wide

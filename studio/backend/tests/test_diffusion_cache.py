@@ -173,3 +173,151 @@ def test_diffusers_unavailable_runs_uncached(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers.hooks", None)
     t = _MixinTransformer()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+
+
+# ── the auto policy: normalize("auto") + generation-time toggling ──────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    FBCACHE_MIN_STEPS,
+    TC_AUTO,
+    effective_denoise_steps,
+    effective_request_strength,
+    maybe_toggle_step_cache,
+)
+
+
+# ── effective_denoise_steps (strength-aware step count for the auto policy) ─────────
+def test_effective_steps_txt2img_is_full_count():
+    # No strength (txt2img / reference) -> the full requested step count.
+    assert effective_denoise_steps(28, None) == 28
+    assert effective_denoise_steps(28, 1.0) == 28  # full redraw denoises every step
+
+
+def test_effective_steps_low_strength_shrinks_below_the_bar():
+    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps (diffusers get_timesteps
+    # floors the product), which is below FBCACHE_MIN_STEPS -> the auto policy must NOT engage
+    # FBCache there.
+    eff = effective_denoise_steps(28, 0.35)
+    assert eff == 9
+    assert eff < FBCACHE_MIN_STEPS
+
+
+def test_effective_request_strength_uses_pipe_default_when_omitted():
+    import inspect
+
+    # txt2img (no init image) or a pipe without the strength kwarg -> full trajectory (None).
+    assert effective_request_strength(None, False, True, 0.6) is None
+    assert effective_request_strength(0.5, True, False, None) is None
+    # img2img with an explicit strength -> that value.
+    assert effective_request_strength(0.2, True, True, 0.6) == 0.2
+    # img2img with an OMITTED strength -> the pipe's own signature default (< 1), so the auto
+    # policy keys on the real (short) trajectory, not the full step count. This is the fix:
+    # int(28 * 0.6) = 16 real steps, not 28.
+    s = effective_request_strength(None, True, True, 0.6)
+    assert s == 0.6
+    assert effective_denoise_steps(28, s) == 16
+    # A non-numeric signature default (inspect.Parameter.empty) falls back to the full count.
+    assert effective_request_strength(None, True, True, inspect.Parameter.empty) is None
+    assert effective_request_strength(None, True, True, None) is None
+
+
+def test_effective_steps_matches_diffusers_get_timesteps():
+    # Mirror diffusers exactly: it denoises init_timestep = min(int(num_inference_steps *
+    # strength), num_inference_steps) steps (the product is floored, not rounded).
+    for steps, strength in [(28, 0.35), (28, 0.8), (50, 0.5), (20, 0.99), (30, 0.1)]:
+        expected = max(1, min(int(steps * strength), steps))
+        assert effective_denoise_steps(steps, strength) == expected
+
+
+def test_toggle_stays_off_for_low_strength_workflow(monkeypatch):
+    # End to end: a 28-step request would engage FBCache, but at strength 0.35 the
+    # effective ~10 steps keep it uncached.
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(_pipe(t), steps = effective_denoise_steps(28, 0.35))
+    assert mode is None and t.enables == 0
+
+
+class _ToggleTransformer(_MixinTransformer):
+    """CacheMixin-style fake with the disable side too, counting transitions."""
+
+    def __init__(self):
+        super().__init__()
+        self.enables = 0
+        self.disables = 0
+
+    def enable_cache(self, config):
+        super().enable_cache(config)
+        self.enables += 1
+
+    def disable_cache(self):
+        self.disables += 1
+
+
+def test_normalize_auto_is_a_distinct_state():
+    assert normalize_transformer_cache("auto") == TC_AUTO
+    assert normalize_transformer_cache(" AUTO ") == TC_AUTO
+
+
+def test_apply_treats_stray_auto_as_off(monkeypatch):
+    # AUTO must be resolved by the loader; if it ever reaches the engage call the
+    # load runs uncached instead of crashing.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "auto") is None
+    assert t.enabled_with is None
+
+
+def test_toggle_engages_at_the_step_bar(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(_pipe(t), steps = FBCACHE_MIN_STEPS)
+    assert mode == TC_FBCACHE and t.enables == 1
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+    assert t._unsloth_step_cache
+
+
+def test_toggle_uses_quant_threshold(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28, quant_active = True)
+    assert t.enabled_with.threshold == QUANT_FBCACHE_THRESHOLD
+
+
+def test_toggle_is_idempotent_when_engaged(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 28)
+    assert mode == TC_FBCACHE and t.enables == 1 and t.disables == 0
+
+
+def test_toggle_disengages_below_the_bar(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    assert mode is None and t.disables == 1
+    assert not t._unsloth_step_cache
+    # and it stays off on repeat calls (no flapping disable calls).
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert t.disables == 1
+
+
+def test_toggle_reengages_after_a_disable(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    maybe_toggle_step_cache(_pipe(t), steps = 8)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 24)
+    assert mode == TC_FBCACHE and t.enables == 2
+
+
+def test_toggle_noop_without_cache_support(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    t = _NonCacheMixinTransformer()
+    assert maybe_toggle_step_cache(_pipe(t), steps = 28) is None
+    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+
+
+def test_toggle_noop_without_transformer():
+    assert maybe_toggle_step_cache(types.SimpleNamespace(), steps = 28) is None
