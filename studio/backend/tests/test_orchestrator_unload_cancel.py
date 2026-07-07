@@ -1482,9 +1482,7 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
         assert results.count(False) == n - 1
         # And exactly one live dispatcher thread exists -- no orphan racing resp_queue.
         live = [
-            t
-            for t in threading.enumerate()
-            if t.name == "inference-dispatcher" and t.is_alive()
+            t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
         ]
         assert len(live) == 1, f"expected one live dispatcher, found {len(live)}"
         assert o._dispatcher_thread is live[0]
