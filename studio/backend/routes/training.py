@@ -2120,9 +2120,7 @@ async def import_diffusion_dataset_example(
             # above would treat that partial result as complete on the next retry (imported=0)
             # and strand the user with a truncated dataset (there is no dataset-delete flow).
             # Staged as a hidden sibling on the same filesystem so promotion is an atomic rename.
-            staging = Path(
-                tempfile.mkdtemp(dir = folder.parent, prefix = f".{folder.name}.import-")
-            )
+            staging = Path(tempfile.mkdtemp(dir = folder.parent, prefix = f".{folder.name}.import-"))
             try:
                 try:
                     if entry["loader"] == "imagefolder_jsonl":

@@ -176,9 +176,7 @@ class TestMaxBodyMiddleware:
         )
 
         path = "/api/train/diffusion/dataset"
-        assert any(
-            path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES
-        )
+        assert any(path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES)
         cap = main_module._get_upload_passthrough_request_max_bytes(path)
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
@@ -196,9 +194,7 @@ class TestMaxBodyMiddleware:
             "/v1/messages",
             "/v1/chat/completions",
         ):
-            assert any(
-                path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
-            ), path
+            assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
     def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(

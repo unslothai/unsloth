@@ -936,9 +936,7 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
-            patch.object(
-                inference_route, "_guard_chat_load_against_training", return_value = None
-            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
             patch.object(arb, "acquire_for", lambda owner: acquired.append(owner)),

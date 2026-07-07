@@ -1244,9 +1244,7 @@ def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
     fam = detect_family("unsloth/FLUX.1-dev-GGUF")
     # A malicious card tag is ignored -> the family default base is used instead.
     monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, hf_token: "attacker/evil-pipeline")
-    assert (
-        _resolve_base_repo("attacker/flux.1-evil-GGUF", None, fam, None) == fam.base_repo
-    )
+    assert _resolve_base_repo("attacker/flux.1-evil-GGUF", None, fam, None) == fam.base_repo
     # A trusted (allowlisted) card tag is still honoured, so variant resolution is not regressed.
     monkeypatch.setattr(
         dmod, "_hf_base_model", lambda repo_id, hf_token: "black-forest-labs/FLUX.1-dev"

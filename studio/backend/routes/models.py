@@ -3223,6 +3223,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         # GGUF (which the loader also cannot resolve) stays in the unsupported bucket rather than
         # advertising a GGUF that would 400 on load.
         from core.inference.video_families import detect_video_family
+
         fam = detect_video_family("", override = a)
         if fam is None:
             for hint in name_hints:
@@ -3250,9 +3251,7 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         for path in _iter_gguf_paths(Path(repo_info.repo_path)):
             if _is_mmproj_filename(path.name):
                 continue
-            task = _arch_to_task(
-                _gguf_architecture(str(path)), name_hints = (repo_id, path.name)
-            )
+            task = _arch_to_task(_gguf_architecture(str(path)), name_hints = (repo_id, path.name))
             if task is not None:
                 return task
     except Exception:
@@ -3274,15 +3273,11 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         try:
             p = Path(path)
             if p.suffix.lower() == ".gguf" and p.is_file():
-                return _arch_to_task(
-                    _gguf_architecture(str(p)), name_hints = _id_hints + (p.name,)
-                )
+                return _arch_to_task(_gguf_architecture(str(p)), name_hints = _id_hints + (p.name,))
             for f in _iter_gguf_paths(p):
                 if _is_mmproj_filename(f.name):
                     continue
-                task = _arch_to_task(
-                    _gguf_architecture(str(f)), name_hints = _id_hints + (f.name,)
-                )
+                task = _arch_to_task(_gguf_architecture(str(f)), name_hints = _id_hints + (f.name,))
                 if task is not None:
                     return task
         except Exception:
@@ -3298,7 +3293,11 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             from core.inference.video import _is_trusted_video_repo
             from core.inference.video_families import detect_video_family
             for needle in (model.model_id, model.display_name, model.id):
-                if needle and detect_video_family(needle) is not None and _is_trusted_video_repo(path):
+                if (
+                    needle
+                    and detect_video_family(needle) is not None
+                    and _is_trusted_video_repo(path)
+                ):
                     return _VIDEO_GEN_TASK
         except Exception:
             pass
