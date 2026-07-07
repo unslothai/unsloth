@@ -1038,3 +1038,117 @@ def test_http_retry_bails_when_shutdown_settles_parked_retry(monkeypatch, tmp_pa
     assert registry.get_job(key_a).state == "cancelled"
     # The bailed retry still persists its XET cancel marker / orphan breadcrumb.
     assert ("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET) in markers
+
+
+def test_shutdown_settles_registered_worker_that_exited_with_error(monkeypatch, tmp_path):
+    # A registered worker that already exited nonzero but whose watcher has not
+    # yet run is absent from terminate_all()'s live snapshot. The old `key in
+    # self._processes` skip left it `running`, so the watcher would later enter
+    # _try_http_retry() and spawn an HTTP worker after shutdown. terminate_all()
+    # must settle it (cancelling + pending cancel) and persist its cancel marker.
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+    )
+    exited_proc = _make_proc(1, b"xet failed")
+    assert registry.register_process(key, exited_proc)
+    # The worker exited nonzero; drop_process has not run yet, so it stays in the
+    # process table while poll() already reports the error.
+    exited_proc.wait()
+    assert exited_proc.poll() == 1
+
+    markers = []
+    monkeypatch.setattr(
+        download_registry,
+        "persist_cancel_marker",
+        lambda *args, **_kwargs: markers.append(args),
+    )
+
+    registry.terminate_all("download")
+
+    # Settled so a later watcher pass sees the intentional stop and bails instead
+    # of retrying over HTTP, and its XET cancel marker is persisted by shutdown.
+    assert registry.get_job(key).state == "cancelling"
+    assert registry.cancel_requested(key) is True
+    assert ("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET) in markers
+
+
+def test_shutdown_leaves_cleanly_exited_registered_worker_alone(monkeypatch, tmp_path):
+    # A registered worker that exited cleanly (rc == 0) completed; its watcher
+    # will mark it done. terminate_all() must not mark it cancelling or persist a
+    # stale cancel marker for it.
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+    )
+    done_proc = _make_proc(0)
+    assert registry.register_process(key, done_proc)
+    done_proc.wait()
+    assert done_proc.poll() == 0
+
+    markers = []
+    monkeypatch.setattr(
+        download_registry,
+        "persist_cancel_marker",
+        lambda *args, **_kwargs: markers.append(args),
+    )
+
+    registry.terminate_all("download")
+
+    assert registry.get_job(key).state == "running"
+    assert registry.cancel_requested(key) is False
+    assert markers == []
+
+
+def test_shutdown_persists_marker_for_parked_no_process_retry(monkeypatch, tmp_path):
+    # A parked XET->HTTP retry has dropped its worker, so it has no live process.
+    # run_lifespan_shutdown only awaits terminate_all(); if it returns before the
+    # daemon watcher wakes, terminate_all() itself must have persisted the XET
+    # cancel marker so the next launch keeps resumable/cancelled state.
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    # Retry runs over HTTP but its cancel marker must name the original XET slot.
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mainhash"}),
+        progress_blob_hashes = frozenset({"mainhash"}),
+        metadata_transport = download_registry.TRANSPORT_HTTP,
+        cancel_marker_transport = download_registry.TRANSPORT_XET,
+    )
+    # No register_process: the retry is parked in the reclaim wait loop.
+    assert registry.get_process(key) is None
+
+    markers = []
+    monkeypatch.setattr(
+        download_registry,
+        "persist_cancel_marker",
+        lambda *args, **_kwargs: markers.append(args),
+    )
+
+    registry.terminate_all("download")
+
+    # Persisted synchronously by terminate_all, not deferred to the watcher.
+    assert registry.get_job(key).state == "cancelling"
+    assert registry.cancel_requested(key) is True
+    assert ("model", "Org/Model", "Q4_K_M", download_registry.TRANSPORT_XET) in markers

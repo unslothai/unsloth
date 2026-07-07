@@ -1297,28 +1297,47 @@ class DownloadRegistry:
             return True
 
     def terminate_all(self, kind: str = "download") -> None:
+        settled_no_proc: list[Optional[DownloadMetadata]] = []
         with self._lock:
             live = [
                 (key, proc, self._metadata.get(key))
                 for key, proc in self._processes.items()
                 if proc.poll() is None
             ]
+            live_keys = {key for key, _proc, _metadata in live}
             # Flag as an intentional stop so the watcher's exit classification
             # reports them cancelled rather than an OOM/crash once SIGKILL lands.
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
-            # Settle no-process active jobs too: an XET->HTTP retry parked in the
-            # reclaim wait loop has dropped its worker and slot guard, so it is
-            # absent from `live` above. Arm a pending cancel so the loop bails at
-            # its cancel_requested check, and any retry already racing past that
-            # check has its freshly spawned worker killed on register, instead of
-            # surviving this shutdown snapshot.
+            # Settle active jobs without a live worker too. Two cases: an
+            # XET->HTTP retry parked in the reclaim wait loop has dropped its
+            # worker and slot guard, so it is absent from `live`; and a
+            # registered worker that already exited with an error but whose
+            # watcher has not yet run would otherwise stay `running` and spawn an
+            # HTTP retry after this shutdown snapshot. Skip a registered worker
+            # that exited cleanly (rc == 0): it completed and the watcher will
+            # mark it done, so marking it cancelling would strand a stale marker.
             for key, job in list(self._jobs.items()):
-                if job.state not in _ACTIVE_STATES or key in self._processes:
+                if job.state not in _ACTIVE_STATES or key in live_keys:
+                    continue
+                proc = self._processes.get(key)
+                if proc is not None and proc.poll() == 0:
                     continue
                 self._pending_cancel[key] = self._generations.get(key)
                 self._jobs[key] = DownloadState("cancelling")
+                settled_no_proc.append(self._metadata.get(key))
+        # Persist a cancel marker for each settled no-live-worker job outside the
+        # lock (mirroring the reaped path) so shutdown records resumable/cancelled
+        # state even if it returns before the daemon watcher wakes to do so.
+        for metadata in settled_no_proc:
+            if metadata is not None:
+                persist_cancel_marker(
+                    metadata.repo_type,
+                    metadata.repo_id,
+                    metadata.variant,
+                    metadata.cancel_marker_transport or metadata.transport,
+                )
         reaped: list[tuple[str, subprocess.Popen, Optional[DownloadMetadata]]] = []
         for key, proc, metadata in live:
             try:
