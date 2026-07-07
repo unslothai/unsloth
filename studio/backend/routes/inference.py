@@ -1769,7 +1769,10 @@ def _enables_code_execution_tool(tools: list[dict]) -> bool:
     streaming requirement is scoped to requests that actually expose one."""
     from core.inference.tools import CODE_EXECUTION_TOOL_NAMES
     return any(
-        (t.get("function") or {}).get("name") in CODE_EXECUTION_TOOL_NAMES for t in (tools or [])
+        isinstance(t, dict)
+        and isinstance(t.get("function"), dict)
+        and t["function"].get("name") in CODE_EXECUTION_TOOL_NAMES
+        for t in (tools or [])
     )
 
 
