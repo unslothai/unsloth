@@ -177,7 +177,9 @@ INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-MAX_ACT_REPROMPTS = 1
+# Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
+# times since #5620); safetensors and MLX inherit the same cap from here.
+MAX_ACT_REPROMPTS = 3
 REPROMPT_MAX_CHARS = 2000
 
 

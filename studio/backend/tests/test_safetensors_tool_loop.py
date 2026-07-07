@@ -3862,19 +3862,45 @@ class TestPlanWithoutActionReprompt:
         texts = [e["text"] for e in events if e["type"] == "content"]
         assert any("Here is the final answer." in t for t in texts)
 
-    def test_reprompt_fires_at_most_once(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ["I'll search the web for that."],
-                ["Let me look into it first."],
-                ["SHOULD NOT APPEAR"],
-            ],
+    def test_reprompt_fires_up_to_the_cap(self):
+        # GGUF parity: a persistently stalling model is re-prompted up to
+        # MAX_ACT_REPROMPTS times, then the last stall is surrendered as the
+        # final answer and no further turn is generated.
+        from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
+
+        stall = "Let me look into it first."
+        turns = [["I'll search the web for that."]]
+        turns += [[stall]] * MAX_ACT_REPROMPTS
+        turns += [["SHOULD NOT APPEAR"]]
+
+        generations = {"count": 0}
+        turn_iter = iter(turns)
+
+        def _gen(_messages):
+            generations["count"] += 1
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool([])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
             nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
+        # One initial turn plus exactly MAX_ACT_REPROMPTS re-prompted turns.
+        assert generations["count"] == MAX_ACT_REPROMPTS + 1
         texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("Let me look into it first." in t for t in texts)
+        assert any(stall in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
     def test_long_prose_answer_is_not_reprompted(self):
