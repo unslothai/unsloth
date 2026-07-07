@@ -857,29 +857,59 @@ def test_fastmodel_peft_base_mapping_clears_fp8_after_remap():
             continue
         if not isinstance(node.test, ast.Name) or node.test.id != "is_peft":
             continue
-        has_old_model_name = False
-        has_clear = False
         for child in ast.walk(node):
-            if isinstance(child, ast.Assign):
-                if any(
-                    isinstance(target, ast.Name) and target.id == "old_model_name"
-                    for target in child.targets
-                ):
-                    has_old_model_name = True
-                if (
-                    any(
-                        isinstance(target, ast.Name) and target.id == "load_in_fp8"
-                        for target in child.targets
-                    )
-                    and isinstance(child.value, ast.Constant)
-                    and child.value.value is False
-                ):
-                    has_clear = True
-        if has_old_model_name and has_clear:
-            return
+            # Look for: if load_in_fp8 != False and model_name != <base>: load_in_fp8 = False
+            if not isinstance(child, ast.If):
+                continue
+            if not (isinstance(child.test, ast.BoolOp) and isinstance(child.test.op, ast.And)):
+                continue
+            compares_model_name = any(
+                isinstance(value, ast.Compare)
+                and isinstance(value.left, ast.Name)
+                and value.left.id == "model_name"
+                for value in child.test.values
+            )
+            clears_fp8 = any(
+                isinstance(stmt, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "load_in_fp8"
+                    for target in stmt.targets
+                )
+                and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value is False
+                for stmt in child.body
+            )
+            if compares_model_name and clears_fp8:
+                return
 
     pytest.fail(
         "FastModel PEFT FP8 base remap must clear load_in_fp8 after selecting an FP8 sibling."
+    )
+
+
+def test_fastmodel_peft_preserves_adapter_name_for_peft_load():
+    # The FP8 base remap must compare against a pre-remap base name, but that comparison must
+    # NOT reuse old_model_name: old_model_name still points at the adapter repo that
+    # PeftModel.from_pretrained loads, so clobbering it inside the is_peft block would make
+    # PEFT attach the base checkpoint instead of the adapter. #6749
+    tree = ast.parse(LOADER.read_text())
+    offending = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if not isinstance(node.test, ast.Name) or node.test.id != "is_peft":
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "old_model_name"
+                for target in child.targets
+            ):
+                offending.append(child.lineno)
+
+    assert offending == [], (
+        "old_model_name must not be reassigned inside an is_peft block; it is the adapter "
+        f"repo used by PeftModel.from_pretrained. Reassigned at lines {offending}."
     )
 
 
