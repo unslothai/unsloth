@@ -6,6 +6,7 @@ import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
   getTrainingRun,
+  TrainingRunRequestError,
 } from "@/features/training";
 import type {
   TrainingViewData,
@@ -15,7 +16,7 @@ import { type ReactElement, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   mapTrainingRunConfigOverride,
-  type TrainingRunConfigOverride,
+  mapTrainingRunMethod,
 } from "./lib/training-run-config";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
@@ -78,8 +79,20 @@ export function LiveTrainingView(): ReactElement {
           if (!active || controller.signal.aborted) return;
           setActiveRunDetail(detail);
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (!active || controller.signal.aborted) return;
+          const status =
+            err instanceof TrainingRunRequestError ? err.status : null;
+          const retryNotFound =
+            status === 404 && (runtime.isStarting || runtime.isTrainingRunning);
+          if (
+            typeof status === "number" &&
+            status < 500 &&
+            !retryNotFound
+          ) {
+            setActiveRunDetail(null);
+            return;
+          }
           retryTimer = window.setTimeout(loadActiveRunDetail, 1000);
         });
     };
@@ -91,7 +104,7 @@ export function LiveTrainingView(): ReactElement {
       }
       controller.abort();
     };
-  }, [runtime.jobId]);
+  }, [runtime.isStarting, runtime.isTrainingRunning, runtime.jobId]);
 
   const activeRunConfigOverride =
     activeRunDetail?.run.id === runtime.jobId
@@ -122,7 +135,10 @@ export function LiveTrainingView(): ReactElement {
     isTrainingRunning: runtime.isTrainingRunning,
     modelName: runtime.startModelName ?? config.selectedModel ?? "",
     projectName: activeProjectName,
-    trainingMethod: config.trainingMethod ?? "",
+    trainingMethod:
+      activeRunDetail?.run.id === runtime.jobId
+        ? mapTrainingRunMethod(activeRunDetail)
+        : config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
     gradNormHistory: runtime.gradNormHistory,

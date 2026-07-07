@@ -4,12 +4,14 @@
 import type { TrainingViewData } from "@/features/training";
 import { getTrainingRun, onTrainingRunUpdated } from "@/features/training";
 import type { TrainingRunDetailResponse } from "@/features/training";
-import { parseBackendTrainingMethod } from "@/features/training/lib/training-methods";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
 import { translate, useT } from "@/i18n";
-import { mapTrainingRunConfigOverride } from "./lib/training-run-config";
+import {
+  mapTrainingRunConfigOverride,
+  mapTrainingRunMethod,
+} from "./lib/training-run-config";
 
 type StudioT = ReturnType<typeof useT>;
 
@@ -80,10 +82,7 @@ function mapToViewData(
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
     projectName: run.project_name,
-    trainingMethod: parseBackendTrainingMethod(
-      detail.config?.training_type,
-      detail.config?.load_in_4bit,
-    ),
+    trainingMethod: mapTrainingRunMethod(detail),
     lossHistory,
     lrHistory,
     gradNormHistory,

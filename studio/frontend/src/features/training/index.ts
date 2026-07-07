@@ -43,6 +43,7 @@ export {
   getTrainingRun,
   deleteTrainingRun,
   renameTrainingRun,
+  TrainingRunRequestError,
 } from "./api/history-api";
 export {
   onTrainingRunUpdated,

@@ -79,6 +79,23 @@ function configRow(
   return [label, value];
 }
 
+function resolveConfigValue<K extends keyof TrainingRunConfigOverride>(
+  configOverride: TrainingRunConfigOverride | undefined,
+  key: K,
+  fallback: Exclude<TrainingRunConfigOverride[K], undefined>,
+): Exclude<TrainingRunConfigOverride[K], undefined> {
+  if (
+    configOverride &&
+    Object.prototype.hasOwnProperty.call(configOverride, key)
+  ) {
+    const value = configOverride[key];
+    if (value !== undefined) {
+      return value as Exclude<TrainingRunConfigOverride[K], undefined>;
+    }
+  }
+  return fallback;
+}
+
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
@@ -172,17 +189,51 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : configOverride?.epochs ?? config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : configOverride?.batchSize ?? config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : configOverride?.learningRate ?? config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : configOverride?.maxSteps ?? config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : configOverride?.contextLength ?? config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : configOverride?.warmupSteps ?? config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : configOverride?.optimizerType ?? config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : configOverride?.loraRank ?? config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : configOverride?.loraAlpha ?? config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : configOverride?.loraDropout ?? config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : configOverride?.loraVariant ?? config.loraVariant;
+  const cfgEpochs = isHistorical
+    ? configOverride?.epochs
+    : resolveConfigValue(configOverride, "epochs", config.epochs);
+  const cfgBatchSize = isHistorical
+    ? configOverride?.batchSize
+    : resolveConfigValue(configOverride, "batchSize", config.batchSize);
+  const cfgLearningRate = isHistorical
+    ? configOverride?.learningRate
+    : resolveConfigValue(
+      configOverride,
+      "learningRate",
+      String(config.learningRate),
+    );
+  const cfgMaxSteps = isHistorical
+    ? configOverride?.maxSteps
+    : resolveConfigValue(configOverride, "maxSteps", config.maxSteps);
+  const cfgContextLength = isHistorical
+    ? configOverride?.contextLength
+    : resolveConfigValue(
+      configOverride,
+      "contextLength",
+      config.contextLength,
+    );
+  const cfgWarmupSteps = isHistorical
+    ? configOverride?.warmupSteps
+    : resolveConfigValue(configOverride, "warmupSteps", config.warmupSteps);
+  const cfgOptimizerType = isHistorical
+    ? configOverride?.optimizerType
+    : resolveConfigValue(
+      configOverride,
+      "optimizerType",
+      config.optimizerType,
+    );
+  const cfgLoraRank = isHistorical
+    ? configOverride?.loraRank
+    : resolveConfigValue(configOverride, "loraRank", config.loraRank);
+  const cfgLoraAlpha = isHistorical
+    ? configOverride?.loraAlpha
+    : resolveConfigValue(configOverride, "loraAlpha", config.loraAlpha);
+  const cfgLoraDropout = isHistorical
+    ? configOverride?.loraDropout
+    : resolveConfigValue(configOverride, "loraDropout", config.loraDropout);
+  const cfgLoraVariant = isHistorical
+    ? configOverride?.loraVariant
+    : resolveConfigValue(configOverride, "loraVariant", config.loraVariant);
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??

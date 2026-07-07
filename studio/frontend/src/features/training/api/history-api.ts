@@ -12,9 +12,22 @@ import type {
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
+export class TrainingRunRequestError extends Error {
+  status: number | null;
+
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "TrainingRunRequestError";
+    this.status = status;
+  }
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw new TrainingRunRequestError(
+      await readError(response),
+      response.status,
+    );
   }
   return (await response.json()) as T;
 }
