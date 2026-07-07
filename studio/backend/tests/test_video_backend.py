@@ -526,6 +526,18 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
+    backend = VideoBackend()
+    # A local FILE (a bare .safetensors) sent as a pipeline is not a diffusers directory, so
+    # from_pretrained would only fail deep in the background load AFTER the route evicts the
+    # resident GPU model. The preflight must reject it HERE -- the check gates on .exists()
+    # (not .is_dir()), mirroring the image loader, so it catches files as well as directories.
+    f = tmp_path / "ltx-2.safetensors"
+    f.write_bytes(b"x")
+    with pytest.raises(ValueError, match = "model_index.json"):
+        backend.validate_load_request(str(f), model_kind = "pipeline", family_override = "ltx-2")
+
+
 def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
     backend = VideoBackend()
     # A local base_repo dir that is NOT a diffusers pipeline (no model_index.json) passes the

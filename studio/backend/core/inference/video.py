@@ -482,8 +482,15 @@ class VideoBackend:
         # Mirrors the image loader's local-pipeline shape check in diffusion.validate_load_request.
         if kind == "pipeline":
             root = Path(repo_id).expanduser()
-            if root.is_dir() and not (root / "model_index.json").is_file():
-                raise ValueError(f"Local pipeline directory has no model_index.json: {repo_id}")
+            # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected
+            # too: a bare .safetensors file is not a diffusers directory, so from_pretrained would
+            # still fail in the background load after the eviction. Mirrors the image loader, which
+            # uses .exists() here.
+            if root.exists() and not (root.is_dir() and (root / "model_index.json").is_file()):
+                raise ValueError(
+                    f"Local pipeline path is not a diffusers directory "
+                    f"(no model_index.json): {repo_id}"
+                )
         # Reject a malformed transformer_quant scheme cheaply, before the GPU handoff
         # (normalize_transformer_quant raises ValueError on an unknown scheme). It applies
         # only on pipeline-kind loads (the dense DiT from the base repo); an ignored value
