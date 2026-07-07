@@ -668,6 +668,21 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
   // it into something that will silently disappear on the next send.
   if (parsed.result === undefined || parsed.result === null) return null;
   const args = parsed.args !== null && typeof parsed.args === "object" ? parsed.args : {};
+  // A real exported tool call can have non-object args -- e.g. imported
+  // OpenAI JSONL where function.arguments was null or already a raw JSON
+  // string -- since contentBlocksToText just serializes whatever `p.args`
+  // was, verbatim. `args` above is coerced to {} only for safely rendering
+  // a key/value UI; `argsText` is what chat-adapter's
+  // serializeAssistantToolCallPart actually sends on replay
+  // (falling back to JSON.stringify(args) only if argsText is missing), so
+  // it must reflect the original value, not the coerced display object, or
+  // replay/re-export would send different arguments than the source data.
+  const argsText =
+    typeof parsed.args === "string"
+      ? parsed.args
+      : parsed.args === undefined
+        ? "{}"
+        : JSON.stringify(parsed.args);
   // `args._server_tool` only makes a call server-side-builtin (see
   // isServerSideBuiltinToolPart) once the tool *name* is also one of
   // SERVER_SIDE_BUILTIN_TOOL_NAMES -- a non-builtin tool (e.g. a user's
@@ -693,7 +708,7 @@ function parseToolCallSegment(segment: string): Record<string, unknown> | null {
     toolCallId: crypto.randomUUID(),
     toolName: parsed.tool_call,
     args,
-    argsText: JSON.stringify(args),
+    argsText,
     result: parsed.result,
     // chat-adapter's shouldFlushCompletedLocalToolPair (see
     // studio/frontend/src/features/chat/api/chat-adapter.ts) only keeps
@@ -794,8 +809,17 @@ function textToContentParts(value: string, role: string): Record<string, unknown
     }
 
     const classified = islands.map((island) => {
-      const trimmed = island.content.trim();
-      return { ...island, toolCall: trimmed ? parseToolCallSegment(trimmed) : null };
+      // contentBlocksToText emits a tool-call as a bare JSON.stringify with
+      // no surrounding characters at all, so a genuine one is never
+      // indented or padded -- only trimming *newline runs* off via the
+      // island split above ever legitimately isolates one. An island whose
+      // content still has its own leading/trailing whitespace (spaces,
+      // tabs -- anything .trim() would remove) can only be literal
+      // assistant text that happens to look tool-call-shaped, e.g. an
+      // indented JSON example; checking the raw content instead of a
+      // trimmed copy keeps that as text instead of silently promoting it.
+      const toolCall = island.content ? parseToolCallSegment(island.content) : null;
+      return { ...island, toolCall };
     });
 
     let textBuffer = "";
