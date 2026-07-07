@@ -1106,6 +1106,35 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
+def _opencode_global_disabled_providers() -> list:
+    # opencode reads its global config from $XDG_CONFIG_HOME/opencode (or
+    # ~/.config/opencode), and %APPDATA%/opencode on Windows. Return that
+    # config's disabled_providers list so the session overlay can re-enable
+    # "unsloth" without dropping the user's other disables. Best-effort: any
+    # missing/unreadable/unparseable config yields an empty list.
+    dirs: list[Path] = []
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        dirs.append(Path(xdg) / "opencode")
+    dirs.append(Path.home() / ".config" / "opencode")
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            dirs.append(Path(appdata) / "opencode")
+    for directory in dirs:
+        for name in ("opencode.json", "opencode.jsonc"):
+            candidate = directory / name
+            try:
+                if not candidate.is_file():
+                    continue
+                data = json.loads(candidate.read_text(encoding = "utf-8"))
+            except Exception:
+                continue
+            if isinstance(data, dict) and isinstance(data.get("disabled_providers"), list):
+                return data["disabled_providers"]
+    return []
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -1123,11 +1152,16 @@ def write_opencode_config(
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
-    # Only clear "unsloth" from an existing disable list so the session provider can
-    # load. Never introduce disabled_providers here: this file is an OPENCODE_CONFIG
-    # overlay, and writing an empty list would re-enable providers the user disabled
-    # in their own global/project config.
+    # Re-enable the "unsloth" provider for this session when the user disabled it.
+    # opencode replaces disabled_providers across config layers only when a higher
+    # layer sets the key, so a global ["unsloth", ...] survives unless the overlay
+    # overrides it -- a fresh overlay omitting the key leaves the provider disabled.
+    # Take the effective disable list (this overlay's own if present, else the
+    # user's global config) and, only when it lists "unsloth", write it back minus
+    # "unsloth" so the provider loads while the user's other disables are preserved.
     disabled_providers = config.get("disabled_providers")
+    if not isinstance(disabled_providers, list):
+        disabled_providers = _opencode_global_disabled_providers()
     if isinstance(disabled_providers, list) and "unsloth" in disabled_providers:
         config["disabled_providers"] = [p for p in disabled_providers if p != "unsloth"]
     model_entry = {"name": model["id"]}
