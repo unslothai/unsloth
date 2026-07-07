@@ -20,14 +20,14 @@ const CURRENCY_REGEX =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
 
 /**
- * Find code-block regions (``` ... ``` and ` ... `) to skip.
+ * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
  * Returns a sorted array of [start, end] index pairs.
  */
 function findCodeBlockRegions(content: string): Array<[number, number]> {
   const regions: Array<[number, number]> = [];
 
-  // Fenced code blocks: ```...```
-  const fencedRe = /```[\s\S]*?```/g;
+  // Fenced code blocks: ```...``` and ~~~...~~~ (both are code in GFM)
+  const fencedRe = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
   let match: RegExpExecArray | null;
   while ((match = fencedRe.exec(content)) !== null) {
     regions.push([match.index, match.index + match[0].length]);
@@ -52,6 +52,34 @@ function findCodeBlockRegions(content: string): Array<[number, number]> {
 
   // Sort by start position for binary search.
   regions.sort((a, b) => a[0] - b[0]);
+  return regions;
+}
+
+/**
+ * Match an inline link/image `[text](DEST)`, capturing the destination as group 1
+ * with the `d` flag so its span is read straight from `match.indices` (the text
+ * can contain an escaped `\](`, so a string search for the separator is unsafe).
+ * The text disallows unescaped `]`; the destination allows escapes and one level
+ * of balanced parens.
+ */
+const LINK_DEST_RE =
+  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/gd;
+
+/**
+ * Find the destination spans of inline links/images, so a `\(...\)` written with
+ * escaped parens inside a URL isn't rewritten as math (which would break the
+ * link). Only the destination is returned, not the link text, so math in the
+ * visible text still converts. Sorted, non-overlapping (matches are disjoint).
+ */
+function findLinkDestinationRegions(content: string): Array<[number, number]> {
+  if (!content.includes("](")) return [];
+  const regions: Array<[number, number]> = [];
+  let match: RegExpExecArray | null;
+  LINK_DEST_RE.lastIndex = 0;
+  while ((match = LINK_DEST_RE.exec(content)) !== null) {
+    // `indices` is present (the `d` flag); group 1 spans the destination.
+    regions.push(match.indices![1]);
+  }
   return regions;
 }
 
@@ -218,6 +246,9 @@ function convertLatexDelimiters(content: string): {
   }
 
   const codeRegions = findCodeBlockRegions(content);
+  const linkRegions = findLinkDestinationRegions(content);
+  const inSkipZone = (pos: number) =>
+    isInRegion(pos, codeRegions) || isInRegion(pos, linkRegions);
   // Pushed in ascending, non-overlapping order (offset only grows), so this
   // stays valid for isInRegion's binary search without a sort.
   const mathRegions: Array<[number, number]> = [];
@@ -246,12 +277,13 @@ function convertLatexDelimiters(content: string): {
   LATEX_DELIM_RE.lastIndex = 0;
   while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
     const matchEnd = match.index + match[0].length;
-    // Skip if either delimiter is inside code: an opener outside a fence must
-    // not consume a closer inside one and rewrite across the boundary.
-    if (
-      isInRegion(match.index, codeRegions) ||
-      isInRegion(matchEnd - 1, codeRegions)
-    ) {
+    // Skip if either delimiter is inside code or a link destination: an opener
+    // outside such a zone must not consume a closer inside one and rewrite
+    // across the boundary. Resume right after this opener (not past the whole
+    // match) so a valid span that this match spanned across (a stray code `\(`
+    // paired with a real closer) is still found on the next pass, not swallowed.
+    if (inSkipZone(match.index) || inSkipZone(matchEnd - 1)) {
+      LATEX_DELIM_RE.lastIndex = match.index + 1;
       continue;
     }
     const isDisplay = match[1] !== undefined;
