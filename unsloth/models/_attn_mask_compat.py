@@ -41,7 +41,8 @@ try:
     # before `is_tracing` existed (only `is_torchdynamo_compiling`).
     from transformers.utils.import_utils import is_tracing  # type: ignore[attr-defined]
 except ImportError:
-    def is_tracing(tensor=None) -> bool:  # type: ignore[no-redef]
+
+    def is_tracing(tensor = None) -> bool:  # type: ignore[no-redef]
         """Local fallback for transformers < 4.52.
 
         Returns True only when Dynamo is actively compiling. Other tracing
