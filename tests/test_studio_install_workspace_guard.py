@@ -332,7 +332,7 @@ def test_install_ps1_writes_venv_marker_after_uv_venv():
     src = INSTALL_PS1.read_text()
     assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
     venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 3600]
+    tail = src[venv_create : venv_create + 5200]
     assert (
         'WriteAllText($VenvOwnershipMarker, "")' in tail
     ), "install.ps1 must write .unsloth-studio-owned after uv venv create"
@@ -342,7 +342,7 @@ def test_install_ps1_fallback_rebuild_preserves_env_mode_ownership_guard():
     """install.ps1 must not rebuild over a pre-existing env-mode workspace unless it was already marked as Studio-owned."""
     src = INSTALL_PS1.read_text()
     venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 2600]
+    tail = src[venv_create : venv_create + 3600]
     assert "$VenvDirExistedBeforeCreate" in tail
     assert "$VenvDirOwnedBeforeCreate" in tail
     assert "Refusing to rebuild non-Studio venv" in tail

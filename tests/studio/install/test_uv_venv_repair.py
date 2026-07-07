@@ -72,6 +72,17 @@ def _write_uv_stub(stub_dir: Path, mode: str) -> Path:
             exit /b 0
             """
         )
+    elif mode == "base_python":
+        body = textwrap.dedent(
+            """\
+            @echo off
+            >>"%UV_LOG%" echo %*
+            if not exist "%~2\\Scripts" mkdir "%~2\\Scripts"
+            copy /Y "%~4" "%~2\\Scripts\\python.exe" >nul
+            >"%~2\\uv-partial.txt" echo broken
+            exit /b 0
+            """
+        )
     else:
         body = textwrap.dedent(
             """\
@@ -97,6 +108,16 @@ def _write_python_stub(stub_dir: Path, mode: str) -> Path:
             if not exist "%~3\\Scripts" mkdir "%~3\\Scripts"
             >"%~3\\fallback-partial.txt" echo broken
             exit /b 9
+            """
+        )
+    elif mode == "partial_success_corrupt":
+        body = textwrap.dedent(
+            """\
+            @echo off
+            if not exist "%~3\\Scripts" mkdir "%~3\\Scripts"
+            type nul > "%~3\\Scripts\\python.exe"
+            >"%~3\\fallback-partial.txt" echo broken
+            exit /b 0
             """
         )
     else:
@@ -219,7 +240,9 @@ def test_install_ps1_rechecks_uv_success_before_continuing():
         "uv venv returned success but left an unusable venv; rebuilding with python -m venv..."
         in body
     )
-    assert '$null = & $PythonExe -c "import sys; print(sys.executable)" 2>$null' in body
+    assert 'Join-Path $VenvRoot "pyvenv.cfg"' in body
+    assert "sys.prefix" in body
+    assert "sys.base_prefix" in body
     assert "Invoke-InstallCommand { & $PythonExe -c" not in body
     assert "Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue" in body
     assert "& $DetectedPython.Path -m venv $VenvDir" in body
@@ -241,6 +264,17 @@ def test_uv_venv_corrupt_python_falls_back(tmp_path):
     proc, venv_dir, log_file, partial_marker = _run_bootstrap(tmp_path, "corrupt", _source())
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert not partial_marker.exists()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+def test_uv_venv_base_python_without_config_falls_back(tmp_path):
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(tmp_path, "base_python", _source())
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert (venv_dir / "pyvenv.cfg").is_file()
     assert not partial_marker.exists()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
@@ -281,6 +315,17 @@ def test_uv_venv_fallback_failure_removes_partial(tmp_path):
         tmp_path, "empty", _source(), python_mode = "partial_fail"
     )
     assert proc.returncode == 9, proc.stdout + proc.stderr
+    assert not venv_dir.exists()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+def test_uv_venv_fallback_success_with_unusable_python_removes_partial(tmp_path):
+    proc, venv_dir, log_file, _ = _run_bootstrap(
+        tmp_path, "empty", _source(), python_mode = "partial_success_corrupt"
+    )
+    assert proc.returncode != 0, proc.stdout + proc.stderr
     assert not venv_dir.exists()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 

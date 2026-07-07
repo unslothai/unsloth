@@ -1523,22 +1523,33 @@ exit 0
         # Trust neither uv's exit code nor a half-baked Scripts\python.exe.
         function Test-VenvPythonReady {
             param(
-                [Parameter(Mandatory = $true)][string]$PythonExe
+                [Parameter(Mandatory = $true)][string]$PythonExe,
+                [Parameter(Mandatory = $true)][string]$VenvRoot
             )
             if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+            if (-not (Test-Path -LiteralPath (Join-Path $VenvRoot "pyvenv.cfg") -PathType Leaf)) { return $false }
             $prevEap = $ErrorActionPreference
+            $prevExpectedVenv = [Environment]::GetEnvironmentVariable("UNSLOTH_EXPECTED_VENV", "Process")
             $ErrorActionPreference = "Stop"
             try {
+                $env:UNSLOTH_EXPECTED_VENV = $VenvRoot
+                $probe = 'import os, sys; expected = os.path.normcase(os.path.abspath(os.environ["UNSLOTH_EXPECTED_VENV"])); prefix = os.path.normcase(os.path.abspath(sys.prefix)); base_prefix = os.path.normcase(os.path.abspath(sys.base_prefix)); raise SystemExit(0 if prefix == expected and prefix != base_prefix else 1)'
                 $global:LASTEXITCODE = 0
-                $null = & $PythonExe -c "import sys; print(sys.executable)" 2>$null
+                $null = & $PythonExe -c $probe 2>$null
                 return ($? -and $LASTEXITCODE -eq 0)
             } catch {
                 return $false
             } finally {
+                if ($null -eq $prevExpectedVenv) {
+                    [Environment]::SetEnvironmentVariable("UNSLOTH_EXPECTED_VENV", $null, "Process")
+                }
+                if ($null -ne $prevExpectedVenv) {
+                    $env:UNSLOTH_EXPECTED_VENV = $prevExpectedVenv
+                }
                 $ErrorActionPreference = $prevEap
             }
         }
-        if (-not (Test-VenvPythonReady $VenvPython)) {
+        if (-not (Test-VenvPythonReady $VenvPython $VenvDir)) {
             substep "uv venv returned success but left an unusable venv; rebuilding with python -m venv..." "Yellow"
             if (
                 $StudioRedirectMode -eq 'env' -and
@@ -1556,8 +1567,9 @@ exit 0
                 Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
                 return (Exit-InstallFailure "Failed to rebuild virtual environment (exit code $venvExit)" $venvExit)
             }
-            if (-not (Test-VenvPythonReady $VenvPython)) {
+            if (-not (Test-VenvPythonReady $VenvPython $VenvDir)) {
                 Write-Host "[ERROR] Rebuilt virtual environment is still unusable" -ForegroundColor Red
+                Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
                 return (Exit-InstallFailure "Rebuilt virtual environment is still unusable" $venvExit)
             }
         }
