@@ -243,6 +243,8 @@ def test_install_ps1_rechecks_uv_success_before_continuing():
         "uv venv returned success but left an unusable venv; rebuilding with python -m venv..."
         in body
     )
+    assert "uv venv failed; rebuilding with python -m venv..." in body
+    assert "if ($needsVenvFallback)" in body
     assert 'Join-Path $VenvRoot "pyvenv.cfg"' in body
     assert "sys.prefix" in body
     assert "sys.base_prefix" in body
@@ -329,9 +331,10 @@ def test_uv_venv_healthy_skips_fallback(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
-def test_uv_venv_nonzero_failure_is_preserved(tmp_path):
-    proc, _, log_file, _ = _run_bootstrap(tmp_path, "fail", _source())
-    assert proc.returncode == 7, proc.stdout + proc.stderr
+def test_uv_venv_nonzero_failure_falls_back(tmp_path):
+    proc, venv_dir, log_file, _ = _run_bootstrap(tmp_path, "fail", _source())
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (venv_dir / "Scripts" / "python.exe").is_file()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
