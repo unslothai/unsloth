@@ -1763,16 +1763,6 @@ async def _select_request_tools(
     return tools
 
 
-def _enables_code_execution_tool(tools: list[dict]) -> bool:
-    """True when the resolved tool list includes a local code-execution tool
-    (python/terminal). Used to scope the ``confirm_code_execution`` stream
-    requirement so a request that never exposes code execution isn't rejected."""
-    from core.inference.tools import CODE_EXECUTION_TOOL_NAMES
-    return any(
-        (t.get("function") or {}).get("name") in CODE_EXECUTION_TOOL_NAMES for t in (tools or [])
-    )
-
-
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set). The
@@ -5683,6 +5673,29 @@ async def openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
+        # Same for confirm_code_execution: an external provider runs code_execution
+        # server-side, so this local confirm gate cannot intercept it -- reject it
+        # rather than give the caller a false approval guarantee.
+        if (
+            payload.confirm_code_execution
+            and not payload.bypass_permissions
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_code_execution is only supported for local streaming tools.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_code_execution",
+                ),
+            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request, current_subject)
@@ -5757,6 +5770,31 @@ async def openai_chat_completions(
                     status = 400,
                     code = "invalid_request_error",
                     param = "confirm_tool_calls",
+                ),
+            )
+        # Same pre-switch guard for confirm_code_execution: the code-execution
+        # confirm gate also needs streaming, so a non-stream request must not evict
+        # the resident model only to 400 after the swap.
+        if (
+            payload.confirm_code_execution
+            and not payload.bypass_permissions
+            and not payload.stream
+            and (
+                _effective_enable_tools(payload)
+                or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_code_execution requires stream=true for local tool execution.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_code_execution",
                 ),
             )
         # Reject a malformed tool_choice forcing object before the switch: a
@@ -6235,13 +6273,11 @@ async def openai_chat_completions(
                 payload.confirm_code_execution
                 and not payload.bypass_permissions
                 and not payload.stream
-                and _enables_code_execution_tool(tools_to_use)
             ):
                 raise _reject(
                     400,
                     openai_error_body(
-                        "confirm_code_execution requires stream=true when a "
-                        "code-execution tool (python/terminal) is enabled.",
+                        "confirm_code_execution requires stream=true for local tool execution.",
                         status = 400,
                         code = "invalid_request_error",
                         param = "confirm_code_execution",
@@ -6977,13 +7013,11 @@ async def openai_chat_completions(
             payload.confirm_code_execution
             and not payload.bypass_permissions
             and not payload.stream
-            and _enables_code_execution_tool(_sf_tools_to_use)
         ):
             raise _reject(
                 400,
                 openai_error_body(
-                    "confirm_code_execution requires stream=true when a "
-                    "code-execution tool (python/terminal) is enabled.",
+                    "confirm_code_execution requires stream=true for local tool execution.",
                     status = 400,
                     code = "invalid_request_error",
                     param = "confirm_code_execution",

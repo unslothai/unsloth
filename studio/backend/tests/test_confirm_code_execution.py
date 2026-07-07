@@ -179,21 +179,3 @@ def test_confirm_tool_calls_still_gates_every_tool():
     starts = _starts(events)
     assert starts[0]["awaiting_confirmation"] is True
     assert calls == [("web_search", {"query": "cats"})]
-
-
-# ── scoping predicate used by the route stream requirement ───────────────────
-
-
-def _spec(name):
-    return {"type": "function", "function": {"name": name}}
-
-
-def test_enables_code_execution_tool_predicate():
-    from routes.inference import _enables_code_execution_tool
-
-    assert _enables_code_execution_tool([_spec("python")]) is True
-    assert _enables_code_execution_tool([_spec("terminal")]) is True
-    assert _enables_code_execution_tool([_spec("web_search"), _spec("python")]) is True
-    assert _enables_code_execution_tool([_spec("web_search"), _spec("render_html")]) is False
-    assert _enables_code_execution_tool([]) is False
-    assert _enables_code_execution_tool(None) is False
