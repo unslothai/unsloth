@@ -44,10 +44,18 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
-_HERMES_WINDOWS_INSTALL_HINT = "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+# Skip the installer's interactive setup wizard: `unsloth start hermes` runs
+# this hint unattended and then writes its own session-scoped Hermes config, so
+# the wizard's global API-key/model prompts would block the launch and point the
+# user at a different (global) provider than the one Unsloth just configured.
+# Both installers expose a skip flag: `-SkipSetup` (PowerShell) and
+# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`).
+_HERMES_WINDOWS_INSTALL_HINT = (
+    "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+)
 _HERMES_POSIX_INSTALL_HINT = (
     "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-    "/main/scripts/install.sh | bash"
+    "/main/scripts/install.sh | bash -s -- --skip-setup"
 )
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression

@@ -121,7 +121,7 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     )
     monkeypatch.setattr(start.shutil, "which", lambda _: r"C:\Users\samle\bin\hermes.exe")
 
-    install_hint = "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+    install_hint = "& ([scriptblock]::Create((irm https://x/install.ps1))) -SkipSetup"
     executable = start._install_agent("hermes", install_hint)
 
     assert executable == r"C:\Users\samle\bin\hermes.exe"
@@ -131,18 +131,21 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
 def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
 
-    assert (
-        start._hermes_install_hint()
-        == "iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+    # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
+    # setup wizard is skipped during the unattended `unsloth start hermes` run.
+    assert start._hermes_install_hint() == (
+        "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
+        " -SkipSetup"
     )
 
 
 def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
     monkeypatch.setattr(start.os, "name", "posix")
 
+    # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
     assert start._hermes_install_hint() == (
         "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash"
+        "/main/scripts/install.sh | bash -s -- --skip-setup"
     )
 
 
