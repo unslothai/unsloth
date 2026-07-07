@@ -34,6 +34,9 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
 } > "$HELPERS_FILE"
 LOOP_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^_custom_studio_roots | while IFS= read -r _custom_root; do/,/^done/p' "$UNINSTALL_SH" > "$LOOP_FILE"
+# The real default-mode ~/.unsloth/stable-diffusion.cpp removal block (marker-guarded).
+DEFAULT_FILE=$(mktemp -p "$_TMP_ROOT")
+sed -n '/^_default_sd_cpp="\$HOME\/\.unsloth\/stable-diffusion\.cpp"/,/^fi/p' "$UNINSTALL_SH" > "$DEFAULT_FILE"
 
 # shellcheck disable=SC1090
 . "$HELPERS_FILE"
@@ -52,6 +55,10 @@ make_studio() {
 run_loop() {
     # shellcheck disable=SC1090
     . "$LOOP_FILE"
+}
+run_default_removal() {
+    # shellcheck disable=SC1090
+    . "$DEFAULT_FILE"
 }
 
 # 1. Single custom root -> root AND its sibling stable-diffusion.cpp both removed.
@@ -94,6 +101,24 @@ mkdir -p "$HOME/.unsloth/stable-diffusion.cpp"
 _custom_studio_roots() { printf '%s\n' "$p1/studioA"; }  # a now-removed root -> guard skips
 run_loop
 assert_dir "default-mode sd.cpp untouched by custom loop" "$HOME/.unsloth/stable-diffusion.cpp"
+
+# 5. Default-mode ~/.unsloth/stable-diffusion.cpp WITH the Studio owner marker (a real Studio
+#    default install) IS removed by the default-mode line.
+rm -rf "$HOME/.unsloth/stable-diffusion.cpp"
+mkdir -p "$HOME/.unsloth/stable-diffusion.cpp/build/bin"
+: > "$HOME/.unsloth/stable-diffusion.cpp/build/bin/sd-cli"
+: > "$HOME/.unsloth/stable-diffusion.cpp/.unsloth-studio-owned"  # written by install_sd_cpp_prebuilt
+run_default_removal
+assert_nodir "default-mode owned sd.cpp removed" "$HOME/.unsloth/stable-diffusion.cpp"
+
+# 6. Default-mode ~/.unsloth/stable-diffusion.cpp WITHOUT the marker -- a user's own checkout at
+#    the default path (or a pre-marker Studio build) -- is KEPT, mirroring the custom-root guard,
+#    so uninstall never deletes a user file.
+rm -rf "$HOME/.unsloth/stable-diffusion.cpp"
+mkdir -p "$HOME/.unsloth/stable-diffusion.cpp"
+: > "$HOME/.unsloth/stable-diffusion.cpp/main.cpp"  # user's own checkout, no owner marker
+run_default_removal
+assert_dir "default-mode unowned sd.cpp kept" "$HOME/.unsloth/stable-diffusion.cpp"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

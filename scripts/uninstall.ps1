@@ -403,7 +403,15 @@ function Uninstall-UnslothStudio {
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
-    if ($defaultSdCpp) { _RemovePath $defaultSdCpp }
+    # "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp produces,
+    # so a user may keep their own checkout (or point UNSLOTH_SD_CPP_PATH) at this default path;
+    # require our owner marker (written by install_sd_cpp_prebuilt) before rm, mirroring the
+    # custom-root guard above, so a user's own checkout or a pre-marker Studio build is kept.
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        _Substep "keeping sd.cpp without Studio owner marker: $defaultSdCpp" "Yellow"
+    } elseif ($defaultSdCpp) {
+        _RemovePath $defaultSdCpp
+    }
     if ($defaultCache) { _RemovePath $defaultCache }
     # Isolated Node.js runtime (sibling of studio under ~/.unsloth). No-op in env/
     # custom mode (nested under the custom root, removed with it) and when absent.

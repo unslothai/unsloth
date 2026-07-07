@@ -234,8 +234,17 @@ _remove_path "$HOME/.unsloth/studio"
 _remove_path "$HOME/.unsloth/llama.cpp"
 # Default-mode native diffusion (stable-diffusion.cpp / sd-cli) build, a sibling of
 # studio like llama.cpp (install_sd_cpp_prebuilt.default_install_dir()). No-op in
-# env/custom mode and when absent. A user-set UNSLOTH_SD_CPP_PATH is kept.
-_remove_path "$HOME/.unsloth/stable-diffusion.cpp"
+# env/custom mode and when absent. "stable-diffusion.cpp" is exactly what a `git clone` of
+# leejet/stable-diffusion.cpp produces, so a user may keep their own checkout (or point
+# UNSLOTH_SD_CPP_PATH) at this default path; require our owner marker (written by
+# install_sd_cpp_prebuilt) before rm, mirroring the custom-root guard above, so a user's own
+# checkout or a pre-marker Studio build is kept rather than deleted.
+_default_sd_cpp="$HOME/.unsloth/stable-diffusion.cpp"
+if [ -e "$_default_sd_cpp" ] && [ ! -f "$_default_sd_cpp/.unsloth-studio-owned" ]; then
+    echo "  keeping sd.cpp without Studio owner marker: $_default_sd_cpp" >&2
+else
+    _remove_path "$_default_sd_cpp"
+fi
 _remove_path "$HOME/.unsloth/.cache"
 # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
 # default mode. No-op in env/custom mode (nested under the custom root) and absent.
