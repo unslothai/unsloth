@@ -523,7 +523,11 @@ def _resolve_fp8_scale_safetensors_files(
     return []
 
 
-def _fp8_scale_snapshot_allow_patterns(subfolder = None, variant = None, use_safetensors = None):
+def _fp8_scale_snapshot_allow_patterns(
+    subfolder = None,
+    variant = None,
+    use_safetensors = None,
+):
     """Glob patterns limiting the scale-restore snapshot to the same safetensors artifact
     from_pretrained selected. Without this, snapshot_download would pull the FULL repo
     (.bin shards, alternate variants, large extras) after the model already loaded, which
