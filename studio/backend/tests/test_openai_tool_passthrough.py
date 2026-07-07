@@ -482,7 +482,39 @@ class TestChatCompletionRequestToolFields:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["param"] == "confirm_code_execution"
-        assert "only supported for local streaming tools" in body["error"]["message"]
+        assert "cannot guard provider-hosted code execution" in body["error"]["message"]
+
+    def test_confirm_code_execution_allows_non_code_provider_tools(self, monkeypatch):
+        # A provider request that enables only non-code tools has no code execution
+        # for this flag to guard, so it must not be rejected on the flag alone.
+        import routes.inference as inference_route
+
+        called = {"proxied": False}
+
+        async def _fake_proxy(payload, request, current_subject):
+            called["proxied"] = True
+            return {"ok": True}
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "external_model": "gpt-4.1",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_code_execution": True,
+            },
+        )
+
+        assert resp.status_code != 400
+        assert called["proxied"] is True
 
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
