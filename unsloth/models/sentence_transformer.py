@@ -990,7 +990,16 @@ class FastSentenceTransformer(FastModel):
             return None
 
     @staticmethod
-    def _create_transformer_module(model_name, model, tokenizer, max_seq_length, trust_remote_code):
+    def _create_transformer_module(
+        model_name,
+        model,
+        tokenizer,
+        max_seq_length,
+        trust_remote_code,
+        token = None,
+        cache_dir = None,
+        revision = None,
+    ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
@@ -1077,7 +1086,28 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
-                transformer_module = Transformer(model_name, **transformer_kwargs)
+                transformer_load_params = inspect.signature(Transformer.load).parameters
+                can_load_from_hub = all(
+                    key in transformer_load_params
+                    for key in ("token", "cache_folder", "revision", "trust_remote_code")
+                )
+                if (
+                    can_load_from_hub and
+                    FastSentenceTransformer._module_path(
+                        model_name, token, cache_dir = cache_dir, revision = revision
+                    )
+                    is not None
+                ):
+                    transformer_module = Transformer.load(
+                        model_name,
+                        token = token,
+                        cache_folder = cache_dir,
+                        revision = revision,
+                        trust_remote_code = trust_remote_code,
+                        **transformer_kwargs,
+                    )
+                else:
+                    transformer_module = Transformer(model_name, **transformer_kwargs)
             finally:
                 # Restore original Auto* loading immediately
                 AutoModel.from_pretrained = original_model_from_pretrained
@@ -1191,6 +1221,9 @@ class FastSentenceTransformer(FastModel):
                         tokenizer,
                         max_seq_length,
                         trust_remote_code,
+                        token,
+                        cache_dir,
+                        revision,
                     )
                     modules[name] = transformer_module
                 else:
@@ -1226,7 +1259,14 @@ class FastSentenceTransformer(FastModel):
         )
 
         transformer_module = FastSentenceTransformer._create_transformer_module(
-            model_name, model, tokenizer, max_seq_length, trust_remote_code
+            model_name,
+            model,
+            tokenizer,
+            max_seq_length,
+            trust_remote_code,
+            token,
+            cache_dir,
+            revision,
         )
         modules["0"] = transformer_module
 
