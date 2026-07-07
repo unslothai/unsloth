@@ -279,7 +279,6 @@ def _llama_backend_active() -> bool:
     ST pickle gate below must not hard-block a repo whose GGUF companion is clean.
     Before any backend is built this still reflects the resolver."""
     from core.rag import embeddings
-
     try:
         return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
