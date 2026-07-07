@@ -3147,7 +3147,7 @@ class LlamaCppBackend:
     # context-scaling compute buffer the rates above miss (present even with an f16
     # cache). Measured on UD-Q4_K_XL (ub=512): ~2 GiB at 16k -> ~65.5 GiB at 1M. Without
     # it auto-fit commits the full 1M train context, OOMs the reserve, and spills to CPU.
-    _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024 ** 3  # ctx-independent indexer scratch
+    _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
     _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
 
     def _estimate_compute_buffer_bytes(

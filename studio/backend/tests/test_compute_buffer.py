@@ -302,7 +302,7 @@ class TestContextBufferDSV4:
     to CPU at ~4 tok/s)."""
 
     _MEASURED_1M_GIB = 65.5  # 70353790464 B compute-graph reserve that OOM'd at 1M ctx
-    GIB = 1024 ** 3
+    GIB = 1024**3
 
     def test_covers_measured_1m_buffer(self):
         b = _backend(embd = 4096, arch = "deepseek4")
@@ -318,16 +318,20 @@ class TestContextBufferDSV4:
     def test_fires_for_f16_cache(self):
         # The bug: an f16 (default) cache took the tiny mask-only path. DSV4 must
         # reserve GiB, not the ~MiB a non-DSV4 model reserves at the same ctx.
-        dsv4 = _backend(embd = 4096, arch = "deepseek4")._compute_buffer_ctx_bytes(262144, cache_type_kv = "f16")
-        other = _backend(embd = 4096, arch = "qwen3")._compute_buffer_ctx_bytes(262144, cache_type_kv = "f16")
+        dsv4 = _backend(embd = 4096, arch = "deepseek4")._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "f16"
+        )
+        other = _backend(embd = 4096, arch = "qwen3")._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "f16"
+        )
         assert dsv4 > 40 * other
 
     def test_cache_type_independent(self):
         # Indexer scratch is present for an f16 and a quantized cache alike.
         b = _backend(embd = 4096, arch = "deepseek4")
-        assert b._compute_buffer_ctx_bytes(262144, cache_type_kv = "f16") == b._compute_buffer_ctx_bytes(
-            262144, cache_type_kv = "q8_0"
-        )
+        assert b._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "f16"
+        ) == b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0")
 
     def test_flat_floor_at_small_ctx(self):
         # ~2 GiB indexer scratch present even at tiny ctx (covers the measured 16k ~2 GiB).
