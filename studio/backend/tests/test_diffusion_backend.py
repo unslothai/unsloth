@@ -2461,7 +2461,9 @@ def test_diffusion_status_response_carries_resolved():
 
     rec = {"transformer_quant": {"value": "fp8", "source": "auto", "reason": "blackwell"}}
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
-    assert resp.resolved == rec
+    # The typed field coerces the plain record into DiffusionResolvedControl objects; the
+    # serialized form must round-trip back to the record, proving the field is DECLARED and not
+    # silently dropped by Pydantic's default extra='ignore'.
     assert resp.model_dump()["resolved"] == rec
     # Absent by default (nothing resolved / native engine).
     assert DiffusionStatusResponse(loaded = False).resolved is None
