@@ -526,12 +526,11 @@ def test_install_ps1_launcher_repairs_missing_studio_install_id():
         "function Repair-StudioInstallId" in launcher
     ), "launch-studio.ps1 must include an install id repair helper"
     repair_call_idx = launcher.index("\nRepair-StudioInstallId\n")
-    assert (
-        repair_call_idx < launcher.index("function Test-StudioHealth")
+    assert repair_call_idx < launcher.index(
+        "function Test-StudioHealth"
     ), "launch-studio.ps1 must repair the id before health checks"
     assert (
-        "`$_ExpectedStudioRootId.Length -ne 64"
-        in launcher
+        "`$_ExpectedStudioRootId.Length -ne 64" in launcher
     ), "repair helper must reject malformed baked ids"
     assert (
         "`$current -match '^[0-9a-f]{64}$'" in launcher
