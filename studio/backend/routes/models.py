@@ -3270,6 +3270,19 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             pass
         return None
     if _local_is_diffusers(model):
+        # A local diffusers pipeline can be a VIDEO family (LTX / Wan / Hunyuan), not just an
+        # image one. Tag it text-to-video so it surfaces in the Video On-Device picker instead
+        # of the Images picker (where the image loader would reject it), mirroring the
+        # cached-repo _cached_repo_task. Gated on _local_is_diffusers, so only a real loadable
+        # pipeline dir (model_index.json) or a name-matched checkpoint reaches this check.
+        try:
+            from core.inference.video import _is_trusted_video_repo
+            from core.inference.video_families import detect_video_family
+            for needle in (model.model_id, model.display_name, model.id):
+                if needle and detect_video_family(needle) is not None and _is_trusted_video_repo(path):
+                    return _VIDEO_GEN_TASK
+        except Exception:
+            pass
         return "text-to-image"
     return None
 

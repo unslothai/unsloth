@@ -448,6 +448,13 @@ class VideoBackend:
                     raise ValueError(str(exc)) from exc
             elif repo_id.startswith(("/", "~", "./", "../")) and not root.is_file():
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
+        # A local pipeline pick must be a real diffusers directory (model_index.json), or it
+        # would only fail deep in from_pretrained AFTER the route evicted the resident model.
+        # Mirrors the image loader's local-pipeline shape check in diffusion.validate_load_request.
+        if kind == "pipeline":
+            root = Path(repo_id).expanduser()
+            if root.is_dir() and not (root / "model_index.json").is_file():
+                raise ValueError(f"Local pipeline directory has no model_index.json: {repo_id}")
         # Reject a malformed transformer_quant scheme cheaply, before the GPU handoff
         # (normalize_transformer_quant raises ValueError on an unknown scheme). It applies
         # only on pipeline-kind loads (the dense DiT from the base repo); an ignored value

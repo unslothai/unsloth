@@ -165,3 +165,25 @@ def test_local_task_none_for_plain_llm(tmp_path):
     _touch(d / "config.json")
     _touch(d / "model.safetensors")
     assert models_route._local_model_task(_local(d, model_id = "meta-llama/Llama-3.1-8B")) is None
+
+
+def test_local_task_tags_video_pipeline_dir(tmp_path):
+    # A local diffusers pipeline whose id resolves to a VIDEO family (LTX / Wan / Hunyuan)
+    # must be tagged text-to-video so it surfaces in the Video On-Device picker, mirroring the
+    # cached-repo path -- not text-to-image, where the image loader would reject it.
+    d = tmp_path / "wan-local"
+    _touch(d / "model_index.json")
+    _touch(d / "transformer" / "diffusion_pytorch_model.safetensors")
+    assert (
+        models_route._local_model_task(_local(d, model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"))
+        == models_route._VIDEO_GEN_TASK
+    )
+
+
+def test_local_task_video_name_without_pipeline_not_surfaced(tmp_path):
+    # A dir whose name matches a video family but which is NOT a diffusers pipeline (no
+    # model_index.json) is not a loadable pipeline, so it must stay untagged -- never surfaced
+    # to the Video picker, so it can never trigger a pipeline load that evicts then fails.
+    d = tmp_path / "ltx-loose"
+    _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
+    assert models_route._local_model_task(_local(d, model_id = "Lightricks/LTX-2")) is None

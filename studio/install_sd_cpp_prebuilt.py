@@ -442,6 +442,13 @@ def install(
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
+    # Ownership marker (the same one setup.sh/_is_studio_root use, and setup.ps1 writes into
+    # the Node sibling dir) so the uninstaller can tell a Studio-installed sd.cpp from a user's
+    # own stable-diffusion.cpp checkout beside a custom Studio root, and delete only ours.
+    try:
+        (target / ".unsloth-studio-owned").touch()
+    except OSError:
+        pass
     return sd_cli
 
 

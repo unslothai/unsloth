@@ -39,13 +39,15 @@ sed -n '/^_custom_studio_roots | while IFS= read -r _custom_root; do/,/^done/p' 
 . "$HELPERS_FILE"
 
 # make_studio <root> : a valid custom Studio root (share/studio.conf owner marker) plus its
-# sibling <parent>/stable-diffusion.cpp build, each with a file so removal is observable.
+# sibling <parent>/stable-diffusion.cpp build carrying the Studio owner marker, each with a
+# file so removal is observable.
 make_studio() {
     mkdir -p "$1/share"
     : > "$1/share/studio.conf"
     _sib="$(dirname "$1")/stable-diffusion.cpp"
     mkdir -p "$_sib"
     : > "$_sib/sd-cli"
+    : > "$_sib/.unsloth-studio-owned"  # written by install_sd_cpp_prebuilt on a real install
 }
 run_loop() {
     # shellcheck disable=SC1090
@@ -73,7 +75,20 @@ assert_nodir "shared-parent root B removed"               "$p2/studioB"
 assert_nodir "shared-parent root C removed"               "$p2/studioC"
 assert_nodir "shared sibling stable-diffusion.cpp removed" "$p2/stable-diffusion.cpp"
 
-# 3. Default-mode sd.cpp (a bare ~/.unsloth/stable-diffusion.cpp with no custom root) is NOT
+# 3. A sibling stable-diffusion.cpp WITHOUT the Studio owner marker (a user's own checkout,
+#    even a built one, beside a custom root -- or one left when UNSLOTH_SD_CPP_PATH points
+#    Studio elsewhere) is KEPT, though the Studio root itself is still removed.
+p3="$_TMP_ROOT/inst3"
+mkdir -p "$p3/studioD/share"; : > "$p3/studioD/share/studio.conf"
+mkdir -p "$p3/stable-diffusion.cpp/build/bin"
+: > "$p3/stable-diffusion.cpp/build/bin/sd-cli"  # user's own build, no owner marker
+: > "$p3/stable-diffusion.cpp/main.cpp"
+_custom_studio_roots() { printf '%s\n' "$p3/studioD"; }
+run_loop
+assert_nodir "unowned-sibling: custom root still removed" "$p3/studioD"
+assert_dir   "unowned sibling stable-diffusion.cpp kept"   "$p3/stable-diffusion.cpp"
+
+# 4. Default-mode sd.cpp (a bare ~/.unsloth/stable-diffusion.cpp with no custom root) is NOT
 #    touched by the custom-root loop -- it is removed by the separate default-mode line.
 mkdir -p "$HOME/.unsloth/stable-diffusion.cpp"
 _custom_studio_roots() { printf '%s\n' "$p1/studioA"; }  # a now-removed root -> guard skips

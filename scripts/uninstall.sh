@@ -213,10 +213,16 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
     # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
     # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
-    # build behind. Derive and remove the sibling, guarding the parent path the same way.
+    # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
+    # and "stable-diffusion.cpp" is exactly what `git clone` of leejet/stable-diffusion.cpp
+    # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
+    # and keep any unowned checkout. A pre-marker Studio build is left behind, never a user
+    # file deleted. Guard the derived parent path the same way.
     _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
     if _is_unsafe_root "$_custom_sd_cpp"; then
         echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
+    elif [ -e "$_custom_sd_cpp" ] && [ ! -f "$_custom_sd_cpp/.unsloth-studio-owned" ]; then
+        echo "  keeping sd.cpp without Studio owner marker: $_custom_sd_cpp" >&2
     else
         _remove_path "$_custom_sd_cpp"
     fi

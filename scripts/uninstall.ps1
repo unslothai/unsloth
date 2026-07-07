@@ -383,10 +383,15 @@ function Uninstall-UnslothStudio {
         # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
         # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
         # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
-        # build behind. Derive and remove the sibling, guarding the parent path the same way.
+        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
+        # and "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp
+        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
+        # and keep any unowned checkout. Guard the derived parent path the same way.
         $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
+        } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+            _Substep "keeping sd.cpp without Studio owner marker: $customSdCpp" "Yellow"
         } else {
             _RemovePath $customSdCpp
         }

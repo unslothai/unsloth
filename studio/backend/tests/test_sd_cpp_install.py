@@ -257,6 +257,9 @@ def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
     sd_cli = install(install_dir = tmp_path)
     assert sd_cli.name == "sd-cli" and sd_cli.is_file()
     assert not (tmp_path / name).exists()  # archive cleaned up after extract
+    # Ownership marker lets the uninstaller delete a Studio-installed sd.cpp beside a custom
+    # root while keeping a user's own stable-diffusion.cpp checkout.
+    assert (tmp_path / ".unsloth-studio-owned").is_file()
 
 
 def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):

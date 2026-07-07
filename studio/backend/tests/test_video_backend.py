@@ -462,6 +462,22 @@ def test_validate_gates_base_repo_and_local_paths(tmp_path):
         )
 
 
+def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
+    backend = VideoBackend()
+    d = tmp_path / "ltx-local"
+    (d / "transformer").mkdir(parents = True)
+    (d / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    # A local dir resolved to a video family but missing model_index.json is not a loadable
+    # diffusers pipeline; it must fail preflight BEFORE the route evicts the resident model,
+    # mirroring the image loader's local-pipeline shape check.
+    with pytest.raises(ValueError, match = "model_index.json"):
+        backend.validate_load_request(str(d), family_override = "ltx-2")
+    # With a model_index.json it is a valid local pipeline pick and passes preflight.
+    (d / "model_index.json").write_text("{}")
+    fam = backend.validate_load_request(str(d), family_override = "ltx-2")
+    assert fam.name == "ltx-2"
+
+
 def test_validate_rejects_gguf_repo_as_pipeline():
     backend = VideoBackend()
     # A -GGUF repo with no quant filename resolves to the pipeline kind and would
