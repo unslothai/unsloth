@@ -36,6 +36,7 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
         # importing trainer.py (which pulls in torch/unsloth/trl at module load).
         ensure_studio_backend_path()
         from studio.backend.core.training.training import create_mlx_trainer_adapter
+
         return create_mlx_trainer_adapter()
 
     ensure_studio_backend_path()
