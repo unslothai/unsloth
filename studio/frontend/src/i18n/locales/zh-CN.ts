@@ -41,6 +41,7 @@ export const zhCN = {
       recipes: "配方",
       export: "导出",
       recents: "最近",
+      noChatsYet: "暂无对话",
       settings: "设置",
       api: "API",
       lightMode: "浅色模式",
