@@ -1092,8 +1092,8 @@ class FastSentenceTransformer(FastModel):
                     for key in ("token", "cache_folder", "revision", "trust_remote_code")
                 )
                 if (
-                    can_load_from_hub and
-                    FastSentenceTransformer._module_path(
+                    can_load_from_hub
+                    and FastSentenceTransformer._module_path(
                         model_name, token, cache_dir = cache_dir, revision = revision
                     )
                     is not None
