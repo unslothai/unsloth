@@ -563,3 +563,21 @@ def test_request_model_base_precision():
         }
     )
     assert cfg.base_precision == "bf16"
+
+
+def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
+    # A local base_model dir that is NOT a diffusers pipeline (no model_index.json) is "trusted"
+    # (any existing path passes the trust check), but the spawned trainer loads it via
+    # from_pretrained, so it must be rejected in the /diffusion/start preflight BEFORE
+    # _free_gpu_for_diffusion_training tears down the resident models -- not fail the child after
+    # the eviction.
+    bad = tmp_path / "bare-base"
+    bad.mkdir()
+    with pytest.raises(ValueError, match = "model_index.json"):
+        common._assert_trusted_base_model(str(bad))
+    # A real local pipeline dir (model_index.json) is accepted.
+    (bad / "model_index.json").write_text("{}")
+    common._assert_trusted_base_model(str(bad))  # no raise
+    # An untrusted remote base is still rejected by the trust gate.
+    with pytest.raises(ValueError, match = "untrusted"):
+        common._assert_trusted_base_model("evil/base")

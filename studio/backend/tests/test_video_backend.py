@@ -478,6 +478,32 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
+    backend = VideoBackend()
+    # A local base_repo dir that is NOT a diffusers pipeline (no model_index.json) passes the
+    # any-existing-path trust check, but the base loads via from_pretrained (needs model_index),
+    # so reject it HERE before the route hands the GPU to VIDEO -- the pipeline-kind shape check
+    # covers only repo_id, and an explicit base_repo is only meaningful for a gguf/single_file load.
+    bad_base = tmp_path / "bare-base"
+    bad_base.mkdir()
+    with pytest.raises(ValueError, match = "model_index.json"):
+        backend.validate_load_request(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = str(bad_base),
+        )
+    # A local base_repo that IS a real pipeline dir passes the gate.
+    (bad_base / "model_index.json").write_text("{}")
+    fam = backend.validate_load_request(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "x.gguf",
+        model_kind = "gguf",
+        base_repo = str(bad_base),
+    )
+    assert fam.name == "ltx-2"
+
+
 def test_validate_rejects_gguf_repo_as_pipeline():
     backend = VideoBackend()
     # A -GGUF repo with no quant filename resolves to the pipeline kind and would

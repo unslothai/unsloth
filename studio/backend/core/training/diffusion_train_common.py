@@ -598,6 +598,7 @@ def discover_image_caption_pairs(
     *,
     instance_prompt: Optional[str] = None,
     caption_column: str = "text",
+    verify_images: bool = False,
 ) -> list[tuple[str, str]]:
     """Resolve ``(image_path, caption)`` pairs from a dataset directory.
 
@@ -614,6 +615,12 @@ def discover_image_caption_pairs(
     Images with no caption from any source are skipped. Pure filesystem + JSON, so it is
     unit-testable without torch. Raises FileNotFoundError for a missing dir and ValueError
     when nothing is captionable.
+
+    ``verify_images`` (opt-in) additionally runs a cheap PIL header probe on each captioned
+    image and raises ValueError on a corrupt/zero-byte/truncated file. The start route enables
+    it so a bad upload is rejected BEFORE the resident GPU models are freed, instead of crashing
+    the spawned trainer after teardown; the trainers leave it off (they decode every image
+    anyway, so a second probe pass would be redundant).
     """
     root = Path(data_dir).expanduser()
     if not root.is_dir():
@@ -658,6 +665,21 @@ def discover_image_caption_pairs(
         if caption is None and instance_prompt:
             caption = instance_prompt
         if caption:
+            if verify_images:
+                # Reject a corrupt / zero-byte / truncated image now via a cheap PIL header
+                # probe (verify() does not decode the full pixels): otherwise it passes this
+                # filename-only discovery, the start route frees the resident GPU models, and
+                # the spawned trainer only then crashes in Image.open -- the eviction this
+                # preflight exists to prevent.
+                try:
+                    from PIL import Image
+                    with Image.open(img) as _probe:
+                        _probe.verify()
+                except Exception as e:  # noqa: BLE001 -- corrupt/zero-byte/truncated file
+                    raise ValueError(
+                        f"Image cannot be decoded: {img.name} ({e}). Remove or replace the "
+                        f"corrupt or zero-byte file before training."
+                    ) from e
             pairs.append((str(img), caption))
 
     if not pairs:
@@ -817,12 +839,18 @@ def _assert_trusted_base_model(base_model: str) -> None:
     a local path or a trusted repo (``unsloth/*`` or an allowlisted official base). This runs
     BEFORE ``from_pretrained`` so an untrusted remote repo (which could ship pickle weights)
     is never fetched or deserialised."""
-    from core.inference.diffusion import _is_trusted_diffusion_repo
+    from core.inference.diffusion import _assert_local_base_is_pipeline, _is_trusted_diffusion_repo
+
     if not _is_trusted_diffusion_repo(base_model):
         raise ValueError(
             f"Refusing to train from untrusted base model '{base_model}'. Use a local path or "
             f"a trusted repo (an unsloth/* repo or an official base)."
         )
+    # An existing LOCAL base is loaded as a full pipeline (from_pretrained(base_model)) by the
+    # spawned trainer, which needs a model_index.json. Any existing path is "trusted" above, so
+    # reject a non-pipeline local dir here -- before /diffusion/start frees the resident GPU
+    # models -- rather than have the child fail after the teardown.
+    _assert_local_base_is_pipeline(base_model)
 
 
 def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Optional[str]:

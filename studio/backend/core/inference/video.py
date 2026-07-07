@@ -426,6 +426,14 @@ class VideoBackend:
                 f"base_repo is limited to unsloth/* repos, the official family base "
                 f"repos, and local paths; '{base_repo}' is neither."
             )
+        # An existing LOCAL base_repo loads as a full pipeline (from_pretrained(base) / config=base),
+        # which needs a model_index.json. The pipeline-kind shape check below covers only repo_id,
+        # and an explicit base_repo is only meaningful for gguf/single_file kinds, so a non-pipeline
+        # local base would otherwise pass here and fail deep in the background load AFTER the route
+        # evicted the resident model. Shared helper, so image/video/training stay in sync.
+        from core.inference.diffusion import _assert_local_base_is_pipeline
+
+        _assert_local_base_is_pipeline(base_repo)
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         if kind in ("gguf", "single_file") and fam.is_moe:

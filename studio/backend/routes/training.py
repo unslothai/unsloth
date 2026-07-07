@@ -1314,6 +1314,10 @@ async def start_diffusion_training(
             config["data_dir"],
             instance_prompt = config.get("instance_prompt") or None,
             caption_column = config.get("caption_column") or "text",
+            # Decode-probe every image now (cheap PIL header check) so a corrupt / zero-byte
+            # upload is rejected with a 400 BEFORE _free_gpu_for_diffusion_training() tears down
+            # the user's resident models, instead of crashing the spawned trainer post-eviction.
+            verify_images = True,
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code = 400, detail = str(e))

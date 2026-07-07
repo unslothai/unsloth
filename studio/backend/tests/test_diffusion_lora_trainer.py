@@ -81,6 +81,35 @@ def test_discover_custom_caption_column(tmp_path):
     assert discover_image_caption_pairs(tmp_path, caption_column = "caption")[0][1] == "col"
 
 
+def test_discover_verify_images_rejects_undecodable(tmp_path):
+    # verify_images (opt-in, enabled by the start route) rejects a corrupt / zero-byte image with
+    # a clear ValueError -> 400 BEFORE the route frees the resident GPU models, instead of letting
+    # the spawned trainer crash in PIL after the teardown. The trainers leave it off (default),
+    # since they decode every image anyway.
+    from PIL import Image
+
+    good = tmp_path / "good.png"
+    Image.new("RGB", (8, 8), "white").save(good)
+    (tmp_path / "good.txt").write_text("ok", encoding = "utf-8")
+    # A zero-byte file with an image extension + a caption passes filename-only discovery.
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"")
+    (tmp_path / "bad.txt").write_text("broken", encoding = "utf-8")
+
+    # Default (verify off): the bad file is accepted (filename-only), matching trainer behavior.
+    pairs = dict(discover_image_caption_pairs(tmp_path))
+    assert str(bad) in pairs and str(good) in pairs
+
+    # verify_images on: the undecodable file raises a clear ValueError.
+    with pytest.raises(ValueError, match = "cannot be decoded"):
+        discover_image_caption_pairs(tmp_path, verify_images = True)
+
+    # A dataset of only valid images passes the verify.
+    bad.unlink()
+    (tmp_path / "bad.txt").unlink()
+    assert discover_image_caption_pairs(tmp_path, verify_images = True) == [(str(good), "ok")]
+
+
 def test_discover_empty_raises(tmp_path):
     _touch(tmp_path / "x.png")  # no captions anywhere, no instance prompt
     with pytest.raises(ValueError, match = "No captioned images"):

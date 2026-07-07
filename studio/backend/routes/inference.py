@@ -12433,7 +12433,11 @@ def _guard_diffusion_load_against_training() -> None:
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
-    from core.inference.diffusion import get_diffusion_backend, resolve_model_kind
+    from core.inference.diffusion import (
+        get_diffusion_backend,
+        resolve_local_single_file,
+        resolve_model_kind,
+    )
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_engine_router import (
         annotate_status,
@@ -12447,6 +12451,17 @@ async def load_diffusion_model(
         # Resolve the load kind once (gguf / single_file / pipeline) so validation,
         # engine selection, and the load all agree. A bad explicit kind raises here -> 400.
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
+        # A local On-Device pick can be a bare single-file .safetensors directory (no
+        # model_index.json): the scanner advertises it as a text-to-image model, but the local
+        # picker starts it as a pipeline with no filename, so a pipeline load would 400 on the
+        # missing model_index.json and the advertised model is unusable. If the directory holds
+        # exactly one checkpoint, reinterpret the pick as a single_file load of it (the only
+        # loadable shape for that dir), so validation, engine selection, and the load all agree.
+        if kind == "pipeline" and not request.gguf_filename:
+            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            if sole is not None:
+                request.gguf_filename = sole
+                kind = resolve_model_kind(sole)
         # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
         # missing local GGUF, a non-unsloth non-GGUF repo) must not evict a working chat
         # model and then 400. The validated family also drives engine selection below.

@@ -1223,7 +1223,20 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = "evil/companions",
         )
-    # A local base_repo (already on disk) still passes the gate.
+    # A local base_repo dir that is NOT a diffusers pipeline (no model_index.json) is rejected
+    # HERE, before the GPU handoff: it passes the any-existing-path trust check but the base loads
+    # via from_pretrained (needs model_index.json), so it would otherwise evict the resident model
+    # and only then fail in the background load.
+    bad_base = tmp_path / "bare-base"
+    bad_base.mkdir()
+    with pytest.raises(ValueError, match = "model_index.json"):
+        backend.validate_load_request(
+            "unsloth/Qwen-Image-2512-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = str(bad_base),
+        )
+    # A local base_repo that IS a real pipeline dir (model_index.json) passes the gate.
     (tmp_path / "model_index.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/Qwen-Image-2512-GGUF",
@@ -1232,6 +1245,32 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
+
+
+def test_resolve_local_single_file(tmp_path):
+    # A bare single-file safetensors directory (no model_index.json) resolves to that checkpoint's
+    # basename, so the images load route can reinterpret an On-Device "pipeline" pick as a
+    # single_file load instead of 400ing on the missing model_index.json.
+    from core.inference.diffusion import resolve_local_single_file
+
+    d = tmp_path / "solo"
+    d.mkdir()
+    (d / "model.safetensors").write_bytes(b"w")
+    assert resolve_local_single_file(str(d)) == "model.safetensors"
+
+    # A real diffusers pipeline dir (has model_index.json) loads as a pipeline unchanged -> None.
+    (d / "model_index.json").write_text("{}")
+    assert resolve_local_single_file(str(d)) is None
+
+    # Ambiguous (two checkpoints, e.g. a sharded pipeline) or empty dirs -> None (unchanged load).
+    d2 = tmp_path / "shards"
+    d2.mkdir()
+    (d2 / "a.safetensors").write_bytes(b"w")
+    (d2 / "b.safetensors").write_bytes(b"w")
+    assert resolve_local_single_file(str(d2)) is None
+    assert resolve_local_single_file(str(tmp_path / "empty-nonexistent")) is None
+    # A remote repo id (not a local dir) -> None.
+    assert resolve_local_single_file("unsloth/Qwen-Image-2512-GGUF") is None
 
 
 def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):

@@ -147,6 +147,30 @@ def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] =
     return "single_file"
 
 
+def resolve_local_single_file(model_path: str) -> Optional[str]:
+    """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
+    diffusers pipeline (no ``model_index.json``) and holds exactly one ``.safetensors`` file, else
+    None.
+
+    The On-Device scanner advertises a bare single-file safetensors directory as a text-to-image
+    model (it matches a known family by name), but the local picker starts it as a ``pipeline``
+    with no filename, so a pipeline load 400s on the missing ``model_index.json`` and the
+    advertised model is unusable. The images load route uses this to reinterpret such a pick as a
+    ``single_file`` load of the sole checkpoint. A real pipeline dir (has ``model_index.json``) or
+    an ambiguous one (0 or more than 1 ``.safetensors``, e.g. a sharded pipeline) returns None and
+    loads unchanged. Never raises."""
+    try:
+        root = Path(model_path).expanduser()
+        if not root.is_dir() or (root / "model_index.json").is_file():
+            return None
+        checkpoints = [
+            p.name for p in root.iterdir() if p.is_file() and p.suffix.lower() == ".safetensors"
+        ]
+    except OSError:
+        return None
+    return checkpoints[0] if len(checkpoints) == 1 else None
+
+
 def _decode_b64_image(data: str, *, mode: str = "RGB") -> Any:
     """Decode a base64 (optionally ``data:`` URL) image string to a PIL image.
 
@@ -274,6 +298,32 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
         pass
     rid = repo_id.strip().lower()
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
+
+
+def _assert_local_base_is_pipeline(base_repo: str) -> None:
+    """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
+    diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
+    ANY existing local path, so without this a local base that is not a pipeline dir would pass the
+    preflight, let the route evict the resident GPU model, then fail deep in the background load --
+    the eviction this validation exists to prevent. A non-existent local base is already rejected
+    by the trust check (it is neither an existing path nor an unsloth/*/allowlisted repo); a bare
+    remote id is left for the loader to resolve. Shared by the image, video, and training preflights
+    so their local-base shape check stays in sync. Never evicts; raises ValueError on a bad local
+    base."""
+    base = (base_repo or "").strip()
+    if not base:
+        return
+    try:
+        root = Path(base).expanduser()
+        exists = root.exists()
+    except OSError:
+        return  # invalid path characters -> a remote id, not a local path
+    if not exists:
+        return
+    if not root.is_dir() or not (root / "model_index.json").is_file():
+        raise ValueError(
+            f"Local base_repo is not a diffusers pipeline directory (no model_index.json): {base}"
+        )
 
 
 @dataclass(frozen = True)
@@ -639,6 +689,11 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got "
                 f"'{base_repo}'."
             )
+        # An existing LOCAL base_repo is loaded as a full pipeline (from_pretrained(base) /
+        # config=base), which needs a model_index.json. Any existing path passes the trust check
+        # above, so reject a non-pipeline local base here -- before the route evicts the resident
+        # model -- rather than deep in the background load. Mirrors the repo_id check below.
+        _assert_local_base_is_pipeline(base_repo)
         # Reject a bad LOCAL pick now (the same checks the load would hit later), so
         # the route never evicts a working chat model for a request that can't load.
         # A path-shaped repo_id (absolute / ~ / ./ / ..) is meant to be on disk, so a
