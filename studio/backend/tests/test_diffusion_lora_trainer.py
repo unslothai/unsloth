@@ -140,6 +140,23 @@ def test_normalized_accepts_supported_schedulers():
         assert cfg.lr_scheduler == sched
 
 
+def test_api_scheduler_enum_never_advertises_a_rejected_scheduler():
+    # The request-model enum must not offer a scheduler that normalized() rejects: a client that
+    # picks it straight from the schema would get a 400. Every option the API advertises must be in
+    # the validation allow-list (this guards against the enum and allow-list drifting apart again,
+    # e.g. piecewise_constant left in one but removed from the other).
+    import typing
+
+    from core.training.diffusion_train_common import _LR_SCHEDULERS
+    from models.training import DiffusionTrainingStartRequest
+
+    api_options = set(
+        typing.get_args(DiffusionTrainingStartRequest.model_fields["lr_scheduler"].annotation)
+    )
+    assert api_options and api_options <= _LR_SCHEDULERS, api_options - _LR_SCHEDULERS
+    assert "piecewise_constant" not in api_options
+
+
 def test_compute_sdxl_add_time_ids():
     assert compute_sdxl_add_time_ids(1024) == (1024, 1024, 0, 0, 1024, 1024)
 

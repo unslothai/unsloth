@@ -720,7 +720,6 @@ class DiffusionTrainingStartRequest(BaseModel):
         "polynomial",
         "constant",
         "constant_with_warmup",
-        "piecewise_constant",
     ] = Field("constant")
     lr_warmup_steps: int = Field(0, ge = 0)
     center_crop: bool = Field(False)
