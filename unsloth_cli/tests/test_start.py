@@ -417,6 +417,73 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
     assert any(c[1].endswith("/api/inference/load") for c in calls)
 
 
+def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
+    # A cached-but-unloaded catalog entry (loaded == False) that only case-differs must
+    # not be treated as ready; the load endpoint must still be called so the requested
+    # model becomes resident instead of the agent preflighting a different backend.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": state["loaded"],
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
+    # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
+    # no /api/inference/load call.
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
 def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)

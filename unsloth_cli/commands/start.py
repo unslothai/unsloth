@@ -618,10 +618,20 @@ def _resolve_model(
     load_has_overrides = bool(
         load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
     )
+    # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
+    # matching one would skip /api/inference/load and leave the agent pointed at a
+    # model that is not resident, so only attach to an entry that is actually loaded.
     match = (
         None
         if requested and load_has_overrides
-        else next((m for m in models if _model_id_matches(m.get("id"), requested)), None)
+        else next(
+            (
+                m
+                for m in models
+                if _model_id_matches(m.get("id"), requested) and m.get("loaded") is not False
+            ),
+            None,
+        )
     )
     if requested and match is None:
         typer.echo(

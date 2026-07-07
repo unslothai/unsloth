@@ -4139,11 +4139,15 @@ class LlamaCppBackend:
             # full download on a low-disk machine.
             split_needs_refetch = False
             if not force and gguf_extra_shards:
-                main_cached = _cached_hf_snapshot_file(
-                    hf_repo, gguf_filename, expected_size = expected_sizes.get(gguf_filename)
-                )
-                if main_cached is None or not _snapshot_has_all_shards(
-                    main_cached, gguf_filename, gguf_extra_shards, expected_sizes
+                # Match the download path: scan all snapshots for one that holds the
+                # whole set co-located, so a newer snapshot with only the first shard
+                # does not mask an older complete one and needlessly trip the disk
+                # fallback for an already-cached split model.
+                if (
+                    _cached_colocated_split_main(
+                        hf_repo, gguf_filename, gguf_extra_shards, expected_sizes
+                    )
+                    is None
                 ):
                     split_needs_refetch = True
             if not force and not split_needs_refetch:
