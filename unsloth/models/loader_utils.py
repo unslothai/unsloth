@@ -416,7 +416,9 @@ def _model_has_real_fp8_modules(model):
 _FP8_SCALE_SUFFIXES = (
     ("weight_scale", ".weight_scale"),
     ("weight_scale_inv", ".weight_scale_inv"),
+    ("gate_up_proj_scale", ".gate_up_proj_scale"),
     ("gate_up_proj_scale_inv", ".gate_up_proj_scale_inv"),
+    ("down_proj_scale", ".down_proj_scale"),
     ("down_proj_scale_inv", ".down_proj_scale_inv"),
 )
 
@@ -446,8 +448,8 @@ def _variant_file_names(variant):
 def _variant_index_names(variant):
     if variant:
         return [
-            f"model.{variant}.safetensors.index.json",
-            f"pytorch_model.{variant}.safetensors.index.json",
+            f"model.safetensors.index.{variant}.json",
+            f"pytorch_model.safetensors.index.{variant}.json",
         ]
     return [
         "model.safetensors.index.json",

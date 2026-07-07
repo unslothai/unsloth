@@ -458,6 +458,7 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_16bit,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
+                kwargs["use_safetensors"] = True
                 restore_fp8_scales = True
             else:
                 assert new_model_name is not None
@@ -1121,6 +1122,7 @@ class FastModel(FastBaseModel):
                     load_in_16bit,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
+                kwargs["use_safetensors"] = True
                 restore_fp8_scales = True
             else:
                 assert new_model_name is not None

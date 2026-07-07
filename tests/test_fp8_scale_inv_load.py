@@ -350,6 +350,40 @@ def test_safetensors_index_opens_only_scale_shards(monkeypatch):
     assert opened == ["scale.safetensors"]
 
 
+def test_variant_safetensors_index_uses_transformers_name(monkeypatch):
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+    opened = []
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([6.0], dtype = torch.float32)},
+            filename = "scale.fp8.safetensors",
+        )
+        index = {"weight_map": {"fp8.weight_scale_inv": "scale.fp8.safetensors"}}
+        (Path(checkpoint_dir) / "model.safetensors.index.fp8.json").write_text(json.dumps(index))
+
+        def recording_safe_open(path, *args, **kwargs):
+            opened.append(Path(path).name)
+            return original_safe_open(path, *args, **kwargs)
+
+        original_safe_open = safetensors.torch.safe_open
+        monkeypatch.setattr(safetensors.torch, "safe_open", recording_safe_open)
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+            variant = "fp8",
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert opened == ["scale.fp8.safetensors"]
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([6.0], dtype = torch.float32))
+
+
 def test_skips_meta_device_scale_restore():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
@@ -487,6 +521,8 @@ class _Fp8Expert(torch.nn.Module):
         super().__init__()
         self.gate_up_proj_scale_inv = torch.ones(2, dtype = torch.float16)
         self.down_proj_scale_inv = torch.ones(2, dtype = torch.float16)
+        self.gate_up_proj_scale = torch.ones(2, dtype = torch.float16)
+        self.down_proj_scale = torch.ones(2, dtype = torch.float16)
 
 
 def test_restores_fp8_expert_scale_tensors():
@@ -514,6 +550,31 @@ def test_restores_fp8_expert_scale_tensors():
         model.expert.gate_up_proj_scale_inv, torch.full((2,), 2.0, dtype = torch.float16)
     )
     assert torch.equal(model.expert.down_proj_scale_inv, torch.full((2,), 3.0, dtype = torch.float16))
+
+
+def test_restores_fbgemm_expert_scale_tensors():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.expert = _Fp8Expert()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {
+                "expert.gate_up_proj_scale": torch.full((2,), 4.0, dtype = torch.float32),
+                "expert.down_proj_scale": torch.full((2,), 5.0, dtype = torch.float32),
+            },
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 2
+    assert skipped == 0
+    assert torch.equal(model.expert.gate_up_proj_scale, torch.full((2,), 4.0, dtype = torch.float16))
+    assert torch.equal(model.expert.down_proj_scale, torch.full((2,), 5.0, dtype = torch.float16))
 
 
 def test_loader_detects_direct_or_requested_fp8_restore_paths():
@@ -672,6 +733,38 @@ def test_offline_fp8_cache_uses_safe_serialization():
                 return
 
     pytest.fail("_offline_quantize_to_fp8 must save safetensors caches.")
+
+
+def test_offline_fp8_cache_forces_safetensors_loads():
+    tree = ast.parse(LOADER.read_text())
+    hit_lines = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if not any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "_offline_quantize_to_fp8"
+            for child in ast.walk(node)
+        ):
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Assign):
+                continue
+            for target in child.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "kwargs"
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "use_safetensors"
+                    and isinstance(child.value, ast.Constant)
+                    and child.value.value is True
+                ):
+                    hit_lines.add(child.lineno)
+
+    assert len(hit_lines) == 2
 
 
 def test_fp8_probe_skips_missing_optional_kernel_module():
