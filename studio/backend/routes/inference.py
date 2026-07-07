@@ -6162,6 +6162,7 @@ async def openai_chat_completions(
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                    nudge_tool_calls = payload.nudge_tool_calls,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
                     else 25,
@@ -6888,6 +6889,7 @@ async def openai_chat_completions(
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
@@ -10074,6 +10076,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
+                nudge_tool_calls = payload.nudge_tool_calls,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).

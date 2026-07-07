@@ -75,6 +75,12 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
+from core.inference.tool_call_parser import (
+    MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
+    REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
+    is_short_intent_without_action as _is_short_intent_without_action,
+    reprompt_to_act_message as _reprompt_to_act_message,
+)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     tool_event_provenance,
@@ -223,25 +229,8 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
-# ── Pre-compiled patterns for plan-without-action re-prompt ──
-# Forward-looking intent signals: the model is describing what it *will*
-# do rather than giving a final answer.
-_INTENT_SIGNAL = re.compile(
-    r"(?i)("
-    # Direct intent ("I'll ...", "Let me ...", straight + curly apostrophes).
-    # Excludes "I can"/"I should"/"I want to"/"let's" (common in answers).
-    # Negative lookahead drops negated forms ("I will not") so a refusal
-    # doesn't trigger a re-prompt.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
-    r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
-    r"|"
-    # "Now I" / "Next I" patterns
-    r"\b(?:now i|next i)\b"
-    r")"
-)
-_MAX_REPROMPTS = 3
+# Plan-without-action re-prompt state (intent signal, caps, message) now lives
+# in tool_call_parser, imported above under its old aliases.
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
@@ -252,7 +241,6 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
-_REPROMPT_MAX_CHARS = 2000
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
@@ -331,11 +319,6 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
         i -= 1
     tail = text[i:]
     return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
-
-
-def _is_short_intent_without_action(text: str) -> bool:
-    stripped = text.strip()
-    return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
 
 
 def _should_suppress_forced_no_tool_output(text: str) -> bool:
@@ -8456,6 +8439,7 @@ class LlamaCppBackend:
         preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
+        nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
@@ -8626,11 +8610,9 @@ class LlamaCppBackend:
         _kb_search_count = 0
 
         # ── Re-prompt on plan-without-action ─────────────────
-        # When the model describes what it intends to do (forward-looking
-        # language) without calling a tool, re-prompt once. Only triggers on
-        # responses signaling intent/planning -- a direct answer like "4" or
-        # "Hello!" won't match. Pattern compiled at module level
-        # (_INTENT_SIGNAL).
+        # Model describes intent without calling a tool: re-prompt once. A
+        # direct answer ("4", "Hello!") won't match. Pattern shared with the
+        # safetensors loop (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
         # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
@@ -9153,8 +9135,10 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
+                        # None keeps the default-on re-prompt; False disables it.
                         if (
                             auto_heal_tool_calls
+                            and (nudge_tool_calls is None or nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
@@ -9183,12 +9167,7 @@ class LlamaCppBackend:
                             conversation.append(
                                 {
                                     "role": "user",
-                                    "content": (
-                                        "You have access to enabled tools. If a tool is needed to satisfy "
-                                        "the user's request or complete the action you described, call "
-                                        f"{tool_hint} now. If no tool is needed, provide the final answer "
-                                        "and follow the user's requested format."
-                                    ),
+                                    "content": _reprompt_to_act_message(tool_hint),
                                 }
                             )
                             # Accumulate tokens and timing from this iteration.

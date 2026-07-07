@@ -1168,6 +1168,48 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     assert len(payloads) == 1
 
 
+def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
+    # Explicit nudge_tool_calls=False disables the plan-without-action
+    # re-prompt even with Auto-Heal on (None keeps the default-on behavior).
+    streams = [[_sse({"content": "I will use render_html now."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 1,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = False,
+        )
+    )
+
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts == ["I will use render_html now."]
+    assert len(payloads) == 1
+
+
 def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatch):
     streams = [
         [

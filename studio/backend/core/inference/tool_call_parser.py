@@ -163,6 +163,41 @@ RAG_SEARCH_CAP_NUDGE = (
 )
 
 
+# ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
+# Forward-looking intent: the model says what it *will* do, not a final answer.
+INTENT_SIGNAL = re.compile(
+    r"(?i)("
+    # Direct intent ("I'll", "Let me"); lookahead drops negated forms
+    # ("I will not") so a refusal does not re-prompt.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
+    r"|"
+    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
+    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    r"|"
+    r"\b(?:now i|next i)\b"
+    r")"
+)
+# Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
+# times since #5620); safetensors and MLX inherit the same cap from here.
+MAX_ACT_REPROMPTS = 3
+REPROMPT_MAX_CHARS = 2000
+
+
+def is_short_intent_without_action(text: str) -> bool:
+    stripped = text.strip()
+    return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
+
+
+def reprompt_to_act_message(tool_hint: str) -> str:
+    """The user message appended when re-prompting a plan-without-action turn."""
+    return (
+        "You have access to enabled tools. If a tool is needed to satisfy "
+        "the user's request or complete the action you described, call "
+        f"{tool_hint} now. If no tool is needed, provide the final answer "
+        "and follow the user's requested format."
+    )
+
+
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 # Qwen3.5 ``<function=name>`` and the attribute form ``<function name="name">``

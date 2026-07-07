@@ -33,10 +33,13 @@ from core.inference.tool_call_parser import (
     _strip_mistral_closed_calls,
     _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
+    MAX_ACT_REPROMPTS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
+    is_short_intent_without_action,
     parse_tool_calls_from_text,
+    reprompt_to_act_message,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup,
@@ -75,21 +78,6 @@ _MAX_BUFFER_CHARS = 32
 # Memory bound for holding a leading bare-JSON object whose top-level "{" never balances.
 _MAX_BARE_JSON_BUFFER = 16384
 
-# Forward-looking intent ("I'll", "First,", "Step 1:") = planning, not answering; nudge a call.
-# Negative lookahead drops negated forms ("I will not") so a refusal doesn't trigger it. Mirrors GGUF.
-_INTENT_SIGNAL = re.compile(
-    r"(?i)("
-    r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
-    r"|\b(?:first\b|step \d+:?|here['’]?s (?:my |the |a )?(?:plan|approach))"
-    r"|\b(?:now i|next i)\b"
-    r")"
-)
-_MAX_REPROMPTS = 3
-_REPROMPT_MAX_CHARS = 2000
-# Templated so the nudge names the caller's enabled tools, not a hardcoded set. Mirrors GGUF tool_hint.
-_REPROMPT_INSTRUCTION_TEMPLATE = (
-    "STOP. Do NOT write code or explain. You MUST call a tool NOW. Call {tool_hint} immediately."
-)
 
 # No grammar constraint here (unlike llama-server's lazy grammar): collapse
 # exact-duplicate calls and cap the count so a runaway turn cannot fan out.
@@ -432,6 +420,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
@@ -471,6 +460,9 @@ def run_safetensors_tool_loop(
         for _ev in _auto["events"]:
             yield _ev
         conversation.extend(_auto["messages"])
+    # Autoinject ran a KB search outside the controller, so it counts as an
+    # executed tool for the plan-without-action gate.
+    rag_autoinjected = bool(_auto)
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
@@ -488,6 +480,9 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # A denied tool confirmation must not be answered with a plan-without-action
+    # re-prompt (which would raise the confirmation gate again).
+    tool_denied = False
     # Real tool-call turns completed. Only turns that actually executed a tool count
     # against ``max_tool_iterations``; a duplicate/disabled no-op correction turn (and a
     # plan-without-action re-prompt) must not consume budget, matching the GGUF loop.
@@ -510,7 +505,7 @@ def run_safetensors_tool_loop(
     _state_draining = 2
 
     # Reserve re-prompt slots so they don't eat the caller's tool budget.
-    _extra_iters = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+    _extra_iters = MAX_ACT_REPROMPTS if max_tool_iterations > 0 else 0
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -869,33 +864,39 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_tool_names,
             )
             if not safety_tc:
-                # Re-prompt only when the model planned without acting (intent
-                # signal); "4" / "Hello!" never trigger. Mirrors GGUF.
-                _stripped = content_accum.strip()
+                # Re-prompt once on plan-without-action, before any tool runs
+                # (GGUF loop parity). The retry is gated on nudge_tool_calls so
+                # Studio callers (which send True) always nudge, while API callers
+                # who omit the flag keep today's no-reprompt behavior (opt-in).
+                stripped_answer = content_accum.strip()
                 if (
-                    tools
-                    and auto_heal_tool_calls
-                    and reprompt_count < _MAX_REPROMPTS
-                    and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
-                    and _INTENT_SIGNAL.search(_stripped)
-                    and not final_attempt_done
+                    auto_heal_tool_calls
+                    and nudge_tool_calls
+                    and active_tools
+                    and reprompt_count < MAX_ACT_REPROMPTS
+                    and not rag_autoinjected
+                    and not tool_denied
+                    and not any(record.executed for record in tool_controller.history)
+                    and is_short_intent_without_action(stripped_answer)
                 ):
                     reprompt_count += 1
                     logger.info(
-                        "Safetensors re-prompt %d/%d: model planned without "
+                        "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
                         reprompt_count,
-                        _MAX_REPROMPTS,
-                        len(_stripped),
+                        MAX_ACT_REPROMPTS,
+                        len(stripped_answer),
                     )
+                    conversation.append({"role": "assistant", "content": stripped_answer})
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
-                    conversation.append({"role": "assistant", "content": _stripped})
                     conversation.append(
                         {
                             "role": "user",
-                            "content": _REPROMPT_INSTRUCTION_TEMPLATE.format(tool_hint = tool_hint),
+                            "content": reprompt_to_act_message(tool_hint),
                         }
                     )
+                    # Empty status clears the badge and resets the route's
+                    # per-turn text cursor before the re-prompted turn streams.
                     yield {"type": "status", "text": ""}
                     continue
 
@@ -1085,6 +1086,7 @@ def run_safetensors_tool_loop(
                         "result": TOOL_REJECTED_MESSAGE,
                         "provenance": decision.provenance,
                     }
+                    tool_denied = True
                     denied_message = {
                         "role": "tool",
                         "name": decision.tool_name,

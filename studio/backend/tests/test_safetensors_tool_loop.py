@@ -2229,6 +2229,9 @@ def _reprompt_loop(*, auto_heal_tool_calls):
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             execute_tool = exec_fn,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            # Studio always nudges (always-on for the Studio inference paths); the
+            # API opts in per request. Model the Studio caller here.
+            nudge_tool_calls = True,
             max_tool_iterations = 3,
         )
     )
@@ -3100,7 +3103,7 @@ class TestLoopBehaviour:
 
 
 class TestLoopRePrompt:
-    """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``_MAX_REPROMPTS`` extra slots."""
+    """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``MAX_ACT_REPROMPTS`` extra slots. Studio always nudges, so these drive the loop with ``nudge_tool_calls=True``."""
 
     def test_intent_signal_triggers_reprompt(self):
         # Turn 1: intent signal, no tool call.
@@ -3116,6 +3119,7 @@ class TestLoopRePrompt:
                 ["The sky is blue."],
             ],
             exec_results = ["Blue (Rayleigh scattering)"],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         # web_search must have been called once (after the re-prompt).
@@ -3159,13 +3163,14 @@ class TestLoopRePrompt:
         contents = [e for e in events if e["type"] == "content"]
         assert contents and contents[-1]["text"].strip() == "4"
 
-    def test_max_reprompts_capped_at_three(self):
-        # Model keeps stalling with intent -- after 3 re-prompts the
-        # loop must give up rather than burn forever.
+    def test_max_reprompts_capped(self):
+        # Model keeps stalling with intent -- after MAX_ACT_REPROMPTS re-prompts
+        # the loop must give up rather than burn forever.
         turns = [["Let me search for that."]] * 6  # well over the cap
         loop, exec_fn = _make_loop(
             turns = turns,
             exec_results = [],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop, max_events = 500)
         # No tool ever ran, but the loop terminated cleanly.
@@ -3184,6 +3189,7 @@ class TestLoopRePrompt:
                 ["found"],
             ],
             exec_results = ["..."],
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
@@ -3194,7 +3200,7 @@ class TestLoopRePrompt:
         # re-prompt ate the slot the tool call would never run.
         loop, exec_fn = _make_loop(
             turns = [
-                # 1. Intent stall (re-prompt 1/3).
+                # 1. Intent stall (re-prompt).
                 ["Let me search for that."],
                 # 2. Real tool call (uses the budget slot).
                 ['<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'],
@@ -3203,6 +3209,7 @@ class TestLoopRePrompt:
             ],
             exec_results = ["sunny"],
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "weather"})]
@@ -3305,13 +3312,22 @@ class TestGGUFSafetensorsHealingParity:
         }
 
     def test_intent_regex_matches_same_phrases_as_gguf(self):
-        # The intent re-prompt regex must match the SAME forward-looking
-        # phrases on both backends so behaviour is the same on Mac (MLX
-        # / safetensors) and on Linux (GGUF).
-        from core.inference.llama_cpp import _INTENT_SIGNAL as gguf_re
-        from core.inference.safetensors_agentic import (
-            _INTENT_SIGNAL as sf_re,
+        # The intent re-prompt regex is now a single shared source of truth
+        # (tool_call_parser.INTENT_SIGNAL) consumed by both the GGUF and the
+        # safetensors/MLX loops, so behaviour is identical on Mac and Linux.
+        # Both backends must resolve to that one shared helper.
+        from core.inference.llama_cpp import (
+            _is_short_intent_without_action as gguf_fn,
         )
+        from core.inference.safetensors_agentic import (
+            is_short_intent_without_action as sf_fn,
+        )
+        from core.inference.tool_call_parser import (
+            INTENT_SIGNAL as shared_re,
+            is_short_intent_without_action as shared_fn,
+        )
+
+        assert gguf_fn is shared_fn and sf_fn is shared_fn
 
         for phrase in (
             "I'll search for that",
@@ -3322,8 +3338,8 @@ class TestGGUFSafetensorsHealingParity:
             "Here's my plan",
             "Now I need to call web_search",
         ):
-            assert gguf_re.search(phrase), f"GGUF missed {phrase!r}"
-            assert sf_re.search(phrase), f"safetensors missed {phrase!r}"
+            assert shared_re.search(phrase), f"missed {phrase!r}"
+            assert shared_fn(phrase), f"helper missed {phrase!r}"
 
         for plain in (
             "4",
@@ -3337,13 +3353,16 @@ class TestGGUFSafetensorsHealingParity:
             "I will not search the web for that.",
             "I'll never call that tool.",
         ):
-            assert not gguf_re.search(plain), f"GGUF wrongly fired on {plain!r}"
-            assert not sf_re.search(plain), f"safetensors wrongly fired on {plain!r}"
+            assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
+            assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
 
     def test_max_reprompts_equal_on_both_backends(self):
+        # Both loops draw the cap from the shared constant, so they stay equal.
         from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap
-        from core.inference.safetensors_agentic import _MAX_REPROMPTS as sf_cap
-        assert gguf_cap == sf_cap == 3
+        from core.inference.safetensors_agentic import MAX_ACT_REPROMPTS as sf_cap
+        from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
+
+        assert gguf_cap == sf_cap == shared_cap
 
 
 class TestLoopControl:
@@ -3820,6 +3839,193 @@ class TestGptOssNameDetection:
     def test_empty_or_none_returns_false(self):
         assert is_gpt_oss_model_name("") is False
         assert is_gpt_oss_model_name(cast(str, None)) is False
+
+
+# ────────────────────────────────────────────────────────────────────
+# Plan-without-action re-prompt (GGUF loop parity)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPlanWithoutActionReprompt:
+    def test_short_intent_is_reprompted_and_tool_executes(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the final answer."],
+            ],
+            exec_results = ["result-1"],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert [c[0] for c in exec_fn.calls] == ["web_search"]
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("Here is the final answer." in t for t in texts)
+
+    def test_reprompt_fires_up_to_the_cap(self):
+        # GGUF parity: a persistently stalling model is re-prompted up to
+        # MAX_ACT_REPROMPTS times, then the last stall is surrendered as the
+        # final answer and no further turn is generated.
+        from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
+
+        stall = "Let me look into it first."
+        turns = [["I'll search the web for that."]]
+        turns += [[stall]] * MAX_ACT_REPROMPTS
+        turns += [["SHOULD NOT APPEAR"]]
+
+        generations = {"count": 0}
+        turn_iter = iter(turns)
+
+        def _gen(_messages):
+            generations["count"] += 1
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool([])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        # One initial turn plus exactly MAX_ACT_REPROMPTS re-prompted turns.
+        assert generations["count"] == MAX_ACT_REPROMPTS + 1
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any(stall in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_long_prose_answer_is_not_reprompted(self):
+        long_answer = "I'll keep explaining the details of the topic. " * 60
+        loop, exec_fn = _make_loop(
+            turns = [
+                [long_answer],
+                ["SHOULD NOT APPEAR"],
+            ],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_disabled_auto_heal_is_not_reprompted(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            auto_heal_tool_calls = False,
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the web for that." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_explicit_nudge_off_is_not_reprompted(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            nudge_tool_calls = False,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the web for that." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_omitted_nudge_flag_is_not_reprompted(self):
+        # The retry is new on this loop: API callers who do not send the flag
+        # must keep today's behavior. Studio opts in explicitly.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the web for that."],
+                ["SHOULD NOT APPEAR"],
+            ],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the web for that." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_rag_autoinject_counts_as_executed_tool(self, monkeypatch):
+        # Autoinject already ran a KB search outside the controller; a short
+        # post-retrieval intent must not trigger a spurious re-prompt.
+        import core.inference.tools as tools_mod
+
+        def fake_autoinject(conversation, rag_scope):
+            return {
+                "events": [
+                    {"type": "tool_start", "tool_name": "search_knowledge_base"},
+                    {"type": "tool_end", "tool_name": "search_knowledge_base"},
+                ],
+                "messages": [{"role": "tool", "content": "kb result"}],
+            }
+
+        monkeypatch.setattr(tools_mod, "build_rag_autoinject", fake_autoinject)
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I'll search the docs."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert any(e.get("type") == "tool_start" for e in events)
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search the docs." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_no_reprompt_after_a_denied_tool_confirmation(self, monkeypatch):
+        # An explicit user denial must not be answered with a nudge to call
+        # the tool again (which would raise another confirmation prompt).
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "appr-1")
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
+        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "deny")
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["I'll search again."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            confirm_tool_calls = True,
+            session_id = "sess",
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert any("I'll search again." in t for t in texts)
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+    def test_no_reprompt_after_a_tool_already_executed(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Now I'll refine the search."],
+                ["SHOULD NOT APPEAR"],
+            ],
+            exec_results = ["result-1"],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        assert [c[0] for c in exec_fn.calls] == ["web_search"]
+        texts = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
 
 # Routes-level python_tag strip (multi-line; stop on next sentinel)
