@@ -1768,7 +1768,6 @@ def _enables_code_execution_tool(tools: list[dict]) -> bool:
     (python/terminal). ``confirm_code_execution`` only gates those, so the
     streaming requirement is scoped to requests that actually expose one."""
     from core.inference.tools import CODE_EXECUTION_TOOL_NAMES
-
     return any(
         (t.get("function") or {}).get("name") in CODE_EXECUTION_TOOL_NAMES for t in (tools or [])
     )

@@ -206,7 +206,11 @@ def test_payload_may_enable_code_execution_predicate(monkeypatch):
     monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
 
     class _P:
-        def __init__(self, enable_tools = None, enabled_tools = None):
+        def __init__(
+            self,
+            enable_tools = None,
+            enabled_tools = None,
+        ):
             self.enable_tools = enable_tools
             self.enabled_tools = enabled_tools
 
@@ -218,9 +222,7 @@ def test_payload_may_enable_code_execution_predicate(monkeypatch):
     )
     # Built-ins on, explicit filter without a code tool -> not code execution (the fix).
     assert (
-        inf._payload_may_enable_code_execution(
-            _P(enable_tools = True, enabled_tools = ["web_search"])
-        )
+        inf._payload_may_enable_code_execution(_P(enable_tools = True, enabled_tools = ["web_search"]))
         is False
     )
     # Built-ins on, code tool in the filter -> code execution.
