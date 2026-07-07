@@ -239,6 +239,7 @@ type TrainingMethodStatePatch = Partial<
     | "targetModules"
     | "datasetFormat"
     | "trainOnCompletions"
+    | "trainOnCompletionsManuallySet"
   >
 >;
 
@@ -250,6 +251,9 @@ function getCptTrainingPatch(): TrainingMethodStatePatch {
     targetModules: CPT_TARGET_MODULES,
     datasetFormat: "raw",
     trainOnCompletions: false,
+    // CPT forces completions-only off; clear the guard so this override is not
+    // treated as a manual choice (and discarded) on the next same-model reload.
+    trainOnCompletionsManuallySet: false,
   };
 }
 
@@ -396,14 +400,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             const isAudio = !!modelDetails.is_audio;
-            // Modality compatibility wins over manual YAML-default guards.
-            if (modelDetails.is_vision && get().isDatasetImage === true) {
-              patch.trainOnCompletions = false;
-            }
-            if (isAudio && !modelDetails.is_vision) {
-              patch.trainOnCompletions = false;
-            }
-            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
+            // Modality compatibility wins over manual YAML-default guards. When it
+            // forces completions-only off, also clear the guard (below) so the
+            // override is not treated as a manual choice on same-model reloads.
+            const modalityForcesCompletionsOff =
+              (modelDetails.is_vision && get().isDatasetImage === true) ||
+              (isAudio && !modelDetails.is_vision) ||
+              (isAudio && modelDetails.is_vision && get().isDatasetAudio);
+            if (modalityForcesCompletionsOff) {
               patch.trainOnCompletions = false;
             }
 
@@ -442,6 +446,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               ...patch,
               ...cptOverrides,
+              ...(modalityForcesCompletionsOff
+                ? { trainOnCompletionsManuallySet: false }
+                : {}),
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
@@ -705,15 +712,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               return {
                 datasetFormat: "raw",
                 trainOnCompletions: false,
+                // Raw/CPT forces completions-only off; clear the guard so the
+                // override is not treated as a manual choice on model reloads.
+                trainOnCompletionsManuallySet: false,
               };
             }
 
+            // Raw formats force completions-only off; clear the guard alongside so
+            // a later same-model reload can restore the model default.
             return {
               datasetFormat,
-              trainOnCompletions:
-                isRawTextDatasetFormat(datasetFormat)
-                  ? false
-                  : state.trainOnCompletions,
+              ...(isRawTextDatasetFormat(datasetFormat)
+                ? { trainOnCompletions: false, trainOnCompletionsManuallySet: false }
+                : {}),
             };
           }),
         setDataset: (dataset) => {
