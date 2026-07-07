@@ -1227,3 +1227,83 @@ def test_fp8_probe_uses_absolute_optional_import_and_broad_nonfatal_guard():
             return
 
     pytest.fail("_is_real_fp8_owner no longer protects the optional fp8 kernel import.")
+
+
+def test_restored_scale_stays_a_parameter_when_placeholder_is_a_parameter():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+    # HF FP8Linear.weight_scale_inv / FbgemmFp8Linear.weight_scale are Parameters; the restore
+    # must keep them Parameters rather than delattr + register_buffer (which would silently
+    # demote the scale to a buffer and hide it from parameter inspection).
+    model.fp8.weight_scale_inv = torch.nn.Parameter(
+        torch.tensor([9.0], dtype = torch.float16), requires_grad = False
+    )
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert "weight_scale_inv" in model.fp8._parameters
+    assert "weight_scale_inv" not in model.fp8._buffers
+    assert isinstance(model.fp8.weight_scale_inv, torch.nn.Parameter)
+    assert torch.equal(
+        model.fp8.weight_scale_inv.detach(),
+        torch.tensor([1.0], dtype = torch.float16),
+    )
+
+
+def test_index_extra_patterns_cover_nonstandard_scale_shards():
+    loader_utils = _load_loader_utils()
+    with tempfile.TemporaryDirectory() as model_dir:
+        index = {
+            "weight_map": {
+                "fp8.weight_scale_inv": "custom-shard-00001.safetensors",
+                "fp8.weight": "custom-shard-00001.safetensors",
+                "other.bias": "custom-shard-00002.safetensors",
+            }
+        }
+        with open(
+            os.path.join(model_dir, "model.safetensors.index.json"),
+            "w",
+            encoding = "utf-8",
+        ) as fh:
+            json.dump(index, fh)
+        extras = loader_utils._fp8_scale_index_extra_patterns(model_dir)
+
+    # Only the shard that actually holds a scale tensor is fetched; weight-only and non-scale
+    # shards are left out.
+    assert extras == ["custom-shard-00001.safetensors"]
+    # The default snapshot globs do not match this non-standard shard name, so without the
+    # index-driven extra pass the scale shard would be under-fetched.
+    default_patterns = loader_utils._fp8_scale_snapshot_allow_patterns()
+    assert not any(
+        fnmatch.fnmatch("custom-shard-00001.safetensors", pattern)
+        for pattern in default_patterns
+    )
+
+
+def test_index_extra_patterns_prefix_subfolder():
+    loader_utils = _load_loader_utils()
+    with tempfile.TemporaryDirectory() as model_dir:
+        subdir = os.path.join(model_dir, "sub")
+        os.makedirs(subdir)
+        index = {"weight_map": {"fp8.weight_scale_inv": "weights-00001.safetensors"}}
+        with open(
+            os.path.join(subdir, "model.safetensors.index.json"),
+            "w",
+            encoding = "utf-8",
+        ) as fh:
+            json.dump(index, fh)
+        extras = loader_utils._fp8_scale_index_extra_patterns(model_dir, subfolder = "sub")
+
+    assert extras == ["sub/weights-00001.safetensors"]

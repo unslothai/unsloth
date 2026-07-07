@@ -563,6 +563,34 @@ def _fp8_scale_snapshot_allow_patterns(
     return patterns
 
 
+def _fp8_scale_index_extra_patterns(model_dir, subfolder = None, variant = None):
+    """Exact safetensors shard names an FP8 scale index references that the default snapshot
+    globs above do not cover. `_resolve_fp8_scale_safetensors_files` follows the index
+    `weight_map` verbatim, so a repo that maps a scale tensor to a shard named outside
+    `model*`/`pytorch_model*` would never be downloaded and the restore would silently find
+    no scales even though the main load reads that shard by its index name. #6749"""
+    scan_dir = os.path.join(model_dir, subfolder) if subfolder else model_dir
+    if not os.path.isdir(scan_dir):
+        return []
+    for index_name in _variant_index_names(variant):
+        index_path = os.path.join(scan_dir, index_name)
+        if not os.path.isfile(index_path):
+            continue
+        try:
+            with open(index_path, encoding = "utf-8") as fh:
+                weight_map = json.load(fh).get("weight_map", {})
+        except Exception:
+            return []
+        extras = []
+        for key, filename in weight_map.items():
+            if not any(key.endswith(suffix) for _, suffix in _FP8_SCALE_SUFFIXES):
+                continue
+            if isinstance(filename, str) and filename.endswith(".safetensors"):
+                extras.append(f"{subfolder}/{filename}" if subfolder else filename)
+        return sorted(set(extras))
+    return []
+
+
 def _find_fp8_scale_inv_tensors(
     model_dir,
     model_name,
@@ -603,6 +631,29 @@ def _find_fp8_scale_inv_tensors(
             )
         except Exception:
             return []
+
+        # The default globs cover standard shard names; if the index instead maps scale tensors
+        # to shards named outside them, pull those exact shards too so the restore below can read
+        # them. Only the shards the first pass missed are fetched, so standard repos add nothing.
+        extra_patterns = _fp8_scale_index_extra_patterns(model_dir, subfolder, variant)
+        missing = [
+            pattern
+            for pattern in extra_patterns
+            if not os.path.isfile(os.path.join(model_dir, pattern))
+        ]
+        if missing:
+            try:
+                model_dir = snapshot_download(
+                    model_name,
+                    revision = revision,
+                    token = token,
+                    local_files_only = local_files_only,
+                    cache_dir = cache_dir,
+                    force_download = force_download,
+                    allow_patterns = allow_patterns + missing,
+                )
+            except Exception:
+                pass
 
     if not os.path.isdir(model_dir):
         return []
@@ -778,6 +829,16 @@ def _restore_missing_fp8_weight_scale_inv(
                 pass
         if attr_name in module._buffers:
             module._buffers[attr_name] = restored_scale
+        elif attr_name in module._parameters:
+            # HF FP8Linear.weight_scale_inv / FbgemmFp8Linear.weight_scale live in _parameters,
+            # so keep them Parameters here instead of delattr + register_buffer: demoting a scale
+            # to a buffer changes the module's parameter set and breaks tensor-parallel/optimizer/
+            # PEFT parameter inspection that expects these FP8 scales to stay parameters. #6749
+            existing = module._parameters[attr_name]
+            requires_grad = bool(getattr(existing, "requires_grad", False))
+            module._parameters[attr_name] = torch.nn.Parameter(
+                restored_scale, requires_grad = requires_grad
+            )
         else:
             if hasattr(module, attr_name):
                 delattr(module, attr_name)
