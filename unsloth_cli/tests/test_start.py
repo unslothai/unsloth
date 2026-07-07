@@ -29,10 +29,10 @@ MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 @pytest.fixture(autouse = True)
 def _no_global_opencode_config(monkeypatch):
-    # Isolate the opencode config tests from any real ~/.config/opencode on the
-    # host, so the overlay's disabled_providers handling is deterministic. Tests
-    # that exercise the global-disable path override this with their own value.
-    monkeypatch.setattr(start, "_opencode_global_disabled_providers", lambda: [])
+    # Isolate the opencode config tests from any real opencode config on the host,
+    # so the inline disabled_providers override is deterministic. Tests that
+    # exercise the disable path override this with their own value.
+    monkeypatch.setattr(start, "_opencode_effective_disabled_providers", lambda: [])
 
 
 # --no-launch prints shell setup as POSIX (export/unset) on Unix/WSL and
@@ -1413,7 +1413,9 @@ def test_write_opencode_config_preserves_and_idempotent(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
-    assert config["disabled_providers"] == ["ollama"]
+    # The overlay no longer edits disabled_providers; re-enabling unsloth is done in
+    # the inline layer, so an existing list here is preserved untouched.
+    assert config["disabled_providers"] == ["ollama", "unsloth"]
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
     assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
     before = path.read_text()
@@ -1432,43 +1434,95 @@ def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
     assert config["disabled_providers"] == ["openai", "gemini"]
 
 
-def test_write_opencode_config_reenables_unsloth_from_global_disable(tmp_path, monkeypatch):
-    # A fresh overlay omits disabled_providers, so a global ["unsloth", ...] would
-    # otherwise survive the merge and keep the session provider disabled. The overlay
-    # must override it, re-enabling unsloth while preserving the user's other disables.
-    monkeypatch.setattr(start, "_opencode_global_disabled_providers", lambda: ["ollama", "unsloth"])
-    path = tmp_path / "opencode.json"
-    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
-    config = json.loads(path.read_text())
-    assert config["disabled_providers"] == ["ollama"]
+def _opencode_inline_config(output: str) -> dict:
+    line = next(
+        ln for ln in output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
+    )
+    return json.loads(shlex.split(line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0])
 
 
-def test_write_opencode_config_no_override_when_global_allows_unsloth(tmp_path, monkeypatch):
-    # If the global config disables other providers but not unsloth, the overlay must
-    # not touch disabled_providers (unsloth already loads; a rewrite would clobber).
-    monkeypatch.setattr(start, "_opencode_global_disabled_providers", lambda: ["ollama", "openai"])
-    path = tmp_path / "opencode.json"
-    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
-    config = json.loads(path.read_text())
-    assert "disabled_providers" not in config
+def test_opencode_inline_reenables_unsloth_from_disable(fake_studio, monkeypatch):
+    # The disabled_providers override rides in the inline OPENCODE_CONFIG_CONTENT
+    # (highest layer, beats a project config), minus unsloth, so the provider loads
+    # while the user's other disables are preserved.
+    monkeypatch.setattr(
+        start, "_opencode_effective_disabled_providers", lambda: ["ollama", "unsloth"]
+    )
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    inline = _opencode_inline_config(result.output)
+    assert inline["disabled_providers"] == ["ollama"]
+    assert inline["model"] == f"unsloth/{MODEL['id']}"
 
 
-def test_opencode_global_disabled_providers_reads_xdg_config(tmp_path, monkeypatch):
-    monkeypatch.undo()  # drop the autouse stub; exercise the real implementation
-    cfg_dir = tmp_path / "opencode"
-    cfg_dir.mkdir()
-    (cfg_dir / "opencode.json").write_text(
+def test_opencode_inline_no_disable_when_unsloth_allowed(fake_studio, monkeypatch):
+    # When unsloth is not disabled, no override is written, or it would clobber the
+    # user's other disables.
+    monkeypatch.setattr(
+        start, "_opencode_effective_disabled_providers", lambda: ["ollama", "openai"]
+    )
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "disabled_providers" not in _opencode_inline_config(result.output)
+
+
+def test_opencode_tui_flags_keep_model_flag(fake_studio):
+    # Top-level TUI flags (not a subcommand) must still pin --model; only a real
+    # subcommand like `serve` takes the model from config.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--dir", "repo"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[:3] == ["opencode", "--model", f"unsloth/{MODEL['id']}"]
+    assert command[3:] == ["--dir", "repo"]
+
+
+def test_opencode_effective_disabled_project_overrides_global(tmp_path, monkeypatch):
+    monkeypatch.undo()  # exercise the real implementation
+    (tmp_path / "xdg" / "opencode").mkdir(parents = True)
+    (tmp_path / "xdg" / "opencode" / "opencode.json").write_text(
+        json.dumps({"disabled_providers": ["ollama"]})
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "opencode.json").write_text(json.dumps({"disabled_providers": ["unsloth", "gemini"]}))
+    monkeypatch.chdir(proj)
+    assert start._opencode_effective_disabled_providers() == ["unsloth", "gemini"]
+
+
+def test_opencode_effective_disabled_reads_global_when_no_project(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    (tmp_path / "xdg" / "opencode").mkdir(parents = True)
+    (tmp_path / "xdg" / "opencode" / "opencode.json").write_text(
         json.dumps({"disabled_providers": ["unsloth", "openai"]})
     )
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert start._opencode_global_disabled_providers() == ["unsloth", "openai"]
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    assert start._opencode_effective_disabled_providers() == ["unsloth", "openai"]
 
 
-def test_opencode_global_disabled_providers_missing_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.undo()  # drop the autouse stub; exercise the real implementation
+def test_opencode_dir_disabled_parses_jsonc_and_config_json(tmp_path):
+    (tmp_path / "jsonc").mkdir()
+    (tmp_path / "jsonc" / "opencode.jsonc").write_text(
+        '{\n  // disable the studio provider\n  "disabled_providers": ["unsloth",],\n}'
+    )
+    assert start._opencode_dir_disabled_providers(tmp_path / "jsonc") == ["unsloth"]
+    (tmp_path / "legacy").mkdir()
+    (tmp_path / "legacy" / "config.json").write_text(
+        json.dumps({"disabled_providers": ["unsloth", "openai"]})
+    )
+    assert start._opencode_dir_disabled_providers(tmp_path / "legacy") == ["unsloth", "openai"]
+
+
+def test_opencode_effective_disabled_missing_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.undo()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
     monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
-    assert start._opencode_global_disabled_providers() == []
+    monkeypatch.chdir(tmp_path)
+    assert start._opencode_effective_disabled_providers() == []
 
 
 def test_opencode_passthrough_subcommand_omits_model_flag(fake_studio):
