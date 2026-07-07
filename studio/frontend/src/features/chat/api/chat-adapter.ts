@@ -2822,6 +2822,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
+                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
                   max_tool_calls_per_message:
                     useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
