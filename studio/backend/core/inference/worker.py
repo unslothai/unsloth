@@ -807,17 +807,23 @@ def run_inference_process(
                 group, rank, size = _init_mlx_distributed()
                 config["_mlx_distributed_group"] = group
                 if size <= 1:
-                    logger.warning(
-                        "MLX distributed launch requested but initialized singleton "
-                        "group; continuing without distributed sharding"
+                    # Every rank is already in distributed-only control flow; a
+                    # singleton group (MLX built without distributed support or an
+                    # invalid launch env/hostfile) would leave nonzero ranks looping
+                    # forever on share_distributed_object. Fail the load instead of
+                    # silently continuing without sharding.
+                    raise RuntimeError(
+                        "MLX distributed launch requested but initialized a singleton "
+                        "group (size 1). Ensure the installed MLX has distributed "
+                        "support and the launch environment/hostfile is valid, or run "
+                        "without distributed."
                     )
-                else:
-                    logger.info(
-                        "MLX distributed initialized in worker: rank=%s size=%s mode=%s",
-                        rank,
-                        size,
-                        config.get("mlx_parallel_mode"),
-                    )
+                logger.info(
+                    "MLX distributed initialized in worker: rank=%s size=%s mode=%s",
+                    rank,
+                    size,
+                    config.get("mlx_parallel_mode"),
+                )
             _send_response(
                 resp_queue,
                 {"type": "status", "message": "Loading model..."},
