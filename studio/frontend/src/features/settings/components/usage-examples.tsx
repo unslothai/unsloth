@@ -33,7 +33,7 @@ import {
   loadOpenAIAutoSwitchSettings,
   updateOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
-import { buildAgentCommand } from "./agent-command";
+import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
 type ExampleType =
   | "curl"
@@ -420,17 +420,18 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
-// `codex` only runs against a GGUF model served by llama-server (see
-// unsloth_cli's `_require_gguf_for_codex`); anything else makes the copied
-// `unsloth start codex` command fail immediately. This tells the agent
-// picker below whether the currently loaded model actually qualifies.
-function useActiveModelIsGguf(): boolean {
-  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const models = useChatRuntimeStore((s) => s.models);
-  return useMemo(
-    () => models.find((m) => m.id === checkpoint)?.isGguf ?? false,
-    [models, checkpoint],
-  );
+// Best-effort loopback check on the base the panel is currently pointing at.
+// Detection (`/api/settings/coding-agents`) runs `shutil.which` on the Studio
+// backend, which only describes the browser's own machine when that base
+// resolves to loopback; for a LAN or tunnel/remote base it describes a
+// different machine entirely, so it must not drive what gets marked
+// "detected" or picked as the default agent.
+function resolveIsLoopbackBase(base: string): boolean {
+  try {
+    return isLoopbackHost(normalizeHost(new URL(base).hostname));
+  } catch {
+    return false;
+  }
 }
 
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
@@ -484,8 +485,11 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
   const agentPickedByUserRef = useRef(false);
-  const activeModelIsGguf = useActiveModelIsGguf();
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const base =
+    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+  const isLoopbackBase = resolveIsLoopbackBase(base);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
     null,
@@ -502,13 +506,28 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       .then((info) => {
         if (cancelled) return;
         setAvailableAgents(info.agents);
+
+        // shutil.which runs on the Studio backend, so "detected" only means
+        // something for the browser's own machine when the base this panel
+        // targets is loopback; for a LAN/tunnel/remote base the server's
+        // installed CLIs describe a different machine, so don't mark
+        // anything as detected or let it drive the default.
+        if (!isLoopbackBase) return;
+
         setDetectedAgents(info.detected);
         // Prefer an agent that's actually installed over the hardcoded
         // "claude" starting point, but never override a choice the user
         // already made -- including one made while this request was in
         // flight, which a value comparison against "claude" alone would miss.
+        // `codex` additionally refuses to launch against a non-GGUF model
+        // (unsloth_cli's _require_gguf_for_codex exits for transformers-backed
+        // models), so skip it unless the loaded model actually qualifies.
         if (!agentPickedByUserRef.current && info.detected.length > 0) {
-          setAgent(info.detected[0]);
+          const isGguf = Boolean(
+            useChatRuntimeStore.getState().activeGgufVariant,
+          );
+          const preferred = info.detected.find((a) => a !== "codex" || isGguf);
+          if (preferred) setAgent(preferred);
         }
       })
       .catch(() => {
@@ -517,19 +536,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  // Steers away from an auto-picked "codex" once we know the loaded model
-  // isn't GGUF (codex would otherwise be handed to the user as a ready-to-run
-  // command that's guaranteed to fail against a transformers-backed model).
-  // Runs on its own so it also re-corrects if the model changes after the
-  // initial detection resolved; never touches a choice the user made by hand.
-  useEffect(() => {
-    if (agentPickedByUserRef.current) return;
-    if (agent !== "codex" || activeModelIsGguf) return;
-    const fallback = detectedAgents.find((id) => id !== "codex");
-    if (fallback) setAgent(fallback);
-  }, [agent, activeModelIsGguf, detectedAgents]);
+  }, [isLoopbackBase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -547,9 +554,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
 
   const model = useLoadedModelName();
   const key = apiKey || KEY_PLACEHOLDER;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
 
   const autoSwitchOn = autoSwitch?.enabled ?? false;
   const snippets = useMemo(
@@ -802,11 +806,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   aria-pressed={active}
                   title={
                     installed
-                      ? t(
-                          useTunnel
-                            ? "settings.apiKeys.codingAgentDetectedRemote"
-                            : "settings.apiKeys.codingAgentDetected",
-                        )
+                      ? t("settings.apiKeys.codingAgentDetected")
                       : undefined
                   }
                   className={cn(
@@ -845,16 +845,11 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           </div>
           <span className="text-[11px] leading-snug text-muted-foreground">
             {detectedAgents.length > 0
-              ? t(
-                  useTunnel
-                    ? "settings.apiKeys.codingAgentsDetectedHintRemote"
-                    : "settings.apiKeys.codingAgentsDetectedHint",
-                  {
-                    agents: detectedAgents
-                      .map((id) => AGENT_LABELS[id] ?? id)
-                      .join(", "),
-                  },
-                )
+              ? t("settings.apiKeys.codingAgentsDetectedHint", {
+                  agents: detectedAgents
+                    .map((id) => AGENT_LABELS[id] ?? id)
+                    .join(", "),
+                })
               : t("settings.apiKeys.codingAgentsSwap")}
           </span>
         </div>

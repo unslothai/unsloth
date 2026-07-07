@@ -445,12 +445,7 @@ export const en = {
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
       codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
       codingAgentDetected: "Installed on this machine",
-      // Shown instead of codingAgentDetected when the tunnel URL is in use:
-      // detection runs on the Studio server, not the device viewing this panel.
-      codingAgentDetectedRemote: "Installed on the Studio server",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
-      codingAgentsDetectedHintRemote:
-        "Detected on the Studio server, which may not match this device when connecting via tunnel: {agents}.",
       relativeNever: "never",
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",
