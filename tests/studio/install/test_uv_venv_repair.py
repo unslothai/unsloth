@@ -107,7 +107,10 @@ def _write_python_stub(stub_dir: Path, mode: str) -> Path:
 
 
 def _run_bootstrap(
-    tmp_path: Path, mode: str, source_text: str, python_mode: str = "real"
+    tmp_path: Path,
+    mode: str,
+    source_text: str,
+    python_mode: str = "real",
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     if PWSH is None:
         pytest.skip("pwsh not available")
@@ -117,9 +120,7 @@ def _run_bootstrap(
     log_file = tmp_path / "uv.log"
     _write_uv_stub(stub_dir, mode)
     detected_python = (
-        _write_python_stub(stub_dir, python_mode)
-        if python_mode != "real"
-        else Path(sys.executable)
+        _write_python_stub(stub_dir, python_mode) if python_mode != "real" else Path(sys.executable)
     )
 
     env = os.environ.copy()
