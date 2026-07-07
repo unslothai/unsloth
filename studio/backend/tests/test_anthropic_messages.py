@@ -1718,6 +1718,19 @@ class TestAnthropicMessagesToolRouting:
         assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
         assert backend.calls == []
 
+    def test_confirm_code_execution_rejected_for_server_tools(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            confirm_code_execution = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "confirm_code_execution is not supported" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
+
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(

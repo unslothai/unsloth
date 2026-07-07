@@ -10378,6 +10378,21 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
+        if bool(getattr(payload, "confirm_code_execution", False)) and not bool(
+            getattr(payload, "bypass_permissions", False)
+        ):
+            api_monitor.fail(
+                monitor_id,
+                "confirm_code_execution is not supported for Anthropic Messages server tools.",
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    "confirm_code_execution is not supported for Anthropic Messages server tools.",
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
         from core.inference.tools import ALL_TOOLS
 
         openai_tools = _select_anthropic_server_tools(

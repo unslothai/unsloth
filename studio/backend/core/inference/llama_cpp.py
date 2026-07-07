@@ -8818,9 +8818,17 @@ class LlamaCppBackend:
                                             in provisional_started_tool_calls.values()
                                         )
                                         # Later parallel cards only reconcile when parallel use is enabled.
+                                        # Suppress the early card whenever this call will be
+                                        # gated for confirmation, so a python/terminal call under
+                                        # confirm_code_execution never flashes "running" before the
+                                        # approve/deny prompt.
                                         _confirm_gated = (
-                                            confirm_tool_calls and not bypass_permissions
-                                        )
+                                            confirm_tool_calls
+                                            or (
+                                                confirm_code_execution
+                                                and current_name in CODE_EXECUTION_TOOL_NAMES
+                                            )
+                                        ) and not bypass_permissions
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(
                                             tool_calls_acc[idx]["function"].get("arguments", "")
