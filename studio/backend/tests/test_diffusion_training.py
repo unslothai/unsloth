@@ -859,6 +859,49 @@ def test_diffusion_dataset_upload_normalizes_windows_and_rejects_dotdot(client, 
     assert r.status_code == 400 and "Unsupported file" in r.json()["detail"]
 
 
+def test_diffusion_dataset_upload_rejects_case_insensitive_stem_clash(client, dataset_roots):
+    # Two images whose stems differ only by case (sample.png vs Sample.jpg) map to the SAME
+    # <stem>.txt caption sidecar on case-insensitive filesystems (Windows / default macOS), so
+    # keeping both would silently share -- and corrupt -- one caption during training. The clash
+    # check compares stems with casefold, so it must reject the pair (the comparison is pure
+    # string logic, so this fires regardless of the test host filesystem).
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "caseset"},
+        files = [
+            ("files", ("sample.png", b"p", "image/png")),
+            ("files", ("Sample.jpg", b"j", "image/jpeg")),
+        ],
+    )
+    assert r.status_code == 400 and "Duplicate image name" in r.json()["detail"]
+
+    # The same clash across batches (the new image collides with one already on disk).
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "caseset2"},
+        files = [("files", ("photo.png", b"p", "image/png"))],
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "caseset2"},
+        files = [("files", ("PHOTO.webp", b"w", "image/webp"))],
+    )
+    assert r.status_code == 400 and "Duplicate image name" in r.json()["detail"]
+
+    # A same-name case variant with the SAME extension is an overwrite (one file on a
+    # case-insensitive FS), not a caption clash, so it is still allowed.
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "caseset3"},
+        files = [
+            ("files", ("pic.png", b"a", "image/png")),
+            ("files", ("Pic.png", b"b", "image/png")),
+        ],
+    )
+    assert r.status_code == 200, r.text
+
+
 def test_diffusion_dataset_upload_over_cap_keeps_existing_example(
     client, dataset_roots, monkeypatch
 ):

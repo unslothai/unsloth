@@ -186,6 +186,30 @@ def test_config_normalized_lists_mxfp8_in_invalid_mode_error():
         ).normalized()
 
 
+def test_config_normalized_krea2_requires_bf16_compute():
+    # krea-2 (like qwen-image / z-image) has fp32 RoPE/embedder internals that overflow fp16,
+    # so its DiT trains in bf16 only; fp16 must be refused up front by the route preflight,
+    # before it reserves training and evicts resident GPU models and the child trainer raises.
+    with pytest.raises(ValueError, match = "bf16"):
+        DiffusionLoraConfig(
+            base_model = "b",
+            data_dir = "d",
+            output_dir = "o",
+            model_family = "krea-2",
+            mixed_precision = "fp16",
+        ).normalized()
+
+
+def test_force_bf16_families_matches_trainer_specs():
+    # The route-level bf16-only preflight set must list exactly the DiT families whose trainer
+    # spec sets force_bf16. If a force_bf16 family is missing from the set (as krea-2 was), an
+    # fp16 start passes the route preflight, reserves training + evicts resident models, and
+    # only the child trainer raises -- the evict-then-fail the preflight exists to prevent.
+    from core.training.diffusion_dit_trainer import _SPECS
+    from core.training.diffusion_train_common import _FORCE_BF16_FAMILIES
+    assert _FORCE_BF16_FAMILIES == {fam for fam, spec in _SPECS.items() if spec.force_bf16}
+
+
 def _cfg(**kw):
     return DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw)
 

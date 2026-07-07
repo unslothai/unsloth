@@ -57,7 +57,7 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 
 # DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Must stay
 # in sync with the DiT trainer's own specs (kept separate to avoid an import cycle).
-_FORCE_BF16_FAMILIES: frozenset[str] = frozenset({"qwen-image", "z-image"})
+_FORCE_BF16_FAMILIES: frozenset[str] = frozenset({"qwen-image", "z-image", "krea-2"})
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")

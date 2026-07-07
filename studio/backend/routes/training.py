@@ -1609,14 +1609,22 @@ async def upload_diffusion_dataset(
         # an overwrite; caption/text files are exempt (sample.txt for sample.png is intended).
         if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
             stem = Path(filename).stem
+            # Compare stems (and the same-name guard) case-insensitively: on Windows/macOS
+            # (case-insensitive filesystems) two images whose stems differ only by case
+            # (sample.png vs Sample.jpg) resolve to the SAME <stem>.txt caption sidecar, so a
+            # case-sensitive check would let both through and silently share -- and corrupt --
+            # one caption. Casefolding the name guard too keeps a same-name case variant
+            # (sample.png vs Sample.png, one file / an overwrite on those filesystems) exempt.
+            stem_cf = stem.casefold()
+            fname_cf = filename.casefold()
             clash = next(
                 (
                     p.name
                     for p in folder.iterdir()
                     if p.is_file()
-                    and p.name != filename
+                    and p.name.casefold() != fname_cf
                     and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
-                    and p.stem == stem
+                    and p.stem.casefold() == stem_cf
                 ),
                 None,
             )
@@ -1625,9 +1633,9 @@ async def upload_diffusion_dataset(
                     (
                         n
                         for n in names
-                        if n != filename
+                        if n.casefold() != fname_cf
                         and Path(n).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
-                        and Path(n).stem == stem
+                        and Path(n).stem.casefold() == stem_cf
                     ),
                     None,
                 )
