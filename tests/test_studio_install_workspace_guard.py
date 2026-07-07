@@ -533,6 +533,9 @@ def test_install_ps1_launcher_repairs_missing_studio_install_id():
         "`$_ExpectedStudioRootId.Length -ne 64" in launcher
     ), "repair helper must reject malformed baked ids"
     assert (
+        "`$idTmp = `$null" in launcher
+    ), "repair helper must initialize `$idTmp before catch cleanup"
+    assert (
         "`$current -match '^[0-9a-f]{64}$'" in launcher
     ), "repair helper must preserve a different valid install id"
     assert (

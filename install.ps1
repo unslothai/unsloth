@@ -654,6 +654,7 @@ function Repair-StudioInstallId {
     if (`$_ExpectedStudioRootId.Length -ne 64 -or `$_ExpectedStudioRootId -notmatch '^[0-9a-f]{64}$') { return }
 
     try {
+        `$idTmp = `$null
         `$studioHome = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent `$studioExe))
         `$idDir = Join-Path `$studioHome 'share'
         `$idFile = Join-Path `$idDir 'studio_install_id'
