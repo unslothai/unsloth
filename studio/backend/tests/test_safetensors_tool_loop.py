@@ -663,7 +663,6 @@ class TestParser:
         assert "[TOOL_CALLS]" not in out
         assert elapsed < 1.0, f"strip took {elapsed * 1000:.0f}ms on 4000 bracket calls"
 
-
     def test_streaming_strip_handles_nested_mistral_json(self):
         # The non-greedy [TOOL_CALLS]name{...} pattern truncates nested JSON at the first }; the
         # balanced helper must remove the whole call so no trailing brace leaks to the streaming ...

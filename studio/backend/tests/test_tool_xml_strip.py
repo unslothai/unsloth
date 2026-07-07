@@ -676,6 +676,8 @@ def test_route_history_and_passthrough_forward_the_display_gate():
         assert "enabled_tool_names" in m.group(
             0
         ), f"{label} must forward enabled_tool_names to _strip_tool_xml_for_display"
+
+
 # ── DeepSeek opener variants + bare Kimi (parse/strip symmetry) ──
 
 
