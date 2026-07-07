@@ -563,7 +563,11 @@ def _fp8_scale_snapshot_allow_patterns(
     return patterns
 
 
-def _fp8_scale_index_extra_patterns(model_dir, subfolder = None, variant = None):
+def _fp8_scale_index_extra_patterns(
+    model_dir,
+    subfolder = None,
+    variant = None,
+):
     """Exact safetensors shard names an FP8 scale index references that the default snapshot
     globs above do not cover. `_resolve_fp8_scale_safetensors_files` follows the index
     `weight_map` verbatim, so a repo that maps a scale tensor to a shard named outside

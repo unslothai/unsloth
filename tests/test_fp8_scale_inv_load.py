@@ -1287,8 +1287,7 @@ def test_index_extra_patterns_cover_nonstandard_scale_shards():
     # index-driven extra pass the scale shard would be under-fetched.
     default_patterns = loader_utils._fp8_scale_snapshot_allow_patterns()
     assert not any(
-        fnmatch.fnmatch("custom-shard-00001.safetensors", pattern)
-        for pattern in default_patterns
+        fnmatch.fnmatch("custom-shard-00001.safetensors", pattern) for pattern in default_patterns
     )
 
 
